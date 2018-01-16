@@ -64,6 +64,7 @@ function initialiseControls() {
 /**
 *
 */
+var facing = true
 function initialise() {
     var canvas = document.getElementById('main-canvas')   
     var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
@@ -72,7 +73,7 @@ function initialise() {
     var stop = document.getElementById('stop')
     var changeCamera = document.getElementById('flip')
     var changeBackgroundButton = document.getElementById('change-background')
-    var facing = true
+    
     var backgroundMovie = true 
 
     if (!gl) {
@@ -515,6 +516,9 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0
     ]
+    if (facing) {
+        transform[0] = -1
+    }
     gl.uniformMatrix4fv(programInfo.uniformLocation.transform,
         false,
         transform)
