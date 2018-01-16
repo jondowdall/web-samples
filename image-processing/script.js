@@ -88,25 +88,14 @@ function initialise() {
 
         attribute vec4 aVertexPosition;    
         attribute vec3 aVertexNormal;
-        attribute vec2 aTextureCoord;
-        attribute vec4 aVertexColour;
        
-        uniform mat4 uNormalMatrix;
-        uniform mat4 uModelViewMatrix;
-        uniform mat4 uProjectionMatrix;
-        uniform float uDelta;
+        uniform mat4 uTransform;
        
-        varying highp vec4 vColor;
-        varying highp vec3 vLighting;
         varying highp vec2 vTextureCoord;
        
         void main() {
-            gl_Position = aVertexPosition;
-
-            vLighting = vec3(1.0, 1.0, 1.0);
-
+            gl_Position = uTransform * VertexPosition;
             vTextureCoord = aTextureCoord;
-       
         }`
        
     const fsSource =
@@ -154,21 +143,16 @@ function initialise() {
         program: shaderProgram,
         attribLocations: {
             vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
-            vertexNormal: gl.getAttribLocation(shaderProgram, 'aVertexNormal'),
             textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
-            vertexColour: gl.getAttribLocation(shaderProgram, 'aVertexColour')
         },
         uniformLocation: {
-            projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
-            modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
-            normalMatrix: gl.getUniformLocation(shaderProgram, 'uNormalMatrix'),
+            transform: gl.getUniformLocation(shaderProgram, 'uTransform'),
             initialFrame: gl.getUniformLocation(shaderProgram, 'initialFrame'),
             currentFrame: gl.getUniformLocation(shaderProgram, 'currentFrame'),
             background: gl.getUniformLocation(shaderProgram, 'background'),
-            delta: gl.getUniformLocation(shaderProgram, 'uDelta'),
-            kernel: gl.getUniformLocation(shaderProgram, "u_kernel[0]"),
-            kernelWeight: gl.getUniformLocation(shaderProgram, "u_kernelWeight"),
-            threshold: gl.getUniformLocation(shaderProgram, "u_threshold"),
+            kernel: gl.getUniformLocation(shaderProgram, 'u_kernel[0]'),
+            kernelWeight: gl.getUniformLocation(shaderProgram, 'u_kernelWeight'),
+            threshold: gl.getUniformLocation(shaderProgram, 'u_threshold'),
             textureSize: gl.getUniformLocation(shaderProgram, 'u_textureSize')
         }
     }
@@ -436,60 +420,25 @@ var height = 130
  
 function initBuffers(gl) {
     const positionBuffer = gl.createBuffer()   
-    const normalBuffer = gl.createBuffer()   
-    const colourBuffer = gl.createBuffer()
     const textureCoordBuffer = gl.createBuffer()
     var positions = []
-    var normals = []
     var textureCoordinates = []
-    var colours = []
-
-    for (var i = 0; i <= width; ++i) {
-        for (var j = 0; j <= height; ++j) {
-            var r = Math.sin(Math.PI * i / width)
-            var y = Math.cos(Math.PI * i / width)
-            /*
-            var x = (2 * i / width) - 1.0
-            var z = (2 * j / height) - 1.0
-            */
-            var x = r * Math.sin(2 * Math.PI * (0.5 + j / height))
-            var z = r * Math.cos(2 * Math.PI * (0.5 + j / height))
-            positions.push(1.2 * x, 1.2 * y, 1.2 * z)
-            normals.push(x, y, z)
-            textureCoordinates.push(j / height, i / width)
-            colours.push((x + 1) / 2, (1 - x) / 2, 1.0, 1.0)
-        }
-    }
 
     positions.push(-1, -1, 0)
-    normals.push(0, 1, 0)
     textureCoordinates.push(0, 1)
-    colours.push(1.0, 1.0, 1.0, 1.0)
     positions.push(1, -1, 0)
-    normals.push(0, 1, 0)
     textureCoordinates.push(1, 1)
-    colours.push(1.0, 1.0, 1.0, 1.0)
     positions.push(1, 1, 0)
-    normals.push(0, 1, 0)
     textureCoordinates.push(1, 0)
-    colours.push(1.0, 1.0, 1.0, 1.0)
     positions.push(-1, 1, 0)
-    normals.push(0, 1, 0)
     textureCoordinates.push(0, 0)
-    colours.push(1.0, 1.0, 1.0, 1.0)
 
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW)
        
-    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW)
-       
     gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW)
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, colourBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colours), gl.STATIC_DRAW)
- 
     const indexBuffer = gl.createBuffer()
     var indices = []
     
@@ -501,27 +450,12 @@ function initBuffers(gl) {
     indices.push((width + 1) * (height + 1) + 2)
     indices.push((width + 1) * (height + 1) )
 
-    for (var tri = 0; tri < width * height; ++tri) {
-        x = tri % width
-        y = Math.floor(tri / width)
-       
-        indices.push(x + y * (width + 1))
-        indices.push(x + 1 + y * (width + 1))
-        indices.push(x + (y + 1) * (width + 1))
- 
-        indices.push(x + 1 + y * (width + 1))
-        indices.push(x + (y + 1) * (width + 1))
-        indices.push(x + 1 + (y + 1) * (width + 1))
-    }
- 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW)
 
     return {
         position: positionBuffer,
-        normal: normalBuffer,
         textureCoord: textureCoordBuffer,
-        colour: colourBuffer,
         indices: indexBuffer
     }
 }
@@ -560,7 +494,7 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
             stride,
             offset)
         gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition)
-   }
+    }
     {
         const num = 2; // every coordinate composed of 2 values
         const type = gl.FLOAT; // the data in the buffer is 32 bit float
@@ -576,12 +510,21 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
             return prev + curr;
         });
         return weight <= 0 ? 1 : weight;
-      }
-      
-      var threshold = document.getElementById('threshold').value
-      gl.uniform1f(programInfo.uniformLocation.threshold, threshold);
-      gl.uniform1fv(programInfo.uniformLocation.kernel, kernel);
-      gl.uniform1f(programInfo.uniformLocation.kernelWeight, weight);
+    }
+    var transform = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    ]
+    gl.uniformMatrix4fv(programInfo.uniformLocation.transform,
+        false,
+        transform)
+
+    var threshold = document.getElementById('threshold').value
+    gl.uniform1f(programInfo.uniformLocation.threshold, threshold);
+    gl.uniform1fv(programInfo.uniformLocation.kernel, kernel);
+    gl.uniform1f(programInfo.uniformLocation.kernelWeight, weight);
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
     gl.useProgram(programInfo.program)
