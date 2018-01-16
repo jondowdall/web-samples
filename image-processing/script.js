@@ -84,17 +84,15 @@ function initialise() {
     gl.clear(gl.COLOR_BUFFER_BIT)
  
     const vsSource =
-       `#define PI 3.1415926538
-
-        attribute vec4 aVertexPosition;    
-        attribute vec3 aVertexNormal;
+       `attribute vec4 aVertexPosition;    
+        attribute vec2 aTextureCoord;
        
         uniform mat4 uTransform;
        
         varying highp vec2 vTextureCoord;
        
         void main() {
-            gl_Position = uTransform * VertexPosition;
+            gl_Position = uTransform * aVertexPosition;
             vTextureCoord = aTextureCoord;
         }`
        
@@ -442,13 +440,13 @@ function initBuffers(gl) {
     const indexBuffer = gl.createBuffer()
     var indices = []
     
-    indices.push((width + 1) * (height + 1))
-    indices.push((width + 1) * (height + 1) + 1)
-    indices.push((width + 1) * (height + 1) + 2)
+    indices.push(0)
+    indices.push(1)
+    indices.push(2)
 
-    indices.push((width + 1) * (height + 1) + 3)
-    indices.push((width + 1) * (height + 1) + 2)
-    indices.push((width + 1) * (height + 1) )
+    indices.push(3)
+    indices.push(2)
+    indices.push(0)
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW)
@@ -547,7 +545,7 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
     gl.uniform1f(programInfo.uniformLocation.delta, angle / 5)                   
     {
         const offset = 0
-        const vertexCount = 6 //+ width * height * 6
+        const vertexCount = 6
  
         gl.drawElements(gl.TRIANGLES, vertexCount, gl.UNSIGNED_SHORT, offset)
     }
