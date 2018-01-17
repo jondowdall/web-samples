@@ -15,7 +15,6 @@ var kernel = [
 var weight
 
 function initialiseControls() {
-
     var autoCalculateWeight = false
     var weightInput = document.getElementById('weight')
     weight = weightInput.value = calculateWeight(kernel)
@@ -101,14 +100,11 @@ function initialise() {
        `
         varying highp vec2 vTextureCoord;
 
-        uniform sampler2D initialFrame;
         uniform sampler2D currentFrame;
-        uniform sampler2D background;
 
         uniform highp vec2 u_textureSize;
         uniform highp float u_kernel[9];
         uniform highp float u_kernelWeight;
-        uniform highp float u_threshold;
 
         highp vec4 smoothed(sampler2D source) {
             highp vec2 onePixel = vec2(1.0, 1.0) / u_textureSize;
@@ -126,14 +122,8 @@ function initialise() {
         }
 
         void main() {
-            highp vec4 initial = smoothed(initialFrame);
             highp vec4 current = smoothed(currentFrame);
-            highp vec4 background = texture2D(background, vTextureCoord);
-            highp vec4 deltav = abs(initial - current);
-            highp float delta = floor((1.0 - u_threshold) + (deltav.r + deltav.g + deltav.b) / 3.0);
-
-            highp vec4 texelColor = mix(background, texture2D(currentFrame, vTextureCoord), delta);
-            gl_FragColor = vec4(texelColor.rgb, 1.0);
+            gl_FragColor = vec4(current.rgb, 1.0);
         }`
        
     const shaderProgram = initialiseShaders(gl, vsSource, fsSource)
@@ -151,51 +141,26 @@ function initialise() {
             background: gl.getUniformLocation(shaderProgram, 'background'),
             kernel: gl.getUniformLocation(shaderProgram, 'u_kernel[0]'),
             kernelWeight: gl.getUniformLocation(shaderProgram, 'u_kernelWeight'),
-            threshold: gl.getUniformLocation(shaderProgram, 'u_threshold'),
             textureSize: gl.getUniformLocation(shaderProgram, 'u_textureSize')
         }
     }
 
     const buffers = initBuffers(gl)
     // Load texture
-    const backgroundImage = loadTexture(gl, 'cubetexture.png')
-    const backgroundMovieTex = initTexture(gl)
-    const initialFrame = initTexture(gl)
     const currentFrame = initTexture(gl)
 
     const textures = {
-        initialFrame: initialFrame,
         currentFrame: currentFrame,
-        background: backgroundMovieTex
     }
-  navigator.mediaDevices.enumerateDevices()
-  .then(function(devices) {
-    devices.forEach(function(device) {
-      //log.append(device.kind + ": " + device.label + " id = " + device.deviceId);
+    navigator.mediaDevices.enumerateDevices().then(function(devices) {
+        devices.forEach(function(device) {
+          //log.append(device.kind + ": " + device.label + " id = " + device.deviceId);
+        });
+    }).catch(function(err) {
+        log.append(err.name + ": " + err.message);
     });
-  })
-  .catch(function(err) {
-    log.append(err.name + ": " + err.message);
-  });
 
-  var videoStream;
-  function changeBackground() {
-      backgroundMovie = ! backgroundMovie
-      if (backgroundMovie) {
-          textures.background = backgroundMovieTex
-          videoStream = setupVideo('Firefox.mp4')
-          copyVideo = false
-      } else {
-        textures.background = backgroundImage
-        if (videoStream) {
-            videoStream.stop()
-        }
-      }
-  }
-
-  changeBackground()
-
-  const cameraStream = document.createElement('video')
+    const cameraStream = document.createElement('video')
    
     var then = 0
    
@@ -204,15 +169,8 @@ function initialise() {
         const deltaTime = now - then
         then = now
        
-        if (copyVideo) {
-            updateTexture(gl, textures.background, videoStream)
-        }
         if (copyCamera) {
             updateTexture(gl, currentFrame, cameraStream)
-            if (! gotInitialFrame) {
-                updateTexture(gl, initialFrame, cameraStream)
-                gotInitialFrame = true
-            }
             var textureSizeLocation = gl.getUniformLocation(shaderProgram, 'u_textureSize')
             var track = cameraStream.srcObject.getVideoTracks()[0].getSettings()
 
@@ -274,7 +232,6 @@ function initialise() {
         gotInitialFrame = false
     })
 
-    changeBackgroundButton.addEventListener('click', changeBackground)
     initialiseControls()
 }
 
@@ -523,22 +480,15 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
         false,
         transform)
 
-    var threshold = document.getElementById('threshold').value
-    gl.uniform1f(programInfo.uniformLocation.threshold, threshold);
     gl.uniform1fv(programInfo.uniformLocation.kernel, kernel);
     gl.uniform1f(programInfo.uniformLocation.kernelWeight, weight);
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
     gl.useProgram(programInfo.program)
-   // Tell WebGL we want to affect texture unit 0
+    // Tell WebGL we want to affect texture unit 0
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture.currentFrame);
 
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, texture.initialFrame);
-
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, texture.background);
     // Bind the texture to texture unit 0
 
     // Tell the shader we bound the texture to texture unit 0
