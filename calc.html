@@ -79,6 +79,14 @@
             padding: 0.2em 0.4em;
         }
 
+        #svg {
+            position: fixed;
+            top: 0;
+            right: 0;
+            padding: 0.2em 0.4em;
+            border: 1px solid gray;
+        }
+
         #sub-answer {
             grid-column: 1 / 4;
             grid-row: 3 / 4;
@@ -299,7 +307,7 @@
             grid-row: 9 / 10;
         }
 
-        #minus {
+        #subtraction {
             grid-column: 7 / 8;
             grid-row: 9 / 10;
         }
@@ -319,7 +327,7 @@
             grid-row: 10 / 11;
         }
 
-        #plus {
+        #addition {
             grid-column: 7 / 8;
             grid-row: 10 / 11;
         }
@@ -363,13 +371,25 @@
             font-weight: bold;
             color: blue;
         }
+
+        #debug {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 25vw;
+            /*height: 25vh;*/
+            background: white;
+            z-index: 10;
+        }
     </style>
 </head>
 
 <body>
+    <div id="debug"></div>
     <div id="layout">
         <div id="status"></div>
         <div id="expression"></div>
+        <div id="svg"></div>
         <div id="sub-answer"></div>
         <div id="answer"></div>
         <div id="settings"></div>
@@ -420,8 +440,8 @@
                 { id: 'divide', html: '&#247', action: divide, class: 'action', },
                 { id: 'multiply', html: '&#215', action: multiply, class: 'action', },
 
-                { id: 'minus', html: '-', action: minus, class: 'action', },
-                { id: 'plus', html: '+', action: plus, class: 'action', },
+                { id: 'subtraction', html: '-', action: subtraction, class: 'action', },
+                { id: 'addition', html: '+', action: addition, class: 'action', },
 
                 { id: 'equal', html: '=', action: equal, class: 'action', },
                 { id: 'enter', html: '&#9166;', action: enter, class: 'action', },
@@ -443,13 +463,253 @@
             addEventListener('load', function (e) {
                 addButtonActions();
                 addKeyActions();
+                addSvg();
             });
+
+            let debug = document.getElementById('debug');
+            let gap = 0;
 
             let angleScale = Math.PI / 180;
             let angleUnits = 'deg';
             let altMode = false;
             const stack = [];
             const precision = (value, places) => Math.round(value * Math.pow(10, places)) / Math.pow(10, places);
+
+            /**
+             * Return an svg element of the given types with the attribtutes specified.
+             */
+            function svgElement(element, attributes = {}, content) {
+                const node = document.createElementNS('http://www.w3.org/2000/svg', element);
+
+                for (const [attribute, value] of Object.entries(attributes)) {
+                    node.setAttribute(attribute, value);
+                }
+
+                if (content !== undefined) {
+                    node.textContent = content;
+                }
+                return node;
+            }
+
+            /**
+             * Draw a root operator in svg adjusting to the size of the elements
+             */
+            function drawRoot(svg, value, root) {
+                /*
+                 * Create a group node to hold symbol and children.
+                 */
+                const group = svgElement('g');
+
+                const rootBox = root ? root.getBBox() : { x: 0, y: 0, width: 5, height: 5 };
+                const valueBox = value.getBBox();
+
+                const height = valueBox.height + gap;
+                const width = valueBox.width + gap;
+                const x = 0.75 * rootBox.width - 6;
+                const y = 0.75 * rootBox.height - 2;
+                const w2 = height / 5;
+
+                const points = [
+                    [x, 5 + y],
+                    [x + 5, y],
+                    [x + 5 + w2, height],
+                    [x + 5 + 2 * w2, 0],
+                    [x + 5 + 2 * w2 + width, 0],
+                    [x + 5 + 2 * w2 + width, 1],
+                    [x + 5 + 2 * w2, 1],
+                    [x + 5 + w2 - 0.5, height + 3],
+                    [x + 5, y + 1],
+                ];
+                const path = points.map((p) => `${p[0]}, ${p[1]}`).join(' L');
+                console.log(path);
+
+                const symbol = svgElement('path', {
+                    d: `M${path} z`,
+                    stroke: 'none', fill: 'black', 'stroke-width': 1,
+                });
+
+                group.appendChild(symbol);
+                group.appendChild(value);
+                setPosition(value, x + 5 + 2 * w2, 2);
+                if (root) {
+                    group.appendChild(root);
+                    setPosition(root, 0, 0);
+                    setScale(root, 0.75);
+                }
+                svg.append(group);
+                return group;
+            }
+
+            /**
+             * Draw a binary operator in svg adjusting to the size of the elements
+             */
+            function drawBinaryOperator(svg, value1, value2, operator) {
+                /*
+                 * Create a group node to hold symbol and children.
+                 */
+                const group = svgElement('g');
+
+                const symbol = svgElement('text',
+                    {
+                        x: 0, y: 0,
+                        'font-family': 'sans-serif',
+                        'font-size': '12pt',
+                        'dominant-baseline': 'hanging'
+                    },
+                    operator);
+                svg.appendChild(symbol);
+
+                const value1Box = value1.getBBox();
+                const value2Box = value2.getBBox();
+                const symbolBox = symbol.getBBox();
+
+                const height = Math.max(value1Box.height, value2Box.height, symbolBox.height);
+                const symbolX = value1Box.width + gap;
+                const value2X = symbolX + symbolBox.width + gap;
+                const value1Y = (height - value1Box.height) / 2;
+                const symbolY = (height - symbolBox.height) / 2;
+                const value2Y = (height - value2Box.height) / 2;
+
+                group.appendChild(value1);
+                setPosition(value1, 0, value1Y);
+                group.appendChild(symbol);
+                setPosition(symbol, symbolX, symbolY);
+                group.appendChild(value2);
+                setPosition(value2, value2X, value2Y);
+
+                svg.append(group);
+                return group;
+            }
+
+            /**
+             * Draw a unary operator in svg adjusting to the size of the element
+             */
+            function drawUnaryOperator(svg, value, symbol) {
+                /*
+                 * Create a group node to hold symbol and children.
+                 */
+                const group = svgElement('g');
+
+                const symbolBox = symbol.getBBox();
+                const valueBox = value.getBBox();
+
+                const height = Math.max(symbolBox.height, valueBox.height);
+
+                const openBrace = drawValue(svg, '(');
+                svg.appendChild(openBrace);
+                const openBraceBox = openBrace.getBBox();
+                setScale(openBrace, 1, height / openBraceBox.height);
+
+                const closeBrace = drawValue(svg, ')');
+                svg.appendChild(closeBrace);
+                const closeBraceBox = closeBrace.getBBox();
+                setScale(closeBrace, 1, height / closeBraceBox.height);
+
+                const openBraceX = symbolBox.width + gap;
+                const valueX = openBraceX + openBraceBox.width + gap;
+                const closeBraceX = valueX + valueBox.width + gap;
+
+                const symbolY = (height - symbolBox.height) / 2;
+                const valueY = (height - valueBox.height) / 2;
+
+                group.appendChild(symbol);
+                setPosition(symbol, 0, symbolY);
+
+                group.appendChild(openBrace);
+                setPosition(openBrace, openBraceX, 0);
+
+                group.appendChild(value);
+                setPosition(value, valueX, valueY);
+
+                group.appendChild(closeBrace);
+                setPosition(closeBrace, closeBraceX, 0);
+
+                svg.append(group);
+                return group;
+            }
+
+            /**
+             * Draw a simple value
+             */
+            function drawValue(svg, value) {
+                const symbol = svgElement('text',
+                    {
+                        x: 0, y: 0,
+                        'font-family': 'math',
+                        'font-size': '12pt',
+                        'dominant-baseline': 'hanging'
+                    },
+                    `${value}`);
+                svg.appendChild(symbol);
+                return symbol;
+            }
+
+            /**
+             * Draw a division operator in svg adjust to the size of the elements
+             */
+            function drawDivision(svg, dividend, divisor) {
+                /*
+                 * Create a group node to hold symbol and children.
+                 */
+                const group = svgElement('g');
+
+                const dividendBox = dividend.getBBox();
+                const divisorBox = divisor.getBBox();
+
+                const width = Math.max(dividendBox.width, divisorBox.width);
+                const position = dividendBox.height;
+
+                const line = svgElement('path', {
+                    d: `M0, ${position} L${width}, ${position}`,
+                    stroke: 'black', fill: 'none', 'stroke-width': 2,
+                });
+                group.appendChild(line);
+
+                group.appendChild(dividend);
+                setPosition(dividend, (width - dividendBox.width) / 2, 0);
+
+                group.appendChild(divisor);
+                setPosition(divisor, (width - divisorBox.width) / 2, position + 3);
+
+                svg.append(group);
+
+                return group;
+            }
+            /**
+             * Set the position of an svg element or group
+             */
+            function setPosition(element, x, y) {
+                if (element.getAttribute('x') === null) {
+                    element.setAttribute('transform', `translate(${x}, ${y})`);
+                } else {
+                    element.setAttribute('x', `${x}`);
+                    element.setAttribute('y', `${y}`);
+                }
+            }
+
+            /**
+             * Set the scale of an svg element or group
+             */
+            function setScale(element, scaleX, scaleY = '') {
+                element.setAttribute('transform', `scale(${scaleX} ${scaleY})`);
+            }
+
+            /**
+             * Test function to check svg code
+             */
+            function addSvg() {
+                const svg = svgElement('svg');//, {viewBox: '0 0 100 100'});
+                document.getElementById('svg').append(svg);
+
+                const value = drawValue(svg, '56223');
+                const add = drawValue(svg, 'x\u03C0');
+                const divisor = drawValue(svg, '5.897');
+                const root = drawValue(svg, '2.56');
+                const operator = drawValue(svg, 'cos');
+
+                svg.appendChild(drawUnaryOperator(svg, drawDivision(svg, drawBinaryOperator(svg, drawRoot(svg, value, root), add, '\u00d7'), divisor), operator));
+                //svg.appendChild(drawDivision(svg, drawRoot(svg, value, root), add));
+            }
 
             function newExpression(value = null) {
                 return {
@@ -483,17 +743,17 @@
                 };
             }
 
-            function unaryOperator(name, evaluate, asString, prefix, postfix) {
+            function unaryOperator(operator, asString, prefix, postfix) {
                 let input = [newNode(active.expression, active)];
                 if (replace && active.expression.input.length === 1) {
                     input = [active.expression.input[0]];
                 }
 
                 const expression = {
-                    name,
                     input,
+                    operator,
                     valueOf() {
-                        return evaluate(this.input[0].expression);
+                        return this.operator.fn(...this.input.map((input) => input.expression));//evaluate(this.input[0].expression);
                     },
                     asString() {
                         return asString(this.input[0].asString);
@@ -506,8 +766,7 @@
                             const symbol = document.createElement('span');
                             symbol.innerHTML = ' &#xD7; ';
                             binaryOperator(
-                                'multiply',
-                                (value1, value2) => value1 * value2,
+                                operatorByName('multiplication'),
                                 (str1, str2) => `${str1} &#xD7; ${str2}`,
                                 '(', symbol, ')');
                             active.expression.input = [active.expression.input[1], active.expression.input[0]];
@@ -535,17 +794,17 @@
                 return expression;
             }
 
-            function binaryOperator(name, evaluate, asString, prefix, operator, postfix) {
+            function binaryOperator(operator, asString, prefix, symbol, postfix) {
                 let input = [newNode(active.expression, active), newNode(undefined, active)];
                 if (replace && active.expression.input.length === 2) {
                     input = [active.expression.input[0], active.expression.input[1]];
                 }
 
                 const expression = {
-                    name,
                     input,
+                    operator,
                     valueOf() {
-                        return evaluate(this.input[0].expression, this.input[1].expression);
+                        return this.operator.fn(...this.input.map((input) => input.expression));//(this.input[0].expression, this.input[1].expression);
                     },
                     asString() {
                         return asString(this.input[0].asString, this.input[1].asString);
@@ -587,8 +846,8 @@
                             fragment.append(prefix);
                         }
                         fragment.append(this.input[0].getNode());
-                        if (operator) {
-                            fragment.append(operator);
+                        if (symbol) {
+                            fragment.append(symbol);
                         }
                         fragment.append(this.input[1].getNode());
                         if (postfix) {
@@ -757,21 +1016,20 @@
             }
 
             function sign(event) {
-                if (active.expression.name === 'negate') {
+                if (active.expression?.operator?.name === 'negate') {
                     active.expression = active.expression.input[0].expression;
                 } else {
                     unaryOperator(
-                        'negate',
-                        (value) => -value,
-                        (str) => `-${str}`,
-                        '-', '');
+                        operatorByName('negate'),
+                        (str) => `\u2212${str}`,
+                        '\u2212', '');
                 }
                 update();
             }
             function square(event) {
                 power(event)
                 active.expression.value = 2;
-                update();
+                up();
             }
             function cube(event) {
                 power(event)
@@ -782,8 +1040,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = ' &#xD7; ';
                 const expression = binaryOperator(
-                    'power',
-                    (value1, value2) => Math.pow(value1, value2),
+                    operatorByName('exponentiation'),
                     (str1, str2) => `${str1} &#xD7; ${str2}`,
                     '(', symbol, ')');
                 Object.assign(expression, {
@@ -803,8 +1060,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = '&#8730(';
                 unaryOperator(
-                    'square root',
-                    (value) => Math.sqrt(value),
+                    operatorByName('square root'),
                     (str) => `&#8730(${str})`,
                     symbol, ')');
                 update();
@@ -812,14 +1068,13 @@
             function cubeRoot(event) {
                 root(event)
                 active.expression.value = 3;
-                update();
+                up();
             }
             function root(event) {
                 const symbol = document.createElement('span');
                 symbol.innerHTML = ' &#xD7; ';
                 const expression = binaryOperator(
-                    'root',
-                    (value1, value2) => precision(Math.exp(Math.log(value1) / value2), 14),
+                    operatorByName('root'),
                     (str1, str2) => `root(${str1}, ${str2})`,
                     '(', symbol, ')');
                 Object.assign(expression, {
@@ -843,20 +1098,16 @@
                     const symbol = document.createElement('span');
                     symbol.innerHTML = '&deg;';
                     unaryOperator(
-                        'radians',
-                        (value) => value * Math.PI / 180,
+                        operatorByName('radians'),
                         (str) => `${str}&deg;`,
                         '', symbol);
                 }
-                update();
             }
             function adeg(event) {
                 unaryOperator(
-                    'degrees',
-                    (value) => precision(value * 180 / Math.PI, 13),
+                    operatorByName('degrees'),
                     (str) => `degrees(${str})`,
                     'degrees(', ')');
-                update();
             }
 
             function sine(event) {
@@ -873,8 +1124,7 @@
                     deg(event);
                 }
                 unaryOperator(
-                    'sine',
-                    (value) => precision(Math.sin(value), 14),
+                    operatorByName('sine'),
                     (str) => `sin(${str})`,
                     'sin(', ')');
                 if (angleUnits === 'deg' && active.expression.value === null) {
@@ -885,8 +1135,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = 'sin<sup>-1</sup>(';
                 unaryOperator(
-                    'inverse sine',
-                    (value) => precision(Math.asin(value), 14),
+                    operatorByName('inverse sine'),
                     (str) => `asin(${str})`,
                     symbol, ')');
                 if (angleUnits === 'deg') {
@@ -907,8 +1156,7 @@
                     deg(event);
                 }
                 unaryOperator(
-                    'cosine',
-                    (value) => precision(Math.cos(value), 14),
+                    operatorByName('cosine'),
                     (str) => `cos(${str})`,
                     'cos(', ')');
 
@@ -921,8 +1169,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = 'cos<sup>-1</sup>(';
                 unaryOperator(
-                    'inverse cosine',
-                    (value) => precision(Math.acos(value), 14),
+                    operatorByName('inverse cosine'),
                     (str) => `acos(${str})`,
                     symbol, ')');
 
@@ -945,8 +1192,7 @@
                     deg(event);
                 }
                 unaryOperator(
-                    'tan',
-                    (value) => precision(Math.tan(value), 14),
+                    operatorByName('tan'),
                     (str) => `tan(${str})`,
                     'tan(', ')');
                 if (angleUnits === 'deg' && active.expression.value === null) {
@@ -958,8 +1204,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = 'tan<sup>-1</sup>(';
                 unaryOperator(
-                    'tan',
-                    (value) => precision(Math.atan(value), 14),
+                    operatorByName('tan'),
                     (str) => `atan(${str})`,
                     symbol, ')');
                 if (angleUnits === 'deg' && active.expression.value === null) {
@@ -968,40 +1213,35 @@
             }
             function sinh(event) {
                 unaryOperator(
-                    'hyperbolic sine',
-                    (value) => Math.sinh(value),
+                    operatorByName('hyperbolic sine'),
                     (str) => `sinh(${str})`,
                     'sinh(', ')');
                 update();
             }
             function cosh(event) {
                 unaryOperator(
-                    'hyperbolic cosine',
-                    (value) => Math.cosh(value),
+                    operatorByName('hyperbolic cosine'),
                     (str) => `cosh(${str})`,
                     'cosh(', ')');
                 update();
             }
             function tanh(event) {
                 unaryOperator(
-                    'hyperbolic tan',
-                    (value) => Math.tanh(value),
+                    operatorByName('hyperbolic tan'),
                     (str) => `tanh(${str})`,
                     'tanh(', ')');
                 update();
             }
             function ln(event) {
                 unaryOperator(
-                    'natural log',
-                    (value) => Math.log(value),
+                    operatorByName('natural log'),
                     (str) => `ln(${str})`,
                     'ln(', ')');
                 update();
             }
             function exp(event) {
                 const expression = unaryOperator(
-                    '10 to the power of x',
-                    (value) => Math.pow(10, value),
+                    operatorByName('10 to the power of x'),
                     (str) => `10 ** (${str})`,
                     '10 ** (', ')');
                 Object.assign(expression, {
@@ -1018,16 +1258,14 @@
             }
             function log(event) {
                 unaryOperator(
-                    'log',
-                    (value) => Math.log10(value),
+                    operatorByName('log'),
                     (str) => `log(${str})`,
                     'log(', ')');
                 update();
             }
             function EE(event) {
                 binaryOperator(
-                    'divide',
-                    (value1, value2) => value1 * Math.pow(10, value2),
+                    operatorByName('scientific notation'),
                     (str1, str2) => `${str1}E${str2}`,
                     '', 'E', '');
                 active = active.expression.input[1];
@@ -1038,7 +1276,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = ' &#xF7; ';
                 binaryOperator(
-                    'divide',
+                    operatorByName('division'),
                     (value1, value2) => value1 / value2,
                     (str1, str2) => `${str1} &#xF7; ${str2}`,
                     '(', symbol, ')');
@@ -1143,8 +1381,7 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = ' &#xF7; ';
                 binaryOperator(
-                    'divide',
-                    (value1, value2) => value1 / value2,
+                    operatorByName('division'),
                     (str1, str2) => `${str1} &#xF7; ${str2}`,
                     '(', symbol, ')');
                 active = active.expression.input[1];
@@ -1154,26 +1391,23 @@
                 const symbol = document.createElement('span');
                 symbol.innerHTML = ' &#xD7; ';
                 binaryOperator(
-                    'multiply',
-                    (value1, value2) => value1 * value2,
+                    operatorByName('multiplication'),
                     (str1, str2) => `${str1} &#xD7; ${str2}`,
                     '(', symbol, ')');
                 active = active.expression.input[1];
                 update();
             }
-            function minus(event) {
+            function subtraction(event) {
                 binaryOperator(
-                    'subtract',
-                    (value1, value2) => value1 - value2,
-                    (str1, str2) => `${str1} - ${str2}`,
-                    '(', ' - ', ')');
+                    operatorByName('subtraction'),
+                    (str1, str2) => `${str1} \u2212 ${str2}`,
+                    '(', ' \u2212 ', ')');
                 active = active.expression.input[1];
                 update();
             }
-            function plus(event) {
+            function addition(event) {
                 binaryOperator(
-                    'add',
-                    (value1, value2) => value1 + value2,
+                    operatorByName('addition'),
                     (str1, str2) => `${str1} + ${str2}`,
                     '(', ' + ', ')');
                 active = active.expression.input[1];
@@ -1182,8 +1416,7 @@
 
             function equal(event) {
                 binaryOperator(
-                    'equal',
-                    (value1, value2) => value1.valueOf() == value2.valueOf(),
+                    operatorByName('comparrison'),
                     (str1, str2) => `${str1} = ${str2}`,
                     '(', ' = ', ')');
                 active = active.expression.input[1];
@@ -1215,6 +1448,45 @@
                 }
             }
 
+            const operators = [
+                { name: 'negate', operands: 2, fn: (a) => -a, htmlSymbol: '-', precidence: 14, },
+                { name: 'addition', operands: 2, fn: (a, b) => a + b, htmlSymbol: '+', precidence: 11, },
+                { name: 'subtraction', operands: 2, fn: (a, b) => a - b, htmlSymbol: '-', precidence: 11, },
+                { name: 'multiplication', operands: 2, fn: (a, b) => a * b, htmlSymbol: '\u00D7', precidence: 12, },
+                { name: 'division', operands: 2, fn: (a, b) => a / b, htmlSymbol: '\u00F7', precidence: 12, },
+                { name: 'remainder', operands: 2, fn: (a, b) => a % b, htmlSymbol: '%', precidence: 12, },
+                { name: 'exponentiation', operands: 2, fn: (a, b) => a ** b, htmlSymbol: '^', precidence: 13, },
+                { name: 'scientific notation', operands: 2, fn: (mantissa, exponent) => mantissa * 10 ** exponent, htmlSymbol: '^', precidence: 13, },
+                { name: 'root', operands: 2, fn: (a, b) => a ** (1 / b), htmlSymbol: '\u221A', precidence: 13, },
+                { name: 'logarithm', operands: 2, fn: (a, b) => Math.log(a) / Math.log(b), htmlSymbol: 'log', precidence: 1, },
+                { name: 'comparrison', operands: 2, fn: (a, b) => a === b, htmlSymbol: '=', precidence: 1, },
+
+                { name: 'natural log', operands: 1, fn: (a) => Math.log(a), htmlSymbol: 'ln', precidence: 1, },
+                { name: 'log 10', operands: 1, fn: (a) => Math.log10(a), htmlSymbol: 'log', precidence: 1, },
+                { name: '10 to the power of x', fn: (a) => 10 ** a, htmlSymbol: '10^', precidence: 1, },
+
+                { name: 'degrees', operands: 1, fn: (a) => a * 180 / Math.PI, htmlSymbol: 'sin', precidence: 1, },
+                { name: 'radians', operands: 1, fn: (a) => a * Math.PI / 180, htmlSymbol: 'sin', precidence: 1, },
+
+                { name: 'sine', operands: 1, fn: (a) => Math.sin(a), htmlSymbol: 'sin', precidence: 1, },
+                { name: 'cosine', operands: 1, fn: (a) => Math.cos(a), htmlSymbol: 'cos', precidence: 1, },
+                { name: 'tan', operands: 1, fn: (a) => Math.tan(a), htmlSymbol: 'tan', precidence: 1, },
+
+                { name: 'inverse sine', operands: 1, fn: (a) => Math.asin(a), htmlSymbol: 'sin<sup>-1</sup>', precidence: 1, },
+                { name: 'inverse cosine', operands: 1, fn: (a) => Math.acos(a), htmlSymbol: 'acos<sup>-1</sup>', precidence: 1, },
+                { name: 'inverse tan', operands: 1, fn: (a) => Math.atan(a), htmlSymbol: 'atan<sup>-1</sup>', precidence: 1, },
+
+                { name: 'hyperbolic sine', operands: 1, fn: (a) => Math.sinh(a), htmlSymbol: 'sinh', precidence: 1, },
+                { name: 'hyperbolic cosine', operands: 1, fn: (a) => Math.cosh(a), htmlSymbol: 'cosh', precidence: 1, },
+                { name: 'hyperbolic tan', operands: 1, fn: (a) => Math.tanh(a), htmlSymbol: 'tanh', precidence: 1, },
+
+                { name: 'inverse hyperbolic sine', operands: 1, fn: (a) => Math.asinh(a), htmlSymbol: 'sinh<sup>-1</sup>', precidence: 1, },
+                { name: 'inverse hyperbolic cosine', operands: 1, fn: (a) => Math.acosh(a), htmlSymbol: 'cosh<sup>-1</sup>', precidence: 1, },
+                { name: 'inverse hyperbolic tan', operands: 1, fn: (a) => Math.atanh(a), htmlSymbol: 'tanh<sup>-1</sup>', precidence: 1, },
+            ];
+            const operatorByName = (name) => operators.find((operator) => operator.name === name);
+
+
             function addButtonActions() {
                 const layout = document.getElementById('layout');
                 buttons.forEach((button) => {
@@ -1242,8 +1514,8 @@
 
                     '.': { action: point },
 
-                    '+': { action: plus },
-                    '-': { action: minus },
+                    '+': { action: addition },
+                    '-': { action: subtraction },
                     '*': { action: multiply },
                     '/': { action: divide },
 
