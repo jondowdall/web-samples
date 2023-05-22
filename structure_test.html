@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport" content="width=device-width" />
+
+    <title>Tree</title>
+
+    <style>
+
+        html {
+
+            font-family: sans-serif;
+
+        }
+
+        .tree-view {
+
+            display: grid;
+
+            grid-template-columns: 1rem 1rem max-content 1fr 1fr;
+
+            grid-auto-rows: min-content;
+
+            gap: 0;
+
+        }
+
+        .layout {
+
+            display: grid;
+
+            grid-template-columns: 1fr 1fr;
+
+            grid-template-rows: min-content 1fr;
+
+        }
+
+        #input {
+
+            font-size: 120%;
+
+            grid-column: 1 / -1;
+
+        }
+
+        .group {
+
+            position: relative;
+
+            border-left: 1px solid gray;
+
+            border-top-left-radius: 0.5em;
+
+            border-bottom-left-radius: 0.5em;
+
+            
+
+              border: 1px solid gray;
+
+              border-radius: 0.5em;
+
+              margin: 0 1px;
+
+            transition: max-height 0.3s ease-in;
+
+        }
+
+        .expand {
+
+            font-family: Arial, Helvetica, sans-serif;
+
+            cursor: pointer;
+
+            transition: max-height 0.3s ease-in;
+
+            max-height: 1.2em;
+
+            overflow: hidden;
+
+        }
+
+        .content {
+
+            white-space: nowrap;
+
+            max-height: 1.2em;
+
+            transition: max-height 0.3s ease-in;
+
+            overflow: hidden;
+
+        }
+
+        .range {
+
+            font-style: italic;
+
+            color: blue;
+
+        }
+
+        .control-node {
+
+            font-style: italic;
+
+            color: blue;
+
+        }
+
+        .range-expanded {
+
+            font-style: italic;
+
+            color: lightgray;
+
+        }
+
+        .collapse {
+
+            max-height: 0;
+
+            /*border: none;*/
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+    <div class="layout">
+
+        <button id="comment">Comment</button>
+
+        <button id="uncomment">Uncomment</button>
+
+        <textarea id="input" rows="20" cols="50">
+
+site
+
+    building1
+
+        room1
+
+            rack1
+
+            rack2
+
+        [2..9]room
+
+         room2
+
+            rack1
+
+            rack2
+
+            [1..5] rack
+
+                rack3 <rack> {[- , ]}
+
+                ?rack=3
+
+                   rack3custom
+
+            rack4
+
+        room3
+
+            rack1
+
+                part
+
+            rack2
+
+</textarea>
+
+        <div class="tree"></div>
+
+        <div class="expanded-tree"></div>
+
+    </div>
+
+    <script>
+
+        /**
+
+         * convert string definition to structure
+
+         */
+
+        function getStructure(definition) {
+
+            const lines = definition.split(/\r?\n/);
+
+            const patterns = {
+
+                group: /^\s*\[(?<list>[^\]]+)\]\s*(?<label>\S.*)/,
+
+                group2: /^\s*(?<label>\S.*)?\s*\[(?<list>[^\]]+)\]\s*$/,
+
+                conditional: /^\s*\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/,
+
+                data: /^\s*\@(?<expr>([^=]+)(=\s*(.+))?(;([^=]+)(=\s*(.+))?)*)/,
+
+            };
+
+            const structure = [];
+
+            const stack = [];
+
+            for (const line of lines) {
+
+                if (/^\s*(#|$)/.test(line)) {
+
+                    continue;
+
+                }
+
+                const content = line.trimStart();
+
+                const level = line.length - content.length;
+
+                while (stack.length && stack[0].level >= level) {
+
+                    stack.shift();
+
+                }
+
+                const node = {
+
+                    content, parent: stack[0], level, parts: [],
+
+                };
+
+                //[node.label, node.data] = content.split(/\||\t/);
+
+                [node.label, node.data] = content.split(/\t/);
+
+                const groupNode = content.match(patterns.group);
+
+                const groupNode2 = node.label.match(patterns.group2);
+
+                const conditionalNode = content.match(patterns.conditional);
+
+                const dataNode = content.match(patterns.data);
+
+                if (groupNode) {
+
+                    node.groupNode = true;
+
+                    node.group = groupNode.groups.list.split(',').flatMap((item) => {
+
+                        const range = item.match(/^(?<start>[0-9]+(\.[0-9]+)?)\s*\.\.\s*(?<end>[0-9]+(\.[0-9]+)?)(\s*\|\s*(?<step>[0-9]+(\.[0-9]+)?))?/);
+
+                        if (range) {
+
+                            const start = Number(range.groups.start);
+
+                            const end = Number(range.groups.end);
+
+                            const step = Number(range.groups.step || 1);
+
+                            const values = [];
+
+                            for (let i = start; i <= end; i += step) {
+
+                                values.push(i);
+
+                            }
+
+                            return values;
+
+                        }
+
+                        return item.trim();
+
+                    });
+
+                    node.label = groupNode.groups.label;
+
+                }
+
+                if (groupNode2) {
+
+                    const generatedNode = {
+
+                        content, groupNode: true, controlNode: true, parent: stack[0], level: level, parts: [], }
+
+                    node.parent = generatedNode;
+
+                    node.level += 0.1;
+
+                    generatedNode.group = groupNode2.groups.list.split(',').flatMap((item) => {
+
+                        const range = item.match(/^(?<start>[0-9]+(\.[0-9]+)?)\s*\.\.\s*(?<end>[0-9]+(\.[0-9]+)?)(\s*\|\s*(?<step>[0-9]+(\.[0-9]+)?))?/);
+
+                        const values = [];
+
+                        if (range) {
+
+                            const start = Number(range.groups.start);
+
+                            const end = Number(range.groups.end);
+
+                            const step = Number(range.groups.step || 1);
+
+                            for (let i = start; i <= end; i += step) {
+
+                                values.push(i);
+
+                            }
+
+                            return values;
+
+                        } else if (!isNaN(Number(item))) {
+
+                            const count = Number(item);
+
+                            for (let i = 1; i <= count; ++i) {
+
+                                values.push(i);
+
+                            }
+
+                            return values;
+
+                        }
+
+                        return item.trim();
+
+                    });
+
+                    const label = (groupNode2.groups.label || '').trim();
+
+                    generatedNode.label = `${label.replace(/<[^>]*>/g, '').replace(/\{[^\}]*\}/g, '').trim()}`;
+
+                    if (/<[^>]*>/.test(label) || /\{[^\}]*\}/.test(label)) {
+
+                        node.content = `${label}`;
+
+                    } else {
+
+                        node.content = `${label} <${label}>`;
+
+                    }
+
+                    if (stack.length) {
+
+                        stack[0].parts.push(generatedNode);
+
+                    } else {
+
+                        structure.push(generatedNode);
+
+                    }
+
+                    stack.unshift(generatedNode);
+
+                }
+
+                if (conditionalNode) {
+
+                    node.conditionalNode = true;
+
+                    const conditionPattern = /\s*(?<label>[^=]+)(=\s*(?<values>.+))?/;
+
+                    const expr = conditionalNode.groups.expr.split(/;/g);
+
+                    node.conditions = expr.map((item) => {
+
+                        const conditionMatch = item.match(conditionPattern);
+
+                        const condition = { label: conditionMatch.groups.label, };
+
+                        if (conditionMatch.groups.values) {
+
+                            condition.values = conditionMatch.groups.values.split(/,/g).map((value) => {
+
+                                const num = Number(value);
+
+                                if (!isNaN(num)) {
+
+                                    return num;
+
+                                }
+
+                                return value.trim();
+
+                            });
+
+                        }
+
+                        return condition;
+
+                    });
+
+                    if (conditionalNode.groups.content) {
+
+                        //document.body.style.background = 'purple';
+
+                        const contentNode = {
+
+                            content: conditionalNode.groups.content.trim(),
+
+                            parent: node, level, parts: [],
+
+                        };
+
+                        node.parts.push(contentNode);
+
+                    }
+
+                    node.test = function (context) {
+
+                        return this.conditions.every((condition) => {
+
+                            if (condition.values) {
+
+                                return condition.values.includes(context.parameters[condition.label]);
+
+                            }
+
+                            const labels = condition.label.split(/\s*,\s*/g)
+
+                            return labels.some((label) => context.path.find((node) => node.label === label));
+
+                        });
+
+                    }
+
+                }
+
+                if (stack.length && dataNode) {
+
+                    node.dataNode = true;
+
+                    //document.body.style.background = 'lightblue';
+
+                    const exprPattern = /(?<label>[^=]+)(=\s*(?<values>.+))?/;
+
+                    const expr = dataNode.groups.expr.split(/;/g);
+
+                    const getNum = (value) => {
+
+                        const num = Number(value);
+
+                        if (!isNaN(num)) {
+
+                            return num;
+
+                        }
+
+                        return value.trim();
+
+                    };
+
+                    node.data = expr.filter((expr) => expr).reduce((data, item) => {
+
+                        const exprMatch = item.match(exprPattern);
+
+                        const label = exprMatch.groups.label.trim();
+
+                        const values = exprMatch.groups.values;
+
+                        if (values) {
+
+                            if (values.includes(',')) {
+
+                                data[label] = values.split(/,/g).map((value) =>
+
+                                    getNum(value));
+
+                            } else {
+
+                                data[label] = getNum(values);
+
+                            }
+
+                        } else {
+
+                            data[label] = true;
+
+                        }
+
+                        return data;
+
+                    }, {});
+
+                }
+
+                if (stack.length) {
+
+                    stack[0].parts.push(node);
+
+                } else {
+
+                    structure.push(node);
+
+                }
+
+                stack.unshift(node);
+
+            }
+
+            return structure;
+
+        }
+
+        /**
+
+         * Toggle the expansion of a node.
+
+         */
+
+        function toggleExpansion(node, recursive) {
+
+            node.expanded = !node.expanded;
+
+            const expand = (node) => {
+
+                if (recursive) {
+
+                    node.expanded = true;
+
+                }
+
+                node.nodes.forEach((node) => node.classList.remove('collapse'));
+
+                if (node.expanded) {
+
+                    node.parts.forEach((part) => expand(part));
+
+                } else {
+
+                    node.nodes[1].classList.add('collapse');
+
+                }
+
+            };
+
+            const collapse = (node) => {
+
+                if (recursive) {
+
+                    node.expanded = false;
+
+                }
+
+                node.nodes.forEach((node) => node.classList.add('collapse'));
+
+                node.parts.forEach((part) => collapse(part));
+
+            };
+
+            if (node.expanded) {
+
+                node.parts.forEach((part) => expand(part));
+
+                node.nodes[0].innerHTML = '&CircleMinus;';
+
+                node.nodes[1].classList.remove('collapse');
+
+            } else {
+
+                node.parts.forEach((part) => collapse(part));
+
+                node.nodes[0].innerHTML = '&CirclePlus;';
+
+                node.nodes[1].classList.add('collapse');
+
+            }
+
+        }
+
+        /**
+
+         * Generate an new structure from the defintion
+
+         */
+
+        function parseStructure(structure, unrolled) {
+
+            const labels = {};
+
+            const evaluate = (string, context) => {
+
+                const path = (sep, start = 0, end) =>
+
+                    context.path.toReversed().slice(start, end).map((node) => node.label).join(sep || '');
+
+                const pathUp = (sep, start = 0, end) =>
+
+                    context.path.slice(start, end).map((node) => node.label).join(sep || '');
+
+                const level = (val) =>
+
+                    context.path[val < 0 ? Math.abs(val) : context.path.length - val].label || '';
+
+                const names = [];
+
+                const values = [];
+
+                Object.keys(context.parameters).filter((key, value) => key).forEach((key) => {
+
+                    names.push(key);
+
+                    values.push(context.parameters[key]);
+
+                });
+
+                try {
+
+                    const func = new Function('path', 'pathUp', 'level', ...names, `return ${string};`);
+
+                    return func(path, pathUp, level, ...values);
+
+                } catch (e) {
+
+                    console.log(e);
+
+                }
+
+                return string;
+
+            };
+
+            const resolve = (string, context) => {
+
+                string = string.replace(/\[\s*-?([0-9]+)\s*\]/, //'_path[$1]');
+
+                    (m, p) => `${context.path[context.path.length - Number(p)] || ''}`);
+
+                string = string.replace(/\[\s*\+\s*(?<sep>.+)?\s*\]/,
+
+                    (m, sep) => `${context.path.join(sep || ' ')}`);
+
+                string = string.replace(/\[\s*-\s*(?<sep>.+)?\s*\]/,
+
+                    (m, sep) => `${context.path.toReversed().join(sep || ' ')}`);
+
+                for (const [name, value] of Object.entries(context.parameters)) {
+
+                    const pattern = new RegExp(`\\b${name}\\b`, 'g');
+
+                    string = string.replace(pattern, value);
+
+                }
+
+                return `${string}`;
+
+            };
+
+            const addNode = (source, context = { unrolled: false, resolved: true, parameters: {}, path: [] }) => {
+
+                context = Object.assign({}, context);
+
+                let node = { source, parts: [], content: source.content, data: {}, };
+
+                const controlNode = source.groupNode || source.conditionalNode || source.dataNode;
+
+                console.log(`### ${source.content} ${controlNode}`);
+
+                const parts = [...source.parts];
+
+                if (unrolled || context.unrolled) {
+
+                    if (context.resolved) {
+
+                        node.content = node.content.replace(/\{([^}]+)\}/g, (match, p1) => evaluate(p1, context));
+
+                        node.content = node.content.replace(/<([^>]*)>/g, (match, label) => {
+
+                            if (context.parameters[label]) {
+
+                                return context.parameters[label];
+
+                            } else if (labels[label]) {
+
+                                // Clone the parts from the referenced object
+
+                                const parts = labels[label].source.parts;
+
+                                const nodes = parts.flatMap((part) => addNode(part, context));
+
+                                node.parts.push(...nodes);
+
+                                // Clone the properties from the referenced object
+
+                                Object.assign(node.data, labels[label].data);
+
+                                return '';
+
+                            }
+
+                            return match;
+
+                        });
+
+                        if (!controlNode) {
+
+                            node.content = node.content.replace(/:(.+)/g, (match, label) => {
+
+                                if (context.parameters[label]) {
+
+                                    return `:${context.parameters[label]}`;
+
+                                }
+
+                                const keys = Object.keys(labels).sort((a, b) => b.length - a.length);
+
+                                const name = keys.find((key) => label.startsWith(key));
+
+                                if (name) {
+
+                                    parts.unshift(...labels[name].source.parts);
+
+                                    // Clone the properties from the referenced object
+
+                                    Object.assign(node.data, labels[name].data);
+
+                                    return '';
+
+                                }
+
+                                return match;
+
+                            });
+
+                        }
+
+                    } else {    
+
+                        node.content = node.content.replace(/\{([^}]+)\}/g, (match, p1) => resolve(p1, context));
+
+                        node.content = node.content.replace(/<([^>]+)>/g, (match, p1) => resolve(p1, context));
+
+                    }
+
+                }
+
+                if (source.dataNode) {
+
+                    Object.assign(context.path[0].data, source.data);
+
+                }
+
+                const [label, data] = node.content.split(/\||\t/);
+
+                node.label = label.trim();
+
+                if (!controlNode) {
+
+                    const path = context.path.map((node) => node.label);
+
+                    let l = 1;
+
+                    while (labels[`${node.label}, ${path.slice(0, l).join(', ')}`] && l < path.length) {
+
+                        l += 1;
+
+                    }
+
+                    node.uniqueLabel = `${node.label}, ${path.slice(0, l).join(', ')}`
+
+                }
+
+                if (!controlNode) {
+
+                    context.path.unshift(node);
+
+                }
+
+                if (data) {
+
+                    const exprPattern = /(?<label>[^=]+)(=\s*(?<values>.+))?/;
+
+                    const expr = data.split(/;/g);
+
+                    Object.assign(node.data, expr.filter(expr => expr).reduce((data, item) => {
+
+                        const exprMatch = item.match(exprPattern);
+
+                        const label = exprMatch.groups.label.trim();
+
+                        if (exprMatch.groups.values) {
+
+                            data[label] = exprMatch.groups.values.split(/,/g).map((value) => {
+
+                                const num = Number(value);
+
+                                if (!isNaN(num)) {
+
+                                    return num;
+
+                                }
+
+                                return value.trim();
+
+                            });
+
+                        } else {
+
+                            data[label] = true;
+
+                        }
+
+                        return data;
+
+                    }, {}));
+
+                }
+
+                const matched = (!source.conditionalNode) || source.test(context);
+
+                if (parts.length && matched && !source.referenceNode) {
+
+                    if (source.groupNode && !(unrolled || source.unrolled)) {
+
+                        context.resolved = false;
+
+                    }
+
+                    if (source.groupNode && (unrolled || source.unrolled)) {
+
+                        context.unrolled = true;
+
+                        source.group.forEach((item, index) => {
+
+                            context.parameters[source.label] = item;
+
+                            context.parameters[`${source.label}_n`] = index;
+
+                            node.parts.push(...parts.flatMap((part) => addNode(part, context)));
+
+                        });
+
+                    } else {
+
+                        node.parts.push(...parts.flatMap((part) => addNode(part, context)));
+
+                    }
+
+                }
+
+                labels[node.label] = labels[node.label] || node;
+
+                labels[node.uniqueLabel] = node;
+
+                if (unrolled && controlNode) {
+
+                    return node.parts;
+
+                }
+
+                if (!controlNode) {
+
+                    context.path.shift();
+
+                }
+
+                return node;
+
+            };
+
+            return structure.flatMap((part) => addNode(part));
+
+        }
+
+        /**
+
+         * Generate dom nodes for the given structure
+
+         */
+
+        function getView(structure) {
+
+            const container = document.createElement('div');
+
+            container.classList.add('tree-view');
+
+            const nodes = [];
+
+            const flatten = (node, level = 1) => {
+
+                node.level = level;
+
+                nodes.push(node);
+
+                node.parts.forEach((part) => flatten(part, level + 1));
+
+            };
+
+            structure.forEach((part) => flatten(part));
+
+            let depth = Math.max(...nodes.map((node) => node.level));
+
+            let row = 0;
+
+            const addNode = (node) => {
+
+                row += 1;
+
+                let text = node.label;
+
+                node.expanded = true;
+
+                node.row = row;
+
+                node.nodes = [];
+
+                const controlNode = node.source.groupNode || node.source.datNode || node.source.conditional;
+
+                const group = document.createElement('div');
+
+                container.appendChild(group);
+
+                group.style.gridColumn = node.level;
+
+                const expander = document.createElement('div');
+
+                expander.classList.add('expand');
+
+                node.nodes.push(expander);
+
+                node.nodes.push(group);
+
+                group.appendChild(expander);
+
+                const content = document.createElement('div');
+
+                content.classList.add('content');
+
+                if (controlNode) {
+
+                    content.classList.add('control-node');
+
+                    if (node.unrolled) {
+
+                        content.classList.add('range-expanded');
+
+                    }
+
+                    content.addEventListener('click', (event) => {
+
+                        node.unrolled = !node.unrolled;
+
+                        container.innerHTML = '';
+
+                        row = 0;
+
+                        structure.forEach((part) => addNode(part));
+
+                    });
+
+                }
+
+                node.nodes.push(content);
+
+                content.style.gridColumn = `${node.level + 1}/${depth + 2}`;
+
+                container.appendChild(content);
+
+                const data = Object.entries(node.data).map(([label, value]) => `${label} = ${value}`).join(', ');
+
+                content.innerText = `${text}`;// (${data})`;
+
+                content.title = `${node.uniqueLabel} ${data}`;
+
+                if (node.parts.length) {
+
+                    group.classList.add('group');
+
+                    expander.innerHTML = '&CircleMinus;';
+
+                    expander.addEventListener('click', (event) => toggleExpansion(node, event.ctrlKey));
+
+                    expander.addEventListener('dblclick', (event) => toggleExpansion(node, true));
+
+                    const startRow = row;
+
+                    node.parts.forEach((part) => addNode(part));
+
+                    group.style.gridRow = `${startRow}/${row + 1}`;
+
+                    group.style.background = `hsl(${360 * Math.random()} 50% 50%)`;
+
+                }
+
+                return nodes;
+
+            };
+
+            const columns = `repeat(${depth}, 1em) max-content 1fr`;
+
+            container.style.gridTemplateColumns = columns;
+
+            structure.forEach((part) => addNode(part));
+
+            return container;
+
+        }
+
+        const input = document.getElementById('input');
+
+        const content = localStorage.getItem('structure');
+
+        if (content) {
+
+            input.value = content;
+
+        }
+
+        const treeNode = document.querySelector('.tree');
+
+        const expandedTreeNode = document.querySelector('.expanded-tree');
+
+        input.addEventListener('input', (event) => {
+
+            localStorage.setItem('structure', input.value);
+
+            const structure = getStructure(input.value);
+
+            expandedTreeNode.innerHTML = '';
+
+            expandedTreeNode.appendChild(getView(parseStructure(structure, true)));
+
+            treeNode.innerHTML = '';
+
+            treeNode.appendChild(getView(parseStructure(structure)));
+
+        });
+
+        const structure = getStructure(input.value);
+
+        const fullStructure = parseStructure(structure, true);
+
+        const definition = parseStructure(structure);
+
+        treeNode.appendChild(getView(definition));
+
+        expandedTreeNode.appendChild(getView(fullStructure));
+
+        const comment = document.getElementById('comment');
+
+        comment.addEventListener('click', (event) => {
+
+            const text = input.value;
+
+            input.value = '#' + text.replace(/\n(\s*)#?/g, '\n$1#');
+
+        });
+
+        const uncomment = document.getElementById('uncomment');
+
+        uncomment.addEventListener('click', (event) => {
+
+            const text = input.value;
+
+            input.value = text.replace(/\n(\s*)#?/g, '\n$1').replace(/^\s*#/g, '');
+
+        });
+
+    </script>
+
+</body>
+
+</html>
