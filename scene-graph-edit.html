@@ -36,9 +36,26 @@
             top: 0;
             right: 0;
             z-index: 10;
+            background: rgb(10, 10, 10, 0.5);
+            padding: 0.5em;
+            border-radius: 0.5em;
+        }
+
+        .overlay {
+            font-weight: bold;
+            font-size: 100%;
+            color: orange;
+            z-index: 10;
             background: rgb(10, 10, 50, 0.5);
             padding: 0.5em;
             border-radius: 0.5em;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        .fixed {
+            position: fixed;
         }
 
         .shape {
@@ -179,6 +196,10 @@
 
         .entry-content {
             padding-left: 1.1em;
+        }
+
+        .selected {
+            background-color: yellow;
         }
     </style>
 </head>
@@ -908,6 +929,8 @@
         const scene = {
             shapes: [],
             points: [],
+            lines: [],
+            overlays: [],
         }
 
 
@@ -1419,8 +1442,8 @@
                     { mode: gl.LINES, count: 8, offset: (indexStart) * 2, colour: [1, 1, 1, 1] },
                 ];
             }
-            planes() {
-                return [
+            intersects(line) {
+                const planes = [
                     { point: [this.width / 2, 0, 0], normal: [1, 0, 0] },
                     { point: [-this.width / 2, 0, 0], normal: [-1, 0, 0] },
                     { point: [0, this.height / 2, 0], normal: [0, 1, 0] },
@@ -1428,6 +1451,7 @@
                     { point: [0, 0, this.depth / 2], normal: [0, 0, 1] },
                     { point: [0, 0, -this.depth / 2], normal: [0, 0, -1] },
                 ];
+                return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
                 const w = this.width / 2;
@@ -1521,13 +1545,33 @@
                     { mode: gl.LINE_STRIP, count: 7, offset: (31 + indexStart) * 2, colour: [1, 1, 1, 1] },
                 ];
             }
-            planes() {
-                return [];
+            intersects(line) {
+                const points = [
+                    [0, this.size, 0,],
+
+                    [-this.size, 0, 0,],
+                    [0, 0, -this.size,],
+                    [this.size, 0, 0,],
+                    [0, 0, this.size,],
+
+                    [0, -this.size, 0,],
+                ];
+
+                const planes = [
+                    planeFromPoints(points[0], points[2], points[1]),
+                    planeFromPoints(points[0], points[3], points[2]),
+                    planeFromPoints(points[0], points[4], points[3]),
+                    planeFromPoints(points[0], points[1], points[4]),
+
+                    planeFromPoints(points[5], points[1], points[2]),
+                    planeFromPoints(points[5], points[2], points[3]),
+                    planeFromPoints(points[5], points[3], points[4]),
+                    planeFromPoints(points[5], points[4], points[1]),
+                ];
+
+                return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
-                const w = this.width / 2;
-                const h = this.height / 2;
-                const d = this.depth / 2;
                 const points = [
                     [0, this.size, 0,],
 
@@ -1565,25 +1609,27 @@
          */
         class Ball {
             constructor(gl, data, width = 2, depth = 2, height = 2, sides = 12, strips = 12) {
-                width /= 2;
-                depth /= 2;
-                height /= 2;
+                this.width = width / 2;
+                this.depth = depth / 2;
+                this.height = height / 2;
+                this.sides = sides;
+                this.strips = strips;
                 const start = data.vertexBuffer.length / 6;
                 const indexStart = data.indices.length;
 
                 // Create the mesh for the ball
-                data.vertexBuffer.push(0, height, 0);
+                data.vertexBuffer.push(0, height / 2, 0);
                 data.vertexBuffer.push(0, 1, 0);
-                data.vertexBuffer.push(0, -height, 0);
+                data.vertexBuffer.push(0, -height / 2, 0);
                 data.vertexBuffer.push(0, -1, 0);
                 for (let j = 0; j < strips - 1; ++j) {
                     const ny = Math.cos((j + 1) * Math.PI / strips);
-                    const y = height * ny;
+                    const y = this.height * ny;
                     const radius = Math.sin((j + 1) * Math.PI / strips);
                     for (let i = 0; i < sides; ++i) {
                         const radians = (i * 2 + j) * Math.PI / sides;
                         data.vertexBuffer.push(
-                            width * radius * Math.sin(radians), y, depth * radius * Math.cos(radians));
+                            this.width * radius * Math.sin(radians), y, this.depth * radius * Math.cos(radians));
                         data.vertexBuffer.push(
                             radius * Math.sin(radians), ny, radius * Math.cos(radians));
                     }
@@ -1600,8 +1646,22 @@
 
                 this.elements = elements;
             }
-            planes() {
-                return [];
+            intersects(line) {
+
+                const planes = [];
+                for (let j = 0; j < this.strips - 1; ++j) {
+                    const ny = Math.cos((j + 1) * Math.PI / this.strips);
+                    const y = this.height * ny;
+                    const radius = Math.sin((j + 1) * Math.PI / this.strips);
+                    for (let i = 0; i < this.sides; ++i) {
+                        const radians = (i * 2 + j) * Math.PI / this.sides;
+                        planes.push({
+                            point: [this.width * radius * Math.sin(radians), y, this.depth * radius * Math.cos(radians),],
+                            normal: [radius * Math.sin(radians), ny, radius * Math.cos(radians),],
+                        });
+                    }
+                }
+                return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
             }
@@ -1613,6 +1673,11 @@
         class Frustrum {
             constructor(gl, data, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
                 height /= 2;
+                this.height = height;
+                this.baseRadius = baseRadius;
+                this.topRadius = topRadius;
+                this.sides = sides;
+
                 const start = data.vertexBuffer.length / 6;
                 const indexStart = data.indices.length;
 
@@ -1671,8 +1736,30 @@
                 }
                 this.elements = elements;
             }
-            planes() {
-                return [];
+            intersects(line) {
+                const angle = Math.atan((this.baseRadius - this.topRadius) / 2 * this.height);
+                const ny = Math.sin(angle);
+                const nRadius = Math.cos(angle);
+
+                const planes = [
+                    { point: [0, this.height, 0], normal: [0, 1, 0] },
+                    { point: [0, -this.height, 0], normal: [0, -1, 0] },
+                ];
+
+                for (let i = 0; i < this.sides; ++i) {
+                    const baseRadians = i * 2 * Math.PI / this.sides;
+                    const topRadians = (1 + i * 2) * Math.PI / this.sides;
+
+                    planes.push({
+                        point: [this.baseRadius * Math.sin(baseRadians), -this.height, this.baseRadius * Math.cos(baseRadians),],
+                        normal: [nRadius * Math.sin(baseRadians), ny, nRadius * Math.cos(baseRadians),],
+                    }, {
+                        point: [this.topRadius * Math.sin(topRadians), this.height, this.topRadius * Math.cos(topRadians),],
+                        normal: [nRadius * Math.sin(topRadians), ny, nRadius * Math.cos(topRadians),],
+                    });
+                }
+
+                return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
             }
@@ -1694,20 +1781,22 @@
          */
         class Tetrahedron {
             constructor(gl, data, size = 1) {
+                this.size = 1;
                 const indexStart = data.indices.length;
+                const l = Math.cos(30 * Math.PI / 180);
                 const points = [
                     [0, 1, 0],
-                    [0, -0.5, Math.cos(30 * Math.PI / 180),],
-                    [Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
+                    [0, -0.5, l,],
+                    [l * l, -0.5, -0.5 * l],
                     [0, 1, 0],
-                    [0, -0.5, Math.cos(30 * Math.PI / 180),],
-                    [-Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
+                    [0, -0.5, l,],
+                    [-l * l, -0.5, -0.5 * l],
                     [0, 1, 0],
-                    [Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
-                    [-Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
-                    [0, -0.5, Math.cos(30 * Math.PI / 180),],
-                    [Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
-                    [-Math.cos(30 * Math.PI / 180) * Math.cos(30 * Math.PI / 180), -0.5, -0.5 * Math.cos(30 * Math.PI / 180)],
+                    [l * l, -0.5, -0.5 * l],
+                    [-l * l, -0.5, -0.5 * l],
+                    [0, -0.5, l,],
+                    [l * l, -0.5, -0.5 * l],
+                    [-l * l, -0.5, -0.5 * l],
                 ].map((point) => point.map((v) => v * size));
 
                 data.indices.push(0, 1, 1, 2, 2, 0, 3, 0, 3, 1, 3, 2);
@@ -1717,10 +1806,46 @@
                     { mode: gl.LINES, count: 12, offset: (12 + indexStart) * 2, colour: [1, 1, 1, 1] },
                 ];
             }
-            planes() {
-                return [];
+            intersects(line) {
+                const l = Math.cos(30 * Math.PI / 180);
+                const sides = [
+                    [[0, 1, 0],
+                    [0, -0.5, l,],
+                    [l * l, -0.5, -0.5 * l]],
+                    [[0, 1, 0],
+                    [-l * l, -0.5, -0.5 * l],
+                    [0, -0.5, l],],
+                    [[0, 1, 0],
+                    [l * l, -0.5, -0.5 * l],
+                    [-l * l, -0.5, -0.5 * l]],
+                    [[l * l, -0.5, -0.5 * l],
+                    [0, -0.5, l,],
+                    [-l * l, -0.5, -0.5 * l]],
+                ].map((point) => point.map((v) => scaled(v, this.size)));
+
+                const planes = sides.map((side) => planeFromPoints(...side));
+                return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
+                const l = Math.cos(30 * Math.PI / 180);
+                const points = [
+                    [0, 1, 0],
+                    [0, -0.5, l,],
+                    [l * l, -0.5, -0.5 * l],
+                    [-l * l, -0.5, -0.5 * l],
+                ].map((p) => transformed(scaled(p, this.size), transform));
+
+                context.beginPath();
+                context.moveTo(points[0][0], points[0][1]);
+                context.lineTo(points[1][0], points[1][1]);
+                context.lineTo(points[2][0], points[2][1]);
+                context.lineTo(points[0][0], points[0][1]);
+                context.lineTo(points[3][0], points[3][1]);
+                context.lineTo(points[1][0], points[1][1]);
+
+                context.moveTo(points[3][0], points[3][1]);
+                context.lineTo(points[2][0], points[2][1]);
+                context.stroke();
             }
         }
 
@@ -1776,7 +1901,6 @@
                     gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
                 });
             }
-
             node.children.forEach((child) => drawNode(gl, node.world, child, time));
         }
 
@@ -1944,6 +2068,29 @@
                     -dot(xaxis, this.position), -dot(yaxis, this.position), -dot(zaxis, this.position), 1
                 ];
             }
+            forward(distance) {
+                const zaxis = normalise(subtract(this.target, this.position));
+                const movement = scaled(zaxis, distance);
+                this.position = add(this.position, movement);
+                this.target = add(this.target, movement);
+            }
+            rotateX(angle) {
+                const zaxis = subtract(this.target, this.position);
+                const xaxis = cross(zaxis, this.up);
+
+                const offset = subtract(this.position, this.target);
+                rotate(offset, xaxis, angle);
+                rotate(this.up, xaxis, angle);
+
+                this.position = add(this.target, offset);
+            }
+            rotateY(angle) {
+                const offset = subtract(this.position, this.target);
+                rotate(offset, this.up, angle);
+                //rotate(this.up, [0, 1, 0], angle);
+
+                this.position = add(this.target, offset);
+            }
             pitch(angle) {
                 const zaxis = subtract(this.target, this.position);
                 const xaxis = cross(zaxis, this.up);
@@ -1968,7 +2115,7 @@
                 const xaxis = normalise(cross(zaxis, this.up));
                 const yaxis = cross(xaxis, zaxis);
                 const d = 1 / Math.tan(fov / 2);
-                const direction = add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d));
+                const direction = normalise(add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d)));
                 //const direction = normalise(subtract(point, this.position));
                 return { point: this.position, direction };
             }
@@ -1983,7 +2130,7 @@
         camera.up = [0, 1, 0];
 
         /**
-         * Management of a 2 view using a canavas
+         * Management of a 2 view using a canvas
          */
         class View2d {
             constructor(scene, canvasId) {
@@ -2047,6 +2194,17 @@
                         this.context.arc(centre[0], centre[1], 3, 0, Math.PI * 2);
                         this.context.stroke();
                     });
+                }
+                if (scene.lines) {
+                    this.context.strokeStyle = 'rgb(255, 200, 255, 0.9)';
+                    this.context.beginPath();
+                    scene.lines.forEach((line) => {
+                        const start = transformed(line.start, this.projection);
+                        const end = transformed(line.end, this.projection);
+                        this.context.moveTo(start[0], start[1]);
+                        this.context.lineTo(end[0], end[1]);
+                    });
+                    this.context.stroke();
                 }
             }
         }
@@ -2115,6 +2273,7 @@
                 aspect,
                 zNear,
                 zFar);
+            scene.projectionMatrix = projectionMatrix;// matrixMultiply(projectionMatrix, scene.modelViewMatrix);
             initialiseShader(scene.gl, scene.shader, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader2, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader3, scene.buffers, projectionMatrix);
@@ -2132,6 +2291,10 @@
             glErrors(scene.gl);
 
             topView.render();
+
+            if (scene.overlays) {
+                scene.overlays.forEach((overlay) => overlay.updateOverlay(scene.projectionMatrix));
+            }
 
             window.requestAnimationFrame(render);
         }
@@ -2229,20 +2392,20 @@
          */
         function invert(input) {
             const x0 = input[0];
-            const x1 = input[4];
-            const x2 = input[8];
-            const x3 = input[12];
-            const x4 = input[1];
+            const x1 = input[1];
+            const x2 = input[2];
+            const x3 = input[3];
+            const x4 = input[4];
             const x5 = input[5];
-            const x6 = input[9];
-            const x7 = input[13];
-            const x8 = input[2];
-            const x9 = input[6];
+            const x6 = input[6];
+            const x7 = input[7];
+            const x8 = input[8];
+            const x9 = input[9];
             const x10 = input[10];
-            const x11 = input[14];
-            const x12 = input[3];
-            const x13 = input[7];
-            const x14 = input[11];
+            const x11 = input[11];
+            const x12 = input[12];
+            const x13 = input[13];
+            const x14 = input[14];
             const x15 = input[15];
 
             const a0 = x0 * x5 - x1 * x4;
@@ -2377,7 +2540,7 @@
         }
 
         /**
-         *
+         * point transform (apply translation)
          */
         function transformed(v, matrix) {
             return [
@@ -2385,6 +2548,40 @@
                 matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2] + matrix[13],
                 matrix[2] * v[0] + matrix[6] * v[1] + matrix[10] * v[2] + matrix[14],
             ];
+        }
+
+        /**
+          * point transform (apply translation)
+          */
+        function transform4(v, matrix) {
+            return [
+                matrix[0] * v[0] + matrix[4] * v[1] + matrix[8] * v[2] + matrix[12],
+                matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2] + matrix[13],
+                matrix[2] * v[0] + matrix[6] * v[1] + matrix[10] * v[2] + matrix[14],
+                matrix[3] * v[0] + matrix[7] * v[1] + matrix[11] * v[2] + matrix[15],
+            ];
+        }
+
+        /**
+         * Direction transform (ignore translation)
+         */
+        function transformDirection(v, matrix) {
+            return normalise([
+                matrix[0] * v[0] + matrix[4] * v[1] + matrix[8] * v[2],
+                matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2],
+                matrix[2] * v[0] + matrix[6] * v[1] + matrix[10] * v[2],
+            ]);
+        }
+
+
+        /**
+         * Return the plane defined by three points
+         */
+        function planeFromPoints(p0, p1, p2) {
+            const v0 = subtract(p0, p1);
+            const v1 = subtract(p0, p2);
+            const normal = normalise(cross(v0, v1));
+            return { point: p0, normal };
         }
 
         /**
@@ -2402,8 +2599,7 @@
                 xaxis[1], yaxis[1], zaxis[1], 0,
                 xaxis[2], yaxis[2], zaxis[2], 0,
                 -dot(xaxis, eye), -dot(yaxis, eye), -dot(zaxis, eye), 1
-            ]
-
+            ];
         }
 
         /**
@@ -2483,6 +2679,29 @@
         }
 
         /**
+         * Find the closest point on a line to a given point
+         */
+        function closestPoint(line, point) {
+            // line = lp + d * ld
+            // point = p
+            // From line to point = p - (lp + d * ld)
+            // Closest when (p - (lp + d * ld)).ld = 0
+            // dot product is distributive hence
+            // (p - (lp + d * ld)).ld = p.ld - lp.ld + d * (ld. ld)
+            // d = (lp - p).ld / ld.ld
+            const numerator = dot(subtract(line.point - point), line.direction);
+            const divisor = dot(line.direction, line.direction);
+            return numerator / divisor;
+        }
+
+        /**
+         * Return the distance between two points
+         */
+        function distance(point1, point2) {
+            return math.hypot(point1[0] - point2[0], point1[1] - point2[1], point1[2] - point2[2]);
+        }
+
+        /**
          * Add touch controls to the given node
          */
         function planeIntercept(line, plane) {
@@ -2525,7 +2744,7 @@
                 }
             });
             if (end < Infinity && end > start) {
-                return [getPoint(line, start), getPoint(line, end)];
+                return [start, end];
             }
         }
 
@@ -2537,7 +2756,57 @@
             const offset = add(plane.point, plane.normal);
             const offsetTick = transformed(offset, transform);
             const normal = normalise(subtract(offsetTick, point));
+            //scene.lines.push({ start: point, end: add(point, normal) });
             return { point, normal };
+        }
+
+        /**
+         * Process a 'click' event
+         */
+        function click(x, y) {
+            const ray = camera.getLine(x, y, 45);
+            scene.ray = ray;
+            scene.points.length = 0;
+            scene.lines.length = 0;
+            const hits = scene.nodes.filter((node) => {
+                if (node.shape) {
+                    const inverse = invert(node.world);
+                    const point = transformed(ray.point, inverse);
+                    /*
+                                                const point2 = transformed(add(ray.point, ray.direction), inverse);
+                                                const direction = normalise(subtract(point2, point));
+                    */
+                    const direction = transformDirection(ray.direction, inverse);
+                    const points = node.shape.intersects({ point, direction });
+
+                    if (points) {
+                        node.hit = points;
+                        //scene.points.push(...worldPoints);
+                        scene.points.push(getPoint(ray, points[0]), getPoint(ray, points[1]));
+                        return true;
+                    }
+                    if (!event.shiftKey) {
+                        node.hit = null;
+                    }
+                    node.nodes.forEach((node) => node.classList.remove('selected'));
+                }
+            });
+            if (hits.length > 0) {
+                hits.sort((a, b) => a.hit[0] - b.hit[0]);
+                if (!event.altKey) {
+                    hits.slice(1).forEach((node) => node.hit = null);
+                    if (hits[0].overlay) {
+                        removeOverlay(hits[0]);
+                    } else {
+                        scene.overlays.push(addOverlay(hits[0]));
+                    }
+                }
+                hits.forEach((hit) => hit.nodes.forEach((node) => node.classList.remove('selected')));
+
+                if (event.ctrlKey) {
+                    camera.target = hits[0].world.slice(12, 16);
+                }
+            }
         }
 
         /**
@@ -2555,17 +2824,22 @@
 
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
-                if (cameraMove.checked) {
-                    action = 'drag';
-                    const deltaX = event.touches[0].clientX - start.x;
-                    const deltaY = event.touches[0].clientY - start.y;
+                //if (cameraMove.checked) {
+                action = 'drag';
+                const deltaX = event.touches[0].clientX - start.x;
+                const deltaY = event.touches[0].clientY - start.y;
 
+                if (event.altKey) {
                     camera.yaw(deltaX / 10);
                     camera.pitch(deltaY / 10);
-
-                    start.x = event.touches[0].clientX;
-                    start.y = event.touches[0].clientY;
+                } else {
+                    camera.rotateY(deltaX);
+                    camera.rotateX(deltaY);
                 }
+
+                start.x = event.touches[0].clientX;
+                start.y = event.touches[0].clientY;
+                //}
             });
 
             node.addEventListener('touchend', (event) => {
@@ -2575,23 +2849,7 @@
 
                     const x = 2 * ((start.x - box.left) / box.width) - 1;
                     const y = 2 * ((box.top - start.y) / box.height) + 1;
-
-                    const ray = camera.getLine(x, y, 45);
-                    scene.ray = ray;
-                    scene.points.length = 0;
-                    const hits = scene.nodes.filter((node) => {
-                        if (node.shape) {
-                            const planes = node.shape.planes().map((plane) =>
-                                transformPlane(plane, node.world));
-                            const points = convexHullIntercept(scene.ray, planes);
-                            if (points) {
-                                scene.points.push(...points);
-                                node.hit = true;
-                                return points;
-                            }
-                            node.hit = false;
-                        }
-                    });
+                    click(x, y);
                 }
             });
 
@@ -2604,14 +2862,18 @@
 
             node.addEventListener('mousemove', (event) => {
                 event.preventDefault();
-                if (action && cameraMove.checked) {
+                if (action) { // && cameraMove.checked) {
                     action = 'drag';
                     const deltaX = event.clientX - start.x;
                     const deltaY = event.clientY - start.y;
 
-                    camera.yaw(deltaX / 10);
-                    camera.pitch(deltaY / 10);
-
+                    if (event.altKey) {
+                        camera.yaw(deltaX / 10);
+                        camera.pitch(deltaY / 10);
+                    } else {
+                        camera.rotateY(deltaX);
+                        camera.rotateX(deltaY);
+                    }
                     start.x = event.clientX;
                     start.y = event.clientY;
                 }
@@ -2625,25 +2887,56 @@
                     const x = 2 * ((start.x - box.left) / box.width) - 1;
                     const y = 2 * ((box.top - start.y) / box.height) + 1;
 
-                    const ray = camera.getLine(x, y, 45);
-                    scene.ray = ray;
-                    scene.points.length = 0;
-                    const hits = scene.nodes.filter((node) => {
-                        if (node.shape) {
-                            const planes = node.shape.planes().map((plane) =>
-                                transformPlane(plane, node.world));
-                            const points = convexHullIntercept(scene.ray, planes);
-                            if (points) {
-                                scene.points.push(...points);
-                                node.hit = true;
-                                return points;
-                            }
-                            node.hit = false;
-                        }
-                    });
+                    click(x, y);
                 }
                 action = null;
             });
+
+            node.addEventListener('wheel', (event) => {
+                const dist = event.deltaY / 10;
+                camera.forward(dist);
+            });
+        }
+
+        /**
+         * Add an overlay for the specified node
+         */
+        function addOverlay(node) {
+            const box = document.getElementById('scene').getBoundingClientRect();
+            const container = document.createElement('div');
+            container.classList.add('overlay', 'fixed');
+
+            const updateOverlay = (projectionMatrix) => {
+                const modelViewMatrix = matrixMultiply(node.world, scene.modelViewMatrix);
+
+                const transform = matrixMultiply(modelViewMatrix, scene.projectionMatrix);
+                const position = transform4([0, 0, 0], transform);
+                const x = box.left + (position[0] / position[3] + 1) * box.width / 2;
+                const y = box.bottom - (position[1] / position[3] + 1) * box.height / 2;
+
+                container.style.left = `${x}px`;
+                container.style.top = `${y}px`;
+                container.innerHTML = `<span>${node.name}</span><br>Position: <span>${node.transform.slice(12, 15).map((p) => p.toFixed(2)).join(', ')}</span>`;
+            }
+            updateOverlay(scene.projectionMatrix);
+
+            document.body.appendChild(container);
+            node.overlay = { container, updateOverlay };
+            return node.overlay;
+        }
+
+        /**
+         * Add an overlay for the specified node
+         */
+        function removeOverlay(node) {
+            if (node.overlay) {
+                node.overlay.container.remove();
+                const pos = scene.overlays.indexOf(node.overlay);
+                if (pos > -1) {
+                    scene.overlays.splice(pos, 1);
+                }
+                node.overlay = null;
+            }
         }
 
         /**
@@ -2657,20 +2950,20 @@
                 label.innerText = `${name}: (array[${value.length}])`;
                 const content = document.createElement('div');
                 container.appendChild(content);
-                content.classList.add('entry-content')
+                content.classList.add('entry-content');
                 for (let i = 0; i < value.length; ++i) {
                     if (stack.includes(value[i])) {
                         content.append(showEntry(name, '...'));
                     } else {
                         stack.push(value[i]);
-                        content.append(showEntry(name, value[i], stack));
+                        //content.append(showEntry(name, value[i], stack));
                         stack.pop();
                     }
                 }
                 return container;
             } else if (value === undefined) {
                 return `${name}: undefined`;
-            } else if (typeof (value) === 'object') {
+            } else if (value && typeof (value) === 'object') {
                 const container = document.createElement('details');
                 const label = document.createElement('summary');
                 container.appendChild(label);
@@ -2683,7 +2976,7 @@
                         content.append(showEntry(name, '...'));
                     } else {
                         stack.push(value);
-                        content.append(showEntry(name, value, stack));
+                        //content.append(showEntry(name, value, stack));
                         stack.pop();
                     }
                 });
@@ -2720,18 +3013,7 @@
         function main() {
             const canvas = document.getElementById('scene');
             const view2 = document.getElementById('top-view');
-            /*
-            canvas.addEventListener('click', (event) => {
-                paused = !paused;
-                const x = (2 * event.clientX / canvas.width) - 1;
-                const y = (2 * event.clientY / canvas.height) - 1;
 
-                const line = camera.getLine(x, y, 45);
-                console.log(line);
-
-                render();
-            });
-            */
             addControls(canvas);
 
             canvas.width = canvas.clientWidth;
@@ -2759,7 +3041,7 @@
                 colourLocation: scene.gl.getUniformLocation(shader, 'uColour'),
                 setNodeData(gl, node) {
                     if (node.hit) {
-                        gl.uniform4fv(node.shader.colourLocation, [1,0,0,1]);
+                        gl.uniform4fv(node.shader.colourLocation, [1, 0, 0, 1]);
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
@@ -2776,7 +3058,7 @@
                 colourLocation: scene.gl.getUniformLocation(shader2, 'uColour'),
                 setNodeData(gl, node) {
                     if (node.hit) {
-                        gl.uniform4fv(node.shader.colourLocation, [1,0,0,1]);
+                        gl.uniform4fv(node.shader.colourLocation, [1, 0, 0, 1]);
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
@@ -2803,7 +3085,7 @@
                 },
                 setNodeData(gl, node) {
                     if (node.hit) {
-                        gl.uniform4fv(node.shader.colourLocation, [1,0,0,1]);
+                        gl.uniform4fv(node.shader.colourLocation, [1, 0, 0, 1]);
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
@@ -2831,7 +3113,7 @@
                 },
                 setNodeData(gl, node) {
                     if (node.hit) {
-                        gl.uniform4fv(node.shader.colourLocation, [1,0,0,1]);
+                        gl.uniform4fv(node.shader.colourLocation, [1, 0, 0, 1]);
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
@@ -3282,7 +3564,7 @@
                 matrix[12] = 0;
                 matrix[13] = 0;
                 matrix[14] = (2 * zFar * zNear) / (zNear - zFar);
-                matrix[15] = 0;
+                matrix[15] = 1;
             },
             translate: function (input, output, change) {
                 var m = [
