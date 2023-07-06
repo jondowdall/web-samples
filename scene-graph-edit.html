@@ -216,7 +216,7 @@
             <input id="light-x" class="light-position" type="range" min="-100" max="100">
             <input id="light-y" class="light-position" type="range" min="-100" max="100">
             <input id="light-z" class="light-position" type="range" min="-100" max="100">
-            <button id="next-node">Next</button>
+            <button id="reset">Reset</button>
         </div>
 
         <div id="transform" style="display:none;">
@@ -1886,34 +1886,31 @@
         }
 
         /**
+         * Move node method.
+         * 
+         * Determine the transformation required to move the node by the given world vector
+         */
+        function move(v) {
+            const transform = this.parent ? this.parent.world : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+            const inverse = invert(transform);
+            const local = transformed(v, inverse);
+            this.transform[12] += local[0];
+            this.transform[13] += local[1];
+            this.transform[14] += local[2];
+        }
+
+        /**
          *
          */
         function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1]) {
-            /*
-            const axis = [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-            ][Math.floor(Math.random() * 3)];
-            const angle = (Math.random() - 0.5) * Math.PI / 360;
-            const q = new Quaternion(
-                Math.cos(angle / 2),
-                Math.sin(angle / 2) * axis[0],
-                Math.sin(angle / 2) * axis[1],
-                Math.sin(angle / 2) * axis[2]);
-
-            const spin = q.getMatrix();
-            transform[12] += 0.1 - 0.2 * Math.random();
-            transform[13] += 0.1 - 0.2 * Math.random();
-            transform[14] += 0.1 - 0.2 * Math.random();
-            */
             const spin = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            const node = {
+            const node = Object.assign(Object.create({ move }), {
                 name, parent, transform, shape, shader, colour, children: [], spin, shininess: 1 + 5 * Math.random(),
-            };
+            });
             if (parent) {
                 parent.children.push(node);
             }
+
             return node;
         }
 
@@ -1965,7 +1962,6 @@
                     gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
                 });
             }
-
             node.children.forEach((child) => drawNode2(gl, child, shader));
         }
 
@@ -2086,9 +2082,13 @@
          */
         class Camera {
             constructor(position = [0, 0, 1], target = [0, 0, 0], up = [0, 1, 0]) {
-                this.position = position;
-                this.target = target;
-                this.up = up;
+                this.initial = {position, target, up};
+                this.reset();
+            }
+            reset() {
+                this.position = [...this.initial.position];
+                this.target = [...this.initial.target];
+                this.up = [...this.initial.up];
             }
             viewMatrix(eye, at, up) {
                 const zaxis = normalise(subtract(this.target, this.position));
@@ -2123,7 +2123,6 @@
             rotateY(angle) {
                 const offset = subtract(this.position, this.target);
                 rotate(offset, this.up, angle);
-                //rotate(this.up, [0, 1, 0], angle);
 
                 this.position = add(this.target, offset);
             }
@@ -2152,7 +2151,6 @@
                 const yaxis = cross(xaxis, zaxis);
                 const d = 1 / Math.tan(fov / 2);
                 const direction = normalise(add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d)));
-                //const direction = normalise(subtract(point, this.position));
                 return { point: this.position, direction };
             }
         }
@@ -2160,10 +2158,7 @@
         /**
          *
          */
-        const camera = new Camera();
-        camera.position = [0, 0, -20];
-        camera.target = [0, 0, 0];
-        camera.up = [0, 1, 0];
+        const camera = new Camera([0, 0, -20], [0, 0, 0], [0, 1, 0]);
 
         /**
          * Management of a 2 view using a canvas
@@ -2785,9 +2780,9 @@
         }
 
         /**
-         * Process a 'click' event
+         * Return the nodes at the screen coordinate 
          */
-        function click(x, y) {
+        function pickNodes(x, y) {
             const ray = camera.getLine(x, y, 45);
             scene.ray = ray;
             scene.points.length = 0;
@@ -2801,6 +2796,7 @@
 
                     if (points) {
                         node.hit = points;
+                        node.hitPoint = getPoint({ point, direction }, points[0]);
                         scene.points.push(getPoint(ray, points[0]), getPoint(ray, points[1]));
                         return true;
                     }
@@ -2810,22 +2806,53 @@
                     node.sourceNode.nodes.forEach((node) => node.classList.remove('selected'));
                 }
             });
+            return hits;
+        }
+
+        /**
+         * Process a 'click' event
+         */
+        function click(x, y) {
+            const hits = pickNodes(x, y);
             if (hits.length > 0) {
                 hits.sort((a, b) => a.hit[0] - b.hit[0]);
                 if (!event.altKey) {
                     hits.slice(1).forEach((node) => node.hit = null);
+                }
+                hits.forEach((hit) => hit.sourceNode.nodes.forEach((node) => node.classList.add('selected')));
+
+                if (event.ctrlKey) {
+                    camera.target = hits[0].world.slice(12, 16);
                     if (hits[0].overlay) {
                         removeOverlay(hits[0]);
                     } else {
                         scene.overlays.push(addOverlay(hits[0]));
                     }
                 }
-                hits.forEach((hit) => hit.sourceNode.nodes.forEach((node) => node.classList.add('selected')));
-
-                if (event.ctrlKey) {
-                    camera.target = hits[0].world.slice(12, 16);
-                }
             }
+        }
+
+        /**
+         * Move a node in screen space
+         */
+        function dragTo(node, x, y) {
+            const ray = camera.getLine(x, y, 45);
+
+            const inverse = invert(node.world);
+            const localRay = {
+                point: transformed(ray.point, inverse),
+                direction: transformDirection(ray.direction, inverse),
+            };
+
+            const normal = transformDirection(normalise(subtract(camera.target, camera.position)), inverse);
+            const newPoint = getPoint(localRay, planeIntercept(localRay, { point: node.hitPoint, normal }));
+
+            const offset = subtract(newPoint, node.hitPoint);
+
+            node.transform[12] += offset[0];
+            node.transform[13] += offset[1];
+            node.transform[14] += offset[2];
+
         }
 
         /**
@@ -2843,7 +2870,6 @@
 
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
-                //if (cameraMove.checked) {
                 action = 'drag';
                 const deltaX = event.touches[0].clientX - start.x;
                 const deltaY = event.touches[0].clientY - start.y;
@@ -2858,7 +2884,6 @@
 
                 start.x = event.touches[0].clientX;
                 start.y = event.touches[0].clientY;
-                //}
             });
 
             node.addEventListener('touchend', (event) => {
@@ -2876,22 +2901,44 @@
                 event.preventDefault();
                 start.x = event.clientX;
                 start.y = event.clientY;
+
+                const box = node.getBoundingClientRect();
+
+                const x = 2 * ((start.x - box.left) / box.width) - 1;
+                const y = 2 * ((box.top - start.y) / box.height) + 1;
+
+                const hits = pickNodes(x, y);
+                if (hits.length > 0) {
+                    hits.sort((a, b) => a.hit[0] - b.hit[0]);
+                    start.hit = hits[0];
+                } else {
+                    start.hit = null;
+                }
                 action = 'click';
             });
 
             node.addEventListener('mousemove', (event) => {
                 event.preventDefault();
-                if (action) { // && cameraMove.checked) {
+                if (action) {
                     action = 'drag';
                     const deltaX = event.clientX - start.x;
                     const deltaY = event.clientY - start.y;
 
-                    if (event.altKey) {
-                        camera.yaw(deltaX / 10);
-                        camera.pitch(deltaY / 10);
+                    if (start.hit) {
+                        const box = node.getBoundingClientRect();
+
+                        const x = 2 * ((event.clientX - box.left) / box.width) - 1;
+                        const y = 2 * ((box.top - event.clientY) / box.height) + 1;
+
+                        dragTo(start.hit, x, y);
                     } else {
-                        camera.rotateY(deltaX);
-                        camera.rotateX(deltaY);
+                        if (event.altKey) {
+                            camera.yaw(deltaX / 10);
+                            camera.pitch(deltaY / 10);
+                        } else {
+                            camera.rotateY(deltaX);
+                            camera.rotateX(deltaY);
+                        }
                     }
                     start.x = event.clientX;
                     start.y = event.clientY;
@@ -3188,9 +3235,8 @@
                 scene.shader4.light.position[2] = lightZ.value;
             });
 
-            const nextNode = document.getElementById('next-node');
-            nextNode.addEventListener('click', () =>
-                scene.target = (scene.target + 1) % scene.nodes.length);
+            const reset = document.getElementById('reset');
+            reset.addEventListener('click', () => camera.reset());
 
             //const treeNode = document.querySelector('.tree');
             const expandedTreeNode = document.querySelector('.expanded-tree');
