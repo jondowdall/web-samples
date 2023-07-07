@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width" />
-    <title>webgl</title>
+    <title>Structure View</title>
     <style>
         html {
             font-family: sans-serif;
@@ -793,9 +793,12 @@
          */
         function getGraph(structure, scene) {
             const buffers = {
-                vertexBuffer: [],
+                vertex: [],
                 indices: [],
             };
+            scene.data = buffers;
+
+            const namedNodes = {};
 
             const types = {
                 box: {
@@ -827,27 +830,12 @@
                     hash: (node) => `tetrahedron ${node.data.size}`,
                 },
                 link: {
-                    makeShape: (node) => new link(scene.gl, buffers, node.data.from, node.data.to, node.data.points),
+                    makeShape: (node) => new Link(scene.gl, buffers, namedNodes[node.data.from], namedNodes[node.data.to], node.data.points),
                     hash: (node) => `link ${node.data.from} ${node.data.to}`,
                 }
             };
             scene.shapes = [];
             const shapes = {};
-
-            const flatten = (node, level = 1) => {
-                const type = node.data?.type ? node.data.type.toLowerCase() : null;
-                if (type && types[type]) {
-                    const hash = types[type].hash(node);
-                    shapes[hash] = shapes[hash] || types[type].makeShape(node);
-                    node.shape = shapes[hash];
-                    scene.shapes.push(node.shape);
-                }
-                node.parts.forEach((part) => flatten(part, level + 1));
-            };
-
-            structure.forEach((part) => flatten(part));
-            updateBuffers(scene.gl, scene.buffers, buffers);
-            glErrors(scene.gl, context = 'Update Buffers');
 
             const stack = [];
             scene.graph = [];
@@ -862,6 +850,14 @@
             }
 
             const add = (node) => {
+                const type = node.data?.type ? node.data.type.toLowerCase() : null;
+                if (type && types[type]) {
+                    const hash = types[type].hash(node);
+                    shapes[hash] = shapes[hash] || types[type].makeShape(node);
+                    node.shape = shapes[hash];
+                    scene.shapes.push(node.shape);
+                }
+
                 if (node.data.position && node.data.position.length === 3) {
                     node.data.position = node.data.position.map((v) => isNaN(v) ? 0 : v);
                     const shader = Math.random() > 0.5 ? scene.shader3 : scene.shader4;
@@ -892,6 +888,7 @@
                         node.data.colour.forEach((val, index) => colour[index] = val);
                     }
                     node.sceneNode = addNode(node.name, parent, transform, node.shape, shader, colour);
+                    namedNodes[node.name] = node.sceneNode;
                     if (!parent) {
                         scene.graph.push(node.sceneNode);
                     }
@@ -910,6 +907,9 @@
             };
 
             structure.forEach((part) => add(part));
+
+            updateBuffers(scene.gl, scene.buffers, buffers);
+            glErrors(scene.gl, context = 'Update Buffers');
         }
 
         /**
@@ -1192,54 +1192,51 @@
         /**
          *
          */
-        function initBuffers(gl, data) {
+        function initBuffers(scene, data) {
 
             // Create a buffer for the square's positions.
 
-            const vertexBuffer = gl.createBuffer();
-            const indexBuffer = gl.createBuffer();
+            //const vertex = gl.createBuffer();
+            scene.buffers = {
+                vertex: scene.gl.createBuffer(),
+                index: scene.gl.createBuffer(),
+            };
 
-            // Select the .vertexBuffer as the one to apply buffer
+            // Select the .vertex as the one to apply buffer
             // operations to from here out.
-            gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-
+            scene.gl.bindBuffer(scene.gl.ARRAY_BUFFER, scene.buffers.vertex);
 
             // Now pass the list of positions into WebGL to build the
             // shape. We do this by creating a Float32Array from the
             // JavaScript array, then use it to fill the current buffer.
-            gl.bufferData(gl.ARRAY_BUFFER,
-                new Float32Array(data.vertexBuffer),
-                gl.STATIC_DRAW);
+            scene.gl.bufferData(scene.gl.ARRAY_BUFFER,
+                new Float32Array(data.vertex),
+                scene.gl.STATIC_DRAW);
 
-            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                scene.gl.bindBuffer(scene.gl.ELEMENT_ARRAY_BUFFER, scene.buffers.indices);
 
-            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
+            scene.gl.bufferData(scene.gl.ELEMENT_ARRAY_BUFFER,
                 new Uint16Array(data.indices),
-                gl.STATIC_DRAW);
-
-            return {
-                vertexBuffer,
-                indexBuffer
-            };
+                scene.gl.STATIC_DRAW);
         }
 
         /**
          *
          */
         function updateBuffers(gl, buffers, data) {
-            // Select the .vertexBuffer as the one to apply buffer
+            // Select the .vertex as the one to apply buffer
             // operations to from here out.
-            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertexBuffer);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
 
 
             // Now pass the list of positions into WebGL to build the
             // shape. We do this by creating a Float32Array from the
             // JavaScript array, then use it to fill the current buffer.
             gl.bufferData(gl.ARRAY_BUFFER,
-                new Float32Array(data.vertexBuffer),
+                new Float32Array(data.vertex),
                 gl.STATIC_DRAW);
 
-            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indexBuffer);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
 
             gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
                 new Uint16Array(data.indices),
@@ -1266,9 +1263,9 @@
         /**
          *
          */
-        function addTriangles(gl, vertexBuffer, indexBuffer, points) {
+        function addTriangles(gl, vertex, indexBuffer, points) {
             const offset = indexBuffer.length * 2;
-            let index = vertexBuffer.length / 6;
+            let index = vertex.length / 6;
             const nTriangles = Math.floor(points.length / 3);
             for (let i = 0; i < nTriangles; ++i) {
                 const p0 = points[i * 3];
@@ -1284,11 +1281,11 @@
                 n[0] /= l;
                 n[1] /= l;
                 n[2] /= l;
-                vertexBuffer.push(...p0, ...n);
+                vertex.push(...p0, ...n);
                 indexBuffer.push(index++);
-                vertexBuffer.push(...p1, ...n);
+                vertex.push(...p1, ...n);
                 indexBuffer.push(index++);
-                vertexBuffer.push(...p2, ...n);
+                vertex.push(...p2, ...n);
                 indexBuffer.push(index++);
             }
 
@@ -1345,11 +1342,27 @@
             return { mode: gl.LINE_STRIP, count, offset };
         }
 
+
+        class shape {
+            updateBuffers(gl) {
+
+            }
+            draw3d(gl) {
+                this.elements.forEach((shape) => {
+                    if (this.colour) {
+                        gl.uniform4fv(node.shader.colourLocation, shape.colour);
+                    }
+                    gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
+                });
+            }
+        }
+
         /**
          *
          */
-        class Box {
+        class Box extends(shape) {
             constructor(gl, data, w, h, d) {
+                super();
                 if (w === undefined) {
                     w = 0.5;
                 } else {
@@ -1368,8 +1381,8 @@
                 this.width = 2 * w;
                 this.height = 2 * h;
                 this.depth = 2 * d;
-                const start = data.vertexBuffer.length / 6;
-                data.vertexBuffer.push(
+                const start = data.vertex.length / 6;
+                data.vertex.push(
                     -w, -h, -d,
                     0, 0, -1,
                     -w, h, -d,
@@ -1499,10 +1512,11 @@
         /**
          *
          */
-        class Diamond {
+        class Diamond extends(shape) {
             constructor(gl, data, size = 1) {
+                super();
                 this.size = size;
-                const start = data.vertexBuffer.length / 6;
+                const start = data.vertex.length / 6;
                 const indexStart = data.indices.length;
                 const points = [
                     [0, 1, 0,],
@@ -1545,7 +1559,7 @@
                 ].map((i) => i + start));
 
                 this.elements = [
-                    addTriangles(gl, data.vertexBuffer, data.indices, points),
+                    addTriangles(gl, data.vertex, data.indices, points),
                     { mode: gl.LINE_STRIP, count: 7, offset: (24 + indexStart) * 2, colour: [1, 1, 1, 1] },
                     { mode: gl.LINE_STRIP, count: 7, offset: (31 + indexStart) * 2, colour: [1, 1, 1, 1] },
                 ];
@@ -1612,30 +1626,31 @@
         /**
          *
          */
-        class Ball {
+        class Ball extends(shape) {
             constructor(gl, data, width = 2, depth = 2, height = 2, sides = 12, strips = 12) {
+                super();
                 this.width = width / 2;
                 this.depth = depth / 2;
                 this.height = height / 2;
                 this.sides = sides;
                 this.strips = strips;
-                const start = data.vertexBuffer.length / 6;
+                const start = data.vertex.length / 6;
                 const indexStart = data.indices.length;
 
                 // Create the mesh for the ball
-                data.vertexBuffer.push(0, height / 2, 0);
-                data.vertexBuffer.push(0, 1, 0);
-                data.vertexBuffer.push(0, -height / 2, 0);
-                data.vertexBuffer.push(0, -1, 0);
+                data.vertex.push(0, height / 2, 0);
+                data.vertex.push(0, 1, 0);
+                data.vertex.push(0, -height / 2, 0);
+                data.vertex.push(0, -1, 0);
                 for (let j = 0; j < strips - 1; ++j) {
                     const ny = Math.cos((j + 1) * Math.PI / strips);
                     const y = this.height * ny;
                     const radius = Math.sin((j + 1) * Math.PI / strips);
                     for (let i = 0; i < sides; ++i) {
                         const radians = (i * 2 + j) * Math.PI / sides;
-                        data.vertexBuffer.push(
+                        data.vertex.push(
                             this.width * radius * Math.sin(radians), y, this.depth * radius * Math.cos(radians));
-                        data.vertexBuffer.push(
+                        data.vertex.push(
                             radius * Math.sin(radians), ny, radius * Math.cos(radians));
                     }
                 }
@@ -1674,15 +1689,16 @@
         /**
          *
          */
-        class Frustrum {
+        class Frustrum extends(shape) {
             constructor(gl, data, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
+                super();
                 height /= 2;
                 this.height = height;
                 this.baseRadius = baseRadius;
                 this.topRadius = topRadius;
                 this.sides = sides;
 
-                const start = data.vertexBuffer.length / 6;
+                const start = data.vertex.length / 6;
                 const indexStart = data.indices.length;
 
                 const angle = Math.atan((baseRadius - topRadius) / 2 * height);
@@ -1692,19 +1708,19 @@
                 for (let i = 0; i < sides; ++i) {
                     const baseRadians = i * 2 * Math.PI / sides;
                     const topRadians = (1 + i * 2) * Math.PI / sides;
-                    data.vertexBuffer.push(
+                    data.vertex.push(
                         baseRadius * Math.sin(baseRadians), -height, baseRadius * Math.cos(baseRadians),
                         nRadius * Math.sin(baseRadians), ny, nRadius * Math.cos(baseRadians),
                         topRadius * Math.sin(topRadians), height, topRadius * Math.cos(topRadians),
                         nRadius * Math.sin(topRadians), ny, nRadius * Math.cos(topRadians));
                 }
 
-                data.vertexBuffer.push(0, -height, 0);
-                data.vertexBuffer.push(0, -1, 0);
+                data.vertex.push(0, -height, 0);
+                data.vertex.push(0, -1, 0);
 
                 for (let i = 0; i < sides; ++i) {
                     const angle = i * 2 * Math.PI / sides;
-                    data.vertexBuffer.push(
+                    data.vertex.push(
                         baseRadius * Math.sin(angle), -height, baseRadius * Math.cos(angle),
                         0, -1, 0);
                 }
@@ -1715,12 +1731,12 @@
                 ];
 
                 if (topRadius > 0) {
-                    data.vertexBuffer.push(0, height, 0);
-                    data.vertexBuffer.push(0, 1, 0);
+                    data.vertex.push(0, height, 0);
+                    data.vertex.push(0, 1, 0);
 
                     for (let i = 0; i < sides; ++i) {
                         const angle = (1 + i * 2) * Math.PI / sides;
-                        data.vertexBuffer.push(
+                        data.vertex.push(
                             topRadius * Math.sin(angle), height, topRadius * Math.cos(angle),
                             0, 1, 0);
                     }
@@ -1783,8 +1799,10 @@
         /**
          *
          */
-        class Tetrahedron {
+        class Tetrahedron extends(shape) {
             constructor(gl, data, size = 1) {
+                super();
+                const start = data.vertex.length / 6;
                 this.size = 1;
                 const indexStart = data.indices.length;
                 const l = Math.cos(30 * Math.PI / 180);
@@ -1803,10 +1821,11 @@
                     [-l * l, -0.5, -0.5 * l],
                 ].map((point) => point.map((v) => v * size));
 
-                data.indices.push(0, 1, 1, 2, 2, 0, 3, 0, 3, 1, 3, 2);
+                const indices = [0, 1, 1, 2, 2, 0, 3, 0, 3, 1, 3, 2].map((i) => i + start);
+                data.indices.push(...indices);
 
                 this.elements = [
-                    addTriangles(gl, data.vertexBuffer, data.indices, points),
+                    addTriangles(gl, data.vertex, data.indices, points),
                     { mode: gl.LINES, count: 12, offset: (12 + indexStart) * 2, colour: [1, 1, 1, 1] },
                 ];
             }
@@ -1857,15 +1876,18 @@
          * Connection between two nodes
          */
         class Link {
-            constructor(gl, data, from, to, points) {
+            constructor(gl, data, from, to, points=[]) {
                 this.from = from;
                 this.to = to;
                 this.points = [from.transform.slice(12, 15), ...points, to.transform.slice(12, 15)];
 
+                const start = data.vertex.length / 6;
                 const indexStart = data.indices.length;
+                this.pointIndex = data.vertex.length;
+                this.pointIndex2 = data.vertex.length + 6 + points.length * 6;
 
-                data.vertexBuffer.push(...points.flatMap((point) => [...point, 0, 0, -1]));
-                const indices = Array(points.length).fill(1).map((e, i) => i);
+                data.vertex.push(...this.points.flatMap((point) => [...point, 0, 0, -1]));
+                const indices = Array(this.points.length).fill(1).map((e, i) => i + start);
 
                 data.indices.push(...indices);
 
@@ -1874,10 +1896,29 @@
                 ];
             }
             intersects(line) {
+            }
+            updateBuffers(scene) {
+                // Update points based on object positions
+                const from = transformed([0, 0, 0], this.from.world);
+                const to = transformed([0, 0, 0], this.to.world);
+                scene.data.vertex[this.pointIndex] = from[0];
+                scene.data.vertex[this.pointIndex + 1] = from[1];
+                scene.data.vertex[this.pointIndex + 2] = from[2];
 
+                scene.data.vertex[this.pointIndex2] = to[0];
+                scene.data.vertex[this.pointIndex2 + 1] = to[1];
+                scene.data.vertex[this.pointIndex2 + 2] = to[2];
+            }
+            draw3d(gl) {
+                this.elements.forEach((shape) => {
+                    if (this.colour) {
+                        gl.uniform4fv(node.shader.colourLocation, shape.colour);
+                    }
+                    gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
+                });
             }
             draw2d(context, transform) {
-                const points2d = this.points.map((point) => transform4(point));
+                const points2d = this.points.map((point) => transform4(point, transform));
 
                 context.beginPath();
                 points2d.forEach((point) => context.lineTo(point[0], point[1]));
@@ -1886,31 +1927,27 @@
         }
 
         /**
-         * Move node method.
-         * 
-         * Determine the transformation required to move the node by the given world vector
+         * Function to update node data prior to rendering
          */
-        function move(v) {
-            const transform = this.parent ? this.parent.world : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            const inverse = invert(transform);
-            const local = transformed(v, inverse);
-            this.transform[12] += local[0];
-            this.transform[13] += local[1];
-            this.transform[14] += local[2];
+        function update(scene, origin, time) {
+            this.world = matrixMultiply(this.transform, origin);
+            if (this.shape) {
+                this.shape.updateBuffers(scene);
+            }
+            this.children.forEach((child) => child.update(scene, this.world, time));
         }
 
         /**
          *
          */
         function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1]) {
-            const spin = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            const node = Object.assign(Object.create({ move }), {
+            const spin = identityMatrix();
+            const node = Object.assign(Object.create({update}), {
                 name, parent, transform, shape, shader, colour, children: [], spin, shininess: 1 + 5 * Math.random(),
             });
             if (parent) {
                 parent.children.push(node);
             }
-
             return node;
         }
 
@@ -1927,12 +1964,7 @@
             gl.uniformMatrix3fv(node.shader.normalMatrixLocation, false, normalMatrix);
             node.shader.setNodeData(gl, node);
             if (node.shape) {
-                node.shape.elements.forEach((shape) => {
-                    if (shape.colour) {
-                        gl.uniform4fv(node.shader.colourLocation, shape.colour);
-                    }
-                    gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
-                });
+                node.shape.draw3d(gl);
             }
             node.children.forEach((child) => drawNode(gl, node.world, child, time));
         }
@@ -1955,12 +1987,7 @@
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
                 gl.uniformMatrix3fv(node.shader.normalMatrixLocation, false, normalMatrix);
                 node.shader.setNodeData(gl, node);
-                node.shape.forEach((shape) => {
-                    if (shape.colour) {
-                        gl.uniform4fv(node.shader.colourLocation, shape.colour);
-                    }
-                    gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
-                });
+                node.shape.draw3d(gl);
             }
             node.children.forEach((child) => drawNode2(gl, child, shader));
         }
@@ -1978,8 +2005,8 @@
 
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             glErrors(gl, 'drawScene');
-            const ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            scene.graph.forEach((node) => drawNode(scene.gl, ident, node, time));
+            glErrors(gl, 'drawScene===');
+            scene.graph.forEach((node) => drawNode(scene.gl, identityMatrix(), node, time));
             glErrors(gl, 'drawScene2');
         }
 
@@ -1996,7 +2023,7 @@
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             glErrors(gl, 'drawScene');
 
-            const origin = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+            const origin = identityMatrix();
             scene.graph.forEach((node) => positionNode(origin, node));
 
             gl.useProgram(scene.shader3.program);
@@ -2035,7 +2062,7 @@
             const offset = 0;         // how many bytes inside the buffer to start from
             gl.useProgram(shader.program);
 
-            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertexBuffer);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
             gl.vertexAttribPointer(
                 shader.attribLocations.vertexPosition,
                 numComponents,
@@ -2056,7 +2083,7 @@
                 gl.enableVertexAttribArray(shader.attribLocations.vertexNormal);
             }
 
-            // Tell WebGL to use our program when drawi
+            // Tell WebGL to use our program when drawing
 
             // Set the shader uniforms
             gl.uniformMatrix4fv(shader.projectionMatrixLocation, false, projectionMatrix);
@@ -2082,7 +2109,7 @@
          */
         class Camera {
             constructor(position = [0, 0, 1], target = [0, 0, 0], up = [0, 1, 0]) {
-                this.initial = {position, target, up};
+                this.initial = { position, target, up };
                 this.reset();
             }
             reset() {
@@ -2191,7 +2218,6 @@
 
                 this.context.lineWidth = 1;
                 this.context.strokeStyle = 'rgba(255, 240, 100, 0.9)';
-                //this.context.fillStyle = 'rgba(255, 240, 100, 0.2)';
                 const renderNode = (node) => {
                     if (node.world && node.shape) {
                         if (node.colour) {
@@ -2202,7 +2228,6 @@
                         const transform = matrixMultiply(node.world, this.projection);
                         node.shape.draw2d(this.context, transform);
                     }
-                    //node.children.forEach((part) => renderNode(part));
                 }
                 scene.nodes.forEach(node => renderNode(node));
 
@@ -2265,26 +2290,6 @@
             }
             last = time;
 
-            // Set the drawing position to the "identity" point, which is
-            // the center of the scene.
-            /*
-                        if (!cameraMove.checked && scene.nodes[scene.target]?.world && scene.nodes[scene.camera]?.world) {
-                            camera.position = [...scene.nodes[scene.camera].world.slice(12, 16)];
-                            camera.position[2] -= 10;
-                            camera.target = [...scene.nodes[scene.target].world.slice(12, 16)];
-            
-                            scene.modelViewMatrix = camera.viewMatrix();
-                        } else {
-                            camera.position = [...scene.nodes[scene.camera].world.slice(12, 16)];
-                            camera.position[2] -= 10;
-                            camera.target = [...scene.nodes[scene.target].world.slice(12, 16)];
-                            scene.modelViewMatrix = camera.viewMatrix();
-                        }
-            *
-            camera.position = [0, 0, -20];
-            camera.target = [0, 0, 0];
-            camera.up = [0, 1, 0];
-            */
             scene.modelViewMatrix = camera.viewMatrix();
 
             // Create a perspective matrix, a special matrix that is
@@ -2295,16 +2300,13 @@
             const aspect = scene.gl.canvas.clientWidth / scene.gl.canvas.clientHeight;
             const zNear = 0.1;
             const zFar = 1000.0;
-            const projectionMatrix = mat4.create();
-
-            // note: glmatrix.js always has the first argument
-            // as the destination to receive the result.
-            mat4.perspective(projectionMatrix,
-                fieldOfView,
-                aspect,
-                zNear,
-                zFar);
+            const projectionMatrix = perspective(fieldOfView, aspect, zNear, zFar);
             scene.projectionMatrix = projectionMatrix;// matrixMultiply(projectionMatrix, scene.modelViewMatrix);
+
+            scene.graph.forEach((node) => node.update(scene, identityMatrix(), node, time));
+
+            updateBuffers(scene.gl, scene.buffers, scene.data);
+
             initialiseShader(scene.gl, scene.shader, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader2, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader3, scene.buffers, projectionMatrix);
@@ -2616,6 +2618,13 @@
         }
 
         /**
+         * Return an identity matrix
+         */
+        function identityMatrix() {
+            return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        }
+
+        /**
          *
          */
         function lookAt(eye, at, up) {
@@ -2634,35 +2643,18 @@
         }
 
         /**
-         *
+         * Calculate a perspective matrix
          */
-        function makeShapes(scene) {
-            const dataBuffers = {
-                vertexBuffer: [],
-                indices: [],
-            };
-
-            scene.shapes.push(new Diamond(scene.gl, dataBuffers));
-            scene.shapes.push(new Tetrahedron(scene.gl, dataBuffers));
-
-            const randInt = (min, max) => min + Math.floor((max - min) * Math.random());
-            const rand = (min, max) => min + (max - min) * Math.random();
-            for (let i = 0; i < 10; ++i) {
-                scene.shapes.push(new Box(scene.gl, dataBuffers,
-                    rand(0.5, 2), rand(0.5, 2), rand(0.5, 2)));
-
-                scene.shapes.push(new Cylinder(scene.gl, dataBuffers,
-                    rand(0.5, 2), rand(0.5, 2), randInt(3, 32)));
-
-                scene.shapes.push(new Frustrum(scene.gl, dataBuffers,
-                    rand(0.5, 2), rand(0.5, 2), rand(0.5, 2), randInt(3, 32)));
-
-                scene.shapes.push(new Ball(scene.gl, dataBuffers,
-                    rand(0.5, 2), rand(0.5, 2), rand(0.5, 2), randInt(3, 32), randInt(3, 32)));
-
-            }
-            scene.buffers = initBuffers(scene.gl, dataBuffers);
+        function perspective(fieldOfView, aspect, zNear, zFar) {
+            var f = 1 / Math.tan(fieldOfView * Math.PI / 360);
+            return [
+                f / aspect, 0, 0, 0,
+                0, f, 0, 0,
+                0, 0, (zFar + zNear) / (zNear - zFar), -1,
+                0, 0, (2 * zFar * zNear) / (zNear - zFar), 1,
+            ];
         }
+
 
         /**
          *
@@ -2837,6 +2829,7 @@
          */
         function dragTo(node, x, y) {
             const ray = camera.getLine(x, y, 45);
+            const transform = node.parent ? node.parent.world : identityMatrix();
 
             const inverse = invert(node.world);
             const localRay = {
@@ -2852,7 +2845,6 @@
             node.transform[12] += offset[0];
             node.transform[13] += offset[1];
             node.transform[14] += offset[2];
-
         }
 
         /**
@@ -3278,8 +3270,10 @@
                     .replace(/^\s*#/g, '');
             });
 
-            makeShapes(scene);
-
+            scene.buffers = {
+                vertex: scene.gl.createBuffer(),
+                indices: scene.gl.createBuffer(),
+            }
             makeGraph(scene, bases, components);
 
             const content = localStorage.getItem('structure');
