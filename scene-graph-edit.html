@@ -103,11 +103,12 @@
         }
 
         #input {
-            font-size: 120%;
+            font-size: 80%;
             width: 100%;
             height: 100%;
             overflow: auto;
             grid-column: 1 / -1;
+            white-space: nowrap;
         }
 
         #scene-container {
@@ -244,10 +245,8 @@
             <button id="comment">Comment</button>
             <button id="uncomment">Uncomment</button>
             <textarea id="input" rows="20" cols="50">
-                box
-                @type=box;width=2;height=1;depth=1;position=1,1,0;
-                box
-                 @type=box;width=2;height=1.5;depth=2;position=1,1,0;
+                box;type=box;width=2;height=1;depth=1;
+                box;type=box;width=2;height=1.5;depth=2;position=1,1,0;
             </textarea>
         </div>
         <div id="scene-container"><canvas id="scene"></canvas></div>
@@ -351,7 +350,7 @@
                 group: /^\s*\[(?<list>[^\]]+)\]\s*(?<name>\S.*)/,
                 template: /^\s*(?<content>\S.*)?\[(?<list>[^\]]+)\]\s*$/,
                 conditional: /^\s*\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/,
-                data: /^\s*\@(?<expr>([^=]+)(=\s*(.+))?(;([^=]+)(=\s*(.+))?)*)/,
+                event: /^\s*\@(?<type>([^=]+)(=\s*(.+))?(;([^=]+)(=\s*(.+))?)*)/,
                 continuation: /^\s*\&(?<content>.+)/,
             };
 
@@ -375,7 +374,7 @@
                 const groupNode = content.match(patterns.group);
                 const templateNode = content.match(patterns.template);
                 const conditionalNode = content.match(patterns.conditional);
-                const dataNode = content.match(patterns.data);
+                const eventNode = content.match(patterns.event);
                 const continuation = content.match(patterns.continuation);
 
                 if (continuation && stack.length) {
@@ -422,34 +421,7 @@
                         });
                     }
                 }
-                if (stack.length && dataNode) {
-                    node.dataNode = true;
-                    //document.body.style.background = 'lightblue';
-                    const exprPattern = /(?<name>[^=]+)(=\s*(?<values>.+))?/;
-                    const expr = dataNode.groups.expr.split(/;/g);
-                    const getNum = (value) => {
-                        const num = Number(value);
-                        if (!isNaN(num)) {
-                            return num;
-                        }
-                        return value.trim();
-                    };
-                    node.data = expr.filter((expr) => expr).reduce((data, item) => {
-                        const exprMatch = item.match(exprPattern);
-                        const name = exprMatch.groups.name.trim();
-                        const values = exprMatch.groups.values;
-                        if (values) {
-                            if (values.includes(',')) {
-                                data[name] = values.split(/,/g).map((value) =>
-                                    getNum(value));
-                            } else {
-                                data[name] = getNum(values);
-                            }
-                        } else {
-                            data[name] = true;
-                        }
-                        return data;
-                    }, {});
+                if (stack.length && eventNode) {
                 }
 
                 if (stack.length) {
@@ -626,10 +598,6 @@
                     });
                 }
 
-                if (source.dataNode) {
-                    Object.assign(context.path[0].data, source.data);
-                }
-
                 parser(node, context);
 
                 if (!controlNode) {
@@ -701,6 +669,10 @@
             return root;
         }
 
+        var tree = {
+            roots: [],
+            nodes: [],
+        };
         /**
          * Generate dom nodes for the given structure
          */
@@ -710,13 +682,16 @@
 
             const nodes = [];
 
+            tree.nodes.length = 0;
             const flatten = (node, level = 1) => {
                 node.level = level;
+                tree.nodes.push(node);
                 nodes.push(node);
                 node.parts.forEach((part) => flatten(part, level + 1));
             };
 
             structure.forEach((part) => flatten(part));
+            tree.roots = structure;
 
             let depth = Math.max(...nodes.map((node) => node.level));
 
@@ -806,8 +781,8 @@
                     hash: (node) => `box ${node.data.width} ${node.data.height} ${node.data.depth}`,
                 },
                 ball: {
-                    makeShape: (node) => new Ball(scene.gl, buffers, node.data.width, node.data.height, node.data.depth, node.data.sides, node.data.strips),
-                    hash: (node) => `ball ${node.data.width} ${node.data.height} ${node.data.depth} ${node.data.sides} ${node.data.strips}`,
+                    makeShape: (node) => new Ball(scene.gl, buffers, node.size, node.data.depth, node.data.height, node.data.sides, node.data.strips),
+                    hash: (node) => `ball ${node.data.size} ${node.data.height} ${node.data.depth} ${node.data.sides} ${node.data.strips}`,
                 },
                 cone: {
                     makeShape: (node) => new Frustrum(scene.gl, buffers, node.data.radius, 0, node.data.height, node.data.sides),
@@ -830,7 +805,7 @@
                     hash: (node) => `tetrahedron ${node.data.size}`,
                 },
                 link: {
-                    makeShape: (node) => new Link(scene.gl, buffers, namedNodes[node.data.from], namedNodes[node.data.to], node.data.points),
+                    makeShape: (node) => Link.make(scene.gl, buffers, node, namedNodes),
                     hash: (node) => `link ${node.data.from} ${node.data.to}`,
                 }
             };
@@ -850,13 +825,14 @@
             }
 
             const add = (node) => {
-                const type = node.data?.type ? node.data.type.toLowerCase() : null;
+                const type = node.data?.type ? node.data.type.toLowerCase() : 'ball';
                 if (type && types[type]) {
                     const hash = types[type].hash(node);
                     shapes[hash] = shapes[hash] || types[type].makeShape(node);
                     node.shape = shapes[hash];
                     scene.shapes.push(node.shape);
                 }
+                node.data.position = node.data.position || [0, 0, 0];
 
                 if (node.data.position && node.data.position.length === 3) {
                     node.data.position = node.data.position.map((v) => isNaN(v) ? 0 : v);
@@ -1213,7 +1189,7 @@
                 new Float32Array(data.vertex),
                 scene.gl.STATIC_DRAW);
 
-                scene.gl.bindBuffer(scene.gl.ELEMENT_ARRAY_BUFFER, scene.buffers.indices);
+            scene.gl.bindBuffer(scene.gl.ELEMENT_ARRAY_BUFFER, scene.buffers.indices);
 
             scene.gl.bufferData(scene.gl.ELEMENT_ARRAY_BUFFER,
                 new Uint16Array(data.indices),
@@ -1360,7 +1336,7 @@
         /**
          *
          */
-        class Box extends(shape) {
+        class Box extends (shape) {
             constructor(gl, data, w, h, d) {
                 super();
                 if (w === undefined) {
@@ -1512,7 +1488,7 @@
         /**
          *
          */
-        class Diamond extends(shape) {
+        class Diamond extends (shape) {
             constructor(gl, data, size = 1) {
                 super();
                 this.size = size;
@@ -1626,9 +1602,12 @@
         /**
          *
          */
-        class Ball extends(shape) {
-            constructor(gl, data, width = 2, depth = 2, height = 2, sides = 12, strips = 12) {
+        class Ball extends (shape) {
+            constructor(gl, data, width = 2, depth = 0, height = 0, sides = 12, strips = 12) {
                 super();
+                depth = depth || width
+                height = height || width
+
                 this.width = width / 2;
                 this.depth = depth / 2;
                 this.height = height / 2;
@@ -1689,7 +1668,7 @@
         /**
          *
          */
-        class Frustrum extends(shape) {
+        class Frustrum extends (shape) {
             constructor(gl, data, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
                 super();
                 height /= 2;
@@ -1799,7 +1778,7 @@
         /**
          *
          */
-        class Tetrahedron extends(shape) {
+        class Tetrahedron extends (shape) {
             constructor(gl, data, size = 1) {
                 super();
                 const start = data.vertex.length / 6;
@@ -1876,7 +1855,29 @@
          * Connection between two nodes
          */
         class Link {
-            constructor(gl, data, from, to, points=[]) {
+            static make(gl, buffers, node, namedNodes) {
+                const from = namedNodes[node.data.from];
+                const to = namedNodes[node.data.to];
+                const values = node.data.points;
+                // Ensure points list is valid
+                if (from && to) {
+                    if (Array.isArray(values)) {
+                        values.length = 3 * Math.floor(values.length / 3);
+                        const points = [];
+                        for (let i = 0; i < values.length; i += 3) {
+                            points.push([
+                                isNaN(values[i]) ? 0 : values[i],
+                                isNaN(values[i + 1]) ? 0 : values[i + 1],
+                                isNaN(values[i + 2]) ? 0 : values[i + 2],
+                            ]);
+                        }
+                        return new Link(gl, buffers, from, to, points);
+                    } else {
+                        return new Link(gl, buffers, from, to);
+                    }
+                }
+            }
+            constructor(gl, data, from, to, points = []) {
                 this.from = from;
                 this.to = to;
                 this.points = [from.transform.slice(12, 15), ...points, to.transform.slice(12, 15)];
@@ -1942,7 +1943,7 @@
          */
         function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1]) {
             const spin = identityMatrix();
-            const node = Object.assign(Object.create({update}), {
+            const node = Object.assign(Object.create({ update }), {
                 name, parent, transform, shape, shader, colour, children: [], spin, shininess: 1 + 5 * Math.random(),
             });
             if (parent) {
@@ -1987,7 +1988,9 @@
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
                 gl.uniformMatrix3fv(node.shader.normalMatrixLocation, false, normalMatrix);
                 node.shader.setNodeData(gl, node);
-                node.shape.draw3d(gl);
+                if (node.shape) {
+                    node.shape.draw3d(gl);
+                }
             }
             node.children.forEach((child) => drawNode2(gl, child, shader));
         }
@@ -2102,7 +2105,7 @@
         /**
          *
          */
-        const cameraMove = document.getElementById('move');
+        const rotationControl = document.getElementById('move');
 
         /**
          *
@@ -2116,6 +2119,24 @@
                 this.position = [...this.initial.position];
                 this.target = [...this.initial.target];
                 this.up = [...this.initial.up];
+            }
+            zAxis() {
+                return normalise(subtract(this.target, this.position));
+            }
+            xAxis() {
+                return xaxis = normalise(cross(this.zAxis(), this.up));
+            }
+            yAxis() {
+                const zAxis = normalise(subtract(this.target, this.position));
+                const xAxis = normalise(cross(zAxis, this.up));
+                return cross(xAxis, zAxis);
+            }
+            axes() {
+                const zAxis = normalise(subtract(this.target, this.position));
+                const xAxis = normalise(cross(zAxis, this.up));
+                const yAxis = cross(xAxis, zAxis);
+
+                return { xAxis, yAxis, zAxis };
             }
             viewMatrix(eye, at, up) {
                 const zaxis = normalise(subtract(this.target, this.position));
@@ -2185,7 +2206,7 @@
         /**
          *
          */
-        const camera = new Camera([0, 0, -20], [0, 0, 0], [0, 1, 0]);
+        const camera = new Camera([0, 0, 20], [0, 0, 0], [0, 1, 0]);
 
         /**
          * Management of a 2 view using a canvas
@@ -2788,7 +2809,7 @@
 
                     if (points) {
                         node.hit = points;
-                        node.hitPoint = getPoint({ point, direction }, points[0]);
+                        node.hitPoint = getPoint(ray, points[0]);
                         scene.points.push(getPoint(ray, points[0]), getPoint(ray, points[1]));
                         return true;
                     }
@@ -2828,23 +2849,47 @@
          * Move a node in screen space
          */
         function dragTo(node, x, y) {
+
+            // Get the movement plane
+            const normal = camera.zAxis();
+            const plane = { point: node.hitPoint, normal };
+
+            // Find the new location
             const ray = camera.getLine(x, y, 45);
+            const point = getPoint(ray, planeIntercept(ray, plane));
+
+
+            // Get the origin transform for this node
             const transform = node.parent ? node.parent.world : identityMatrix();
+            const inverse = invert(transform);
 
+            const worldOffset = subtract(point, node.hitPoint);
+            const offset = [
+                inverse[0] * worldOffset[0] + inverse[4] * worldOffset[1] + inverse[8] * worldOffset[2],
+                inverse[1] * worldOffset[0] + inverse[5] * worldOffset[1] + inverse[9] * worldOffset[2],
+                inverse[2] * worldOffset[0] + inverse[6] * worldOffset[1] + inverse[10] * worldOffset[2],
+            ];
+
+            const translate = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...offset, 1];
+            node.transform = matrixMultiply(node.transform, translate);
+            node.hitPoint = point;
+        }
+
+        /**
+         * Move a node in screen space
+         */
+        function rotateNode(node, x, y) {
             const inverse = invert(node.world);
-            const localRay = {
-                point: transformed(ray.point, inverse),
-                direction: transformDirection(ray.direction, inverse),
-            };
 
-            const normal = transformDirection(normalise(subtract(camera.target, camera.position)), inverse);
-            const newPoint = getPoint(localRay, planeIntercept(localRay, { point: node.hitPoint, normal }));
+            const zAxis = normalise(subtract(camera.target, camera.position));
+            const xAxis = normalise(cross(zAxis, camera.up));
+            const yAxis = normalise(cross(zAxis, xAxis));
 
-            const offset = subtract(newPoint, node.hitPoint);
+            const rotateX = getRotationMatrix(-y, transformDirection(xAxis, inverse));
+            const rotateY = getRotationMatrix(x, transformDirection(yAxis, inverse));
 
-            node.transform[12] += offset[0];
-            node.transform[13] += offset[1];
-            node.transform[14] += offset[2];
+            node.transform = matrixMultiply(rotateX, node.transform);
+            node.transform = matrixMultiply(rotateY, node.transform);
         }
 
         /**
@@ -2857,6 +2902,19 @@
                 event.preventDefault();
                 start.x = event.touches[0].clientX;
                 start.y = event.touches[0].clientY;
+
+                const box = node.getBoundingClientRect();
+
+                const x = 2 * ((start.x - box.left) / box.width) - 1;
+                const y = 2 * ((box.top - start.y) / box.height) + 1;
+
+                const hits = pickNodes(x, y);
+                if (hits.length > 0) {
+                    hits.sort((a, b) => a.hit[0] - b.hit[0]);
+                    start.hit = hits[0];
+                } else {
+                    start.hit = null;
+                }
                 action = 'click';
             });
 
@@ -2866,12 +2924,25 @@
                 const deltaX = event.touches[0].clientX - start.x;
                 const deltaY = event.touches[0].clientY - start.y;
 
-                if (event.altKey) {
-                    camera.yaw(deltaX / 10);
-                    camera.pitch(deltaY / 10);
+                if (start.hit) {
+                    if (rotationControl.checked) {
+                        rotateNode(start.hit, deltaX, deltaY);
+                    } else {
+                        const box = node.getBoundingClientRect();
+
+                        const x = 2 * ((event.touches[0].clientX - box.left) / box.width) - 1;
+                        const y = 2 * ((box.top - event.touches[0].clientY) / box.height) + 1;
+
+                        dragTo(start.hit, x, y);
+                    }
                 } else {
-                    camera.rotateY(deltaX);
-                    camera.rotateX(deltaY);
+                    if (event.altKey) {
+                        camera.yaw(deltaX / 10);
+                        camera.pitch(deltaY / 10);
+                    } else {
+                        camera.rotateY(deltaX);
+                        camera.rotateX(deltaY);
+                    }
                 }
 
                 start.x = event.touches[0].clientX;
@@ -2917,12 +2988,16 @@
                     const deltaY = event.clientY - start.y;
 
                     if (start.hit) {
-                        const box = node.getBoundingClientRect();
+                        if (rotationControl.checked || event.buttons & 4) {
+                            rotateNode(start.hit, deltaX, deltaY);
+                        } else {
+                            const box = node.getBoundingClientRect();
 
-                        const x = 2 * ((event.clientX - box.left) / box.width) - 1;
-                        const y = 2 * ((box.top - event.clientY) / box.height) + 1;
+                            const x = 2 * ((event.clientX - box.left) / box.width) - 1;
+                            const y = 2 * ((box.top - event.clientY) / box.height) + 1;
 
-                        dragTo(start.hit, x, y);
+                            dragTo(start.hit, x, y);
+                        }
                     } else {
                         if (event.altKey) {
                             camera.yaw(deltaX / 10);
@@ -3014,13 +3089,15 @@
                         content.append(showEntry(name, '...'));
                     } else {
                         stack.push(value[i]);
-                        //content.append(showEntry(name, value[i], stack));
+                        content.append(showEntry(`${i}`, value[i], stack));
                         stack.pop();
                     }
                 }
                 return container;
             } else if (value === undefined) {
                 return `${name}: undefined`;
+            } else if (value === null) {
+                return `${name}: null`;
             } else if (value && typeof (value) === 'object') {
                 const container = document.createElement('details');
                 const label = document.createElement('summary');
@@ -3029,12 +3106,12 @@
                 const content = document.createElement('div');
                 container.appendChild(content);
                 content.classList.add('entry-content')
-                Object.entries(value).forEach(([name, value]) => {
-                    if (stack.includes(value)) {
-                        content.append(showEntry(name, '...'));
+                Object.entries(value).forEach(([key, element]) => {
+                    if (stack.includes(element)) {
+                        content.append(showEntry(key, '...'));
                     } else {
-                        stack.push(value);
-                        //content.append(showEntry(name, value, stack));
+                        stack.push(element);
+                        content.append(showEntry(key, element, stack));
                         stack.pop();
                     }
                 });
@@ -3050,14 +3127,17 @@
          * Display the details for a deployed node.
          */
         function showDeployedNodeDetails(node) {
+            scene.nodes.forEach((node) => node.hit = null);
+            tree.nodes.forEach((node) =>
+                node.nodes.forEach((node) => node.classList.remove('selected')));
+            if (node.sceneNode) {
+                node.sceneNode.hit = true;
+            }
+            node.nodes.forEach((node) => node.classList.add('selected'));
             const detailNode = document.querySelector('.detail');
+            detailNode.innerHTML = '';
             Object.entries(node).map(([key, value]) =>
-                detailNode.append(showEntry(key, value)));
-            return;
-
-            const lines = Object.entries(node).map(([key, value]) =>
-                `${key}: ${value}`);
-            detailNode.innerHTML = lines.join('<br>');
+                detailNode.append(showEntry(key, value, [value])));
         }
 
         /**
@@ -3291,6 +3371,23 @@
             render();
         }
 
+        /**
+         * Return a matrix representing a rotation
+         */
+        function getRotationMatrix(angle, axis) {
+            angle *= Math.PI / 180;
+            axis = normalise(axis);
+
+            const a = Math.cos(angle / 2);
+            const b = Math.sin(angle / 2) * axis[0];
+            const c = Math.sin(angle / 2) * axis[1];
+            const d = Math.sin(angle / 2) * axis[2];
+
+            return [a * a + b * b - c * c - d * d, 2 * (b * c - a * d), 2 * (b * d + a * c), 0,
+            2 * (b * c + a * d), a * a - b * b + c * c - d * d, 2 * (c * d - a * b), 0,
+            2 * (b * d - a * c), 2 * (c * d + a * b), a * a - b * b - c * c + d * d, 0,
+                0, 0, 0, a * a + b * b + c * c + d * d];
+        }
 
         /**
          * Quaternion constructor
