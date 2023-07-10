@@ -763,6 +763,7 @@
             return container;
         }
 
+        const namedNodes = {};
         /**
          * Generate scene graph for the given structure
          */
@@ -772,8 +773,7 @@
                 indices: [],
             };
             scene.data = buffers;
-
-            const namedNodes = {};
+            let links = 0;
 
             const types = {
                 box: {
@@ -781,7 +781,7 @@
                     hash: (node) => `box ${node.data.width} ${node.data.height} ${node.data.depth}`,
                 },
                 ball: {
-                    makeShape: (node) => new Ball(scene.gl, buffers, node.size, node.data.depth, node.data.height, node.data.sides, node.data.strips),
+                    makeShape: (node) => new Ball(scene.gl, buffers, node.data.size, node.data.depth, node.data.height, node.data.sides, node.data.strips),
                     hash: (node) => `ball ${node.data.size} ${node.data.height} ${node.data.depth} ${node.data.sides} ${node.data.strips}`,
                 },
                 cone: {
@@ -806,7 +806,7 @@
                 },
                 link: {
                     makeShape: (node) => Link.make(scene.gl, buffers, node, namedNodes),
-                    hash: (node) => `link ${node.data.from} ${node.data.to}`,
+                    hash: (node) => `link ${++links}`,
                 }
             };
             scene.shapes = [];
@@ -1852,35 +1852,43 @@
         }
 
         /**
+         * Find the first node that matches the name or undefined if no match found
+         */
+        function findNode(name) {
+            return namedNodes[name];
+        }
+
+
+
+        /**
          * Connection between two nodes
          */
         class Link {
             static make(gl, buffers, node, namedNodes) {
-                const from = namedNodes[node.data.from];
-                const to = namedNodes[node.data.to];
+
+                const from = node.data.from;
+                const to = node.data.to;
                 const values = node.data.points;
                 // Ensure points list is valid
-                if (from && to) {
-                    if (Array.isArray(values)) {
-                        values.length = 3 * Math.floor(values.length / 3);
-                        const points = [];
-                        for (let i = 0; i < values.length; i += 3) {
-                            points.push([
-                                isNaN(values[i]) ? 0 : values[i],
-                                isNaN(values[i + 1]) ? 0 : values[i + 1],
-                                isNaN(values[i + 2]) ? 0 : values[i + 2],
-                            ]);
-                        }
-                        return new Link(gl, buffers, from, to, points);
-                    } else {
-                        return new Link(gl, buffers, from, to);
+                if (Array.isArray(values)) {
+                    values.length = 3 * Math.floor(values.length / 3);
+                    const points = [];
+                    for (let i = 0; i < values.length; i += 3) {
+                        points.push([
+                            isNaN(values[i]) ? 0 : values[i],
+                            isNaN(values[i + 1]) ? 0 : values[i + 1],
+                            isNaN(values[i + 2]) ? 0 : values[i + 2],
+                        ]);
                     }
+                    return new Link(gl, buffers, from, to, points);
+                } else {
+                    return new Link(gl, buffers, from, to);
                 }
             }
             constructor(gl, data, from, to, points = []) {
                 this.from = from;
                 this.to = to;
-                this.points = [from.transform.slice(12, 15), ...points, to.transform.slice(12, 15)];
+                this.points = [[0, 0, 0], ...points, [0, 0, 0]];
 
                 const start = data.vertex.length / 6;
                 const indexStart = data.indices.length;
@@ -1898,32 +1906,46 @@
             }
             intersects(line) {
             }
-            updateBuffers(scene) {
-                // Update points based on object positions
-                const from = transformed([0, 0, 0], this.from.world);
-                const to = transformed([0, 0, 0], this.to.world);
-                scene.data.vertex[this.pointIndex] = from[0];
-                scene.data.vertex[this.pointIndex + 1] = from[1];
-                scene.data.vertex[this.pointIndex + 2] = from[2];
+            updateBuffers(scene, node) {
+                this.fromNode = this.fromNode || findNode(this.from) || node.parent;
+                this.toNode = this.toNode || findNode(this.to) || node.parent;
+                let inverse = identityMatrix();
+                if (node.parent) {
+                    inverse = invert(node.parent.world);
+                }
 
-                scene.data.vertex[this.pointIndex2] = to[0];
-                scene.data.vertex[this.pointIndex2 + 1] = to[1];
-                scene.data.vertex[this.pointIndex2 + 2] = to[2];
+                if (this.fromNode?.world && this.toNode?.world) {
+                    // Update points based on object positions
+
+                    const from = this.fromNode === node.parent ?  [0,0,0] : transformed(transformed([0, 0, 0], this.fromNode.world), inverse);
+                    const to = this.toNode === node.parent ?  [0,0,0] : transformed(transformed([0, 0, 0], this.toNode.world), inverse);
+                    scene.data.vertex[this.pointIndex] = from[0];
+                    scene.data.vertex[this.pointIndex + 1] = from[1];
+                    scene.data.vertex[this.pointIndex + 2] = from[2];
+
+                    scene.data.vertex[this.pointIndex2] = to[0];
+                    scene.data.vertex[this.pointIndex2 + 1] = to[1];
+                    scene.data.vertex[this.pointIndex2 + 2] = to[2];
+                }
             }
             draw3d(gl) {
-                this.elements.forEach((shape) => {
-                    if (this.colour) {
-                        gl.uniform4fv(node.shader.colourLocation, shape.colour);
-                    }
-                    gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
-                });
+                if (this.fromNode && this.toNode) {
+                    this.elements.forEach((shape) => {
+                        if (this.colour) {
+                            gl.uniform4fv(node.shader.colourLocation, shape.colour);
+                        }
+                        gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
+                    });
+                }
             }
             draw2d(context, transform) {
-                const points2d = this.points.map((point) => transform4(point, transform));
+                if (this.fromNode && this.toNode) {
+                    const points2d = this.points.map((point) => transform4(point, transform));
 
-                context.beginPath();
-                points2d.forEach((point) => context.lineTo(point[0], point[1]));
-                context.stroke();
+                    context.beginPath();
+                    points2d.forEach((point) => context.lineTo(point[0], point[1]));
+                    context.stroke();
+                }
             }
         }
 
@@ -1933,7 +1955,7 @@
         function update(scene, origin, time) {
             this.world = matrixMultiply(this.transform, origin);
             if (this.shape) {
-                this.shape.updateBuffers(scene);
+                this.shape.updateBuffers(scene, this);
             }
             this.children.forEach((child) => child.update(scene, this.world, time));
         }
