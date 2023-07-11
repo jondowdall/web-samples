@@ -347,6 +347,7 @@
         function getStructure(definition) {
             const lines = definition.split(/\r?\n/);
             const patterns = {
+                pattern: /^\s*`(?<pattern>[^`]+)`(?<flags>[ig])?`(?<replacement>[^`]+)`\s*$/,
                 group: /^\s*\[(?<list>[^\]]+)\]\s*(?<name>\S.*)/,
                 template: /^\s*(?<content>\S.*)?\[(?<list>[^\]]+)\]\s*$/,
                 conditional: /^\s*\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/,
@@ -376,6 +377,7 @@
                 const conditionalNode = content.match(patterns.conditional);
                 const eventNode = content.match(patterns.event);
                 const continuation = content.match(patterns.continuation);
+                const patternNode = content.match(patterns.pattern);
 
                 if (continuation && stack.length) {
                     stack[0].content += '|' + continuation.groups.content;
@@ -422,6 +424,12 @@
                     }
                 }
                 if (stack.length && eventNode) {
+                }
+                if (patternNode) {
+                    node.patternNode = true;
+                    node.pattern = patternNode.groups.pattern;
+                    node.flags = patternNode.groups.flags;
+                    node.replacement = patternNode.groups.replacement;
                 }
 
                 if (stack.length) {
@@ -511,8 +519,6 @@
             }
         }
 
-
-
         /**
          * Generate an new structure from the defintion
          */
@@ -560,13 +566,27 @@
 
             const root = [];
 
+            const patternStack = [];
+
+
             const addNode = (source, parent, context = { resolved: true, parameters: {}, path: [], nesting: [] }) => {
                 context = Object.assign({}, context);
                 let node = { source, parts: [], content: source.content, data: {}, };
-                const controlNode = source.groupNode || source.conditionalNode || source.templateNode;
+                const controlNode = source.patternNode || source.groupNode || source.conditionalNode || source.templateNode;
                 const parts = [...source.parts];
 
+                if (source.patternNode) {
+                    try {
+                        patternStack.push({
+                            match: new RegExp(source.pattern, source.flags),
+                            replacement: source.replacement || '',
+                        });
+                    } catch (e) { }
+                }
+
                 if (!controlNode) {
+                    patternStack.forEach((pattern) =>
+                        node.content = node.content.replace(pattern.match, pattern.replacement));
                     node.content = node.content.replace(/<([^>]*)>/g, (match, label) => {
                         if (context.parameters[label]) {
                             return context.parameters[label];
@@ -646,6 +666,8 @@
                             context.parameters[`${source.name}_n`] = index;
                             parts.forEach((part) => addNode(part, parent, context));
                         });
+                    } else if (source.patternNode) {
+                        parts.forEach((part) => addNode(part, parent, context));
                     } else {
                         parts.forEach((part) => addNode(part, node, context));
                     }
@@ -662,6 +684,9 @@
                     } else {
                         root.push(node);
                     }
+                }
+                if (source.patternNode) {
+                    patternStack.pop();
                 }
             };
             structure.forEach((node) => addNode(node));
@@ -1917,8 +1942,8 @@
                 if (this.fromNode?.world && this.toNode?.world) {
                     // Update points based on object positions
 
-                    const from = this.fromNode === node.parent ?  [0,0,0] : transformed(transformed([0, 0, 0], this.fromNode.world), inverse);
-                    const to = this.toNode === node.parent ?  [0,0,0] : transformed(transformed([0, 0, 0], this.toNode.world), inverse);
+                    const from = this.fromNode === node.parent ? [0, 0, 0] : transformed(transformed([0, 0, 0], this.fromNode.world), inverse);
+                    const to = this.toNode === node.parent ? [0, 0, 0] : transformed(transformed([0, 0, 0], this.toNode.world), inverse);
                     scene.data.vertex[this.pointIndex] = from[0];
                     scene.data.vertex[this.pointIndex + 1] = from[1];
                     scene.data.vertex[this.pointIndex + 2] = from[2];
