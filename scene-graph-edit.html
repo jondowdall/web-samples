@@ -71,7 +71,8 @@
         }
 
         .light-position {
-            width: 30vw;
+            width: 100%;
+            grid-column: span 2;
         }
 
         .tree-view {
@@ -83,8 +84,8 @@
 
         .layout {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: min-content 2fr 2fr 1fr;
+            grid-template-columns: repeat(6, 1fr);
+            grid-template-rows: min-content min-content 2fr 2fr 1fr;
             width: 100%;
             height: 100%;
             grid-gap: 2px;
@@ -96,7 +97,7 @@
 
         #edit {
             position: relative;
-            grid-column: 1 / 2;
+            grid-column: 1 / 4;
             display: grid;
             grid-template-rows: max-content 1fr;
             grid-template-columns: 1fr 1fr;
@@ -112,7 +113,8 @@
         }
 
         #scene-container {
-            grid-column: 2;
+            grid-column: 4 / 7;
+            grid-row: 3;
             position: relative;
             overflow: hidden;
         }
@@ -123,7 +125,7 @@
         }
 
         #top-view-container {
-            grid-column: 1;
+            grid-column: 1 / 4;
             grid-row: 3;
             position: relative;
             overflow: hidden;
@@ -202,23 +204,39 @@
         .selected {
             background-color: yellow;
         }
+
+        .media-button {
+            padding: 0;
+            margin: 0;
+            background: none;
+            border: none;
+            font-size: 150%;
+        }
     </style>
 </head>
 
 <body>
     <div id="overlay"></div>
     <div class="layout">
-        <div id="controls">
+        <!--div id="controls">
             <input id="bases" class="number" type="range" min="1" max="20">
             <input id="components" class="number" type="range" min="0" max="100">
-            <span id="total"></span>
-            <input id="split" type="checkbox">
-            <input id="move" type="checkbox">
+            <span id="total"></span-->
             <input id="light-x" class="light-position" type="range" min="-100" max="100">
             <input id="light-y" class="light-position" type="range" min="-100" max="100">
             <input id="light-z" class="light-position" type="range" min="-100" max="100">
+            <input id="split" type="checkbox">
+            <input id="move" type="checkbox">
             <button id="reset">Reset</button>
+
+            <div>
+            <button id="start" class="media-button">&#x23ee;</button>
+            <button id="rewind" class="media-button">&#x23ea;</button>
+            <button id="play" class="media-button">&#x23ef;</button>
+            <button id="forward" class="media-button">&#x23e9;</button>
+            <button id="end" class="media-button">&#x23ed;</button>
         </div>
+        <!--/div-->
 
         <div id="transform" style="display:none;">
             <input class="a0" type="number" value="1">
@@ -347,7 +365,7 @@
         function getStructure(definition) {
             const lines = definition.split(/\r?\n/);
             const patterns = {
-                pattern: /^\s*`(?<pattern>[^`]+)`(?<flags>[ig])?`(?<replacement>[^`]+)`\s*$/,
+                pattern: /^\s*`(?<pattern>[^`]+)`(?<flags>[ig])?\s*=>\s*`(?<replacement>[^`]+)`\s*$/,
                 group: /^\s*\[(?<list>[^\]]+)\]\s*(?<name>\S.*)/,
                 template: /^\s*(?<content>\S.*)?\[(?<list>[^\]]+)\]\s*$/,
                 conditional: /^\s*\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/,
@@ -849,6 +867,22 @@
                 return parent?.sceneNode;
             }
 
+            function getEvents(node) {
+                const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<attribute>[^=]+)/
+                return Object.entries(node.data).map(([item, value]) => {
+                    const event = item.match(eventPattern);
+                    if (event) {
+                        return {
+                            node,
+                            trigger: numberOrString(event.groups.trigger),
+                            attribute: event.groups.attribute,
+                            value,
+                            duration: 1,
+                        };
+                    }
+                }).filter((i) => i);
+            }
+
             const add = (node) => {
                 const type = node.data?.type ? node.data.type.toLowerCase() : 'ball';
                 if (type && types[type]) {
@@ -859,7 +893,17 @@
                 }
                 node.data.position = node.data.position || [0, 0, 0];
 
-                if (node.data.position && node.data.position.length === 3) {
+                if (node.name === "Camera" && !node.data.type) {
+                    if (node.data.lookAt && node.data.lookAt.length === 3) {
+                        camera.target = node.data.lookAt;
+                    }
+                    if (node.data.position && node.data.position.length === 3) {
+                        camera.position = node.data.position;
+                    }
+                    if (node.data.up && node.data.up.length === 3) {
+                        camera.up = node.data.up;
+                    }
+                } else if (node.data.position && node.data.position.length === 3) {
                     node.data.position = node.data.position.map((v) => isNaN(v) ? 0 : v);
                     const shader = Math.random() > 0.5 ? scene.shader3 : scene.shader4;
                     const transform = [];
@@ -895,6 +939,8 @@
                     }
                     node.sceneNode.sourceNode = node;
                     scene.nodes.unshift(node.sceneNode);
+                    const events = getEvents(node);
+                    scene.events.push(...events);
                     stack.unshift(node);
                 }
 
@@ -908,6 +954,7 @@
             };
 
             structure.forEach((part) => add(part));
+            scene.events.sort((a, b) => (a.trigger - a.duration) - (b.trigger - b.duration));
 
             updateBuffers(scene.gl, scene.buffers, buffers);
             glErrors(scene.gl, context = 'Update Buffers');
@@ -937,6 +984,7 @@
             points: [],
             lines: [],
             overlays: [],
+            events: [],
         }
 
 
@@ -1877,6 +1925,67 @@
         }
 
         /**
+          *
+          */
+        class Prism extends (shape) {
+            constructor(gl, data, points = [[0, 0], [0, 1], [0, -1]], height = 1) {
+                super();
+                const start = data.vertex.length / 6;
+                const indexStart = data.indices.length;
+                this.height = height;
+                this.points = points;
+
+                const indices = [0, 1, 1, 2, 2, 0, 3, 0, 3, 1, 3, 2].map((i) => i + start);
+                data.indices.push(...indices);
+
+                this.elements = [
+                    addTriangles(gl, data.vertex, data.indices, points),
+                    { mode: gl.LINES, count: 12, offset: (12 + indexStart) * 2, colour: [1, 1, 1, 1] },
+                ];
+            }
+            get3dPoints() {
+                return [
+                    ...points.map((point) => [point[0], -this.height / 2, point[1]]),
+                    ...points.map((point) => [point[0], this.height / 2, point[1]]),
+                ];
+            }
+            getSides() {
+                const points = this.getPoints();
+                const nPoints = this.points.length;
+                const faces = this.points.map((point, i) => [
+                    points[i], points[(i + 1) % nPoints],
+                    points[nPoints + (i + 1) % nPoints], points[i + nPoints],
+                ]);
+            }
+            intersects(line) {
+                return;
+                return convexHullIntercept(line, planes);
+            }
+            draw2d(context, transform) {
+                const l = Math.cos(30 * Math.PI / 180);
+                const points = [
+                    [0, 1, 0],
+                    [0, -0.5, l,],
+                    [l * l, -0.5, -0.5 * l],
+                    [-l * l, -0.5, -0.5 * l],
+                ].map((p) => transformed(scaled(p, this.size), transform));
+
+                context.beginPath();
+                context.moveTo(points[0][0], points[0][1]);
+                context.lineTo(points[1][0], points[1][1]);
+                context.lineTo(points[2][0], points[2][1]);
+                context.lineTo(points[0][0], points[0][1]);
+                context.lineTo(points[3][0], points[3][1]);
+                context.lineTo(points[1][0], points[1][1]);
+
+                context.moveTo(points[3][0], points[3][1]);
+                context.lineTo(points[2][0], points[2][1]);
+                context.stroke();
+            }
+        }
+
+
+        /**
          * Find the first node that matches the name or undefined if no match found
          */
         function findNode(name) {
@@ -2199,6 +2308,11 @@
                     -dot(xaxis, this.position), -dot(yaxis, this.position), -dot(zaxis, this.position), 1
                 ];
             }
+            zoom(distance) {
+                const direction = subtract(this.target, this.position);
+                const movement = scaled(direction, distance);
+                this.position = add(this.position, movement);
+            }
             forward(distance) {
                 const zaxis = normalise(subtract(this.target, this.position));
                 const movement = scaled(zaxis, distance);
@@ -2338,6 +2452,18 @@
          */
         let topView;
         let sideView;
+        const cameraMove = {};
+
+        /**
+         * Start moving camera
+         */
+        function moveCamera(target, position, up, duration = 1) {
+            cameraMove.action = 'start';
+            cameraMove.target = target || camera.target;
+            cameraMove.position = position || camera.position;
+            cameraMove.up = up || camera.up;
+            cameraMove.duration = duration;
+        }
 
         /**
          *
@@ -2347,6 +2473,23 @@
                 return;
             }
 
+            const stateActions = {
+                start: () => {
+                    state.time = 0;
+                },
+                rewind: () => {},
+                play: () => {
+                    if (state.mode === 'playing'){
+                        state.rate = 1;
+                        state.mode = 'paused';
+                    } else {
+                        state.mode = 'playing';
+                    }
+                },
+                forward: () => {},
+                end: () => {},
+            }[state];
+
             if (last) {
                 const delta = time - last;
                 times.push(delta);
@@ -2355,8 +2498,34 @@
                     const total = times.reduce((sum, delta) => sum + delta);
                     const average = 5000 / total;
                 }
+                if (state.mode === 'playing') {
+                    state.time += delta / 1000;
+                    if (scene.events[state.nextEvent] && state.time > scene.events[state.nextEvent]) {
+                        state.nextEvent += 1;
+                    }
+                }
             }
             last = time;
+            if (cameraMove.action === 'start') {
+                cameraStart = {
+                    target: camera.target,
+                    position: camera.position,
+                    up: camera.up,
+                    time: time,
+                }
+                cameraMove.action = 'move';
+            }
+            if (cameraMove.action === 'move') {
+                const d = (time - cameraStart.time) / (1000 * (cameraMove.duration || 1));
+                const s = d * d * (3 - 2 * d);
+                camera.target = add(cameraStart.target, scale(subtract(cameraMove.target, cameraStart.target), s));
+                camera.position = add(cameraStart.position, scale(subtract(cameraMove.position, cameraStart.position), s));
+                camera.up = add(cameraStart.up, scale(subtract(cameraMove.up, cameraStart.up), s));
+                if (d > 1) {
+                    cameraMove.action = null;
+                }
+            }
+
 
             scene.modelViewMatrix = camera.viewMatrix();
 
@@ -2891,6 +3060,8 @@
                         scene.overlays.push(addOverlay(hits[0]));
                     }
                 }
+                const target = transformed([0, 0, 0], hits[0].world);
+                moveCamera(target);
             }
         }
 
@@ -2898,6 +3069,25 @@
          * Move a node in screen space
          */
         function dragTo(node, x, y) {
+
+            // Get the movement plane
+            const normal = camera.zAxis();
+            const plane = { point: node.hitPoint, normal };
+
+            // Find the new location
+            const ray = camera.getLine(x, y, 45);
+            const point = getPoint(ray, planeIntercept(ray, plane));
+
+            const worldOffset = subtract(point, node.hitPoint);
+
+            camera.target = subtract(camera.target, worldOffset);
+            camera.position = subtract(camera.position, worldOffset);
+        }
+
+        /**
+         * Move a node in screen space
+         */
+        function dragNodeTo(node, x, y) {
 
             // Get the movement plane
             const normal = camera.zAxis();
@@ -2925,8 +3115,8 @@
         }
 
         /**
-         * Move a node in screen space
-         */
+                 * Move a node in screen space
+                 */
         function rotateNode(node, x, y) {
             const inverse = invert(node.world);
 
@@ -3045,7 +3235,11 @@
                             const x = 2 * ((event.clientX - box.left) / box.width) - 1;
                             const y = 2 * ((box.top - event.clientY) / box.height) + 1;
 
-                            dragTo(start.hit, x, y);
+                            if (event.ctrlKey) {
+                                dragNodeTo(start.hit, x, y);
+                            } else {
+                                dragTo(start.hit, x, y);
+                            }
                         }
                     } else {
                         if (event.altKey) {
@@ -3075,9 +3269,16 @@
             });
 
             node.addEventListener('wheel', (event) => {
-                const dist = event.deltaY / 10;
-                camera.forward(dist);
+                const dist = event.deltaY / 1000;
+                camera.zoom(dist);
+                report (dist);
             });
+
+            document.getElementById('start', (event) => state.action = 'start');
+            document.getElementById('rewind', (event) => state.action = 'rewind');
+            document.getElementById('play', (event) => state.action = 'play');
+            document.getElementById('forward', (event) => state.action = 'forward');
+            document.getElementById('end', (event) => state.action = 'end');
         }
 
         /**
@@ -3193,6 +3394,7 @@
          *
          */
         let paused = false;
+        let state = {time: 0, rate: 1, mode: 'paused'};
 
         /**
          *
@@ -3313,13 +3515,11 @@
             scene.gl.clearColor(0.0, 0.0, 0.0, 1.0);
             // Clear the color buffer with specified clear color
             scene.gl.clear(scene.gl.COLOR_BUFFER_BIT);
-
+/*
             let bases = 1;
             let components = 3;
             const basesControl = document.getElementById('bases');
             const componentsControl = document.getElementById('components');
-            const totalControl = document.getElementById('total');
-            totalControl.innerHTML = bases * bases * (components + 1);
 
             basesControl.value = bases;
             componentsControl.value = components;
@@ -3334,7 +3534,7 @@
                 totalControl.innerHTML = bases * bases * (components + 1);
                 makeGraph(scene, bases, components);
             });
-
+*/
             const lightX = document.getElementById('light-x');
             const lightY = document.getElementById('light-y');
             const lightZ = document.getElementById('light-z');
@@ -3403,7 +3603,7 @@
                 vertex: scene.gl.createBuffer(),
                 indices: scene.gl.createBuffer(),
             }
-            makeGraph(scene, bases, components);
+            //makeGraph(scene, bases, components);
 
             const content = localStorage.getItem('structure');
             if (content) {
