@@ -867,17 +867,18 @@
                 return parent?.sceneNode;
             }
 
-            function getEvents(node) {
+            function getEvents(node, sceneNode) {
                 const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<attribute>[^=]+)/
                 return Object.entries(node.data).map(([item, value]) => {
                     const event = item.match(eventPattern);
                     if (event) {
+                        const duration = 1;
                         return {
-                            node,
-                            trigger: numberOrString(event.groups.trigger),
+                            node: sceneNode,
+                            startTime: numberOrString(event.groups.trigger) - duration,
+                            endTime: numberOrString(event.groups.trigger),
                             attribute: event.groups.attribute,
                             value,
-                            duration: 1,
                         };
                     }
                 }).filter((i) => i);
@@ -939,7 +940,7 @@
                     }
                     node.sceneNode.sourceNode = node;
                     scene.nodes.unshift(node.sceneNode);
-                    const events = getEvents(node);
+                    const events = getEvents(node, node.sceneNode);
                     scene.events.push(...events);
                     stack.unshift(node);
                 }
@@ -954,7 +955,7 @@
             };
 
             structure.forEach((part) => add(part));
-            scene.events.sort((a, b) => (a.trigger - a.duration) - (b.trigger - b.duration));
+            scene.events.sort((a, b) => (a.startTime) - (b.startTime));
 
             updateBuffers(scene.gl, scene.buffers, buffers);
             glErrors(scene.gl, context = 'Update Buffers');
@@ -985,6 +986,7 @@
             lines: [],
             overlays: [],
             events: [],
+            activeEvents: [],
         }
 
 
@@ -2468,12 +2470,26 @@
         /**
          *
          */
+         function processActiveEvents(time) {
+            report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
+            scene.activeEvents = scene.activeEvents.filter((event) => event.endTime > time);
+            scene.activeEvents.forEach((event) => {
+                const d = (time - event.startTime) / (event.endTime - event.startTime);
+                const p = d * d * (3 - 2 * d);
+                const movement = scale(subtract(event.value, event.initial), p);
+                node[event.attribute] = add(event.start, movement);
+            });
+         }
+
+            /**
+         *
+         */
         function render(time = 0) {
             if (paused) {
                 return;
             }
 
-            const stateActions = {
+            const stateAction = {
                 start: () => {
                     state.time = 0;
                 },
@@ -2488,7 +2504,13 @@
                 },
                 forward: () => {},
                 end: () => {},
-            }[state];
+            }[state.action];
+            if (stateAction) {
+                stateAction();
+            }
+
+            state.action = null;
+
 
             if (last) {
                 const delta = time - last;
@@ -2497,14 +2519,18 @@
                     times.shift();
                     const total = times.reduce((sum, delta) => sum + delta);
                     const average = 5000 / total;
-                }
+                }   
                 if (state.mode === 'playing') {
                     state.time += delta / 1000;
-                    if (scene.events[state.nextEvent] && state.time > scene.events[state.nextEvent]) {
-                        state.nextEvent += 1;
+                    while (scene.events[state.nextEvent] && state.time > scene.events[state.nextEvent].startTime) {
+                        const event = scene.events[state.nextEvent];
+                        event.initial = event.node[event.attribute];
+                        scene.activeEvents.push(event);
+                        ++state.nextEvent;
                     }
                 }
             }
+            processActiveEvents(state.time);
             last = time;
             if (cameraMove.action === 'start') {
                 cameraStart = {
@@ -3274,11 +3300,11 @@
                 report (dist);
             });
 
-            document.getElementById('start', (event) => state.action = 'start');
-            document.getElementById('rewind', (event) => state.action = 'rewind');
-            document.getElementById('play', (event) => state.action = 'play');
-            document.getElementById('forward', (event) => state.action = 'forward');
-            document.getElementById('end', (event) => state.action = 'end');
+            document.getElementById('start').addEventListener('click', (event) => state.action = 'start');
+            document.getElementById('rewind').addEventListener('click', (event) => state.action = 'rewind');
+            document.getElementById('play').addEventListener('click', (event) => state.action = 'play');
+            document.getElementById('forward').addEventListener('click', (event) => state.action = 'forward');
+            document.getElementById('end').addEventListener('click', (event) => state.action = 'end');
         }
 
         /**
@@ -3394,7 +3420,7 @@
          *
          */
         let paused = false;
-        let state = {time: 0, rate: 1, mode: 'paused'};
+        let state = {time: 0, rate: 1, mode: 'paused', nextEvent: 0};
 
         /**
          *
