@@ -222,14 +222,14 @@
             <input id="bases" class="number" type="range" min="1" max="20">
             <input id="components" class="number" type="range" min="0" max="100">
             <span id="total"></span-->
-            <input id="light-x" class="light-position" type="range" min="-100" max="100">
-            <input id="light-y" class="light-position" type="range" min="-100" max="100">
-            <input id="light-z" class="light-position" type="range" min="-100" max="100">
-            <input id="split" type="checkbox">
-            <input id="move" type="checkbox">
-            <button id="reset">Reset</button>
+        <input id="light-x" class="light-position" type="range" min="-100" max="100">
+        <input id="light-y" class="light-position" type="range" min="-100" max="100">
+        <input id="light-z" class="light-position" type="range" min="-100" max="100">
+        <input id="split" type="checkbox">
+        <input id="move" type="checkbox">
+        <button id="reset">Reset</button>
 
-            <div>
+        <div>
             <button id="start" class="media-button">&#x23ee;</button>
             <button id="rewind" class="media-button">&#x23ea;</button>
             <button id="play" class="media-button">&#x23ef;</button>
@@ -807,6 +807,159 @@
         }
 
         const namedNodes = {};
+
+        class Transition {
+            constructor(node) {
+                this.node = node.sceneNode;
+            }
+            start() {}
+            finish() {}
+        }
+
+        class Translate extends (Transition) {
+            constructor(node, value) {
+                super(node);
+                this.value = value;
+            }
+            progress(d) {
+                if (d < 0) {
+                    return;
+                }
+                if (d > 1) {
+                    this.node.movement = matrixMultiply(this.node.movement,
+                        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
+                }
+                const p = d * d * (3 - 2 * d);
+                const v = scaled(this.value, p);
+                this.node.movement = matrixMultiply(this.node.movement, [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    ...v, 1,
+                ]);
+            }
+            finish() {
+                this.node.transform = matrixMultiply(this.node.transform,
+                        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
+            }
+        }
+
+        class Rotate extends (Transition) {
+            constructor(node, value) {
+                super(node);
+                this.value = value;
+                if (this.value.length < 4) {
+                    const start = this.value.length;
+                    this.value.length = 4;
+                    this.value.fill(0, start);
+                }
+            }
+            progress(d) {
+                if (d < 0) {
+                    return;
+                }
+                if (d > 1) {
+                    this.node.movement = matrixMultiply(this.node.movement,
+                        getRotationMatrix(this.value[0], this.value.slice(1)));
+                }
+                const p = d * d * (3 - 2 * d);
+                const angle = this.value[0] * p;
+                this.node.movement = matrixMultiply(this.node.movement,
+                    getRotationMatrix(angle, this.value.slice(1)));
+            }
+            finish() {
+                this.node.transform = matrixMultiply(this.node.transform,
+                        getRotationMatrix(this.value[0], this.value.slice(1)));
+            }
+        }
+
+        class Scale extends (Transition) {
+            constructor(node, value) {
+                super(node);
+                if (Array.isArray(value)) {
+                    this.value = value;
+                } else {
+                    this.value = Array(3).fill(value);
+                }
+            }
+            progress(d) {
+                if (d < 0) {
+                    return;
+                }
+                if (d > 1) {
+                    this.node.movement = matrixMultiply(this.node.movement, [
+                        this.value[0], 0, 0, 0,
+                        0, this.value[1], 0, 0,
+                        0, 0, this.value[2], 0,
+                        0, 0, 0, 1,
+                    ]);
+                }
+                const p = d * d * (3 - 2 * d);
+                const s = scaled(this.value, p);
+                this.node.movement = matrixMultiply(this.node.movement, [
+                    s[0], 0, 0, 0,
+                    0, s[1], 0, 0,
+                    0, 0, s[2], 0,
+                    0, 0, 0, 1,
+                ]);
+            }
+            finish() {
+                this.node.transform = matrixMultiply(this.node.transform, [
+                        this.value[0], 0, 0, 0,
+                        0, this.value[1], 0, 0,
+                        0, 0, this.value[2], 0,
+                        0, 0, 0, 1,
+                    ]);
+            }
+        }
+
+        class ColourChange extends (Transition) {
+            constructor(node, value) {
+                super(node);
+                this.value = value;
+            }
+            start() {
+                this.intialColour = this.node.colour;
+            }
+            progress(d) {
+                if (d < 0) {
+                    return;
+                }
+                if (d > 1) {
+                    this.node.colour = value;
+                }
+                const p = d * d * (3 - 2 * d);
+                const v = this.value.forEach((v, i) =>
+                    this.intialColour[i] + (v - this.intialColour[i]) * p);
+                this.node.colour = v;
+            }
+        }
+
+        class Fade extends (Transition) {
+            constructor(node, value) {
+                super(node);
+                this.value = value;
+            }
+            start() {
+                this.initialAlpha = this.node.colour[3];
+            }
+            progress(d) {
+                if (d < 0) {
+                    return;
+                }
+                if (d > 1) {
+                    this.node.colour = value;
+                }
+                const p = d * d * (3 - 2 * d);
+                const f = this.intialAlpha + (v - this.intialAlpha) * p;
+                this.node.colour[3] = f;
+            }
+        }
+
+        const nodeTransitions = {
+            Translate, Rotate, Scale, ColourChange, Fade,
+        };
+
         /**
          * Generate scene graph for the given structure
          */
@@ -867,19 +1020,33 @@
                 return parent?.sceneNode;
             }
 
+
             function getEvents(node, sceneNode) {
-                const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<attribute>[^=]+)/
+                const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<transition>[^=]+)/
+                const triggerPattern = /^(?<time>[^\/]+)\/(?<duration>[^\/]+)/
                 return Object.entries(node.data).map(([item, value]) => {
                     const event = item.match(eventPattern);
                     if (event) {
-                        const duration = 1;
-                        return {
-                            node: sceneNode,
-                            startTime: numberOrString(event.groups.trigger) - duration,
-                            endTime: numberOrString(event.groups.trigger),
-                            attribute: event.groups.attribute,
-                            value,
-                        };
+                        const transition = nodeTransitions[event.groups.transition];
+                        const triggerWithDuration = event.groups.trigger.match(triggerPattern);
+                        let startTime;
+                        let endTime;
+                        if (triggerWithDuration) {
+                            endTime = numberOrString(triggerWithDuration.groups.time);
+                            const duration = numberOrString(triggerWithDuration.groups.duration);
+                            startTime = endTime - duration;
+                        } else {
+                            endTime = numberOrString(event.groups.trigger)
+                            startTime = endTime - 1;
+                        }
+                        if (transition) {
+                            return {
+                                node: sceneNode,
+                                startTime,
+                                endTime,
+                                transition: new transition(node, value),
+                            };
+                        }
                     }
                 }).filter((i) => i);
             }
@@ -2099,10 +2266,11 @@
         /**
          *
          */
-        function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1]) {
-            const spin = identityMatrix();
+        function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1], shininess) {
+            shininess = shininess || 1 + 5 * Math.random();
             const node = Object.assign(Object.create({ update }), {
-                name, parent, transform, shape, shader, colour, children: [], spin, shininess: 1 + 5 * Math.random(),
+                name, parent, transform, movement: identityMatrix(),
+                shape, shader, colour, shininess, children: [], 
             });
             if (parent) {
                 parent.children.push(node);
@@ -2114,7 +2282,7 @@
          *
          */
         function drawNode(gl, origin, node, time) {
-            node.world = matrixMultiply(node.transform, origin);
+            node.world = matrixMultiply(matrixMultiply(node.transform, node.movement), origin);
             const transform = matrixMultiply(node.world, scene.modelViewMatrix);
 
             gl.useProgram(node.shader.program);
@@ -2126,6 +2294,7 @@
                 node.shape.draw3d(gl);
             }
             node.children.forEach((child) => drawNode(gl, node.world, child, time));
+            node.movement = identityMatrix();
         }
 
         /**
@@ -2141,6 +2310,7 @@
          */
         function drawNode2(gl, node, shader, time) {
             if (node.shader === shader) {
+                node.world = matrixMultiply(matrixMultiply(node.transform, node.movement), origin);
                 const transform = matrixMultiply(node.world, scene.modelViewMatrix);
                 gl.uniformMatrix4fv(node.shader.modelViewMatrixLocation, false, transform);
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
@@ -2151,6 +2321,7 @@
                 }
             }
             node.children.forEach((child) => drawNode2(gl, child, shader));
+            node.movement = identityMatrix();
         }
 
         /**
@@ -2470,18 +2641,17 @@
         /**
          *
          */
-         function processActiveEvents(time) {
+        function processActiveEvents(time) {
             report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
+            scene.activeEvents.filter((event) => event.endTime <= time).forEach((event) => event.transition.finish());
             scene.activeEvents = scene.activeEvents.filter((event) => event.endTime > time);
             scene.activeEvents.forEach((event) => {
                 const d = (time - event.startTime) / (event.endTime - event.startTime);
-                const p = d * d * (3 - 2 * d);
-                const movement = scale(subtract(event.value, event.initial), p);
-                node[event.attribute] = add(event.start, movement);
+                event.transition.progress(d);
             });
-         }
+        }
 
-            /**
+        /**
          *
          */
         function render(time = 0) {
@@ -2492,25 +2662,25 @@
             const stateAction = {
                 start: () => {
                     state.time = 0;
+                    state.nextEvent = 0;
                 },
-                rewind: () => {},
+                rewind: () => { },
                 play: () => {
-                    if (state.mode === 'playing'){
+                    if (state.mode === 'playing') {
                         state.rate = 1;
                         state.mode = 'paused';
                     } else {
                         state.mode = 'playing';
                     }
                 },
-                forward: () => {},
-                end: () => {},
+                forward: () => { },
+                end: () => { },
             }[state.action];
             if (stateAction) {
                 stateAction();
             }
 
             state.action = null;
-
 
             if (last) {
                 const delta = time - last;
@@ -2519,12 +2689,11 @@
                     times.shift();
                     const total = times.reduce((sum, delta) => sum + delta);
                     const average = 5000 / total;
-                }   
+                }
                 if (state.mode === 'playing') {
                     state.time += delta / 1000;
                     while (scene.events[state.nextEvent] && state.time > scene.events[state.nextEvent].startTime) {
                         const event = scene.events[state.nextEvent];
-                        event.initial = event.node[event.attribute];
                         scene.activeEvents.push(event);
                         ++state.nextEvent;
                     }
@@ -2574,9 +2743,6 @@
             initialiseShader(scene.gl, scene.shader2, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader3, scene.buffers, projectionMatrix);
             initialiseShader(scene.gl, scene.shader4, scene.buffers, projectionMatrix);
-
-            scene.nodes.forEach((node) =>
-                node.transform = matrixMultiply(node.transform, node.spin));
 
             const split = document.getElementById('split');
             scene.gl.enable(scene.gl.BLEND)
@@ -3297,7 +3463,7 @@
             node.addEventListener('wheel', (event) => {
                 const dist = event.deltaY / 1000;
                 camera.zoom(dist);
-                report (dist);
+                report(dist);
             });
 
             document.getElementById('start').addEventListener('click', (event) => state.action = 'start');
@@ -3420,7 +3586,7 @@
          *
          */
         let paused = false;
-        let state = {time: 0, rate: 1, mode: 'paused', nextEvent: 0};
+        let state = { time: 0, rate: 1, mode: 'paused', nextEvent: 0 };
 
         /**
          *
@@ -3541,26 +3707,26 @@
             scene.gl.clearColor(0.0, 0.0, 0.0, 1.0);
             // Clear the color buffer with specified clear color
             scene.gl.clear(scene.gl.COLOR_BUFFER_BIT);
-/*
-            let bases = 1;
-            let components = 3;
-            const basesControl = document.getElementById('bases');
-            const componentsControl = document.getElementById('components');
-
-            basesControl.value = bases;
-            componentsControl.value = components;
-
-            basesControl.addEventListener('change', (event) => {
-                bases = basesControl.valueAsNumber;
-                totalControl.innerHTML = bases * bases * (components + 1);
-                makeGraph(scene, bases, components);
-            });
-            componentsControl.addEventListener('change', (event) => {
-                components = componentsControl.valueAsNumber;
-                totalControl.innerHTML = bases * bases * (components + 1);
-                makeGraph(scene, bases, components);
-            });
-*/
+            /*
+                        let bases = 1;
+                        let components = 3;
+                        const basesControl = document.getElementById('bases');
+                        const componentsControl = document.getElementById('components');
+            
+                        basesControl.value = bases;
+                        componentsControl.value = components;
+            
+                        basesControl.addEventListener('change', (event) => {
+                            bases = basesControl.valueAsNumber;
+                            totalControl.innerHTML = bases * bases * (components + 1);
+                            makeGraph(scene, bases, components);
+                        });
+                        componentsControl.addEventListener('change', (event) => {
+                            components = componentsControl.valueAsNumber;
+                            totalControl.innerHTML = bases * bases * (components + 1);
+                            makeGraph(scene, bases, components);
+                        });
+            */
             const lightX = document.getElementById('light-x');
             const lightY = document.getElementById('light-y');
             const lightZ = document.getElementById('light-z');
