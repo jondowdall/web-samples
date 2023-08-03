@@ -109,7 +109,7 @@
             height: 100%;
             overflow: auto;
             grid-column: 1 / -1;
-            white-space: nowrap;
+            /*white-space: nowrap;*/
         }
 
         #scene-container {
@@ -371,24 +371,79 @@
                 conditional: /^\s*\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/,
                 event: /^\s*\@(?<type>([^=]+)(=\s*(.+))?(;([^=]+)(=\s*(.+))?)*)/,
                 continuation: /^\s*\&(?<content>.+)/,
+                format: /^\s*\$(?<format>(<[^>]+>[^<]+)*(<[^>]+>))\s*$/,
+                id: /^\s*<id>(?<pattern>.+)/i,
+                idSeparator: /^\s*<separator>(?<separator>.+)/i,
             };
 
             const structure = [];
             const stack = [];
+            const names = {};
 
+            // The structure is determined by indentation, level, or 'path' style.
+            // When using indentation a tab is equivelent to 4 spaces. ToDo change
+            // Such that tab moves to next boundary rather than just adding 4
+            // spaces!
+            // Level is indicated by > at the start of a line followed by integer
+            // at start of line.
+            // Path is indicated by optional whitespace followed by a '.'
+            // separated path, including a leading and trailling '.'.
+
+            let idPattern;
+            let idSeparator = '/';
             for (const line of lines) {
                 if (/^\s*(#|$)/.test(line)) {
                     continue;
                 }
-                const content = line.trimStart();
-                const level = line.length - content.length;
+
+                // Get the leading whitespace
+                const indent = line.replace(/^(\s*)>(?<level>[0-9]+)/, (match, leading, level) =>
+                    `${leading}${Array(parseInt(level)).fill(' ').join('')}`).replace(/\S.*/, '');
+                const level = indent.split('').map((c, i) => c === '\t' ? 'xxxx'.slice(i % 4) : 'x').join('').length;
+
+                const content = line.replace(/^(\s*)>(?<level>[0-9]+)/, '').trimStart();
                 while (stack.length && stack[0].level >= level) {
                     stack.shift();
+                }
+
+                const separatorDefinition = line.match(patterns.idSeparator);
+                if (separatorDefinition) {
+                    idSeparator = separatorDefinition.groups.separator;
+                    continue;
+                }
+
+                const idDefinition = line.match(patterns.id);
+                if (idDefinition) {
+                    if (idDefinition.groups.pattern.includes('(?<id>')) {
+                        idPattern = new RegExp(idDefinition.groups.pattern);
+                    } else {
+                        try {
+                            idPattern = new RegExp(`(?<id>${idDefinition.groups.pattern})`);
+                        } catch (e) {
+                            console.log(e);
+                        }
+                    }
+                    continue;
                 }
 
                 const node = {
                     content, parent: stack[0], level, parts: [],
                 };
+
+                if (idPattern) {
+                    const namePattern = line.match(idPattern);
+                    if (namePattern) {
+                        const id = namePattern.groups.id;
+                        const path = id.split(idSeparator);
+                        const name = path.pop();
+                        const parentName = path.join(idSeparator);
+                        if (names[parentName]) {
+                            node.parent = names[parentName];
+                            //report(parentName);
+                        }
+                        names[namePattern.groups.id] = node;
+                    }
+                }
 
                 const groupNode = content.match(patterns.group);
                 const templateNode = content.match(patterns.template);
@@ -396,6 +451,7 @@
                 const eventNode = content.match(patterns.event);
                 const continuation = content.match(patterns.continuation);
                 const patternNode = content.match(patterns.pattern);
+                const formatNode = content.match(patterns.format);
 
                 if (continuation && stack.length) {
                     stack[0].content += '|' + continuation.groups.content;
@@ -450,14 +506,22 @@
                     node.replacement = patternNode.groups.replacement;
                 }
 
-                if (stack.length) {
-                    if (!continuation) {
-                        stack[0].parts.push(node);
-                    }
-                } else {
-                    structure.push(node);
+                if (formatNode) {
+                    node.formatNode = true;
+                    // Construct a test for a match to the format.
+                    const parts = formatNode.groups.format.split(/[<>]/).slice(1);
+                    const pattern = parts.map((item, index) => index % 2 ? item : `(?<${item}>.*)`).join('');
+                    node.pattern = new RegExp(pattern);
                 }
-                stack.unshift(node);
+
+                if (!continuation) {
+                    if (node.parent) {
+                        node.parent.parts.push(node);
+                    } else {
+                        structure.push(node);
+                    }
+                    stack.unshift(node);
+                }
             }
             return structure;
         }
@@ -508,6 +572,17 @@
                 return input.trim();
             }
             return num;
+        }
+
+        /**
+         * Convert a string to a value or list of values
+         */
+        function getValue(str) {
+            const list = str.split(/\s*,\s*/);
+            if (list.length > 1) {
+                return list.map((i) => numberOrString(i));
+            }
+            return numberOrString(str);
         }
 
         /**
@@ -586,11 +661,11 @@
 
             const patternStack = [];
 
-
+            const formatStack = [];
             const addNode = (source, parent, context = { resolved: true, parameters: {}, path: [], nesting: [] }) => {
                 context = Object.assign({}, context);
                 let node = { source, parts: [], content: source.content, data: {}, };
-                const controlNode = source.patternNode || source.groupNode || source.conditionalNode || source.templateNode;
+                const controlNode = source.patternNode || source.groupNode || source.conditionalNode || source.templateNode || source.formatNode;
                 const parts = [...source.parts];
 
                 if (source.patternNode) {
@@ -599,7 +674,13 @@
                             match: new RegExp(source.pattern, source.flags),
                             replacement: source.replacement || '',
                         });
-                    } catch (e) { }
+                    } catch (e) {
+                        console.log(e);
+                    }
+                }
+
+                if (source.formatNode) {
+                    formatStack.unshift(source);
                 }
 
                 if (!controlNode) {
@@ -637,6 +718,17 @@
                 }
 
                 parser(node, context);
+                if (formatStack.length) {
+                    const match = node.content.match(formatStack[0].pattern);
+                    if (match) {
+                        const data = Object.entries(match.groups).reduce((obj, [name, value]) => {
+                            obj[name] = getValue(value);
+                            return obj;
+                        }, {});
+                        node.data = Object.assign(data, node.data);
+                    }
+                }
+
 
                 if (!controlNode) {
                     const path = context.path.map((node) => node.name);
@@ -684,7 +776,7 @@
                             context.parameters[`${source.name}_n`] = index;
                             parts.forEach((part) => addNode(part, parent, context));
                         });
-                    } else if (source.patternNode) {
+                    } else if (source.patternNode || source.formatNode) {
                         parts.forEach((part) => addNode(part, parent, context));
                     } else {
                         parts.forEach((part) => addNode(part, node, context));
@@ -706,6 +798,10 @@
                 if (source.patternNode) {
                     patternStack.pop();
                 }
+                if (source.formatNode) {
+                    formatStack.shift();
+                }
+
             };
             structure.forEach((node) => addNode(node));
 
@@ -812,8 +908,8 @@
             constructor(node) {
                 this.node = node.sceneNode;
             }
-            start() {}
-            finish() {}
+            start() { }
+            finish() { }
         }
 
         class Translate extends (Transition) {
@@ -840,7 +936,7 @@
             }
             finish() {
                 this.node.transform = matrixMultiply(this.node.transform,
-                        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
+                    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
             }
         }
 
@@ -869,7 +965,7 @@
             }
             finish() {
                 this.node.transform = matrixMultiply(this.node.transform,
-                        getRotationMatrix(this.value[0], this.value.slice(1)));
+                    getRotationMatrix(this.value[0], this.value.slice(1)));
             }
         }
 
@@ -905,11 +1001,11 @@
             }
             finish() {
                 this.node.transform = matrixMultiply(this.node.transform, [
-                        this.value[0], 0, 0, 0,
-                        0, this.value[1], 0, 0,
-                        0, 0, this.value[2], 0,
-                        0, 0, 0, 1,
-                    ]);
+                    this.value[0], 0, 0, 0,
+                    0, this.value[1], 0, 0,
+                    0, 0, this.value[2], 0,
+                    0, 0, 0, 1,
+                ]);
             }
         }
 
@@ -971,9 +1067,9 @@
             scene.data = buffers;
             let links = 0;
 
-            const types = {
+            const types_OLD = {
                 box: {
-                    makeShape: (node) => new Box(scene.gl, buffers, node.data.width, node.data.height, node.data.depth),
+                    makeShape: (node) => Box.make(scene.gl, buffers, node),
                     hash: (node) => `box ${node.data.width} ${node.data.height} ${node.data.depth}`,
                 },
                 ball: {
@@ -1005,6 +1101,9 @@
                     hash: (node) => `link ${++links}`,
                 }
             };
+            const types = {
+                Box, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Prism, Link,
+            }
             scene.shapes = [];
             const shapes = {};
 
@@ -1019,7 +1118,6 @@
                 }
                 return parent?.sceneNode;
             }
-
 
             function getEvents(node, sceneNode) {
                 const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<transition>[^=]+)/
@@ -1052,10 +1150,13 @@
             }
 
             const add = (node) => {
-                const type = node.data?.type ? node.data.type.toLowerCase() : 'ball';
-                if (type && types[type]) {
-                    const hash = types[type].hash(node);
-                    shapes[hash] = shapes[hash] || types[type].makeShape(node);
+                const shapeName = node.data?.shape ? node.data.shape.toLowerCase() : 'Ball';
+                const typeName = shapeName.slice(0, 1).toUpperCase() + shapeName.slice(1).toLowerCase();
+                report(typeName);
+
+                if (typeName && types[typeName]) {
+                    const hash = types[typeName].hash(node);
+                    shapes[hash] = shapes[hash] || types[typeName].make(scene.gl, buffers, node, namedNodes);
                     node.shape = shapes[hash];
                     scene.shapes.push(node.shape);
                 }
@@ -1073,7 +1174,7 @@
                     }
                 } else if (node.data.position && node.data.position.length === 3) {
                     node.data.position = node.data.position.map((v) => isNaN(v) ? 0 : v);
-                    const shader = Math.random() > 0.5 ? scene.shader3 : scene.shader4;
+                    const shader = Math.random() > 1 ? scene.shader3 : scene.shader4;
                     const transform = [];
                     if (node.data.rotation && node.data.rotation.length === 4) {
                         node.data.rotation = node.data.rotation.map((v) => isNaN(v) ? 0 : v);
@@ -1096,11 +1197,19 @@
                             ...node.data.position, 1);
                     }
                     const parent = getParent(node);
-                    const colour = [1, 0.9, 0.5, 1];
-                    if (Array.isArray(node.data.colour)) {
-                        node.data.colour.forEach((val, index) => colour[index] = val);
+                    let colour = node.data.colour;//[1, 0.9, 0.5, 1];
+                    let ancestor = parent;
+                    while (ancestor && !colour) {
+                        colour = ancestor.colour;
+                        ancestor = ancestor.parent;
                     }
-                    node.sceneNode = addNode(node.name, parent, transform, node.shape, shader, colour);
+
+                    if (Array.isArray(colour)) {
+                        colour = [1, 0.9, 0.5, 1].map((v, i) => colour[i] != undefined ? colour[i] : v);
+                    } else {
+                        colour = [1, 0.9, 0.5, 1];
+                    }
+                    node.sceneNode = addNode(node.name, parent, transform, node.shape, shader, colour, node.data.specular || 4);
                     namedNodes[node.name] = node.sceneNode;
                     if (!parent) {
                         scene.graph.push(node.sceneNode);
@@ -1579,6 +1688,16 @@
          *
          */
         class Box extends (shape) {
+            static make(gl, data, node) {
+                const size = node.data.size || [1, 1, 1];
+                const width = node.data.width || size[0] || 1;
+                const height = node.data.height || size[1] || size[0] || 1;
+                const depth = node.data.depth || size[2] || size[0] || 1;
+                return new Box(gl, data, width, height, depth);
+            }
+            static hash(node) {
+                return `box ${node.data.width} ${node.data.height} ${node.data.depth}`;
+            }
             constructor(gl, data, w, h, d) {
                 super();
                 if (w === undefined) {
@@ -1731,6 +1850,12 @@
          *
          */
         class Diamond extends (shape) {
+            static make(gl, data, node) {
+                return new Diamond(scene.gl, data, node.data.size);
+            }
+            static hash(node) {
+                return `diamond ${node.data.size}`;
+            }
             constructor(gl, data, size = 1) {
                 super();
                 this.size = size;
@@ -1845,6 +1970,12 @@
          *
          */
         class Ball extends (shape) {
+            static make(gl, data, node) {
+                return new Ball(scene.gl, data, node.data.size, node.data.depth, node.data.height, node.data.sides, node.data.strips);
+            }
+            static hash(node) {
+                return `ball ${node.data.size} ${node.data.height} ${node.data.depth} ${node.data.sides} ${node.data.strips}`;
+            }
             constructor(gl, data, width = 2, depth = 0, height = 0, sides = 12, strips = 12) {
                 super();
                 depth = depth || width
@@ -1911,6 +2042,12 @@
          *
          */
         class Frustrum extends (shape) {
+            static make(gl, data, node) {
+                return new Frustrum(scene.gl, data, node.data.radius, 0, node.data.height, node.data.sides);
+            }
+            static hash(node) {
+                return `frustrum ${node.data.baseRadius} ${node.data.topRadius} ${node.data.height} ${node.data.sides}`;
+            }
             constructor(gl, data, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
                 super();
                 height /= 2;
@@ -2010,6 +2147,12 @@
          *
          */
         class Cylinder extends (Frustrum) {
+            static make(gl, data, node) {
+                return new Cylinder(scene.gl, data, node.data.radius, node.data.height, node.data.sides);
+            }
+            static hash(node) {
+                return `cylinder ${node.data.radius} ${node.data.height} ${node.data.sides}`;
+            }
             constructor(gl, data, radius = 1, height = 2, sides = 12) {
                 super(gl, data, radius, radius, height, sides);
             }
@@ -2020,7 +2163,30 @@
         /**
          *
          */
+        class Cone extends (Frustrum) {
+            static make(gl, data, node) {
+                return new Cone(scene.gl, data, node.data.radius, node.data.height, node.data.sides);
+            }
+            static hash(node) {
+                return `cone ${node.data.radius} ${node.data.height} ${node.data.sides}`;
+            }
+            constructor(gl, data, radius = 1, height = 2, sides = 12) {
+                super(gl, data, radius, 0, height, sides);
+            }
+            draw2d(context, transform) {
+            }
+        }
+
+        /**
+         *
+         */
         class Tetrahedron extends (shape) {
+            static make(gl, data, node) {
+                return new Tetrahedron(scene.gl, data, node.data.size);
+            }
+            static hash(node) {
+                return `tetrahedron ${node.data.size}`;
+            }
             constructor(gl, data, size = 1) {
                 super();
                 const start = data.vertex.length / 6;
@@ -2097,6 +2263,12 @@
           *
           */
         class Prism extends (shape) {
+            static make(gl, data, node) {
+                return new Prism(gl, data, node.date.points, node.data.height);
+            }
+            static hash(node) {
+                return `Prism ${node.data.points.join(',')} ${node.data.height}`;
+            }
             constructor(gl, data, points = [[0, 0], [0, 1], [0, -1]], height = 1) {
                 super();
                 const start = data.vertex.length / 6;
@@ -2168,7 +2340,6 @@
          */
         class Link {
             static make(gl, buffers, node, namedNodes) {
-
                 const from = node.data.from;
                 const to = node.data.to;
                 const values = node.data.points;
@@ -2187,6 +2358,9 @@
                 } else {
                     return new Link(gl, buffers, from, to);
                 }
+            }
+            static hash(node) {
+                return `link ${++links}`;
             }
             constructor(gl, data, from, to, points = []) {
                 this.from = from;
@@ -2267,10 +2441,12 @@
          *
          */
         function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1], shininess) {
+
             shininess = shininess || 1 + 5 * Math.random();
+
             const node = Object.assign(Object.create({ update }), {
                 name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, children: [], 
+                shape, shader, colour, shininess, children: [],
             });
             if (parent) {
                 parent.children.push(node);
@@ -2642,7 +2818,7 @@
          *
          */
         function processActiveEvents(time) {
-            report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
+            //report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
             scene.activeEvents.filter((event) => event.endTime <= time).forEach((event) => event.transition.finish());
             scene.activeEvents = scene.activeEvents.filter((event) => event.endTime > time);
             scene.activeEvents.forEach((event) => {
@@ -3332,48 +3508,70 @@
             let action;
             node.addEventListener('touchstart', (event) => {
                 event.preventDefault();
+
                 start.x = event.touches[0].clientX;
                 start.y = event.touches[0].clientY;
 
-                const box = node.getBoundingClientRect();
+                if (event.touches.length === 1) {
+                    const box = node.getBoundingClientRect();
 
-                const x = 2 * ((start.x - box.left) / box.width) - 1;
-                const y = 2 * ((box.top - start.y) / box.height) + 1;
+                    const x = 2 * ((start.x - box.left) / box.width) - 1;
+                    const y = 2 * ((box.top - start.y) / box.height) + 1;
 
-                const hits = pickNodes(x, y);
-                if (hits.length > 0) {
-                    hits.sort((a, b) => a.hit[0] - b.hit[0]);
-                    start.hit = hits[0];
-                } else {
-                    start.hit = null;
+                    const hits = pickNodes(x, y);
+                    if (hits.length > 0) {
+                        hits.sort((a, b) => a.hit[0] - b.hit[0]);
+                        start.hit = hits[0];
+                    } else {
+                        start.hit = null;
+                    }
+                    action = 'click';
+                } else if (event.touches.length === 2) {
+                    start.second = {
+                        x: event.touches[1].clientX,
+                        y: event.touches[1].clientY,
+                    };
+                    action = 'pinch';
                 }
-                action = 'click';
+                report(action);
             });
 
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
-                action = 'drag';
-                const deltaX = event.touches[0].clientX - start.x;
-                const deltaY = event.touches[0].clientY - start.y;
+                if (action === 'pinch') {
+                    const initial = Math.hypot(start.x - start.second.x, start.y - start.second.y);
+                    const current = Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
 
-                if (start.hit) {
-                    if (rotationControl.checked) {
-                        rotateNode(start.hit, deltaX, deltaY);
+                    const offset = subtract(camera.position, camera.target);
+                    const scale = current / initial;
+                    camera.position = add(camera.target, scaled(offset, scale));
+
+                    start.second.x = event.touches[1].clientX;
+                    start.second.y = event.touches[1].clientY;
+                } else if (action) {
+                    action = 'drag';
+                    const deltaX = event.touches[0].clientX - start.x;
+                    const deltaY = event.touches[0].clientY - start.y;
+
+                    if (start.hit) {
+                        if (rotationControl.checked) {
+                            rotateNode(start.hit, deltaX, deltaY);
+                        } else {
+                            const box = node.getBoundingClientRect();
+
+                            const x = 2 * ((event.touches[0].clientX - box.left) / box.width) - 1;
+                            const y = 2 * ((box.top - event.touches[0].clientY) / box.height) + 1;
+
+                            dragTo(start.hit, x, y);
+                        }
                     } else {
-                        const box = node.getBoundingClientRect();
-
-                        const x = 2 * ((event.touches[0].clientX - box.left) / box.width) - 1;
-                        const y = 2 * ((box.top - event.touches[0].clientY) / box.height) + 1;
-
-                        dragTo(start.hit, x, y);
-                    }
-                } else {
-                    if (event.altKey) {
-                        camera.yaw(deltaX / 10);
-                        camera.pitch(deltaY / 10);
-                    } else {
-                        camera.rotateY(deltaX);
-                        camera.rotateX(deltaY);
+                        if (event.altKey) {
+                            camera.yaw(deltaX / 10);
+                            camera.pitch(deltaY / 10);
+                        } else {
+                            camera.rotateY(deltaX);
+                            camera.rotateX(deltaY);
+                        }
                     }
                 }
 
@@ -3389,6 +3587,8 @@
                     const x = 2 * ((start.x - box.left) / box.width) - 1;
                     const y = 2 * ((box.top - start.y) / box.height) + 1;
                     click(x, y);
+                } else if (action === 'pinch') {
+                    action = null;
                 }
             });
 
