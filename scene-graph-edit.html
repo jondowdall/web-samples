@@ -25,7 +25,9 @@
             margin: 0;
             width: 100vw;
             height: 100vh;
+            padding: 0.25rem;
             overflow: hidden;
+            background-color: lightslategray;
         }
 
         #overlay {
@@ -84,10 +86,11 @@
         .layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            grid-template-rows: min-content min-content 2fr 2fr 1fr;
+            grid-template-rows: min-content 2fr 2fr 1fr;
             width: 100%;
             height: 100%;
             grid-gap: 2px;
+            background-color: lightslategray;
         }
 
         #controls {
@@ -96,6 +99,10 @@
 
         .controls {
             grid-column: 1 / -1;
+        }
+
+        .right {
+            float: right;
         }
 
         #playback-contols {
@@ -110,12 +117,26 @@
             grid-template-columns: 1fr 1fr 1fr 1fr;
         }
 
+        .editor {
+            display: flex;
+            grid-column: 1 / -1;
+        }
+
+        .line-numbers {
+            text-align: end;
+            background: lightgray;
+            resize: none;
+            overflow: hidden;
+        }
+
         #input {
-            font-size: 100%;
+            /*font-size: 100%;*/
             width: 100%;
             height: 100%;
             overflow: auto;
             grid-column: 1 / -1;
+            flex-grow: 1;
+            resize: none;
             /*white-space: nowrap;*/
         }
 
@@ -238,6 +259,16 @@
     <div id="overlay"></div>
     <div class="layout">
         <div class="controls">
+            <select id="layout-selection">
+                <option value="0">Grid</option>
+                <Option value="1">Source</Option>
+                <Option value="2">Tree</Option>
+                <Option value="3">3d</Option>
+                <Option value="4">Top</Option>
+                <Option value="5">Details</Option>
+                <Option value="6">Shader</Option>
+            </select>
+            <button id="fullscreen">fullscreen</button>
             <button id="start" class="media-button">&#x23ee;</button>
             <button id="rewind" class="media-button">&#x23ea;</button>
             <button id="play" class="media-button">&#x23ef;</button>
@@ -247,7 +278,6 @@
             <label for="split">Split</label><input id="split" type="checkbox">
             <label for="move">Move</label><input id="move" type="checkbox">
             <button id="reset">Reset</button>
-
         </div>
 
         <div id="transform" style="display:none;">
@@ -276,11 +306,20 @@
             <button id="uncomment">Uncomment</button>
             <button id="indent">&rarr;</button>
             <button id="outdent">&larr;</button>
-            <textarea id="input" rows="20" cols="50">
+            <div class="editor">
+                <textarea class="line-numbers"></textarea>
+                <textarea id="input" rows="20" cols="50" wrap="off">
 box;shape=box;width=2;height=1;depth=1;
 box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             </textarea>
+            </div>
         </div>
+        <template id="editor-template">
+            <div class="editor">
+                <textarea class="line-numbers"></textarea>
+                <textarea class="main" rows="20" cols="50" wrap="off"></textarea>
+            </div>
+        </template>
         <div id="scene-container">
             <div id="light-direction" class="vector-sliders">
                 <input id="light-x" class="light-position" type="range" min="-100" max="100">
@@ -351,6 +390,41 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         /**
+         * Editor component
+         */
+        class Editor {
+            constructor(parent) {
+                const template = document.getElementById('editor-template');
+                this.container = template.content.firstElementChild.cloneNode(true);
+                this.lineNumbers = this.container.querySelector('.line-numbers');
+                this.main = this.container.querySelector('.editor');
+
+                this.main.addEventListener('scroll', (event) =>
+                    this.lineNumbers.scrollTop = input.scrollTop);
+
+                this.main.addEventListener('input', (event) => this.updateLineNumbers());
+
+                if (parent) {
+                    parent.appendChild(this.container);
+                }
+            }
+            updateLineNumbers() {
+                const count = this.main.value.split(/\n/g).length;
+                this.lineNumbers.value = '';
+                const numbers = Array(count).fill(0).map((e, i) => i + 1);
+                this.lineNumbers.value = numbers.join('\r\n');
+                this.lineNumbers.cols = 1 + (count + '').length;
+            }
+            get value() {
+                return this.main.value;
+            }
+            set value(text) {
+                this.main.value = text;
+                this.updateLineNumbers();
+            }
+        }
+
+        /**
          * Extract group data from match data.
          */
         function setGroupData(node, match) {
@@ -402,9 +476,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             const names = {};
 
             // The structure is determined by indentation, level, or 'path' style.
-            // When using indentation a tab is equivelent to 4 spaces. ToDo change
-            // Such that tab moves to next boundary rather than just adding 4
-            // spaces!
+            // When using indentation a tab is equivelent to 4 spaces.
             // Level is indicated by > at the start of a line followed by integer
             // at start of line.
             // Path is indicated by optional whitespace followed by a '.'
@@ -412,7 +484,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
 
             let idPattern;
             let idSeparator = '/';
+            let lineNumber = 0;
             for (const line of lines) {
+                ++lineNumber;
                 if (/^\s*(#|$)/.test(line)) {
                     continue;
                 }
@@ -448,7 +522,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 }
 
                 const node = {
-                    content, parent: stack[0], level, parts: [],
+                    content, parent: stack[0], level, parts: [], lineNumber,
                 };
 
                 if (idPattern) {
@@ -487,7 +561,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     setGroupData(node, templateNode);
                     node.content = templateNode.groups.content;
                     node.templateNode = true;
-                    document.body.style.background = 'lightblue';
+                    //document.body.style.background = 'lightblue';
                 }
                 if (conditionalNode) {
                     node.conditionalNode = true;
@@ -611,7 +685,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          */
         function defaultParser(node, context) {
             if (node.content) {
-                const [name, ...data] = node.content.split(/\||\t|;/g);
+                const [name, ...data] = node.content.split(/[\|\t;]/g);
                 node.name = name.trim();
                 node.values = [];
                 node.data = data.reduce((data, item) => {
@@ -626,7 +700,13 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                             data[name] = numberOrString(value);
                         }
                     } else {
-                        node.values.push(numberOrString(item));
+                        if (/^"[^"]+"$/.test(item)) {
+                            node.values.push(item);
+                        } else if (item.includes(',')) {
+                            node.values.push(item.split(/,/g).map((val) => numberOrString(val)));
+                        } else {
+                            node.values.push(numberOrString(item));
+                        }
                     }
                     return data;
                 }, {});
@@ -777,6 +857,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     if (context.parameters[''] !== undefined) {
                         context.nesting.unshift([context.parameters[''], context.parameters['_n']])
                     }
+                    node.lineNumber = source.lineNumber;
                     source.group.forEach((item, index) => {
                         context.parameters[''] = item;
                         context.parameters[`_n`] = index;
@@ -1090,7 +1171,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             let links = 0;
 
             const types = {
-                Box, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Prism, Link,
+                Box, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Torus, Prism, Link,
             }
             scene.shapes = [];
             const shapes = {};
@@ -1138,17 +1219,32 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             }
 
             const add = (node) => {
-                const shapeName = node.data?.shape ? node.data.shape.toLowerCase() : 'Ball';
+                let index = 0;
+                let positionalName = null;
+                if (node.values[index]) {
+                    positionalName = node.values[index].slice(0, 1).toUpperCase() + node.values[index].slice(1).toLowerCase();
+                    if (positionalName in types) {
+                        ++index;
+                    }
+                }
+                let position;
+                if (node.values[index] && Array.isArray(node.values[index]) && node.values[index].length === 3) {
+                    position = node.values[index];
+                    ++index;
+                } else {
+                    position = node.data.position;
+                }
+                const shapeName = positionalName || (node.data?.shape ? node.data.shape.toLowerCase() : 'Ball');
                 const typeName = shapeName.slice(0, 1).toUpperCase() + shapeName.slice(1).toLowerCase();
                 report(typeName);
 
                 if (typeName && types[typeName]) {
                     const hash = types[typeName].hash(node);
-                    shapes[hash] = shapes[hash] || types[typeName].make(scene.gl, buffers, node, namedNodes);
+                    shapes[hash] = shapes[hash] || types[typeName].make(scene.gl, buffers, node, index, namedNodes);
                     node.shape = shapes[hash];
                     scene.shapes.push(node.shape);
                 }
-                node.data.position = node.data.position || [0, 0, 0];
+                //node.data.position = node.data.position || [0, 0, 0];
 
                 if (node.name === "Camera" && !node.data.type) {
                     if (node.data.lookAt && node.data.lookAt.length === 3) {
@@ -1160,8 +1256,12 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     if (node.data.up && node.data.up.length === 3) {
                         camera.up = node.data.up;
                     }
-                } else if (node.data.position && node.data.position.length === 3) {
-                    node.data.position = node.data.position.map((v) => isNaN(v) ? 0 : v);
+                } else if (node.name === 'Background') {
+                    if (node.data.colour) {
+                        background.colour = node.data.colour;
+                    }
+                } else if (position && position.length === 3) {
+                    position = position.map((v) => isNaN(v) ? 0 : v);
                     const shader = Math.random() > 1 ? scene.shader3 : scene.shader4;
                     const transform = [];
                     if (node.data.rotation && node.data.rotation.length === 4) {
@@ -1174,18 +1274,18 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                             Math.sin(angle / 2) * axis[1],
                             Math.sin(angle / 2) * axis[2]);
                         q.setMatrix(transform);
-                        transform[12] = node.data.position[0];
-                        transform[13] = node.data.position[1];
-                        transform[14] = node.data.position[2];
+                        transform[12] = position[0];
+                        transform[13] = position[1];
+                        transform[14] = position[2];
                     } else {
                         transform.push(
                             1, 0, 0, 0,
                             0, 1, 0, 0,
                             0, 0, 1, 0,
-                            ...node.data.position, 1);
+                            ...position, 1);
                     }
                     const parent = getParent(node);
-                    let colour = node.data.colour;//[1, 0.9, 0.5, 1];
+                    let colour = node.data.colour;
                     let ancestor = parent;
                     while (ancestor && !colour) {
                         colour = ancestor.colour;
@@ -1197,7 +1297,11 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     } else {
                         colour = [1, 0.9, 0.5, 1];
                     }
-                    node.sceneNode = addNode(node.name, parent, transform, node.shape, shader, colour, node.data.specular || 4);
+                    if (Array.isArray(node.data.specularColour) && node.data.specularColour.length === 3) {
+
+                    }
+
+                    node.sceneNode = addNode(node.name, parent, transform, node.shape, shader, colour, node.data.specular || 4, node.data.specularColour);
                     namedNodes[node.name] = node.sceneNode;
                     if (!parent) {
                         scene.graph.push(node.sceneNode);
@@ -1434,7 +1538,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
 
             void main() {
                 // ambient
-                vec3 ambient = vec3(0.25, 0.25, 0.25) * uDiffuseColor.rgb;
+                vec3 ambient = vec3(0.25) * uAmbientColor.rgb;
 
                 // Calculate diffuse lighting contribution
                 vec3 lightDirection = normalize(uLightPosition - vPosition);
@@ -1559,7 +1663,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         /**
-         *
+         * Create the indexes for a strip of quads formed from pairs of triangles.
          */
         function addClosedTriangleStrip(gl, indexBuffer, nQuads, start1, start2, step1 = 2, step2) {
             const offset = indexBuffer.length * 2;
@@ -1676,7 +1780,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         class Box extends (shape) {
-            static make(gl, data, node) {
+            static make(gl, data, node, index) {
                 const size = node.data.size || [1, 1, 1];
                 const width = node.data.width || size[0] || 1;
                 const height = node.data.height || size[1] || size[0] || 1;
@@ -1838,7 +1942,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         class Diamond extends (shape) {
-            static make(gl, data, node) {
+            static make(gl, data, node, index) {
                 return new Diamond(scene.gl, data, node.data.size);
             }
             static hash(node) {
@@ -1958,8 +2062,16 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         class Ball extends (shape) {
-            static make(gl, data, node) {
-                return new Ball(scene.gl, data, node.data.size, node.data.depth, node.data.height, node.data.sides, node.data.strips);
+            static make(gl, data, node, index) {
+                const values = node.values || [];
+                const size = node.data.size || values[index++] || 2;
+                const depth = node.data.depth || values[index++] || 2;
+                const height = node.data.height || values[index++] || 2;
+                const sides = node.data.sides || values[index++] || 12;
+                const strips = node.data.strips || values[index++] || 12;
+                const mode = node.data.mode || values[index++] || 'solid';
+
+                return new Ball(scene.gl, data, size, depth, height, sides, strips);
             }
             static hash(node) {
                 return `ball ${node.data.size} ${node.data.height} ${node.data.depth} ${node.data.sides} ${node.data.strips}`;
@@ -2029,8 +2141,86 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         /**
          *
          */
+        class Torus extends (shape) {
+            static make(gl, data, node, index) {
+                const values = node.values || [];
+                const size = node.data.size || values[index++] || 2;
+                const thickness = node.data.thickness || values[index++] || 1;
+                const sides = node.data.sides || values[index++] || 12;
+                const strips = node.data.strips || values[index++] || 12;
+                const start = node.data.start || values[index++] || 0;
+                const mode = node.data.mode || values[index++] || 'solid';
+
+                return new Torus(scene.gl, data, size, thickness, sides, strips, start, mode);
+            }
+            static hash(node) {
+                return `torus ${node.data.size} ${node.data.thickness} ${node.data.sides} ${node.data.strips}`;
+            }
+            constructor(gl, data, mainRadius = 2, minorRadius = 1, sides = 12, strips = 12, startAngle = 0, mode = 'solid') {
+                super();
+                this.sides = sides;
+                this.strips = strips;
+                const start = data.vertex.length / 6;
+                startAngle = startAngle * Math.PI / 180;
+
+                // Create the mesh for the torus
+                for (let j = 0; j < sides; ++j) {
+                    const dx = Math.cos(2 * j * Math.PI / sides);
+                    const dz = Math.sin(2 * j * Math.PI / sides);
+
+                    for (let i = 0; i < strips; ++i) {
+                        const angle = startAngle + 2 * i * Math.PI / strips;
+                        const x = dx * (mainRadius + minorRadius * Math.sin(angle));
+                        const y = minorRadius * Math.cos(angle);
+                        const z = dz * (mainRadius + minorRadius * Math.sin(angle));
+                        data.vertex.push(x, y, z);
+                        data.vertex.push(dx * Math.sin(angle), y, dz * Math.sin(angle));
+                    }
+                }
+
+                this.elements = [];
+                if (mode !== 'wireframe') {
+                    for (let j = 0; j < sides; ++j) {
+                        const start1 = start + j * strips;
+                        const start2 = start + ((j + 1) % sides) * strips;
+                        this.elements.push(addClosedTriangleStrip(gl, data.indices, strips, start1, start2, 1, 1));
+                    }
+                }
+
+                if (mode === 'lined' || mode === 'wireframe') {
+                    for (let i = 0; i < sides; ++i) {
+                        this.elements.push(addLineLoop(gl, data.indices, strips, start + i * strips, 1));
+                    }
+                    for (let i = 0; i < strips; ++i) {
+                        this.elements.push(addLineLoop(gl, data.indices, sides, start + i, strips));
+                    }
+                }
+            }
+            intersects(line) {
+                const planes = [];
+                for (let j = 0; j < this.strips - 1; ++j) {
+                    const ny = Math.cos((j + 1) * Math.PI / this.strips);
+                    const y = this.height * ny;
+                    const radius = Math.sin((j + 1) * Math.PI / this.strips);
+                    for (let i = 0; i < this.sides; ++i) {
+                        const radians = (i * 2 + j) * Math.PI / this.sides;
+                        planes.push({
+                            point: [this.width * radius * Math.sin(radians), y, this.depth * radius * Math.cos(radians),],
+                            normal: [radius * Math.sin(radians), ny, radius * Math.cos(radians),],
+                        });
+                    }
+                }
+                return convexHullIntercept(line, planes);
+            }
+            draw2d(context, transform) {
+            }
+        }
+
+        /**
+         *
+         */
         class Frustrum extends (shape) {
-            static make(gl, data, node) {
+            static make(gl, data, node, index) {
                 return new Frustrum(scene.gl, data, node.data.radius, 0, node.data.height, node.data.sides);
             }
             static hash(node) {
@@ -2137,10 +2327,10 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         class Cylinder extends (Frustrum) {
             static make(gl, data, node) {
                 var index = 0;
-                const params = node.data.params || {};
-                const radius = node.data.radius || params[index++];
-                const height = node.data.height || params[index++];
-                const sides = node.data.sides || params[index++];
+                const values = node.values || [];
+                const radius = node.data.radius || values[index++];
+                const height = node.data.height || values[index++];
+                const sides = node.data.sides || values[index++];
                 return new Cylinder(scene.gl, data, node.data.radius, node.data.height, node.data.sides);
             }
             static hash(node) {
@@ -2174,7 +2364,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         class Tetrahedron extends (shape) {
-            static make(gl, data, node) {
+            static make(gl, data, node, index) {
                 return new Tetrahedron(scene.gl, data, node.data.size);
             }
             static hash(node) {
@@ -2256,7 +2446,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
           *
           */
         class Prism extends (shape) {
-            static make(gl, data, node) {
+            static make(gl, data, node, index) {
                 return new Prism(gl, data, node.date.points, node.data.height);
             }
             static hash(node) {
@@ -2332,7 +2522,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          * Connection between two nodes
          */
         class Link {
-            static make(gl, buffers, node, namedNodes) {
+            static make(gl, buffers, node, index, namedNodes) {
                 const from = node.data.from;
                 const to = node.data.to;
                 const values = node.data.points;
@@ -2433,13 +2623,13 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         /**
          *
          */
-        function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1], shininess) {
+        function addNode(name, parent, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour) {
 
             shininess = shininess || 1 + 5 * Math.random();
 
             const node = Object.assign(Object.create({ update }), {
                 name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, children: [],
+                shape, shader, colour, shininess, specularColour, children: [],
             });
             if (parent) {
                 parent.children.push(node);
@@ -2497,7 +2687,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         function drawScene(gl, buffers, shapes, time) {
-            gl.clearColor(0.0, 0.1, 0.1, 1.0);  // Clear to black, fully opaque
+            const clearColour = [0, 0, 0].map((e, i) => background.colour[i] || e);
+            scene.gl.clearColor(...clearColour, 1.0);
+
             gl.clearDepth(1.0);                 // Clear everything
             gl.enable(gl.DEPTH_TEST);           // Enable depth testing
             gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
@@ -2515,7 +2707,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         function drawScene2(gl, buffers, shapes, time) {
-            gl.clearColor(0.0, 0.1, 0.1, 1.0);  // Clear to black, fully opaque
+            const clearColour = [0, 0, 0].map((e, i) => background.colour[i] || e);
+            scene.gl.clearColor(...clearColour, 1.0);
+
             gl.clearDepth(1.0);                 // Clear everything
             gl.enable(gl.DEPTH_TEST);           // Enable depth testing
             gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
@@ -2732,6 +2926,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          *
          */
         const camera = new Camera([0, 0, 20], [0, 0, 0], [0, 1, 0]);
+        const background = { colour: [0, 0, 0] };
 
         /**
          * Management of a 2 view using a canvas
@@ -2843,6 +3038,29 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         /**
+         * Resize the canvas based on the node size
+         */
+        function updateCanvasSize(scene) {
+
+            // Lookup the size the browser is displaying the canvas in CSS pixels.
+            const width = scene.gl.canvas.clientWidth;
+            const height = scene.gl.canvas.clientHeight;
+
+            // Check if the canvas is not the same size.
+            const resize = scene.gl.canvas.width !== width || scene.gl.canvas.height !== height;
+
+            if (resize) {
+                // Make the canvas the same size
+                scene.gl.canvas.width = width;
+                scene.gl.canvas.height = height;
+
+                scene.gl.viewport(0, 0, width, height);
+            }
+
+            return resize;
+        }
+
+        /**
          *
          */
         function render(time = 0) {
@@ -2913,7 +3131,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 }
             }
 
-
+            updateCanvasSize(scene);
             scene.modelViewMatrix = camera.viewMatrix();
 
             // Create a perspective matrix, a special matrix that is
@@ -3831,6 +4049,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 const content = document.createElement('div');
                 container.appendChild(content);
                 content.classList.add('entry-content');
+                /*
                 for (let i = 0; i < value.length; ++i) {
                     if (stack.includes(value[i])) {
                         content.append(showEntry(name, '...'));
@@ -3840,6 +4059,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         stack.pop();
                     }
                 }
+                */
                 return container;
             } else if (value === undefined) {
                 return `${name}: undefined`;
@@ -3852,7 +4072,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 label.innerText = `${name}: (object)`;
                 const content = document.createElement('div');
                 container.appendChild(content);
-                content.classList.add('entry-content')
+                content.classList.add('entry-content');
+                /*
                 Object.entries(value).forEach(([key, element]) => {
                     if (stack.includes(element)) {
                         content.append(showEntry(key, '...'));
@@ -3862,6 +4083,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         stack.pop();
                     }
                 });
+                */
                 return container;
             }
             const container = document.createElement('div');
@@ -3885,6 +4107,16 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             detailNode.innerHTML = '';
             Object.entries(node).map(([key, value]) =>
                 detailNode.append(showEntry(key, value, [value])));
+
+            // Show the source node.
+            input = document.getElementById('input');
+            const lines = input.value.split(/\r?\n/);
+            const position = input.scrollHeight * (node.source.lineNumber - 1) / lines.length;
+            input.focus();
+            input.scrollTo(0, position);
+            const start = lines.slice(0, node.source.lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
+            input.selectionStart = start;
+            input.selectionEnd = start + lines[node.source.lineNumber - 1].length;
         }
 
         /**
@@ -3894,13 +4126,216 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         let state = { time: 0, rate: 1, mode: 'paused', nextEvent: 0 };
 
         /**
+         * Update the line numbers for a textarea element
+         */
+        function updateLineNumbers(main, lineNumbers) {
+            const count = main.value.split(/\n/g).length;
+            lineNumbers.value = '';
+            const numbers = Array(count).fill(0).map((e, i) => i + 1);
+            lineNumbers.value = numbers.join('\r\n');
+            lineNumbers.cols = 1 + (count + '').length;
+        }
+
+        const actions = {};
+
+
+        /**
+         * Add drag control to an element
+         */
+        function addElementDrag(node) {
+            const start = {};
+
+            const moveNode = (eventX, eventY) => {
+                const dx = eventX - start.mouseX;
+                const dy = eventY - start.mouseY;
+                const x = start.elementX + dx;
+                const y = start.elementY + dy;
+                node.style.position = 'absolute';
+                node.style.left = `${x}px`;
+                node.style.top = `${y}px`;
+                node.style.right = 'auto';
+            }
+            const mouseMove = (event) => {
+                moveNode(event.clientX, event.clientY);
+            }
+            const touchMove = (event) => {
+                moveNode(event.touches[0].clientX, event.touches[0].clientY);
+            }
+
+            node.addEventListener('mousedown', (event) => {
+                const box = node.getBoundingClientRect();
+                start.mouseX = event.clientX;
+                start.mouseY = event.clientY;
+                start.elementX = box.left;
+                start.elementY = box.top;
+                actions.mouseMove = mouseMove;
+                actions.mouseUp = (event) => actions.mouseMove = null;
+            });
+
+
+            node.addEventListener('touchstart', (event) => {
+                const box = node.getBoundingClientRect();
+                start.mouseX = event.touches[0].clientX;
+                start.mouseY = event.touches[0].clientY;
+                start.elementX = box.left;
+                start.elementY = box.top;
+                actions.touchMove = touchMove;
+                actions.touchEnd = (event) => actions.touchMove = null;
+            });
+        }
+
+        /**
+         * Update the layout based on the selection
+         */
+        function updateLayout(event) {
+            const selectedLayout = parseInt(event.target.value);
+            const layout = document.querySelector('.layout');
+
+            const sourceView = document.getElementById('edit');
+            const treeView = document.querySelector('.expanded-tree');
+            const topView = document.getElementById('top-view-container');
+            const dynamicView = document.getElementById('scene-container');
+            const detailView = document.querySelector('.detail');
+
+            const reset = (node) => {
+                node.style.zIndex = null;
+                node.style.gridColumn = null;
+                node.style.gridRow = null;
+                node.style.display = null;
+            }
+
+            const resetAll = () => {
+                layout.style.gridTemplateColumns = null;
+                layout.style.gridTemplateRows = null;
+                reset(sourceView);
+                reset(treeView);
+                reset(topView);
+                reset(dynamicView);
+                reset(detailView);
+            }
+
+            const gridLayout = () => {
+                resetAll();
+            }
+
+            const setView = (view) => {
+                resetAll();
+                if (view === shaderView) {
+                    sourceView.style.display = 'none';
+                    treeView.style.display = 'none';
+                    topView.style.display = 'none';
+                    dynamicView.style.display = 'none';
+                    detailView.style.display = 'none';
+                    layout.style.gridTemplateColumns = '1fr 1fr';
+                    layout.style.gridTemplateRows = 'min-content 1fr 1fr';
+                    view.show();
+                } else if (view) {
+                    sourceView.style.display = 'none';
+                    treeView.style.display = 'none';
+                    topView.style.display = 'none';
+                    dynamicView.style.display = 'none';
+                    detailView.style.display = 'none';
+                    layout.style.gridTemplateColumns = '1fr';
+                    layout.style.gridTemplateRows = 'min-content 1fr';
+                    view.style.gridColumn = '1 / -1';
+                    view.style.gridRow = '2 / -1';
+                    view.zIndex = 5;
+                    view.style.display = null;
+                }
+            }
+
+            const views = [null, sourceView, treeView, dynamicView, topView, detailView, shaderView];
+            setView(views[selectedLayout]);
+        }
+
+        /**
+         * Create a shader view
+         */
+        function createShaderView() {
+            const layout = document.querySelector('.layout');
+
+            const vertexEditor = new Editor(layout);
+            const fragmentEditor = new Editor(layout);
+
+            vertexEditor.container.style.display = 'none';
+            fragmentEditor.container.style.display = 'none';
+
+            const show = () => {
+                vertexEditor.value = vsSource2;
+                fragmentEditor.value = fsSource4;
+                vertexEditor.container.style.display = 'block';
+                fragmentEditor.container.style.display = 'block';
+                vertexEditor.container.style.gridColumn = 1;
+                vertexEditor.container.style.gridRow = 2;
+                fragmentEditor.container.style.gridColumn = 2;
+                fragmentEditor.container.style.gridrow = 2;
+            }
+
+            return {show, vertexEditor, fragmentEditor};
+        }
+
+        const shaderView = createShaderView();
+
+
+        /**
+         * Toggle fullscreen mode
+         */
+        function toggleFullscreen() {
+            if (document.body.webkitRequestFullscreen) {
+                if (document.body.webkitIsFullScreed) {
+                    document.body.webkitCancelFullScreen();
+                } else {
+                    document.body.webkitRequestFullscreen(document.body.ALLOW_KEYBOARD_INPUT);
+                }
+            }
+            if (document.body.requestFullscreen) {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else {
+                    document.body.requestFullscreen();
+                }
+            }
+        }
+
+
+        /**
          *
          */
         function main() {
             const canvas = document.getElementById('scene');
             const view2 = document.getElementById('top-view');
 
+            document.body.addEventListener('mousemove', (event) => {
+                if (actions.mouseMove) {
+                    actions.mouseMove(event);
+                }
+            });
+            document.body.addEventListener('mouseup', (event) => {
+                if (actions.mouseUp) {
+                    actions.mouseUp(event);
+                }
+            });
+
+            document.body.addEventListener('touchmove', (event) => {
+                event.preventDefault();
+                if (actions.touchMove) {
+                    actions.touchMove(event);
+                }
+            });
+            document.body.addEventListener('touchend', (event) => {
+                if (actions.touchEnd) {
+                    actions.touchEnd(event);
+                }
+            });
+            addElementDrag(document.getElementById('overlay'));
+
             addControls(canvas);
+
+            const layoutSelection = document.getElementById('layout-selection');
+            layoutSelection.addEventListener('change', updateLayout);
+
+            const fullscreen = document.getElementById('fullscreen');
+            fullscreen.addEventListener('click', toggleFullscreen);
 
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
@@ -3975,7 +4410,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
-                    gl.uniform3fv(this.specularColour, [0.8, 0.9, 0.3]);
+                    gl.uniform3fv(this.specularColour, node.specularColour || [0.8, 0.9, 0.3]);
                     gl.uniform1f(this.shininess, node.shininess);
                 },
             };
@@ -4003,35 +4438,18 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     } else {
                         gl.uniform4fv(node.shader.colourLocation, node.colour);
                     }
-                    gl.uniform3fv(this.specularColour, [0.8, 0.9, 0.3]);
+                    gl.uniform3fv(this.specularColour, node.specularColour || [0.8, 0.9, 0.3]);
+                    //gl.uniform3fv(this.specularColour, [0.8, 0.9, 0.3]);
                     gl.uniform1f(this.shininess, node.shininess);
                 },
             };
 
             // Set clear color to black, fully opaque
-            scene.gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            const clearColour = [0, 0, 0].map((e, i) => background.colour[i] || e);
+            scene.gl.clearColor(...clearColour, 1.0);
             // Clear the color buffer with specified clear color
             scene.gl.clear(scene.gl.COLOR_BUFFER_BIT);
-            /*
-                        let bases = 1;
-                        let components = 3;
-                        const basesControl = document.getElementById('bases');
-                        const componentsControl = document.getElementById('components');
-            
-                        basesControl.value = bases;
-                        componentsControl.value = components;
-            
-                        basesControl.addEventListener('change', (event) => {
-                            bases = basesControl.valueAsNumber;
-                            totalControl.innerHTML = bases * bases * (components + 1);
-                            makeGraph(scene, bases, components);
-                        });
-                        componentsControl.addEventListener('change', (event) => {
-                            components = componentsControl.valueAsNumber;
-                            totalControl.innerHTML = bases * bases * (components + 1);
-                            makeGraph(scene, bases, components);
-                        });
-            */
+
             const lightX = document.getElementById('light-x');
             const lightY = document.getElementById('light-y');
             const lightZ = document.getElementById('light-z');
@@ -4074,6 +4492,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 expandedTreeNode.appendChild(getView(deployed, deployedNodeActions));
                 //treeNode.innerHTML = '';
                 //treeNode.appendChild(getView(parseStructure(structure)));
+                const lines = document.querySelector('.line-numbers');
+                updateLineNumbers(input, lines);
             });
 
             const structure = getStructure(input.value);
@@ -4122,6 +4542,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 //treeNode.innerHTML = '';
                 //treeNode.appendChild(getView(parseStructure(structure)));
             }
+            updateLineNumbers(input, document.querySelector('.line-numbers'));
+            input.addEventListener('scroll', (event) =>
+                document.querySelector('.line-numbers').scrollTop = input.scrollTop);
 
             render();
         }
