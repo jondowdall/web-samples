@@ -4410,24 +4410,13 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             };
 
             const build = () => {
-                const name = nameSelection.value;
-                if (scene.shaders[name]) {
-                    const shader = scene.shaders[name];
-                    shader.definition.vertex = vertexEditor.value;
-                    shader.definition.fragment = fragmentEditor.value;
-                    shader.definition.attributes = attributes;
-                    shader.defintion.uniforms = uniforms;
-                    shader.program = initialiseShaders(scene.gl, shader.definition.vertex, shader.definition.fragment);
-
-                    // Add code to update locations
-                    if (shader.program) {
-                        attributes.forEach((attribute) =>
-                            shader.attribLocations[attribute.name] = scene.gl.getAttribLocation(shader.program, attribute.attribute));
-                        uniforms.forEach((uniform) =>
-                            shader[uniform.name] = scene.gl.getUniformLocation(shader.program, uniform.uniform));
-                    }
-                }
-                const shader = initialiseShaders(scene.gl, vertexEditor.value, fragmentEditor.value);
+                const definition = {
+                    name: nameSelection.value,
+                    vertex: vertexEditor.value,
+                    fragment: fragmentEditor.value,
+                    attributes, uniforms,
+                };
+                scene.shaders[definition.name] = makeShader;
             }
 
             buildButton.addEventListener('click', (event) => build());
@@ -4438,6 +4427,61 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         const shaderView = createShaderView();
+
+
+        /**
+         * Build a shader from a definition.
+         */
+        function makeShader(definition) {
+            const removeIndent = (text) => {
+                const lines = text.split(/\n/);
+                const indent = Math.min(...lines.filter((line) => line.length).map((line) => line.length - line.trimStart().length));
+                return lines.map((line) => line.slice(indent)).join('\n');
+            };
+
+            definition.vertex = removeIndent(definition.vertex);
+            definition.fragment = removeIndent(definition.fragment);
+
+            const shader = {
+                attribLocations: {},
+                definition,
+            };
+
+            shader.program = initialiseShaders(scene.gl, definition.vertex, definition.fragment);
+            if (shader.program) {
+                definition.attributes.forEach((attribute) =>
+                    shader.attribLocations[attribute.name] = scene.gl.getAttribLocation(shader.program, attribute.attribute));
+                definition.uniforms.forEach((uniform) =>
+                    shader[uniform.name] = scene.gl.getUniformLocation(shader.program, uniform.uniform));
+            }
+
+            shader.setSceneData = (scene) => {
+                definition.uniforms.forEach((uniform) => {
+                    if (scene[uniform.name]) {
+                        uniform.set(shader[uniform.name], scene[uniform.name]);
+                    }
+                });
+            }
+            shader.setNodeData = (gl, node) => {
+                definition.uniforms.forEach((uniform) => {
+                    if (node[uniform.name]) {
+                        uniform.set(shader[uniform.name], node[uniform.name]);
+                    }
+                });
+                if (node.hit) {
+                    gl.uniform4fv(shader.colour, [1, 0, 0, 1]);
+                }
+            }
+            shader.setElementData = (element) => {
+                definition.uniforms.forEach((uniform) => {
+                    if (element[uniform.name]) {
+                        uniform.set(shader[uniform.name], element[uniform.name]);
+                    }
+                });
+            }
+
+            return shader;
+        }
 
 
         /**
@@ -4573,54 +4617,10 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 },
             ];
 
-            const removeIndent = (text) => {
-                const lines = text.split(/\n/);
-                const indent = Math.min(...lines.filter((line) => line.length).map((line) => line.length - line.trimStart().length));
-                return lines.map((line) => line.slice(indent)).join('\n');
-            };
 
 
             scene.shaders = shaders.reduce((shaders, definition) => {
-                definition.vertex = removeIndent(definition.vertex);
-                definition.fragment = removeIndent(definition.fragment);
-                const shader = {
-                    attribLocations: {},
-                    definition,
-                };
-
-                shader.program = initialiseShaders(scene.gl, definition.vertex, definition.fragment);
-                if (shader.program) {
-                    definition.attributes.forEach((attribute) =>
-                        shader.attribLocations[attribute.name] = scene.gl.getAttribLocation(shader.program, attribute.attribute));
-                    definition.uniforms.forEach((uniform) =>
-                        shader[uniform.name] = scene.gl.getUniformLocation(shader.program, uniform.uniform));
-                }
-
-                shader.setSceneData = (scene) => {
-                    definition.uniforms.forEach((uniform) => {
-                        if (scene[uniform.name]) {
-                            uniform.set(shader[uniform.name], scene[uniform.name]);
-                        }
-                    });
-                }
-                shader.setNodeData = (gl, node) => {
-                    definition.uniforms.forEach((uniform) => {
-                        if (node[uniform.name]) {
-                            uniform.set(shader[uniform.name], node[uniform.name]);
-                        }
-                    });
-                    if (node.hit) {
-                        gl.uniform4fv(shader.colour, [1, 0, 0, 1]);
-                    }
-                }
-                shader.setElementData = (element) => {
-                    definition.uniforms.forEach((uniform) => {
-                        if (element[uniform.name]) {
-                            uniform.set(shader[uniform.name], element[uniform.name]);
-                        }
-                    });
-                }
-                shaders[definition.name] = shader;
+                shaders[definition.name] = makeShader(definition);
                 return shaders;
             }, {});
 
