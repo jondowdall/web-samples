@@ -327,7 +327,7 @@
     <div class="layout">
         <div class="controls">
             <select id="layout-selection">
-                <option value="0">Grid</option>
+                <option value="0">Scene</option>
                 <Option value="1">Source</Option>
                 <Option value="2">Tree</Option>
                 <Option value="3">3d</Option>
@@ -1339,7 +1339,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     }
                 } else if (position && position.length === 3) {
                     position = position.map((v) => isNaN(v) ? 0 : v);
-                    const shader = node.data.shader || scene.shaders.shader4;
+                    const shader = scene.shaders[node.data.shader] || scene.shaders.shader4;
                     const transform = [];
                     if (node.data.rotation && node.data.rotation.length === 4) {
                         node.data.rotation = node.data.rotation.map((v) => isNaN(v) ? 0 : v);
@@ -4312,19 +4312,24 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 const lines = shader.definition.vertex.split('\n');
                 lines.push(...shader.definition.fragment.split('\n'));
 
-
-                // attribute { name: 'vertexNormal', attribute: 'aNormal' },
-                // uniform { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-
+                setters = {
+                    mat4: (location, value) => scene.gl.uniformMatrix4fv(location, false, value),
+                    mat3: (location, value) => scene.gl.uniformMatrix3fv(location, false, value),
+                    vec3: (location, value) => scene.gl.uniform3fv(location, value),
+                    vec4: (location, value) => scene.gl.uniform4fv(location, value),
+                    float: (location, value) => scene.gl.uniform1f(location, value),
+                };
 
                 lines.forEach((line) => {
                     const attrMatch = line.match(attributePattern);
                     const uniformMatch = line.match(uniformPattern);
 
                     if (attrMatch) {
+                        const definition = shader.definition.attributes.find((def) => def.attribute === attrMatch.groups.name);
                         const attribute = {
                             attribute: attrMatch.groups.name,
-                            type: attrMatch.groups.type
+                            name: definition ? definition.name : '',
+                            type: attrMatch.groups.type,
                         };
                         const name = document.createElement('span');
                         attrTable.appendChild(name);
@@ -4333,6 +4338,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         const input = document.createElement('input');
                         attrTable.appendChild(input);
                         input.classList.add('cell');
+                        input.value = attribute.name;
                         input.addEventListener('change', (event) => attribute.name = input.value);
                         const type = document.createElement('span');
                         attrTable.appendChild(type);
@@ -4341,9 +4347,12 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         attributes.push(attribute);
                     }
                     if (uniformMatch) {
+                        const definition = shader.definition.uniforms.find((def) => def.uniform === uniformMatch.groups.name);
                         const uniform = {
                             uniform: uniformMatch.groups.name,
-                            type: uniformMatch.groups.type
+                            name: definition ? definition.name : '',
+                            type: uniformMatch.groups.type,
+                            set: setters[uniformMatch.groups.type],
                         };
 
                         const name = document.createElement('span');
@@ -4353,10 +4362,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         const input = document.createElement('input');
                         uniformTable.appendChild(input);
                         input.classList.add('cell');
-                        const definition = shader.definition.uniforms.find((def) => def.uniform === uniformMatch.groups.name);
-                        input.value = definition ? definition.name : '';
+                        input.value = uniform.name;
                         input.addEventListener('change', (event) => uniform.name = input.value);
-
                         const type = document.createElement('span');
                         uniformTable.appendChild(type);
                         type.innerHTML = uniformMatch.groups.type;
@@ -4368,7 +4375,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     }
                 });
             }
-
 
             const update = (shader) => {
                 attributes.length = 0;
@@ -4416,7 +4422,12 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     fragment: fragmentEditor.value,
                     attributes, uniforms,
                 };
-                scene.shaders[definition.name] = makeShader;
+                scene.shaders[definition.name] = makeShader(definition);
+
+                const input = document.getElementById('input');
+                const structure = getStructure(input.value);
+                const deployed = parseStructure(structure);
+                getGraph(deployed, scene);
             }
 
             buildButton.addEventListener('click', (event) => build());
@@ -4427,7 +4438,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         const shaderView = createShaderView();
-
 
         /**
          * Build a shader from a definition.
@@ -4617,8 +4627,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 },
             ];
 
-
-
             scene.shaders = shaders.reduce((shaders, definition) => {
                 shaders[definition.name] = makeShader(definition);
                 return shaders;
@@ -4651,7 +4659,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             const reset = document.getElementById('reset');
             reset.addEventListener('click', () => camera.reset());
 
-            //const treeNode = document.querySelector('.tree');
             const expandedTreeNode = document.querySelector('.expanded-tree');
 
             const input = document.getElementById('input');
@@ -4667,8 +4674,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 expandedTreeNode.innerHTML = '';
                 getGraph(deployed, scene);
                 expandedTreeNode.appendChild(getView(deployed, deployedNodeActions));
-                //treeNode.innerHTML = '';
-                //treeNode.appendChild(getView(parseStructure(structure)));
                 const lines = document.querySelector('.line-numbers');
                 updateLineNumbers(input, lines);
             });
@@ -4676,9 +4681,6 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             const structure = getStructure(input.value);
             const fullStructure = parseStructure(structure);
             const definition = parseStructure(structure);
-
-            //treeNode.appendChild(getView(definition));
-            //expandedTreeNode.appendChild(getView(fullStructure));
 
             document.getElementById('comment').addEventListener('click',
                 (event) => {
@@ -5401,5 +5403,4 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
     </script>
 </body>
-
 </html>
