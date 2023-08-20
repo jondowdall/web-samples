@@ -758,7 +758,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         /**
-         * Generate an new structure from the defintion
+         * Generate an new structure from the definition
          */
         function defaultParser(node, context) {
             if (node.content) {
@@ -791,7 +791,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
         }
 
         /**
-         * Generate an new structure from the defintion
+         * Generate an new structure from the definition
          */
         function parseStructure(structure, parser = defaultParser) {
             const names = {};
@@ -2246,7 +2246,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     const y = this.height * ny;
                     const radius = Math.sin((j + 1) * Math.PI / strips);
                     for (let i = 0; i < sides; ++i) {
-                        const radians = (i * 2 + j) * Math.PI / sides;
+                        const radians = (i * 2) * Math.PI / sides;
                         data.vertex.push(
                             this.width * radius * Math.sin(radians), y, this.depth * radius * Math.cos(radians));
                         data.vertex.push(
@@ -2538,7 +2538,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
 
                     [0, 1, 0, 0.5, 0],
                     [0, -0.5, l, 2 / 3, 0.5],
-                    [-l * l, -0.5, -0.5 * l, 1/3, 0.5],
+                    [-l * l, -0.5, -0.5 * l, 1 / 3, 0.5],
 
                     [0, 1, 0, 0.25, 0],
                     [l * l, -0.5, -0.5 * l, 1 / 3, 0.5],
@@ -2655,7 +2655,50 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
 
                 this.elements = [
                     { mode: gl.TRIANGLE_STRIP, count: points.length * 4, offset: indexStart * 2 },
-               ];
+                ];
+
+                const offset = data.indices.length * 2;
+                const baseIndex = data.vertex.length / 8;
+                data.vertex.push(...points.flatMap((point) => [point[0], -height / 2, point[1], 0, -1, 0, 0, 0]));
+                const topIndex = data.vertex.length / 8;
+                data.vertex.push(...points.flatMap((point) => [point[0], height / 2, point[1], 0, 1, 0, 0, 0]));
+
+                const d = [];
+                for (let j = 0; j < points.length; ++j) {
+                    const i = (j + points.length - 1) % points.length;
+                    const k = (j + 1) % points.length;
+
+                    const v1 = [points[j][0] - points[i][0], points[j][1] - points[i][1]];
+                    const v2 = [points[k][0] - points[j][0], points[k][1] - points[j][1]];
+
+                    d.push(v1[0] * v2[1] - v1[1] * v2[0]);
+                }
+                const sign = d.reduce((sum, d) => sum + d, 0);
+                let count = 0;
+                if (d.some((d) => (d * sign) < 0)) {
+                    points.forEach((point, index) => {
+                        if ((d[index] * sign) < 0) {
+                            let next = (index + 1) % points.length;
+                            while (next !== index && ((d[next] * sign) > 0)) {
+                                const third = (next + 1) % points.length;
+                                data.indices.push(baseIndex + index, baseIndex + next, baseIndex + third);
+                                data.indices.push(topIndex + index, topIndex + next, topIndex + third);
+                                count += 6;
+                                next = third;
+                            }
+                        }
+                    });
+                } else if (points.length > 2) {
+                    for (let i = 1; i < points.length; ++i) {
+                        const next = (i + 1) % points.length;
+                        data.indices.push(baseIndex, baseIndex + i, baseIndex + next);
+                        data.indices.push(topIndex, topIndex + i, topIndex + next);
+                    }
+                    count = (points.length - 2) * 6;
+                }
+                if (count > 0) {
+                    this.elements.push({ mode: gl.TRIANGLES, count, offset });
+                }
             }
             get3dPoints() {
                 return [
@@ -4405,6 +4448,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
          * Create a shader view
          */
         function createShaderView() {
+            let shader;
             const layout = document.querySelector('.layout');
 
             const template = document.getElementById('shader-controls-template');
@@ -4420,6 +4464,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             nameSelection.addEventListener('change', (event) => {
                 const name = nameSelection.value;
                 if (scene.shaders[name]) {
+                    shader = scene.shaders[name];
                     update(scene.shaders[name]);
                 }
             });
@@ -4430,6 +4475,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
 
             const attributes = [];
             const uniforms = [];
+
+            vertexEditor.main.addEventListener('input', (event) => shader.vertex = vertexEditor.value);
+            fragmentEditor.main.addEventListener('input', (event) => shader.fragment = fragmentEditor.value);
 
             const getNames = (shader) => {
                 const attrTable = externalNames.querySelector('.attributes');
@@ -4508,8 +4556,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             const update = (shader) => {
                 attributes.length = 0;
                 uniforms.length = 0;
-                vertexEditor.value = shader.definition.vertex;
-                fragmentEditor.value = shader.definition.fragment;
+                vertexEditor.value = shader.vertex || shader.definition.vertex;
+                fragmentEditor.value = shader.fragment || shader.definition.fragment;
                 for (let cell of externalNames.querySelectorAll('.cell')) {
                     cell.remove();
                 }
@@ -4526,7 +4574,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     node.innerHTML = shaderName;
                 });
                 layout.style.gridTemplateRows = 'min-content min-content 1fr 1fr';
-                update(scene.shaders.shader4);
+                shader = shader || scene.shaders.shader4;
+                update(shader);
                 vertexEditor.container.style.display = 'flex';
                 fragmentEditor.container.style.display = 'flex';
                 vertexEditor.container.style.gridColumn = 1;
@@ -4552,6 +4601,8 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                     attributes, uniforms,
                 };
                 scene.shaders[definition.name] = makeShader(definition);
+                const shaders = Object.values(scene.shaders);
+                localStorage.setItem('shaders', JSON.stringify(shaders, null, 2));
 
                 const input = document.getElementById('input');
                 const structure = getStructure(input.value);
@@ -4584,6 +4635,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             const shader = {
                 attribLocations: {},
                 definition,
+                toJSON() {
+                    return this.definition
+                },
             };
 
             shader.program = initialiseShaders(scene.gl, definition.vertex, definition.fragment);
@@ -4593,6 +4647,25 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                 definition.uniforms.forEach((uniform) =>
                     shader[uniform.name] = scene.gl.getUniformLocation(shader.program, uniform.uniform));
             }
+
+            const setters = {
+                mat4: (location, value) => scene.gl.uniformMatrix4fv(location, false, value),
+                mat3: (location, value) => scene.gl.uniformMatrix3fv(location, false, value),
+                vec3: (location, value) => scene.gl.uniform3fv(location, value),
+                vec4: (location, value) => scene.gl.uniform4fv(location, value),
+                float: (location, value) => scene.gl.uniform1f(location, value),
+                sampler2D: (location, value) => scene.gl.uniform1i(location, value),
+            };
+
+            // Extract the declaration of uniforms from the source
+            const uniformPattern = /^\s*uniform\s+(highp\s+)?(?<type>[^\s]+)\s+(?<name>[^\s;\/]+)/;
+            const full = (definition.vertex + definition.fragment).split(';');
+            const uniforms = full.map((line) => line.match(uniformPattern))
+                .flatMap((match) => match ? match.groups : [])
+                .reduce((obj, uniform) => {obj[uniform.name] = uniform.type; return obj}, {});
+
+            // Generate 'setters' for each uniform
+            definition.uniforms.forEach((uniform) => uniform.set = uniform.set || setters[uniforms[uniform.uniform]]);
 
             shader.setSceneData = (scene) => {
                 definition.uniforms.forEach((uniform) => {
@@ -4693,7 +4766,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             topView.width = view2.clientWidth;
             topView.Height = view2.clientHeight;
 
-            const shaders = [
+            const savedShaders = localStorage.getItem('shaders');            
+
+            const shaders = savedShaders ? JSON.parse(savedShaders) : [
                 {
                     name: 'shader1',
                     vertex: vsSource, fragment: fsSource,
@@ -4701,9 +4776,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         { name: 'vertexPosition', attribute: 'aVertexPosition' },
                     ],
                     uniforms: [
-                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'colour', uniform: 'uColour', set: (location, value) => scene.gl.uniform4fv(location, value) },
+                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'colour', uniform: 'uColour', }, //, set: (location, value) => scene.gl.uniform4fv(location, value) },
                     ],
                 },
                 {
@@ -4713,9 +4788,9 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         { name: 'vertexPosition', attribute: 'aVertexPosition' },
                     ],
                     uniforms: [
-                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'colour', uniform: 'uColour', set: (location, value) => scene.gl.uniform4fv(location, value) },
+                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'colour', uniform: 'uColour', }, //, set: (location, value) => scene.gl.uniform4fv(location, value) },
                     ],
                 },
                 {
@@ -4726,14 +4801,14 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         { name: 'vertexNormal', attribute: 'aNormal' },
                     ],
                     uniforms: [
-                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'normalMatrix', uniform: 'uNormalMatrix', set: (location, value) => scene.gl.uniformMatrix3fv(location, false, value) },
+                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'normalMatrix', uniform: 'uNormalMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix3fv(location, false, value) },
 
-                        { name: 'lightPosition', uniform: 'uLightPosition', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'colour', uniform: 'uDiffuseColour', set: (location, value) => scene.gl.uniform4fv(location, value) },
-                        { name: 'specularColour', uniform: 'uSpecularColour', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'shininess', uniform: 'uShininess', set: (location, value) => scene.gl.uniform1f(location, value) },
+                        { name: 'lightPosition', uniform: 'uLightPosition', }, //, set: (location, value) => scene.gl.uniform3fv(location, value) },
+                        { name: 'colour', uniform: 'uDiffuseColour', }, //, set: (location, value) => scene.gl.uniform4fv(location, value) },
+                        { name: 'specularColour', uniform: 'uSpecularColour', }, //, set: (location, value) => scene.gl.uniform3fv(location, value) },
+                        { name: 'shininess', uniform: 'uShininess', }, //, set: (location, value) => scene.gl.uniform1f(location, value) },
                     ],
                 },
                 {
@@ -4744,14 +4819,14 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         { name: 'vertexNormal', attribute: 'aNormal' },
                     ],
                     uniforms: [
-                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'normalMatrix', uniform: 'uNormalMatrix', set: (location, value) => scene.gl.uniformMatrix3fv(location, false, value) },
+                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
+                        { name: 'normalMatrix', uniform: 'uNormalMatrix', }, //, set: (location, value) => scene.gl.uniformMatrix3fv(location, false, value) },
 
-                        { name: 'lightPosition', uniform: 'uLightPosition', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'colour', uniform: 'uDiffuseColour', set: (location, value) => scene.gl.uniform4fv(location, value) },
-                        { name: 'specularColour', uniform: 'uSpecularColour', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'shininess', uniform: 'uShininess', set: (location, value) => scene.gl.uniform1f(location, value) },
+                        { name: 'lightPosition', uniform: 'uLightPosition', }, //, set: (location, value) => scene.gl.uniform3fv(location, value) },
+                        { name: 'colour', uniform: 'uDiffuseColour', }, //, set: (location, value) => scene.gl.uniform4fv(location, value) },
+                        { name: 'specularColour', uniform: 'uSpecularColour', }, //, set: (location, value) => scene.gl.uniform3fv(location, value) },
+                        { name: 'shininess', uniform: 'uShininess', }, //, set: (location, value) => scene.gl.uniform1f(location, value) },
                     ],
                 },
                 {
@@ -4763,15 +4838,15 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
                         { name: 'vertexTexture', attribute: 'aTextureCoord' },
                     ],
                     uniforms: [
-                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', set: (location, value) => scene.gl.uniformMatrix4fv(location, false, value) },
-                        { name: 'normalMatrix', uniform: 'uNormalMatrix', set: (location, value) => scene.gl.uniformMatrix3fv(location, false, value) },
+                        { name: 'projectionMatrix', uniform: 'uProjectionMatrix', type: 'mat4' },
+                        { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', type: 'mat4' },
+                        { name: 'normalMatrix', uniform: 'uNormalMatrix', type: 'mat3' },
 
-                        { name: 'lightPosition', uniform: 'uLightPosition', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'colour', uniform: 'uDiffuseColour', set: (location, value) => scene.gl.uniform4fv(location, value) },
-                        { name: 'specularColour', uniform: 'uSpecularColour', set: (location, value) => scene.gl.uniform3fv(location, value) },
-                        { name: 'shininess', uniform: 'uShininess', set: (location, value) => scene.gl.uniform1f(location, value) },
-                        { name: 'texture', uniform: 'uSampler', set: (location, value) => scene.gl.uniform1i(location, value) },
+                        { name: 'lightPosition', uniform: 'uLightPosition', type: 'vec3' },
+                        { name: 'colour', uniform: 'uDiffuseColour', type: 'vec4' },
+                        { name: 'specularColour', uniform: 'uSpecularColour', type: 'vec3' },
+                        { name: 'shininess', uniform: 'uShininess', type: 'float' },
+                        { name: 'texture', uniform: 'uSampler', type: 'sampler2D' },
                     ],
                 },
             ];
@@ -4794,6 +4869,7 @@ box;shape=box;width=2;height=1.5;depth=2;position=1,1,0;
             lightX.value = scene.light[0].position[0];
             lightY.value = scene.light[0].position[1];
             lightZ.value = scene.light[0].position[2];
+            scene.lightPosition = scene.light[0].position;
 
             lightX.addEventListener('input', () => {
                 scene.light[0].position[0] = lightX.value;
