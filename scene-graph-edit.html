@@ -599,6 +599,7 @@
                 context.container.shift();
                 context.parse(node, this.value);
                 context.parsers.forEach((parser) => parser.apply(node, context));
+                context.named.push(node);
                 return node;
             }
         }
@@ -622,6 +623,66 @@
                 return this.content.flatMap((node) => node.expand(context));
             }
         }
+
+        class DataNode extends MetaNode {
+            static pattern = /^\s*\*(?<value>.+)$/;
+            static match(value) {
+                return DataNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+                const match = value.match(DataNode.pattern);
+                this.value = match.groups.value;
+            }
+            expand(context) {
+                // Generate a temporary node
+                if (context.defaultValue.length > 0) {
+                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
+                }
+                context.modifiers.forEach((modifier) => {
+                    this.value = modifier.apply(this.value);
+                });
+                const node = super.makeNode(context);
+                if (node.name) {
+                    context.names[node.name] = context.names[node.name] || [];
+                    context.names[node.name].unshift(node);
+                }
+                context.container.unshift(this);
+                node[symbols.content] = this.content.flatMap((node) => node.expand(context));
+                context.container.shift();
+
+                if (node.name) {
+                    context.names[node.name].shift();
+                }
+                // If the name is found add the data otherwise return the node
+                if (context.named[node.name]) {
+                    const ref = context.named[node.name];
+                    Object.assign(ref, node, ref);
+                    ref[symbols.content].push(...node.content);
+                    return [];
+                }
+                return node;
+            }
+        }
+
+        class DefaultNode extends MetaNode {
+            static pattern = /^\s*\!(?<value>.+)$/;
+            static match(value) {
+                return DefaultNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+                const match = value.match(DefaultNode.pattern);
+                this.value = match.groups.value;
+            }
+            expand(context) {
+                context.defaultValue.push(this.value);
+                const content = this.content.flatMap((node) => node.expand(context));
+                context.defaultValue.pop();
+                return content;
+            }            
+        }
+        
         class GroupNode extends MetaNode {
             static match(content) {
                 const pattern = /^\s*\[(?<list>[^\]]+)\]\s*(?<name>\S.*)?/;
@@ -665,6 +726,9 @@
             }
             expand(context) {
                 // Process the elements of the value based on the context
+                if (context.defaultValue.length > 0) {
+                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
+                }
                 context.modifiers.forEach((modifier) => {
                     this.list = modifier.apply(this.list);
                     this.value = modifier.apply(this.value);
@@ -770,7 +834,6 @@
             }
         }
 
-
         class PatternNode extends MetaNode {
             static pattern = /^\s*\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*=>\s*(?<replacement>.+)$/;
             static match(content) {
@@ -859,6 +922,9 @@
                 super(value, level, lineNumber);
             }
             expand(context) {
+                if (context.defaultValue.length > 0) {
+                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
+                }
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
@@ -885,6 +951,8 @@
             const lines = definition.split(/\r?\n/);
             const nodeTypes = [
                 ContinuationNode,
+                DefaultNode,
+                DataNode,
                 ConditionalNode,
                 GroupNode,
                 TemplateNode,
@@ -971,9 +1039,11 @@
                 values: {},
                 stack: [],
                 names: {},
+                named: {},
                 container: [],
                 modifiers: [],
                 parsers: [],
+                defaultValue: [],
                 resolve(value) {
                     if (value) {
                         // Convert any variables in the string to the values in the context.
@@ -1902,12 +1972,12 @@
             points: [],
             lines: [],
             graph: [],
+            nodes: [],
             overlays: [],
             events: [],
             activeEvents: [],
             light: [{ position: [0, 0, 0] }],
         }
-
 
         // Vertex shader program
         /**
@@ -4808,7 +4878,7 @@
             });
 
             document.body.addEventListener('touchend', (event) => {
-                event.preventDefault();
+                //event.preventDefault();
                 action = null;
             });
         }
