@@ -156,6 +156,7 @@
         .editor {
             display: flex;
             grid-column: 1 / -1;
+            font-family: monospace;
         }
 
         .line-numbers {
@@ -172,7 +173,6 @@
         }
 
         #input {
-            /*font-size: 100%;*/
             width: 100%;
             height: 100%;
             overflow: auto;
@@ -591,7 +591,6 @@
             links: Symbol('links'),
         }
 
-
         /**
          * Classes of the nodes in the template structure.
          */
@@ -601,6 +600,7 @@
                 this.level = level;
                 this.lineNumber = lineNumber;
                 this.content = [];
+                this.generated = [];
             }
             makeNode(context) {
                 const node = {
@@ -609,12 +609,25 @@
                     [symbols.links]: {},
                     [symbols.values]: [],
                 }
+                context.parse(node, this.value);
+                context.parsers.forEach((parser) => parser.apply(node, context));
+
+                if (node.name) {
+                    context.names[node.name] = context.names[node.name] || [];
+                    context.names[node.name].unshift(node);
+                    context.named[node.name] = node;
+                }
+
                 context.container.unshift(node);
                 node[symbols.content] = this.content.flatMap((node) => node.expand(context));
                 context.container.shift();
-                context.parse(node, this.value);
-                context.parsers.forEach((parser) => parser.apply(node, context));
-                context.named.push(node);
+
+                if (node.name) {
+                    context.names[node.name].shift();
+                }
+
+                this.generated.push(node);
+                node[symbols.value] = this.value;
                 return node;
             }
         }
@@ -658,25 +671,56 @@
                     this.value = modifier.apply(this.value);
                 });
                 const node = super.makeNode(context);
-                if (node.name) {
-                    context.names[node.name] = context.names[node.name] || [];
-                    context.names[node.name].unshift(node);
-                }
-                context.container.unshift(this);
-                node[symbols.content] = this.content.flatMap((node) => node.expand(context));
-                context.container.shift();
 
-                if (node.name) {
-                    context.names[node.name].shift();
-                }
                 // If the name is found add the data otherwise return the node
                 if (context.named[node.name]) {
                     const ref = context.named[node.name];
-                    Object.assign(ref, node, ref);
-                    ref[symbols.content].push(...node.content);
+                    Object.keys(node).forEach((key) => 
+                        ref[key] = ref[key] === undefined ? node[key] : ref[key]);
+                    //Object.assign(ref, node, ref);
+                    ref[symbols.content].push(...node[symbols.content]);
                     return [];
                 }
                 return node;
+            }
+        }
+
+        class UpdateNode extends MetaNode {
+            static pattern = /^\s*\~(?<value>.+)$/;
+            static match(value) {
+                return UpdateNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+                const match = value.match(UpdateNode.pattern);
+                this.value = match.groups.value;
+            }
+            expand(context) {
+                // Generate a temporary node
+                if (context.defaultValue.length > 0) {
+                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
+                }
+                context.modifiers.forEach((modifier) => {
+                    this.value = modifier.apply(this.value);
+                });
+                const dataNode = super.makeNode(context);
+                
+                const testKeys = Object.keys(dataNode).filter((key) => key.startsWith('*'))
+                    .map((key) => key.replace(/^\*/, ''));
+                const valueKeys = Object.keys(dataNode).filter((key) => !key.startsWith('*') && key !== 'name');
+
+                const test = (node) => testKeys.every((key) => node[key] === dataNode[`*${key}`]);
+                const nodes = Object.values(context.named).filter((node) => test(node));
+
+                if (nodes.length) {
+                    nodes.forEach((node) => {
+                        valueKeys.forEach((key) => 
+                            node[key] = node[key] === undefined ? dataNode[key] : node[key]);
+                        node[symbols.content].push(...dataNode[symbols.content]);
+                    });
+                    return [];
+                }
+                return dataNode;
             }
         }
 
@@ -753,19 +797,7 @@
                 const content = this.group.flatMap((item, index) => {
                     context.values[this.name] = item;
                     context.values[`${this.name}_n`] = index;
-                    const node = super.makeNode(context);
-                    if (node.name) {
-                        context.names[node.name] = context.names[node.name] || [];
-                        context.names[node.name].unshift(node);
-                    }
-                    context.container.unshift(this);
-                    node[symbols.content] = this.content.flatMap((node) => node.expand(context));
-                    context.container.shift();
-
-                    if (node.name) {
-                        context.names[node.name].shift();
-                    }
-                    return node;
+                    return super.makeNode(context);
                 });
                 return content;
             }
@@ -797,20 +829,7 @@
                 }
                 context.warnings.push(`Unresolved refernce ${parameter} = ${value} on line: $(this.lineNumber}`);
 
-                const node = super.makeNode(context);
-                if (node.name) {
-                    context.names[node.name] = context.names[node.name] || [];
-                    context.names[node.name].unshift(node);
-                }
-                context.container.unshift(this);
-                node[symbols.content] = this.content.flatMap((node) => node.expand(context));
-                context.container.shift();
-
-                if (node.name) {
-                    context.names[node.name].shift();
-                }
-                return node;
-
+                return super.makeNode(context);
             }
         }
 
@@ -850,7 +869,7 @@
         }
 
         class PatternNode extends MetaNode {
-            static pattern = /^\s*\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*=>\s*(?<replacement>.+)$/;
+            static pattern = /^\s*!\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*=>\s*(?<replacement>.+)$/;
             static match(content) {
                 return this.pattern.test(content);
             }
@@ -858,6 +877,30 @@
                 super(value, level, lineNumber);
 
                 const match = value.match(PatternNode.pattern);
+
+                this.pattern = match.groups.pattern;
+                this.flags = match.groups.flags;
+                this.replacement = match.groups.replacement.trim();
+                try {
+                    this.contextPattern = new RegExp(this.pattern, this.flags);
+                } catch (error) {
+                    
+                }
+            }
+            expand(context) {
+                return this.content.flatMap((node) => node.expand(context));;
+            }
+        }        
+        
+        class ParsedPatternNode extends MetaNode {
+            static pattern = /^\s*\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*=>\s*(?<replacement>.+)$/;
+            static match(content) {
+                return ParsedPatternNode.pattern.test(content);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+
+                const match = value.match(ParsedPatternNode.pattern);
 
                 this.pattern = match.groups.pattern;
                 this.flags = match.groups.flags;
@@ -912,6 +955,7 @@
             apply(node, context) {
                 this.headings.forEach((heading, index) => {
                     if (node[symbols.values][index]) {
+                        heading = heading.trim();
                         if (heading.endsWith('*')) {
                             node.name = node[symbols.values][index];
                             heading = heading.replace(/\*\s*$/, '');
@@ -927,7 +971,43 @@
                 return content;
             }
         }
+        
+        class PathNode extends MetaNode {
+            static match(content) {
+                const pattern = /^[\./].+$/;
+                return pattern.test(content);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+            }
+            expand(context) {
+                if (context.defaultValue.length > 0) {
+                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
+                }
+                context.modifiers.forEach((modifier) => {
+                    this.value = modifier.apply(this.value);
+                });
+                const node = super.makeNode(context);
+                const path = (node[symbols.values][0] + '').replace(/[\./]+$/, '').split(/([\./])/g);
 
+                if (path.length > 2) {
+                    const containerID = numberOrString(path.slice(0, -2).join(''));
+                    const container = context.container.find((node) =>
+                        node[symbols.values][0] === containerID) ||
+                    Object.values(context.named).find((node) =>
+                        node[symbols.values][0] === containerID);
+                    console.log(`ParentID: ${containerID}`);
+                    console.log(`Parent: ${container}`);
+    
+                    if (container) {
+                        container[symbols.content].push(node);
+                        return [];
+                    }
+                }
+                return node;
+            }
+        }
+        
         class PlainNode extends MetaNode {
             static match(content) {
                 const pattern = /^.*$/;   // Match anything not already matched
@@ -943,19 +1023,7 @@
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                const node = super.makeNode(context);
-                if (node.name) {
-                    context.names[node.name] = context.names[node.name] || [];
-                    context.names[node.name].unshift(node);
-                }
-                context.container.unshift(this);
-                node[symbols.content] = this.content.flatMap((node) => node.expand(context));
-                context.container.shift();
-
-                if (node.name) {
-                    context.names[node.name].shift();
-                }
-                return node;
+                return super.makeNode(context);
             }
         }
 
@@ -964,19 +1032,6 @@
          */
         function getStructure(definition) {
             const lines = definition.split(/\r?\n/);
-            const nodeTypes = [
-                ContinuationNode,
-                DefaultNode,
-                DataNode,
-                ConditionalNode,
-                GroupNode,
-                TemplateNode,
-                ReferenceNode,
-                PatternNode,
-                FormatNode,
-                TableNode,
-                PlainNode];
-
             const structure = [];
             const stack = [];
             const names = {};
@@ -1027,21 +1082,17 @@
                     stack.shift();
                 }
 
-                const value = match.groups.value; //line.replace(/^(\s*)(?<level>[0-9]+)?\s*/, '');
+                const value = match.groups.value;
 
-                // Determine node type based on content
-                const type = nodeTypes.find((type) => type.match(value));
-                if (type) {
-                    const metaNode = new type(value, level, lineNumber);
-                    if (stack[0]) {
-                        stack[0].content.push(metaNode);
-                    } else {
-                        structure.push(metaNode)
-                    }
-                    stack.unshift(metaNode);
-                } else {
-                    console.log(`Unrecognised node type on line: ${lineNumber}`);
+                const node = {
+                    value, lineNumber, level, content:[],
                 }
+                if (stack[0]) {
+                    stack[0].content.push(node);
+                } else {
+                    structure.push(node)
+                }
+                stack.unshift(node);
             }
             return structure;
         }
@@ -1051,6 +1102,21 @@
          */
         function expand(structure, parser) {
             const context = {
+                nodeTypes: [
+                    PatternNode,
+                    ContinuationNode,
+                    DefaultNode,
+                    DataNode,
+                    UpdateNode,
+                    ConditionalNode,
+                    GroupNode,
+                    TemplateNode,
+                    ReferenceNode,
+                    ParsedPatternNode,
+                    FormatNode,
+                    TableNode,
+                    PathNode,
+                    PlainNode],
                 values: {},
                 stack: [],
                 names: {},
@@ -1059,6 +1125,7 @@
                 modifiers: [],
                 parsers: [],
                 defaultValue: [],
+                patterns:[],
                 resolve(value) {
                     if (value) {
                         // Convert any variables in the string to the values in the context.
@@ -1086,8 +1153,29 @@
                     return parser(node, this.resolve(value));
                 },
             };
-
-            const expanded = structure.flatMap((node) => node.expand(context));
+            
+            // Determine node type based on content
+            const define = (node) => {
+                context.patterns.forEach((pattern) =>
+                    node.value = node.value.replace(pattern.contextPattern, pattern.replacement));
+                const type = context.nodeTypes.find((type) => type.match(node.value));
+                if (type) {
+                    const typedNode = new type(node.value, node.level, node.lineNumber);
+                    if (typedNode.contextPattern) {
+                        context.patterns.unshift(typedNode);
+                    }
+                    typedNode.content = node.content.flatMap((node) => define(node));
+                    if (typedNode.contextPattern) {
+                        context.patterns.shift();
+                    }
+                    return typedNode;
+                }
+                console.log(`Unrecognised node type on line: ${lineNumber}`);
+                return [];
+            }
+            const defined = structure.flatMap((node) => define(node));
+            
+            const expanded = defined.flatMap((node) => node.expand(context));
             return expanded;
         }
 
@@ -1802,10 +1890,9 @@
          * Generate scene graph for the given structure
          */
         function getGraph(structure, scene) {
-            scene.data = {
-                vertex: [],
-                indices: [],
-            };
+            scene.data.vertex.length = 0;
+            scene.data.indices.length = 0;
+
             let links = 0;
 
             const types = {
@@ -1935,7 +2022,7 @@
 
                     }
 
-                    node.sceneNode = addNode(node, node.name, parent, transform, shape, shader, colour, node.specular || 4, node.specularColour);
+                    node.sceneNode = addNode(node, node.name, stack[0], transform, shape, shader, colour, node.specular || 4, node.specularColour);
                     namedNodes[node.name] = node.sceneNode;
                     if (!parent) {
                         scene.graph.push(node.sceneNode);
@@ -1944,14 +2031,14 @@
                     scene.nodes.unshift(node.sceneNode);
                     const events = getEvents(node, node.sceneNode);
                     scene.events.push(...events);
-                    stack.unshift(node);
+                    stack.unshift(node.sceneNode);
                 }
 
                 if (node[symbols.content].length) {
                     node[symbols.content].forEach((part) => add(part));
                 }
 
-                if (node.position) {
+                if (node.sceneNode) {
                     stack.shift();
                 }
             };
@@ -1992,6 +2079,10 @@
             events: [],
             activeEvents: [],
             light: [{ position: [0, 0, 0] }],
+            data: {
+                vertex: [],
+                indices: [],
+            },
         }
 
         // Vertex shader program
@@ -5546,7 +5637,7 @@
 
                 const tree = new TreeView({
                     getContent: (node) => node[symbols.content],
-                    getTitle: (node) => Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
+                    getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
                 });
                 document.querySelector('.detail').append(tree.node);
 
@@ -5829,7 +5920,7 @@
                     document.querySelector('.line-numbers').scrollTop = input.scrollTop);
 
                 render();
-        }
+            }
 
         /**
          * Return a matrix representing a rotation
