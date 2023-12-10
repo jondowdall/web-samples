@@ -179,6 +179,7 @@
             grid-column: 1 / -1;
             flex-grow: 1;
             resize: none;
+            font-family: monospace;
             /*white-space: nowrap;*/
         }
 
@@ -615,7 +616,7 @@
                 if (node.name) {
                     context.names[node.name] = context.names[node.name] || [];
                     context.names[node.name].unshift(node);
-                    context.named[node.name] = node;
+                    context.nodeList.push(node);
                 }
 
                 context.container.unshift(node);
@@ -672,16 +673,41 @@
                 });
                 const node = super.makeNode(context);
 
+                const referencedNode = context.nodeList.find((existing) => existing.name === node.name);
+                
                 // If the name is found add the data otherwise return the node
-                if (context.named[node.name]) {
-                    const ref = context.named[node.name];
+                if (referencedNode) {
                     Object.keys(node).forEach((key) => 
-                        ref[key] = ref[key] === undefined ? node[key] : ref[key]);
-                    //Object.assign(ref, node, ref);
-                    ref[symbols.content].push(...node[symbols.content]);
+                        referencedNode[key] = referencedNode[key] === undefined ? node[key] : referencedNode[key]);
+                    referencedNode[symbols.content].push(...node[symbols.content]);
                     return [];
                 }
                 return node;
+            }
+        }
+        
+        /**
+         * Node in which all content consists of JSON content
+         */
+        class JSONNode extends MetaNode {
+            static pattern = /^\s*!JSON(?<value>.+)$/;
+            static match(value) {
+                return JSONNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+            }
+            expand(context) {
+                // consolidate the content of this node
+                const getContent = (str, node) =>
+                    str +`${node.value}\n${this.content.reduce(getContent, '')}`;
+                const content = this.content.reduce(getContent, '');
+                try {
+                    return JSON.parse(content);
+                } catch (error) {
+                    context.warning(`Failed to parse the JSON at line ${this.lineNumber}`);
+                }
+                return [];
             }
         }
 
@@ -710,7 +736,7 @@
                 const valueKeys = Object.keys(dataNode).filter((key) => !key.startsWith('*') && key !== 'name');
 
                 const test = (node) => testKeys.every((key) => node[key] === dataNode[`*${key}`]);
-                const nodes = Object.values(context.named).filter((node) => test(node));
+                const nodes = context.nodeList.filter((node) => test(node));
 
                 if (nodes.length) {
                     nodes.forEach((node) => {
@@ -822,12 +848,12 @@
                     this.value = modifier.apply(this.value);
                 });
 
-                const refNode = context.find((node) => node[parameters] === value);
+                const refNode = context.nodeList.find((node) => node[this.parameters] === this.value);
                 if (refNode) {
                     return refNode.source.expand(context);
 
                 }
-                context.warnings.push(`Unresolved refernce ${parameter} = ${value} on line: $(this.lineNumber}`);
+                context.warnings.push(`Unresolved refernce ${this.parameter} = ${this.value} on line: $(this.lineNumber}`);
 
                 return super.makeNode(context);
             }
@@ -994,7 +1020,7 @@
                     const containerID = numberOrString(path.slice(0, -2).join(''));
                     const container = context.container.find((node) =>
                         node[symbols.values][0] === containerID) ||
-                    Object.values(context.named).find((node) =>
+                    context.nodeList.find((node) =>
                         node[symbols.values][0] === containerID);
                     console.log(`ParentID: ${containerID}`);
                     console.log(`Parent: ${container}`);
@@ -1120,12 +1146,13 @@
                 values: {},
                 stack: [],
                 names: {},
-                named: {},
+                nodeList: [],
                 container: [],
                 modifiers: [],
                 parsers: [],
                 defaultValue: [],
                 patterns:[],
+                warnings: [],
                 resolve(value) {
                     if (value) {
                         // Convert any variables in the string to the values in the context.
@@ -2641,9 +2668,9 @@
                 this.width = width;
                 this.height = height;
                 this.depth = depth;
-                const w = width / 2;
-                const h = height / 2;
-                const d = depth / 2;
+                const w = width;// / 2;
+                const h = height;// / 2;
+                const d = depth;// / 2;
                 const start = data.vertex.length / 8;
 
                 const addFace = (p1, p2, p3, p4, normal, mapping) => {
@@ -2664,17 +2691,17 @@
                     }
                 };
                 const points = [
-                    [-w, -h, -d],
-                    [-w, h, -d],
+                    [0, 0, 0],
+                    [0, h, 0],
 
-                    [w, -h, -d],
-                    [w, h, -d],
+                    [w, 0, 0],
+                    [w, h, 0],
 
-                    [w, -h, d],
+                    [w, 0, d],
                     [w, h, d],
 
-                    [-w, -h, d],
-                    [-w, h, d],
+                    [0, 0, d],
+                    [0, h, d],
                 ];
                 mapping = mapping || Array(6);
                 addFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
@@ -3277,12 +3304,23 @@
                     for (let i = 0; i < node.points.length; i += 2) {
                         points.push([node.points[i], node.points[i + 1] || 0]);
                     }
-                    return new Prism(gl, data, points, node.height, node.smooth);
                 }
-                return new Prism(gl, data, undefined, node.height, node.smooth);
+                if (Array.isArray(node.path)) {
+                    if (points.length === 0) {
+                        points.push([node.path[0], node.path[1] || 0]);                        
+                    } else {
+                        points.push(points[points.length - 1][0] + node.path[0], points[points.length - 1][1] + node.path[1]);
+                    }
+                    for (let i = 2; i < node.path.length; i += 2) {
+                        const x = points[points.length - 1][0] + node.path[i];
+                        const z = points[points.length - 1][1] + (node.path[i + 1] || 0);
+                        points.push([x, z]);
+                    }
+                }
+                return new Prism(gl, data, points, node.height, node.smooth);
             }
             static hash(node) {
-                const points = Array.isArray(node.points) ? node.points : [];
+                const points = Array.isArray(node.path) ? node.path : [];
                 return `Prism ${points.join(',')} ${node.height} ${node.smooth}`;
             }
             constructor(gl, data, points = [[0, 0], [0, 1], [0, -1]], height = 1, smooth) {
@@ -3291,7 +3329,7 @@
                 const indexStart = data.indices.length;
                 this.height = height;
                 this.points = points.flatMap((point) =>
-                    [[point[0], -height / 2, point[1]], [point[0], height / 2, point[1]]]);
+                    [[point[0], 0, point[1]], [point[0], height, point[1]]]);
 
                 const addFace = (p1, p2, p3, p4, mapping) => {
                     const v1 = subtract(p2, p1);
@@ -3326,9 +3364,9 @@
 
                 const offset = data.indices.length * 2;
                 const baseIndex = data.vertex.length / 8;
-                data.vertex.push(...points.flatMap((point) => [point[0], -height / 2, point[1], 0, -1, 0, 0, 0]));
+                data.vertex.push(...points.flatMap((point) => [point[0], 0, point[1], 0, -1, 0, 0, 0]));
                 const topIndex = data.vertex.length / 8;
-                data.vertex.push(...points.flatMap((point) => [point[0], height / 2, point[1], 0, 1, 0, 0, 0]));
+                data.vertex.push(...points.flatMap((point) => [point[0], height, point[1], 0, 1, 0, 0, 0]));
 
                 const d = [];
                 for (let j = 0; j < points.length; ++j) {
@@ -3382,6 +3420,16 @@
                 ]);
             }
             intersects(line) {
+                const planes = [];
+                for (let i = 0; i < this.points.length; i += 2) {
+                    const point = this.points[i];
+                    const p2 = this.points[(i + 1) % this.points.length];
+                    const p3 = this.points[(i + 2) % this.points.length];
+                    const v1 = subtract(p2, point);
+                    const v2 = subtract(p3, point);
+                    const normal = normalise(cross(v1, v2));
+                    planes.push({point, normal});
+                };
                 return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
@@ -4707,7 +4755,7 @@
                 }
                 report(action);
             });
-
+/*
             node.addEventListener('touchstart', (event) => {
                 event.preventDefault();
 
@@ -4737,7 +4785,7 @@
                 }
                 report(action);
             });
-
+*/
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
                 if (action === 'pinch') {
@@ -4989,9 +5037,6 @@
             });
         }
 
-
-
-
         /**
          * Add an overlay for the specified node
          */
@@ -5052,17 +5097,6 @@
                             content.append(showEntry(`${i}`, element)));
                     }
                 });
-                /*
-                for (let i = 0; i < value.length; ++i) {
-                    if (stack.includes(value[i])) {
-                        content.append(showEntry(name, '...'));
-                    } else {
-                        stack.push(value[i]);
-                        content.append(showEntry(`${i}`, value[i], stack));
-                        stack.pop();
-                    }
-                }
-                */
                 return container;
             } else if (value === undefined) {
                 return `${name}: undefined`;
@@ -5148,7 +5182,6 @@
         }
 
         const actions = {};
-
 
         /**
          * Add drag control to an element
@@ -5563,7 +5596,7 @@
          */
         async function load() {
             const input = document.getElementById('input');
-            const name = 'test-scene.txt.download';//document.getElementById('filename').value;
+            const name = 'test-scene.txt';//document.getElementById('filename').value;
             
             const response = await fetch(`${name}`);
             const content = await response.text();
