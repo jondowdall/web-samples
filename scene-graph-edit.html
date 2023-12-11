@@ -821,7 +821,7 @@
 
                 setGroupData(this);
                 const content = this.group.flatMap((item, index) => {
-                    context.values[this.name] = item;
+                    context.values[this.name || '_'] = item;
                     context.values[`${this.name}_n`] = index;
                     return super.makeNode(context);
                 });
@@ -1124,6 +1124,69 @@
         }
 
         /**
+         *
+         */
+        function numberOrString(input) {
+            const num = Number(input);
+            if (isNaN(num)) {
+                return input.trim();
+            }
+            return num;
+        }
+
+        /**
+         * Convert a string to a value or list of values
+         */
+        function getValue(str) {
+            const list = str.split(/\s*,\s*/);
+            if (list.length > 1) {
+                return list.map((i) => numberOrString(i));
+            }
+            return numberOrString(str);
+        }
+
+        /**
+         * Generate an new structure from the definition
+         */
+        function defaultParser(node, value, context) {
+            node[symbols.values] = [];
+            if (value) {
+                const [...data] = value.split(/[\|\t;]/g);
+                node.name = data[0].trim();
+                data.forEach((item) => {
+                    item = item.trim();
+                    if (item.includes('=')) {
+                        const [name, value] = item.split(/=/);
+                        if (/^"[^"]+"$/.test(value)) {
+                            node[name] = value;
+                        } else if (value.includes(',')) {
+                            node[name] = value.split(/,/g).map((val) => numberOrString(val));
+                        } else {
+                            node[name] = numberOrString(value);
+                        }
+                    } else if (item.startsWith('@')) {
+                        const name = item.slice(1);
+                        const referencedNode = context.nodeList.find((node) => node.name === name);
+                        if (referencedNode) {
+                            Object.entries(referencedNode).forEach(([key, value]) =>
+                                node[key] = key in node ? node[key] : value);
+                        } else {
+                            node[symbols.values].push(item);
+                        }
+                    } else {
+                        if (/^"[^"]+"$/.test(item)) {
+                            node[symbols.values].push(item);
+                        } else if (item.includes(',')) {
+                            node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
+                        } else {
+                            node[symbols.values].push(numberOrString(item));
+                        }
+                    }
+                });
+            }
+        }        
+        
+        /**
          * Expand the structure
          */
         function expand(structure, parser) {
@@ -1157,8 +1220,8 @@
                     if (value) {
                         // Convert any variables in the string to the values in the context.
                         value = value.replace(/<([^>]*)>/g, (match, name) =>
-                            this.values[name] || `<name>`);
-                        value = value.replace(/\{([^:]+)(:0+)?\}/g, (match, expr, format) => {
+                            this.values[name || '_'] || `<name>`);
+                        value = value.replace(/\{([^:\}]+)(:0+)?\}/g, (match, expr, format) => {
                             let result = match;
                             const names = Object.keys(context.values).map((name) => name ? name : '_');
                             const values = Object.values(context.values);
@@ -1177,7 +1240,7 @@
                 },
                 parse(node, value) {
                     const resolved = this.resolve(value);
-                    return parser(node, this.resolve(value));
+                    return parser(node, this.resolve(value), this);
                 },
             };
             
@@ -1413,257 +1476,6 @@
                 node.nodes[0].innerHTML = '&CirclePlus;';
                 node.nodes[1].classList.add('collapse');
             }
-        }
-
-        /**
-         *
-         */
-        function numberOrString(input) {
-            const num = Number(input);
-            if (isNaN(num)) {
-                return input.trim();
-            }
-            return num;
-        }
-
-        /**
-         * Convert a string to a value or list of values
-         */
-        function getValue(str) {
-            const list = str.split(/\s*,\s*/);
-            if (list.length > 1) {
-                return list.map((i) => numberOrString(i));
-            }
-            return numberOrString(str);
-        }
-
-        /**
-         * Generate an new structure from the definition
-         */
-        function defaultParser(node, value) {
-            node[symbols.values] = [];
-            if (value) {
-                const [...data] = value.split(/[\|\t;]/g);
-                node.name = data[0].trim();
-                data.forEach((item) => {
-                    item = item.trim();
-                    if (item.includes('=')) {
-                        const [name, value] = item.split(/=/);
-                        if (/^"[^"]+"$/.test(value)) {
-                            node[name] = value;
-                        } else if (value.includes(',')) {
-                            node[name] = value.split(/,/g).map((val) => numberOrString(val));
-                        } else {
-                            node[name] = numberOrString(value);
-                        }
-                    } else {
-                        if (/^"[^"]+"$/.test(item)) {
-                            node[symbols.values].push(item);
-                        } else if (item.includes(',')) {
-                            node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
-                        } else {
-                            node[symbols.values].push(numberOrString(item));
-                        }
-                    }
-                });
-            }
-        }
-
-        /**
-         * Generate an new structure from the definition
-         */
-        function parseStructure(structure, parser = defaultParser) {
-            const names = {};
-
-            const evaluate = (string, context) => {
-                const path = (sep, start = 0, end) =>
-                    context.path.toReversed().slice(start, end).map((node) => node.name).join(sep || '');
-                const pathUp = (sep, start = 0, end) =>
-                    context.path.slice(start, end).map((node) => node.name).join(sep || '');
-
-                const level = (val) =>
-                    context.path[val < 0 ? Math.abs(val) : context.path.length - val].name || '';
-                const names = [];
-                const values = [];
-                Object.keys(context.parameters).filter((key, value) => key).forEach((key) => {
-                    names.push(key);
-                    values.push(context.parameters[key]);
-                });
-                try {
-                    const func = new Function('path', 'pathUp', 'level', ...names, `return ${string};`);
-                    return func(path, pathUp, level, ...values);
-                } catch (e) {
-                    console.log(e);
-                }
-                return string;
-            };
-
-            const resolve = (string, context) => {
-                string = string.replace(/\[\s*-?([0-9]+)\s*\]/, //'_path[$1]');
-                    (m, p) => `${context.path[context.path.length - Number(p)] || ''}`);
-                string = string.replace(/\[\s*\+\s*(?<sep>.+)?\s*\]/,
-                    (m, sep) => `${context.path.join(sep || ' ')}`);
-                string = string.replace(/\[\s*-\s*(?<sep>.+)?\s*\]/,
-                    (m, sep) => `${context.path.toReversed().join(sep || ' ')}`);
-
-                for (const [name, value] of Object.entries(context.parameters)) {
-                    const pattern = new RegExp(`\\b${name}\\b`, 'g');
-                    string = string.replace(pattern, value);
-                }
-
-                return `${string}`;
-            };
-
-            const root = [];
-
-            const patternStack = [];
-
-            const formatStack = [];
-            const addNode = (source, parent, context = { resolved: true, parameters: {}, path: [], nesting: [] }) => {
-                context = Object.assign({}, context);
-                let node = { source, parts: [], content: source.content, data: {}, };
-                const controlNode = source.patternNode || source.groupNode || source.conditionalNode || source.templateNode || source.formatNode;
-                const parts = [...source[symbols.content]];
-
-                if (source.patternNode) {
-                    try {
-                        patternStack.push({
-                            match: new RegExp(source.pattern, source.flags),
-                            replacement: source.replacement || '',
-                        });
-                    } catch (e) {
-                        console.log(e);
-                    }
-                }
-
-                if (source.formatNode) {
-                    formatStack.unshift(source);
-                }
-
-                if (!controlNode) {
-                    patternStack.forEach((pattern) =>
-                        node.content = node.content.replace(pattern.match, pattern.replacement));
-                    node.content = node.content.replace(/<([^>]*)>/g, (match, label) => {
-                        if (context.parameters[label]) {
-                            return context.parameters[label];
-                        }
-                        const index = Number(label);
-                        if (!isNaN(index) && context.nesting.length) {
-                            return context.nesting[Math.abs(index) % context.nesting.length][0];
-                        }
-                        const keys = Object.keys(names).sort((a, b) => b.length - a.length);
-                        const name = keys.find((key) => label.startsWith(key));
-                        if (name) {
-                            parts.unshift(...names[name][symbols.source][symbols.content]);
-                            return names[name].content;
-                        }
-                        return match;
-                    });
-                    node.content = node.content.replace(/\{([^}]+)\}/g, (match, p1) => evaluate(p1, context));
-                    node.content = node.content.replace(/:([^\t\|;:]+)/g, (all, item) => {
-                        if (context.parameters[item]) {
-                            return `:${context.parameters[item]}`;
-                        }
-                        const keys = Object.keys(names).sort((a, b) => b.length - a.length);
-                        const name = keys.find((key) => item.startsWith(key));
-                        if (name) {
-                            parts.unshift(...names[name][symbols.source][symbols.content]);
-                            return `:${names[name].content}`;
-                        }
-                        return all;
-                    });
-                }
-
-                parser(node, context);
-                if (formatStack.length) {
-                    const match = node.content.match(formatStack[0].pattern);
-                    if (match) {
-                        var index = 0;
-                        const data = Object.entries(match.groups).reduce((obj, [name, value]) => {
-                            obj[name] = getValue(value);
-                            return obj;
-                        }, {});
-                        node = Object.assign(data, node);
-                    }
-                }
-
-                if (!controlNode) {
-                    const path = context.path.map((node) => node.name);
-                    let l = 1;
-                    while (names[`${node.name}, ${path.slice(0, l).join(', ')}`] && l < path.length) {
-                        l += 1;
-                    }
-                    node.uniqueName = `${node.name}, ${path.slice(0, l).join(', ')}`
-                }
-
-                if (!controlNode) {
-                    context.path.unshift(node);
-                }
-
-                const matched = (!source.conditionalNode) || source.test(context);
-
-                if (source.templateNode) {
-                    if (!/(<[^>]*>)|(\{[^\}]*\})/.test(node.content)) {
-                        //document.body.style.background = 'pink';
-                        node.content = `${node.content} <>`;
-                    }
-
-                    node[symbols.content] = [...source[symbols.content]];
-                    if (context.parameters[''] !== undefined) {
-                        context.nesting.unshift([context.parameters[''], context.parameters['_n']])
-                    }
-                    node.lineNumber = source.lineNumber;
-                    source.group.forEach((item, index) => {
-                        context.parameters[''] = item;
-                        context.parameters[`_n`] = index;
-                        /*
-                        context.parameters[node.name] = item;
-                        context.parameters[`${node.name}_n`] = index;
-                        */
-                        addNode(node, parent, context);
-                    });
-                    if (context.parameters[''] !== undefined) {
-                        context.nesting.shift();
-                    }
-                }
-
-                if (parts.length && matched && !source.referenceNode) {
-                    if (source.groupNode) {
-                        source.group.forEach((item, index) => {
-                            context.parameters[source.name] = item;
-                            context.parameters[`${source.name}_n`] = index;
-                            parts.forEach((part) => addNode(part, parent, context));
-                        });
-                    } else if (source.patternNode || source.formatNode) {
-                        parts.forEach((part) => addNode(part, parent, context));
-                    } else {
-                        parts.forEach((part) => addNode(part, node, context));
-                    }
-                }
-                names[node.name] = names[node.name] || node;
-                names[node.uniqueName] = node;
-                if (!controlNode) {
-                    context.path.shift();
-                }
-                if (!controlNode) {
-                    if (parent) {
-                        parent[symbols.content].push(node);
-                        node.parent = parent;
-                    } else {
-                        root.push(node);
-                    }
-                }
-                if (source.patternNode) {
-                    patternStack.pop();
-                }
-                if (source.formatNode) {
-                    formatStack.shift();
-                }
-
-            };
-            structure.forEach((node) => addNode(node));
-
-            return root;
         }
 
         var tree = {
@@ -1979,8 +1791,7 @@
                         ++index;
                     }
                 }
-                let position;
-                position = node.position;
+                let position = node.position;
 
                 const shapeName = positionalName || (node?.shape ? node.shape.toLowerCase() : 'Box');
                 const typeName = shapeName.slice(0, 1).toUpperCase() + shapeName.slice(1).toLowerCase();
@@ -2049,9 +1860,11 @@
 
                     }
 
-                    node.sceneNode = addNode(node, node.name, stack[0], transform, shape, shader, colour, node.specular || 4, node.specularColour);
+                    node.sceneNode = addNode(node, node.name, transform, shape, shader, colour, node.specular || 4, node.specularColour);
                     namedNodes[node.name] = node.sceneNode;
-                    if (!parent) {
+                    if (stack.length > 0) {
+                        stack[0].children.push(node.sceneNode);
+                    } else {
                         scene.graph.push(node.sceneNode);
                     }
                     node.sceneNode.sourceNode = node;
@@ -3320,7 +3133,7 @@
                 return new Prism(gl, data, points, node.height, node.smooth);
             }
             static hash(node) {
-                const points = Array.isArray(node.path) ? node.path : [];
+                const points = Array.isArray(node.points) ? node.points : [];
                 return `Prism ${points.join(',')} ${node.height} ${node.smooth}`;
             }
             constructor(gl, data, points = [[0, 0], [0, 1], [0, -1]], height = 1, smooth) {
@@ -3359,7 +3172,7 @@
                 }
 
                 this.elements = [
-                    { mode: gl.TRIANGLE_STRIP, count: points.length * 4, offset: indexStart * 2 },
+                    { mode: gl.TRIANGLE_STRIP, count: (points.length + 1) * 4, offset: indexStart * 2 },
                 ];
 
                 const offset = data.indices.length * 2;
@@ -3570,7 +3383,7 @@
         /**
          *
          */
-        function addNode(source, name, parent, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour) {
+        function addNode(source, name, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour) {
 
             shininess = shininess || 1 + 5 * Math.random();
 
@@ -3580,10 +3393,6 @@
             });
             if (source.texture) {
                 node.texture = getTexture(source.texture, scene);
-            }
-
-            if (parent) {
-                parent.children.push(node);
             }
             return node;
         }
@@ -5669,7 +5478,8 @@
                 const view2 = document.getElementById('top-view');
 
                 const tree = new TreeView({
-                    getContent: (node) => node[symbols.content],
+                    //getContent: (node) => node[symbols.content],
+                    getContent: (node) => node.children || [],
                     getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
                 });
                 document.querySelector('.detail').append(tree.node);
@@ -5867,25 +5677,29 @@
                 };
 
                 input.addEventListener('input', (event) => {
-                    try {
-                        //localStorage.setItem('structure', input.value);
+                    //localStorage.setItem('structure', input.value);
                         const structure = getStructure(input.value);
                         const expanded = expand(structure, defaultParser);
 
 
-                        tree.setContent(expanded);
+                        //tree.setContent(expanded);
 
 
                         expandedTreeNode.innerHTML = '';
                         getGraph(expanded, scene);
+                        
+                        tree.setContent(scene.graph);
+                        
                         expandedTreeNode.appendChild(getView(expanded, sceneNodeActions));
                         const lines = document.querySelector('.line-numbers');
                         updateLineNumbers(input, lines);
+                        /*
                     } catch (e) {
                         const err = Object.entries(e).map(([key, value]) => `${key}: ${value}`);
                         err.forEach((err) =>
                             console.log(err));
                     }
+                    */
                 });
 
                 const structure = getStructure(input.value);
