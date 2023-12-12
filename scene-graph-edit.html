@@ -110,6 +110,7 @@
             grid-template-columns: 1fr min-content 1fr;
             /* grid-template-rows: min-content 1fr min-content 1fr; */
             background-color: lightgray;
+            overflow: hidden;
         }
 
         .vertical-bar {
@@ -2465,25 +2466,28 @@
          *
          */
         class Box extends shape {
-            static make(gl, data, node, index) {
+            static parameters(node) {
                 const size = node.size || [1, 1, 1];
                 const width = node.width || size[0] || 1;
                 const height = node.height || size[1] || size[0] || 1;
                 const depth = node.depth || size[2] || size[0] || 1;
                 const mapping = node.mapping;
-                return new Box(gl, data, width, height, depth, mapping);
+                return [width, height, depth, mapping];
+            }
+            static make(gl, data, node, index) {
+                return new Box(gl, data, ...Box.parameters(node));
             }
             static hash(node) {
-                return `box ${node.width} ${node.height} ${node.depth}`;
+                return `box ${Box.parameters(node)}`;
             }
             constructor(gl, data, width = 1, height = 1, depth = 1, mapping) {
                 super();
                 this.width = width;
                 this.height = height;
                 this.depth = depth;
-                const w = width;// / 2;
-                const h = height;// / 2;
-                const d = depth;// / 2;
+                const w = width;
+                const h = height;
+                const d = depth;
                 const start = data.vertex.length / 8;
 
                 const addFace = (p1, p2, p3, p4, normal, mapping) => {
@@ -3140,9 +3144,9 @@
                 super();
                 const start = data.vertex.length / 8;
                 const indexStart = data.indices.length;
+
                 this.height = height;
-                this.points = points.flatMap((point) =>
-                    [[point[0], 0, point[1]], [point[0], height, point[1]]]);
+                this.points = points;
 
                 const addFace = (p1, p2, p3, p4, mapping) => {
                     const v1 = subtract(p2, p1);
@@ -3165,14 +3169,16 @@
                     }
                 };
 
-                for (let i = 0; i < points.length; ++i) {
-                    const j = (i + 1) % points.length;
-                    addFace(this.points[i * 2], this.points[i * 2 + 1], this.points[j * 2], this.points[j * 2 + 1])
-                    data.indices.push(start + i * 4, start + 1 + i * 4, start + 2 + i * 4, start + 3 + i * 4);
-                }
-
+                const base = (point) => [point[0], 0, point[1]];
+                const top = (point) => [point[0], height, point[1]];
+                points.forEach((point, index) => {
+                    const next = points[(index + 1) % points.length];
+                    addFace(base(point), top(point), base(next), top(next));
+                    const idx = start + index * 4;
+                    data.indices.push(idx, idx + 1, idx + 2, idx + 3);
+                });
                 this.elements = [
-                    { mode: gl.TRIANGLE_STRIP, count: (points.length + 1) * 4, offset: indexStart * 2 },
+                    { mode: gl.TRIANGLE_STRIP, count: 2 + points.length * 4, offset: indexStart * 2 },
                 ];
 
                 const offset = data.indices.length * 2;
@@ -3216,12 +3222,13 @@
                 }
                 if (count > 0) {
                     this.elements.push({ mode: gl.TRIANGLES, count, offset });
+                    //this.elements.push({ mode: gl.LINES, count, offset });
                 }
             }
             get3dPoints() {
                 return [
-                    ...points.map((point) => [point[0], -this.height / 2, point[1]]),
-                    ...points.map((point) => [point[0], this.height / 2, point[1]]),
+                    ...this.points.map((point) => [point[0], 0, point[1]]),
+                    ...this.points.map((point) => [point[0], this.height, point[1]]),
                 ];
             }
             getSides() {
@@ -3233,16 +3240,13 @@
                 ]);
             }
             intersects(line) {
-                const planes = [];
-                for (let i = 0; i < this.points.length; i += 2) {
-                    const point = this.points[i];
-                    const p2 = this.points[(i + 1) % this.points.length];
-                    const p3 = this.points[(i + 2) % this.points.length];
-                    const v1 = subtract(p2, point);
-                    const v2 = subtract(p3, point);
+                const planes = this.points.map((point, index) => {
+                    const next = this.points[(index + 1) % this.points.length];
+                    const v1 = [next[0] - point[0], 0, next[1] - point[1]]
+                    const v2 = [0, 1, 0];
                     const normal = normalise(cross(v1, v2));
-                    planes.push({point, normal});
-                };
+                    return {point: [point[0], 0, point[1]], normal};
+                });
                 return convexHullIntercept(line, planes);
             }
             draw2d(context, transform) {
