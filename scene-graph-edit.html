@@ -3178,7 +3178,7 @@
                     data.indices.push(idx, idx + 1, idx + 2, idx + 3);
                 });
                 this.elements = [
-                    { mode: gl.TRIANGLE_STRIP, count: 2 + points.length * 4, offset: indexStart * 2 },
+                    { mode: gl.TRIANGLE_STRIP, count: points.length * 4, offset: indexStart * 2 },
                 ];
 
                 const offset = data.indices.length * 2;
@@ -3187,31 +3187,61 @@
                 const topIndex = data.vertex.length / 8;
                 data.vertex.push(...points.flatMap((point) => [point[0], height, point[1], 0, 1, 0, 0, 0]));
 
+                const det = (u, v) => u[0] * v[1] - u[1] * v[0];
+
+                const winding = (p0, p1, p2) => {
+                    const v1 = [p1[0] - p0[0], p1[1] - p0[1]];
+                    const v2 = [p2[0] - p1[0], p2[1] - p1[1]];
+
+                    return det(v1, v2) / (Math.hypot(...v1) * Math.hypot(...v2));                    
+                }
+
+                const inside = (p0, d1, d2, point) => {                    
+                    const a = (det(point, d2) - det(p0, d2)) / det(d1, d2);
+                    const b = (det(p0, d1) - det(point, d1)) / det(d1, d2);
+
+                    return (a > 0) && (b > 0) && (a + b < 1);;
+                }
+                
+                const empty = (p0, p1, p2) => {
+                    const d1 = [p0[0] - p1[0], p0[1] - p1[1]];
+                    const d2 = [p2[0] - p1[0], p2[1] - p1[1]];
+
+                    return !points.some((point) => inside(p1, d1, d2, point));
+                }
+                
                 const d = [];
                 for (let j = 0; j < points.length; ++j) {
                     const i = (j + points.length - 1) % points.length;
                     const k = (j + 1) % points.length;
-
-                    const v1 = [points[j][0] - points[i][0], points[j][1] - points[i][1]];
-                    const v2 = [points[k][0] - points[j][0], points[k][1] - points[j][1]];
-
-                    d.push(v1[0] * v2[1] - v1[1] * v2[0]);
+                    d.push(winding(points[i], points[j], points[k]));
                 }
+                
                 const sign = d.reduce((sum, d) => sum + d, 0);
                 let count = 0;
                 if (d.some((d) => (d * sign) < 0)) {
-                    points.forEach((point, index) => {
-                        if ((d[index] * sign) < 0) {
-                            let next = (index + 1) % points.length;
-                            while (next !== index && ((d[next] * sign) > 0)) {
-                                const third = (next + 1) % points.length;
-                                data.indices.push(baseIndex + index, baseIndex + next, baseIndex + third);
-                                data.indices.push(topIndex + index, topIndex + next, topIndex + third);
-                                count += 6;
-                                next = third;
-                            }
+                    const remaining = points.map((point, index) => index);
+                    let current = 0;
+                    let loops = 0;
+                    let indices = [];
+                    while (remaining.length > 2 && loops < 1000) {
+                        const prior = (current + remaining.length - 1) % remaining.length;
+                        const next = (current + 1) % remaining.length;
+                        const p0 = points[remaining[prior]];
+                        const p1 = points[remaining[current]];
+                        const p2 = points[remaining[next]];
+                        if (winding(p0, p1, p2) * sign > 0 && empty(p0, p1, p2)) {
+                            indices.push(remaining[prior], remaining[current], remaining[next]);
+                            remaining.splice(current, 1);         
+                        } else {
+                            current = next;
                         }
-                    });
+                        current = current % remaining.length;
+                        ++loops;
+                    }
+                    data.indices.push(...indices.map((i) => i + baseIndex));
+                    data.indices.push(...indices.map((i) => i + topIndex));
+                    count += indices.length * 2;
                 } else if (points.length > 2) {
                     for (let i = 1; i < points.length; ++i) {
                         const next = (i + 1) % points.length;
@@ -3222,7 +3252,6 @@
                 }
                 if (count > 0) {
                     this.elements.push({ mode: gl.TRIANGLES, count, offset });
-                    //this.elements.push({ mode: gl.LINES, count, offset });
                 }
             }
             get3dPoints() {
@@ -3240,6 +3269,7 @@
                 ]);
             }
             intersects(line) {
+                return false;
                 const planes = this.points.map((point, index) => {
                     const next = this.points[(index + 1) % this.points.length];
                     const v1 = [next[0] - point[0], 0, next[1] - point[1]]
