@@ -397,6 +397,7 @@
             <label for="split">Split</label><input id="split" type="checkbox">
             <label for="move">Move</label><input id="move" type="checkbox">
             <button id="reset">Reset</button>
+            <button id="upright">Upright</button>
         </div>
         <div class="layout-row">
             <div id="edit">
@@ -416,7 +417,7 @@
                     <input id="light-y" class="light-position" type="range" min="-100" max="100">
                     <input id="light-z" class="light-position" type="range" min="-100" max="100">
                 </div>
-                <canvas id="scene"></canvas>
+                <canvas id="scene" tabindex="1"></canvas>
             </div>
         </div>
         <!--div id="top-view-container"><canvas id="top-view"></canvas></div-->
@@ -1827,7 +1828,7 @@
                     if (node.rotation && node.rotation.length === 4) {
                         node.rotation = node.rotation.map((v) => isNaN(v) ? 0 : v);
                         const angle = Math.PI * node.rotation[0] / 180;
-                        const axis = normalise([...node.rotation.slice(1)]);
+                        const axis = normalised([...node.rotation.slice(1)]);
                         const q = new Quaternion(
                             Math.cos(angle / 2),
                             Math.sin(angle / 2) * axis[0],
@@ -2220,7 +2221,6 @@
 
             // Send the source to the shader object
             gl.shaderSource(shader, source);
-            report('hello');
 
             //document.body.style.background = 'yellow';
 
@@ -2288,7 +2288,7 @@
                 const p2 = points[i * 3 + 2].slice(0, 3);
                 const v1 = subtract(p0, p1);//[p0[0] - p1[0], p0[1] - p1[1], p0[2] - p1[2]];
                 const v2 = subtract(p1, p2);//[p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2]];
-                const n = normalise((v1, v2));
+                const n = normalised((v1, v2));
                 vertex.push(...p0.slice(0, 3), ...n, ...points[i * 3].slice(3));
                 indexBuffer.push(index++);
                 vertex.push(...p1.slice(0, 3), ...n, ...points[i * 3 + 1].slice(3));
@@ -2347,7 +2347,7 @@
             }
             indexBuffer.push(first);
             const count = 1 + nSegments
-            return { mode: gl.LINE_STRIP, count, offset };
+            return { mode: gl.LINE_STRIP, count, offset, colour: [0, 0, 0.2, 1.0] };
         }
 
 
@@ -2452,10 +2452,10 @@
         class shape {
             constructor(data) { }
             updateBuffers(gl) { }
-            draw3d(gl) {
+            draw3d(gl, shader) {
                 this.elements.forEach((shape) => {
-                    if (this.colour) {
-                        gl.uniform4fv(node.shader.colour, shape.colour);
+                    if (shape.colour) {
+                        gl.uniform4fv(shader.colour, shape.colour);
                     }
                     gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
                 });
@@ -3151,7 +3151,7 @@
                 const addFace = (p1, p2, p3, p4, mapping) => {
                     const v1 = subtract(p2, p1);
                     const v2 = subtract(p3, p1);
-                    const normal = normalise(cross(v1, v2));
+                    const normal = normalised(cross(v1, v2));
                     if (mapping !== undefined) {
                         const u1 = (mapping % 4) / 4;
                         const v1 = Math.floor(mapping / 4) / 3;
@@ -3253,6 +3253,15 @@
                 if (count > 0) {
                     this.elements.push({ mode: gl.TRIANGLES, count, offset });
                 }
+                this.elements.push(addLineLoop(gl, data.indices, points.length, baseIndex));
+                this.elements.push(addLineLoop(gl, data.indices, points.length, topIndex));
+                {
+                    const offset = data.indices.length * 2;
+                    for (let i = 0; i < points.length; ++i) {
+                        data.indices.push(baseIndex + i, topIndex + i);
+                    }
+                    this.elements.push({ mode: gl.LINES, count: points.length * 2, offset });
+                }
             }
             get3dPoints() {
                 return [
@@ -3274,7 +3283,7 @@
                     const next = this.points[(index + 1) % this.points.length];
                     const v1 = [next[0] - point[0], 0, next[1] - point[1]]
                     const v2 = [0, 1, 0];
-                    const normal = normalise(cross(v1, v2));
+                    const normal = normalised(cross(v1, v2));
                     return {point: [point[0], 0, point[1]], normal};
                 });
                 return convexHullIntercept(line, planes);
@@ -3382,11 +3391,11 @@
                     scene.data.vertex[this.pointIndex2 + 2] = to[2];
                 }
             }
-            draw3d(gl) {
+            draw3d(gl, shader) {
                 if (this.fromNode && this.toNode) {
                     this.elements.forEach((shape) => {
-                        if (this.colour) {
-                            gl.uniform4fv(node.shader.colour, shape.colour);
+                        if (shape.colour) {
+                            gl.uniform4fv(shader.colour, shape.colour);
                         }
                         gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
                     });
@@ -3444,7 +3453,7 @@
             gl.uniformMatrix3fv(node.shader.normalMatrix, false, normalMatrix);
             node.shader.setNodeData(gl, node);
             if (node.shape) {
-                node.shape.draw3d(gl);
+                node.shape.draw3d(gl, node.shader);
             }
             node.children.forEach((child) => drawNode(gl, node.world, child, time));
             node.movement = identityMatrix();
@@ -3470,7 +3479,7 @@
                 gl.uniformMatrix3fv(node.shader.normalMatrix, false, normalMatrix);
                 node.shader.setNodeData(gl, node);
                 if (node.shape) {
-                    node.shape.draw3d(gl);
+                    node.shape.draw3d(gl, node.shader);
                 }
             }
             node.children.forEach((child) => drawNode2(gl, child, shader));
@@ -3527,7 +3536,6 @@
          */
         function glErrors(gl, context = '') {
             const err = gl.getError();
-            report('hello');
 
             if (err) {
                 const errors = [];
@@ -3629,26 +3637,26 @@
                 return `Camera;lookAt=${str(camera.target)};position=${str(camera.position)};up=${str(camera.up)}`;
             }
             zAxis() {
-                return normalise(subtract(this.target, this.position));
+                return normalised(subtract(this.target, this.position));
             }
             xAxis() {
-                return xaxis = normalise(cross(this.zAxis(), this.up));
+                return xaxis = normalised(cross(this.zAxis(), this.up));
             }
             yAxis() {
-                const zAxis = normalise(subtract(this.target, this.position));
-                const xAxis = normalise(cross(zAxis, this.up));
+                const zAxis = normalised(subtract(this.target, this.position));
+                const xAxis = normalised(cross(zAxis, this.up));
                 return cross(xAxis, zAxis);
             }
             axes() {
-                const zAxis = normalise(subtract(this.target, this.position));
-                const xAxis = normalise(cross(zAxis, this.up));
+                const zAxis = normalised(subtract(this.target, this.position));
+                const xAxis = normalised(cross(zAxis, this.up));
                 const yAxis = cross(xAxis, zAxis);
 
                 return { xAxis, yAxis, zAxis };
             }
             viewMatrix(eye, at, up) {
-                const zaxis = normalise(subtract(this.target, this.position));
-                const xaxis = normalise(cross(zaxis, this.up));
+                const zaxis = normalised(subtract(this.target, this.position));
+                const xaxis = normalised(cross(zaxis, this.up));
                 const yaxis = cross(xaxis, zaxis);
 
                 negate(zaxis);
@@ -3667,7 +3675,7 @@
                 updateCamera(this.getString);
             }
             forward(distance) {
-                const zaxis = normalise(subtract(this.target, this.position));
+                const zaxis = normalised(subtract(this.target, this.position));
                 const movement = scaled(zaxis, distance);
                 this.position = add(this.position, movement);
                 this.target = add(this.target, movement);
@@ -3690,6 +3698,14 @@
 
                 this.position = add(this.target, offset);
                 updateCamera(this.getString);
+            }
+            spinY(angle) {
+                const offset = subtract(this.target, this.position);
+                rotate(offset, [0, 1, 0], angle);
+                rotate(this.up, [0, 1, 0], angle);
+
+                this.target = add(this.position, offset);
+                updateCamera(this.getString);                
             }
             pitch(angle) {
                 const zaxis = subtract(this.target, this.position);
@@ -3714,11 +3730,11 @@
             getLine(x, y, fieldOfView) {
                 const aspect = scene.gl.canvas.clientWidth / scene.gl.canvas.clientHeight;
                 const fov = fieldOfView * Math.PI / 180;
-                const zaxis = normalise(subtract(this.target, this.position));
-                const xaxis = normalise(cross(zaxis, this.up));
+                const zaxis = normalised(subtract(this.target, this.position));
+                const xaxis = normalised(cross(zaxis, this.up));
                 const yaxis = cross(xaxis, zaxis);
                 const d = 1 / Math.tan(fov / 2);
-                const direction = normalise(add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d)));
+                const direction = normalised(add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d)));
                 return { point: this.position, direction };
             }
         }
@@ -4116,11 +4132,22 @@
         }
 
         /**
-         *
+         * Normalise the input vector
          */
-        function normalise(v) {
-            const hypot = Math.hypot(v[0], v[1], v[2]);
-            return [v[0] / hypot, v[1] / hypot, v[2] / hypot];
+        function normalise(vector) {
+            const length = Math.hypot(...vector);
+            for(let i = 0; i < vector.length; ++i) {
+                vector[i] /= length;
+            }
+            return vector;
+        }
+
+        /**
+         * Return a normalised copy of the input vector
+         */
+        function normalised(vector) {
+            const length = Math.hypot(...vector);
+            return vector.map((element) => element / length);
         }
 
         /**
@@ -4159,6 +4186,14 @@
         /**
          *
          */
+        function addInPlace(...vectors) {
+            const scale = Array.isArray(vectors[vectors.length - 1]) ? 1 : vectors.pop();
+            vectors.slice(1).forEach((v) => v.forEach((a, i) => vectors[0][i] += a * scale));
+        }
+
+        /**
+         *
+         */
         function subtract(v1, v2) {
             return [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]];
         }
@@ -4185,7 +4220,7 @@
          */
         function rotate(v, axis, angle) {
             angle *= Math.PI / 180;
-            axis = normalise(axis);
+            axis = normalised(axis);
 
             const s = Math.cos(angle / 2);
             const u = scaled(axis, Math.sin(angle / 2));
@@ -4239,7 +4274,7 @@
          * Direction transform (ignore translation)
          */
         function transformDirection(v, matrix) {
-            return normalise([
+            return normalised([
                 matrix[0] * v[0] + matrix[4] * v[1] + matrix[8] * v[2],
                 matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2],
                 matrix[2] * v[0] + matrix[6] * v[1] + matrix[10] * v[2],
@@ -4253,7 +4288,7 @@
         function planeFromPoints(p0, p1, p2) {
             const v0 = subtract(p0, p1);
             const v1 = subtract(p0, p2);
-            const normal = normalise(cross(v0, v1));
+            const normal = normalised(cross(v0, v1));
             return { point: p0, normal };
         }
 
@@ -4268,8 +4303,8 @@
          *
          */
         function lookAt(eye, at, up) {
-            const zaxis = normalise(subtract(at, eye));
-            const xaxis = normalise(cross(zaxis, up));
+            const zaxis = normalised(subtract(at, eye));
+            const xaxis = normalised(cross(zaxis, up));
             const yaxis = cross(xaxis, zaxis);
 
             negate(zaxis);
@@ -4349,7 +4384,7 @@
          */
         function convexHullIntercept(line, planes) {
             let start = -Infinity, end = Infinity;
-            line.direction = normalise(line.direction);
+            line.direction = normalised(line.direction);
             planes.forEach((plane) => {
                 const d = planeIntercept(line, plane);
                 if (d !== undefined) {
@@ -4476,9 +4511,9 @@
         function rotateNode(node, x, y) {
             const inverse = invert(node.world);
 
-            const zAxis = normalise(subtract(camera.target, camera.position));
-            const xAxis = normalise(cross(zAxis, camera.up));
-            const yAxis = normalise(cross(zAxis, xAxis));
+            const zAxis = normalised(subtract(camera.target, camera.position));
+            const xAxis = normalised(cross(zAxis, camera.up));
+            const yAxis = normalised(cross(zAxis, xAxis));
 
             const rotateX = getRotationMatrix(-y, transformDirection(xAxis, inverse));
             const rotateY = getRotationMatrix(x, transformDirection(yAxis, inverse));
@@ -4598,40 +4633,19 @@
                 }
                 report(action);
             });
-/*
-            node.addEventListener('touchstart', (event) => {
-                event.preventDefault();
 
-                start.x = event.touches[0].clientX;
-                start.y = event.touches[0].clientY;
-
-                if (event.touches.length === 1) {
-                    const box = node.getBoundingClientRect();
-
-                    const x = 2 * ((start.x - box.left) / box.width) - 1;
-                    const y = 2 * ((box.top - start.y) / box.height) + 1;
-
-                    const hits = pickNodes(x, y);
-                    if (hits.length > 0) {
-                        hits.sort((a, b) => a.hit[0] - b.hit[0]);
-                        start.hit = hits[0];
-                    } else {
-                        start.hit = null;
-                    }
-                    action = 'click';
-                } else if (event.touches.length === 2) {
-                    start.second = {
-                        x: event.touches[1].clientX,
-                        y: event.touches[1].clientY,
-                    };
-                    action = 'pinch';
-                }
-                report(action);
-            });
-*/
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
                 if (action === 'pinch') {
+                    // Use movement of centre to control rotation
+                    const cx = (start.x + start.second.x);
+                    const cy = (start.y + start.second.y);
+                    const deltaX = (event.touches[0].clientX + event.touches[1].clientX - cx) / 2;
+                    const deltaY = (event.touches[0].clientY + event.touches[1].clientY - cy) / 2;
+                    
+                    camera.rotateY(deltaX);
+                    camera.rotateX(deltaY);
+
                     const initial = Math.hypot(start.x - start.second.x, start.y - start.second.y);
                     const current = Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
 
@@ -4684,6 +4698,7 @@
                     action = null;
                 }
                 node.classList.toggle('focus');
+                node.focus();
             });
 
             node.addEventListener('mousedown', (event) => {
@@ -4753,12 +4768,91 @@
                     click(x, y);
                 }
                 action = null;
+                node.focus();
             });
 
             node.addEventListener('wheel', (event) => {
                 const dist = event.deltaY / 1000;
                 camera.zoom(dist);
                 report(dist);
+            });
+            
+            node.addEventListener('keydown', (event) => {
+                report(event.key);
+                event.preventDefault();
+                const yAxis = normalised(camera.up);
+                const zAxis = normalised(subtract(camera.target, camera.position));
+                const xAxis = cross(zAxis, yAxis);
+                if (true) {
+                    yAxis[0] = 0;
+                    yAxis[1] = 1;
+                    yAxis[0] = 0;
+                    
+                    xAxis[1] = 0;
+                    zAxis[1] = 0;
+                    
+                    normalise(xAxis);
+                    normalise(zAxis);
+                }
+                const scale = event.ctrlKey ? 0.1 : 1;
+                if (event.key === 'ArrowUp') {
+                    if (event.shiftKey) {
+                        if (event.altKey) {
+                            camera.rotateX(10 * scale);
+                        } else {
+                            camera.pitch(-10 * scale);
+                        }    
+                    } else {
+                        if (event.altKey) {
+                            addInPlace(camera.target, yAxis, scale);
+                            addInPlace(camera.position, yAxis, scale);                            
+                        } else {
+                            addInPlace(camera.target, zAxis, scale);
+                            addInPlace(camera.position, zAxis, scale);
+                        }
+                    }
+                }
+                if (event.key === 'ArrowDown') {
+                    if (event.shiftKey) {
+                        if (event.altKey) {
+                            camera.rotateX(-10 * scale);
+                        } else {
+                            camera.pitch(10 * scale);
+                        }    
+                    } else {
+                        if (event.altKey) {
+                            addInPlace(camera.target, yAxis, -scale);
+                            addInPlace(camera.position, yAxis, -scale);                            
+                        } else {
+                            addInPlace(camera.target, zAxis, -scale);
+                            addInPlace(camera.position, zAxis, -scale);
+                        }
+                    }
+                }
+                if (event.key === 'ArrowLeft') {
+                    if (event.shiftKey) {
+                        addInPlace(camera.target, xAxis, -scale);
+                        addInPlace(camera.position, xAxis, -scale);
+                    } else {
+                        if (event.altKey) {
+                            camera.rotateY(-10 * scale);
+                        } else {
+                            camera.spinY(-10 * scale);
+                        }    
+                    }
+                }
+                if (event.key === 'ArrowRight') {
+                    if (event.shiftKey) {
+                        addInPlace(camera.target, xAxis, scale);
+                        addInPlace(camera.position, xAxis, scale);
+                    } else {
+                        if (event.altKey) {
+                            camera.rotateY(10 * scale);
+                        } else {
+                            camera.spinY(10 * scale);
+                        }    
+                    }
+                }
             });
 
             const input = document.getElementById('input');
@@ -5700,7 +5794,16 @@
                 });
 
                 const reset = document.getElementById('reset');
-                reset.addEventListener('click', () => camera.reset());
+                reset.addEventListener('click', () => {
+                    camera.reset();
+                    canvas.focus();
+                });
+
+                const upright = document.getElementById('upright');
+                upright.addEventListener('click', () => {
+                    camera.up = [0, 1, 0];
+                    canvas.focus();
+                });
 
                 const expandedTreeNode = document.querySelector('.expanded-tree');
 
