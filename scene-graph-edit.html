@@ -608,31 +608,39 @@
             }
             makeNode(context) {
                 const node = {
-                    [symbols.source]: this,
+                    [symbols.source]: [],
                     [symbols.container]: context.container[0],
+                    [symbols.content]: [],
                     [symbols.links]: {},
+                    [symbols.values]: '',
                     [symbols.values]: [],
                 }
+                this.parseValue(context, node);
+                return node;
+            }
+            parseValue(context, node, newNode=true) {
+                node[symbols.source].push(this);
                 context.parse(node, this.value);
                 context.parsers.forEach((parser) => parser.apply(node, context));
 
-                if (node.name) {
-                    context.names[node.name] = context.names[node.name] || [];
-                    context.names[node.name].unshift(node);
+                if (newNode) {
+                    if (node.name) {
+                        context.names[node.name] = context.names[node.name] || [];
+                        context.names[node.name].unshift(node);
+                    }
                     context.nodeList.push(node);
                 }
 
                 context.container.unshift(node);
-                node[symbols.content] = this.content.flatMap((node) => node.expand(context));
+                node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
                 context.container.shift();
 
-                if (node.name) {
+                if (newNode && node.name) {
                     context.names[node.name].shift();
                 }
 
                 this.generated.push(node);
-                node[symbols.value] = this.value;
-                return node;
+                node[symbols.value] += `${this.value};`;
             }
         }
 
@@ -656,14 +664,14 @@
             }
         }
 
-        class DataNode extends MetaNode {
+        class ExtensionNode extends MetaNode {
             static pattern = /^\s*\*(?<value>.+)$/;
             static match(value) {
-                return DataNode.pattern.test(value);
+                return ExtensionNode.pattern.test(value);
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-                const match = value.match(DataNode.pattern);
+                const match = value.match(ExtensionNode.pattern);
                 this.value = match.groups.value;
             }
             expand(context) {
@@ -675,21 +683,16 @@
                     this.value = modifier.apply(this.value);
                 });
 
-                const node = super.makeNode(context);
+                const name = this.value.split(/[\t\|;]/)[0].trim();
 
-                const referencedNode = context.nodeList.find((existing) => existing.name === node.name);
+                const referencedNode = context.nodeList.find((existing) => existing.name === name);
                 
-                // If the name is found add the data otherwise return the node
+                // If the name is found add the data otherwise return the a new node
                 if (referencedNode) {
-                    context.container.unshift(referencedNode[symbols.container]);
-                    const node = super.makeNode(context);
-                    context.container.shift();
-                    Object.keys(node).forEach((key) => 
-                        referencedNode[key] = referencedNode[key] === undefined ? node[key] : referencedNode[key]);
-                    referencedNode[symbols.content].push(...node[symbols.content]);
+                    this.parseValue(context, referencedNode, false);
                     return [];
                 }
-                return node;
+                return super.makeNode(context);
             }
         }
         
@@ -736,24 +739,33 @@
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                const dataNode = super.makeNode(context);
-                
-                const testKeys = Object.keys(dataNode).filter((key) => key.startsWith('*'))
+                const testNode = this.makeNode(context);
+                ///this.parseValue(context, testNode);
+                let nodes = [...context.nodeList];
+                if (testNode.name && testNode.name.startsWith('/')) {
+                    try {
+                        const re = new RegExp(testNode.name.slice(1, -1));
+                        nodes = nodes.filter((node) => re.test(node.name));
+                    } catch (error) {
+                        
+                    }
+                }
+                const testKeys = Object.keys(testNode).filter((key) => key.startsWith('*'))
                     .map((key) => key.replace(/^\*/, ''));
-                const valueKeys = Object.keys(dataNode).filter((key) => !key.startsWith('*') && key !== 'name');
+                const valueKeys = Object.keys( ExtensionNode).filter((key) => !key.startsWith('*') && key !== 'name');
 
-                const test = (node) => testKeys.every((key) => node[key] === dataNode[`*${key}`]);
-                const nodes = context.nodeList.filter((node) => test(node));
+                const test = (node) => testKeys.every((key) => node[key] === testNode[`*${key}`]);
+                nodes = nodes.filter((node) => test(node));
 
                 if (nodes.length) {
                     nodes.forEach((node) => {
-                        valueKeys.forEach((key) => 
-                            node[key] = node[key] === undefined ? dataNode[key] : node[key]);
-                        node[symbols.content].push(...dataNode[symbols.content]);
+                        this.value = this.value.replace(/\/[^\t\|;]+/g, '');
+                        this.value = this.value.replace(/[\t\|;]\s*\*[^\t\|;]+/g, '');
+                        this.parseValue(context, node, false);
                     });
                     return [];
                 }
-                return dataNode;
+                return testNode;
             }
         }
 
@@ -858,7 +870,6 @@
                 const refNode = context.nodeList.find((node) => node[this.parameters] === this.value);
                 if (refNode) {
                     return refNode.source.expand(context);
-
                 }
                 context.warnings.push(`Unresolved refernce ${this.parameter} = ${this.value} on line: $(this.lineNumber}`);
 
@@ -1168,15 +1179,44 @@
         }
 
         /**
-         * Convert a string to a value or list of values
+         *
          */
+        function setProperty(obj, name, input) {
+            if (input.trim().startsWith('=')) {
+                const expr = input.trim().slice(1);
+                try {
+                    const func = new Function(`
+                    try {
+                        return ${expr};
+                    } catch (error) {
+                        return 0;
+                    }`);
+                    Object.defineProperty(obj, name, {
+                        enumerable: true,
+                        get: func,
+                    });
+                } catch (e) {
+                    console.log(e);
+                    obj[name] = input;
+                }
+            } else {
+                obj[name] = numberOrString(input);
+            }
+        }
+
+        /**
+         * Convert a string to a value or list of values
+         *
         function getValue(str) {
-            const list = str.split(/\s*,\s*/);
+            const list = str.split(/\s*,\s* /);
             if (list.length > 1) {
-                return list.map((i) => numberOrString(i));
+                return list.map((i) => {
+                    numberOrString(i)
+                });
             }
             return numberOrString(str);
         }
+        */
 
         /**
          * Generate an new structure from the definition
@@ -1189,7 +1229,8 @@
                 data.forEach((item) => {
                     item = item.trim();
                     if (item.includes('=')) {
-                        const [name, value] = item.split(/=/);
+                        const [name, ...valueArr] = item.split(/=/);
+                        const value = valueArr.join('=');
                         if (/^"[^"]+"$/.test(value)) {
                             node[name] = value;
                         } else if (value.startsWith('^')) {
@@ -1201,9 +1242,10 @@
                                 node[name] = value;
                             }
                         } else if (value.includes(',')) {
-                            node[name] = value.split(/,/g).map((val) => numberOrString(val));
+                            node[name] = [];
+                            value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
                         } else {
-                            node[name] = numberOrString(value);
+                            setProperty(node, name, value);
                         }
                     } else if (item.startsWith('@')) {
                         const name = item.slice(1);
@@ -1236,7 +1278,7 @@
                     PatternNode,
                     ContinuationNode,
                     DefaultNode,
-                    DataNode,
+                     ExtensionNode,
                     UpdateNode,
                     ConditionalNode,
                     GroupNode,
@@ -1261,7 +1303,7 @@
                     if (value) {
                         // Convert any variables in the string to the values in the context.
                         value = value.replace(/<([^>]*)>/g, (match, name) =>
-                            this.values[name || '_'] || `<name>`);
+                            this.values[name] !== undefined ? this.values[name] : `<${name}>`);
                         value = value.replace(/\{([^:\}]+)(:0+)?\}/g, (match, expr, format) => {
                             let result = match;
                             const names = Object.keys(context.values).map((name) => name ? name : '_');
@@ -1551,7 +1593,7 @@
                 node.expanded = true;
                 node.row = row;
                 node.nodes = [];
-                const controlNode = node[symbols.source].groupNode || node[symbols.source].datNode || node[symbols.source].conditional;
+                const controlNode = node[symbols.source][0].groupNode || node[symbols.source][0].datNode || node[symbols.source][0].conditional;
 
                 const group = document.createElement('div');
                 container.appendChild(group);
@@ -1883,6 +1925,11 @@
                             0, 1, 0, 0,
                             0, 0, 1, 0,
                             ...position, 1);
+                    }
+                    if (node.scale && !isNaN(node.scale)) {
+                        transform[0] *= node.scale;
+                        transform[5] *= node.scale;
+                        transform[10] *= node.scale;
                     }
                     const parent = getParent(node);
                     let colour = node.colour;
@@ -5187,12 +5234,12 @@
             // Show the source node.
             input = document.getElementById('input');
             const lines = input.value.split(/\r?\n/);
-            const position = input.scrollHeight * (node[symbols.source].lineNumber - 1) / lines.length;
+            const position = input.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
             input.focus();
             input.scrollTo(0, position);
-            const start = lines.slice(0, node[symbols.source].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
+            const start = lines.slice(0, node[symbols.source][0].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
             input.selectionStart = start;
-            input.selectionEnd = start + lines[node[symbols.source].lineNumber - 1].length;
+            input.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
         }
 
         /**
