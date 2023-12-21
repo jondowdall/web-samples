@@ -114,25 +114,52 @@
         }
 
         .vertical-bar {
-            width: 4px;
+            width: 9px;
             grid-column: 2;
             grid-row: 2 / -1;
             cursor: ew-resize;
-            margin: 2px;
+            margin: 1px;
         }
 
         .horizontal-bar {
-            height: 4px;
+            height: 9px;
             grid-column: 1 / -1;
             grid-row: 3;
             cursor: ns-resize;
-            margin: 2px;
+            margin: 1px;
         }
 
         .vertical-bar, .horizontal-bar {
             border: 1px outset white;
         }
 
+
+        .frame {
+            
+        }
+        
+        .frame-control-toggle {
+            position: absolute;
+            z-index: 100;
+            top: 0;
+            right: 0;
+        }
+        
+        .frame-control-bar {
+            background: lightgray;
+            border: 1px outset gray;
+            padding: 0.25em;
+            min-height: 2em;
+            z-index: 99;
+            position: absolute;
+            top: 0;
+            left: 0;
+            transition: transform 0.3s ease-in-out;
+        }
+        
+        .hide-up {
+            transform: translateY(-100%);
+        }
 
         .controls {
             grid-column: 1 / -1;
@@ -219,6 +246,7 @@
         }
 
         .detail {
+            position: relative;
             overflow: auto;
         }
 
@@ -352,6 +380,21 @@
             max-height: 0;
             overflow: hidden;
         }
+        
+        #search-button {
+            width: 100px;
+            height: 50px;
+        }
+    
+        #search-button svg {
+            width: 25px;
+            height: 25px;
+        }
+
+        .svg-icon {
+            width: 25px;
+            height: 25px;
+        }
 
     </style>
 </head>
@@ -359,6 +402,34 @@
 <body>
     <div id="overlay"></div>
     <datalist id="shader-list"></datalist>
+    <template id="frame-template">
+        <div class="frame">
+            <button class="frame-control-toggle">&#9776;</button>
+            <div class="frame-control-bar hide-up">
+                <span class="frame-title"></span>
+                <button class="frame-split-vertical">
+                    <svg id="vertical-split-icon" class="svg-icon" viewBox="0 0 24 24">
+        <path d="M12 4 L12 20 L2 20 L2 4 L 12 4 M18 10 L18 14 M16 12 L20 12" stroke="black" fill="none"/>
+        <path d="M0 0 L24 0 L24 24 L0 24 L0 0" stroke="gray" fill="none"/>
+
+                    
+                    
+                    
+                </button>
+                <button class="frame-split-horizontal">-</button>
+                <button class="frame-toggle-tabbed">
+                        <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
+        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" stroke="black"/>
+        <path d="M0 0h24v24H0z" fill="none"/>
+    </svg>
+                </button>
+                <button class="frame-close">&#10006;</button>
+            </div>
+        </div>
+    </template>
+
+
+
     <template id="editor-template">
         <div class="editor">
             <textarea class="line-numbers"></textarea>
@@ -516,6 +587,145 @@
             document.body.appendChild(link);
             link.click();
             link.remove();
+        }
+
+        class FrameRow {
+            constructor (container) {
+                this.container = container;
+                this.conent = [];
+                this.node = document.createElement('div');
+                this.node.classList.add('layout-row');
+            }
+            setContent(...content) {
+                this.content = content.map((view) => ({
+                    frame: new Frame(view),
+                    width: 1,
+                }));
+                this.content.forEach((item, index) => {
+                    this.node.append(item.node);
+                    if (index < this.content.length - 1) {
+                        const bar = document.createElement('div');
+                        this.node.append(bar);
+                        bar.classList.add('vertical-bar');
+                    }
+                });
+                this.node.style.gridTemplateColumn = this.content.map((item) => `${item.width}fr`).join(' min-content ');
+            }
+            verticalSplit(frame) {
+                const next = frame.node.nextSibling;
+                const index = this.content.findIndex((item) => item.frame === frame);
+                const current = this.content[current];
+                if (index > -1) {
+                    const bar = document.createElement('div');
+                    this.node.insertBefore(bar, next);
+                    bar.classList.add('vertical-bar');
+                    const newFrame = new Frame();
+                    this.node.insertBefore(newFrame.node, next);
+                    current.width /= 2;
+                    this.content.splice(index, 0, {frame: newFrame, width: current.width, });
+                    this.node.style.gridTemplateColumn = this.content.map((item) => `${item.width}fr`).join(' min-content ');
+                }
+
+            }
+            horizontalSplit(frame) {
+                const index = this.content.findIndex((item) => item.frame === frame);
+                if (index > -1) {
+                    const column = new FrameColumn(this);
+                    frame.node.replaceWith(column.node);
+                    frame.container = column;
+                    column.setContent(frame, new Frame());
+                }
+            }
+            remove(frame) {
+                if (this.content.length > 2) {
+                    const index = this.content.findIndex((item) => item.frame === frame);
+                    this.node.remove(frame.node);
+                    this.content.splice(index, 1);
+                } else {
+                    const other = this.content.find((item) => item.frame !== frame);
+                    other.container = this.container;
+                    this.replaceWith(other.node);
+                }
+            }
+        }
+        
+        class FrameColumn {
+            constructor (container) {
+                this.container = container;
+                this.conent = [];
+                this.node = document.createElement('div');
+                this.node.classList.add('layout-column');
+            }
+            setContent(...content) {
+                this.content = content.map((view) => ({
+                    frame: new Frame(view),
+                    height: 1,
+                }));
+                this.content.forEach((item, index) => {
+                    this.node.append(item.node);
+                    if (index < this.content.length - 1) {
+                        const bar = document.createElement('div');
+                        this.node.append(bar);
+                        bar.classList.add('horizontal-bar');
+                    }
+                });
+                this.node.style.gridTemplateRow = this.content.map((item) => `${item.height}fr`).join(' min-content ');
+            }
+            splitVertically(frame) {
+                const index = this.content.findIndex((item) => item.frame === frame);
+                if (index > -1) {
+                    const row = new FrameRow(this);
+                    frame.node.replaceWith(row.node);
+                    frame.container = row;
+                    row.setContent(frame, new Frame());
+                }
+            }
+            splitHorizontally(frame) {
+                const next = frame.node.nextSibling;
+                const index = this.content.findIndex((item) => item.frame === frame);
+                const current = this.content[current];
+                if (index > -1) {
+                    const bar = document.createElement('div');
+                    this.node.insertBefore(bar, next);
+                    bar.classList.add('horizontal-bar');
+                    const newFrame = new Frame();
+                    this.node.insertBefore(newFrame.node, next);
+                    current.width /= 2;
+                    this.content.splice(index, 0, {frame: newFrame, width: current.width, });
+                    this.node.style.gridTemplateRow = this.content.map((item) => `${item.height}fr`).join(' min-content ');
+                }
+            }
+            remove(frame) {
+                if (this.content.length > 2) {
+                    const index = this.content.findIndex((item) => item.frame === frame);
+                    this.node.remove(frame.node);
+                    this.content.splice(index, 1);
+                } else {
+                    const other = this.content.find((item) => item.frame !== frame);
+                    other.container = this.container;
+                    this.replaceWith(other.node);
+                }
+            }
+        }
+        
+        class Frame {
+            constructor (view, container) {
+                this.container = container;
+                this.title = view.title;
+                const template = document.getElementById('frame-template');
+                this.node = template.content.firstElementChild.cloneNode(true);
+
+                const controlToggle = this.node.querySelector('.frame-control-toggle');
+                const controlBar = this.node.querySelector('.frame-control-bar');
+                const titleNode = this.node.querySelector('.frame-title');
+                
+                titleNode.innerText = view.title;
+
+                controlToggle.addEventListener('click', (event) =>
+                    controlBar.classList.toggle('hide-up'));
+                
+                this.node.append(view.node);
+            }
         }
 
         /**
@@ -5051,7 +5261,7 @@
                 });
                 vbar.addEventListener('touchstart', (event) => {
                     event.preventDefault();
-                    if (event.touches.length === 0) {
+                    if (event.touches.length > 0) {
                         startHorizontalDrag(vbar, event.touches[0].clientX);
                     }
                 });
@@ -5083,7 +5293,7 @@
                 });
                 hbar.addEventListener('touchstart', (event) => {
                     event.preventDefault();
-                    if (event.touches.length === 0) {
+                    if (event.touches.length > 0) {
                         startVerticalDrag(hbar, event.touches[0].clientY);
                     }
                 });
@@ -6045,6 +6255,13 @@
                     document.querySelector('.line-numbers').scrollTop = input.scrollTop);
 
                 render();
+                
+                const row = new FrameRow();
+                const frame1 = new Frame({node: tree.node, title: 'Tree'}, row);
+                const frame2 = new Frame({node: document.createElement('div'), title: 'test'}, row);
+                row.setContent(frame1, frame2);
+                document.querySelector('.detail').append(row);
+                
             }
 
         /**
