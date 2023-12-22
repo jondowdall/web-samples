@@ -122,20 +122,18 @@
         }
 
         .vertical-bar {
-            width: 9px;
+            width: 8px;
             cursor: ew-resize;
-            margin: 1px;
         }
 
         .horizontal-bar {
-            height: 9px;
+            height: 8px;
             cursor: ns-resize;
-            margin: 1px;
         }
 
         .vertical-bar,
         .horizontal-bar {
-            border: 1px outset white;
+            border: 2px outset white;
         }
 
         .frame {
@@ -654,6 +652,7 @@
             constructor(...content) {
                 this.node = document.createElement('div');
                 this.node.classList.add('layout-row');
+                this.style = window.getComputedStyle(this.node);
                 if (content.length) {
                     this.setContent(content);
                 }
@@ -662,58 +661,61 @@
                 if (content.length < 2) {
                     content.push(new Frame());
                 }
-                this.content = content.map((frame) => ({
-                    frame,
-                    width: 1,
-                }));
-                this.content.forEach((item, index) => {
-                    item.frame.container = this;
-                    this.node.append(item.frame.node);
+                this.content = content;
+                content.forEach((frame, index) => {
+                    frame.container = this;
+                    this.node.append(frame.node);
                     if (index < this.content.length - 1) {
-                        const bar = document.createElement('div');
-                        this.node.append(bar);
-                        bar.classList.add('vertical-bar');
-                        bar.dataset.column = (index * 2) + 1;
-                        layoutControls.newVerticalBar(bar);
+                        this.node.append(layoutControls.newVerticalBar());
                     }
                 });
-                this.node.style.gridTemplateColumns = this.content.map((item) => `${item.width}fr`).join(' min-content ');
+                this.node.style.gridTemplateColumns = this.content.map((item) => '1fr').join(' min-content ');
             }
             verticalSplit(frame) {
-                const next = frame.node.nextSibling;
-                const index = this.content.findIndex((item) => item.frame === frame);
+                const content = Array.from(this.node.children);
+                const index = content.indexOf(frame.node);
                 if (index > -1) {
-                    const current = this.content[index];
-                    const bar = document.createElement('div');
-                    this.node.insertBefore(bar, next);
-                    bar.classList.add('vertical-bar');
+                    const widths = this.style.gridTemplateColumns.split(' ').map((width) => parseFloat(width));
+                    const total = widths.reduce((sum, width, index) => sum + (index % 2) ? 0 : width, 0);
+                    const count = (widths.length + 1) / 2;
+                    const sizes = widths.map((width, index) => (index % 2) ? 'min-content' : `${width}fr`);
+                    const bar = layoutControls.newVerticalBar();                    
+                    frame.node.after(bar);
                     const newFrame = new Frame();
-                    this.node.insertBefore(newFrame.node, next);
-                    current.width /= 2;
-                    this.content.splice(index, 0, { frame: newFrame, width: current.width, });
-                    this.node.style.gridTemplateColumn = this.content.map((item) => `${item.width}fr`).join(' min-content ');
+                    newFrame.container = this;
+                    bar.after(newFrame.node);
+                    sizes.splice(index + 1, 0, 'min-content', `${total / count}fr`);
+                    this.node.style.gridTemplateColumns = sizes.join(' ');
                 }
-
             }
             horizontalSplit(frame) {
-                const index = this.content.findIndex((item) => item.frame === frame);
-                if (index > -1) {
-                    const column = new FrameColumn();
-                    column.container = this;
-                    this.content[index].frame = column;
-                    frame.node.replaceWith(column.node);
-                    column.setContent([frame, new Frame()]);
-                }
+                const column = new FrameColumn();
+                column.container = this;
+                frame.node.replaceWith(column.node);
+                column.setContent([frame, new Frame()]);
             }
             remove(frame) {
-                if (this.content.length > 2) {
-                    const index = this.content.findIndex((item) => item.frame === frame);
-                    this.node.remove(frame.node);
-                    this.content.splice(index, 1);
+                const content = Array.from(this.node.children);
+                const widths = this.style.gridTemplateColumns.split(' ').map((width) => parseFloat(width));
+                const index = content.indexOf(frame.node);
+                if (index === 0) {
+                    frame.node.nextSibling.remove();
+                    frame.node.remove();
+                    widths.splice(index, 2);
+                } else if (index > 0) {
+                    frame.node.previousSibling.remove();
+                    frame.node.remove();
+                    widths.splice(index - 1, 2);
+                }
+                if (widths.length > 1) {
+                    const sizes = widths.map((width, index) =>
+                        (index % 2) ? 'min-content' : `${width}fr`);
+                    this.node.style.gridTemplateColumns = sizes.join(' ');
                 } else {
-                    const other = this.content.find((item) => item.frame !== frame);
-                    other.container = this.container;
+                    const other = this.content.find((other) => other != frame);
                     this.node.replaceWith(other.node);
+                    other.container = this.container;
+                    this.container.content = this.container.content.map((frame) => frame === this ? other : frame);
                 }
             }
         }
@@ -723,65 +725,70 @@
                 this.conent = [];
                 this.node = document.createElement('div');
                 this.node.classList.add('layout-column');
+                this.style = window.getComputedStyle(this.node);
                 if (content.length) {
                     this.setContent(content);
                 }
             }
             setContent(content) {
-                this.content = content.map((frame) => ({
-                    frame,
-                    height: 1,
-                }));
-                this.content.forEach((item, index) => {
-                    item.frame.container = this;
-                    this.node.append(item.frame.node);
+                if (content.length < 2) {
+                    content.push(new Frame());
+                }
+                this.content = content;
+                content.forEach((frame, index) => {
+                    frame.container = this;
+                    this.node.append(frame.node);
                     if (index < this.content.length - 1) {
-                        const bar = document.createElement('div');
-                        this.node.append(bar);
-                        bar.classList.add('horizontal-bar');
-                        bar.dataset.row = (index * 2) + 1;
-                        layoutControls.newHorizontalBar(bar);
-
+                        this.node.append(layoutControls.newHorizontalBar());
                     }
                 });
-                this.node.style.gridTemplateRows = this.content.map((item) => `${item.height}fr`).join(' min-content ');
+                this.node.style.gridTemplateRows = this.content.map((item) => '1fr').join(' min-content ');
             }
             verticalSplit(frame) {
-                const index = this.content.findIndex((item) => item.frame === frame);
-                if (index > -1) {
-                    const row = new FrameRow();
-                    row.container = this;
-                    this.content[index].frame = row;
-                    frame.node.replaceWith(row.node);
-                    row.setContent([frame, new Frame()]);
-                }
+                const row = new FrameRow();
+                row.container = this;
+                frame.node.replaceWith(row.node);
+                row.setContent([frame, new Frame()]);
             }
             horizontalSplit(frame) {
-                const next = frame.node.nextSibling;
-                const index = this.content.findIndex((item) => item.frame === frame);
+                const content = Array.from(this.node.children);
+                const index = content.indexOf(frame.node);
                 if (index > -1) {
-                    const current = this.content[index];
-                    const bar = document.createElement('div');
-                    this.node.insertBefore(bar, next);
-                    bar.classList.add('horizontal-bar');
+                    const heights = this.style.gridTemplateRows.split(' ').map((height) => parseFloat(height));
+                    const total = heights.reduce((sum, height, index) => sum + (index % 2) ? 0 : height, 0);
+                    const count = (heights.length + 1) / 2;
+                    const sizes = heights.map((height, index) => (index % 2) ? 'min-content' : `${height}fr`);
+                    const bar = layoutControls.newHorizontalBar();
+                    frame.node.after(bar);
                     const newFrame = new Frame();
-                    this.node.insertBefore(newFrame.node, next);
-                    current.width /= 2;
-                    this.content.splice(index, 0, { frame: newFrame, width: current.width, });
-                    this.node.style.gridTemplateRow = this.content.map((item) => `${item.height}fr`).join(' min-content ');
+                    newFrame.container = this;
+                    bar.after(newFrame.node);
+                    sizes.splice(index + 1, 0, 'min-content', `${total / count}fr`);
+                    this.node.style.gridTemplateRows = sizes.join(' ');
                 }
             }
             remove(frame) {
-                if (this.content.length > 2) {
-                    const index = this.content.findIndex((item) => item.frame === frame);
-                    this.node.remove(frame.node);
-                    this.content.splice(index, 1);
+                const content = Array.from(this.node.children);
+                const heights = this.style.gridTemplateRows.split(' ').map((height) => parseFloat(height));
+                const index = content.indexOf(frame.node);
+                if (index === 0) {
+                    frame.node.nextSibling.remove();
+                    frame.node.remove();
+                    heights.splice(index, 2);
+                } else if (index > 0) {
+                    frame.node.previousSibling.remove();
+                    frame.node.remove();
+                    heights.splice(index - 1, 2);
+                }
+                if (heights.length > 1) {
+                    const sizes = heights.map((height, index) => 
+                        (index % 2) ? 'min-content' : `${height}fr`);
+                    this.node.style.gridTemplateRows = sizes.join(' ');
                 } else {
-                    const other = this.content.find((item) => item.frame !== frame).frame;
-                    other.container = this.container;
+                    const other = this.content.find((other) => other != frame);
                     this.node.replaceWith(other.node);
-                    const item = this.container.content.find((item) => item.frame === this);
-                    item.frame = other;
+                    other.container = this.container;
+                    this.container.content = this.container.content.map((frame) => frame === this ? other : frame);
                 }
             }
         }
@@ -5504,22 +5511,25 @@
                 start.sizes[start.index - 1] += delta;
                 start.sizes[start.index + 1] -= delta;
                 start.container.style.gridTemplateColumns = start.sizes.map((size) => `${size}px`).join(' ');
-
                 start.x = x;
             }
 
             const startHorizontalDrag = (vbar, x) => {
                 start.x = x;
                 start.container = vbar.parentElement;
-                start.index = parseInt(vbar.dataset.column);
                 const content = Array.from(vbar.parentElement.children);
                 start.sizes = content.map((element) => element.clientWidth);
+                start.index = content.indexOf(vbar);
                 action = horizontalDrag;
             }
 
             const verticalBars = document.querySelectorAll('.vertical-bar');
 
             const newVerticalBar = (vbar) => {
+                if (!vbar) {
+                    vbar = document.createElement('div');
+                    vbar.classList.add('vertical-bar');
+                }
                 vbar.addEventListener('mousedown', (event) => {
                     startHorizontalDrag(vbar, event.clientX);
                 });
@@ -5529,6 +5539,7 @@
                         startHorizontalDrag(vbar, event.touches[0].clientX);
                     }
                 });
+                return vbar;
             };
 
             for (const vbar of verticalBars) {
@@ -5547,14 +5558,18 @@
             const startVerticalDrag = (hbar, y) => {
                 start.y = y;
                 start.container = hbar.parentElement;
-                start.index = parseInt(hbar.dataset.row);
                 const content = Array.from(hbar.parentElement.children);
                 start.sizes = content.map((element) => element.clientHeight);
+                start.index = content.indexOf(hbar);
                 action = verticalDrag;
             }
 
             const horizontalBars = document.querySelectorAll('.horizontal-bar');
             const newHorizontalBar = (hbar) => {
+                if (!hbar) {
+                    hbar = document.createElement('div');
+                    hbar.classList.add('horizontal-bar');
+                }
                 hbar.addEventListener('mousedown', (event) => {
                     startVerticalDrag(hbar, event.clientY);
                 });
@@ -5564,7 +5579,7 @@
                         startVerticalDrag(hbar, event.touches[0].clientY);
                     }
                 });
-
+                return hbar;
             };
 
             for (const hbar of horizontalBars) {
@@ -5680,17 +5695,6 @@
                             content.append(showEntry(`${key}`, value)));
                     }
                 });
-                /*
-                Object.entries(value).forEach(([key, element]) => {
-                    if (stack.includes(element)) {
-                        content.append(showEntry(key, '...'));
-                    } else {
-                        stack.push(element);
-                        content.append(showEntry(key, element, stack));
-                        stack.pop();
-                    }
-                });
-                */
                 return container;
             }
             const container = document.createElement('div');
