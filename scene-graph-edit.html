@@ -115,7 +115,7 @@
             width: 100%;
         }
 
-        .grid-tree-view {
+        .grid-tree-view .tree {
             display: grid;
             grid-template-columns: 1rem 1rem max-content 1fr 1fr;
             grid-auto-rows: min-content;
@@ -510,12 +510,6 @@
             </div>
         </div>
     </template>
-    <template id="shader-controls-template">
-        <div class="shader-controls">
-            <input class="shader-name" placeholder="Shader Name" list="shader-list">
-            <button class="build-shader">Build</button>
-        </div>
-    </template>
 
     <template id="tree-view-template">
         <div class="tree-view">
@@ -525,6 +519,18 @@
                 <input class="regular-expression" title="Regular Expression" type="checkbox" checked />
             </div>
             <div class="tree"></div>
+        </div>
+    </template>
+
+    <template id="grid-tree-view-template">
+        <div class="grid-tree-view">
+            <!--div class="search-controls">
+                <input class="search" type="text" />
+                <input class="case-sensitive" title="Case Sensitive" type="checkbox" />
+                <input class="regular-expression" title="Regular Expression" type="checkbox" checked />
+            </div-->
+            <div class="tree"></div>
+            <div class="settings hide-up"></settings>
         </div>
     </template>
 
@@ -583,8 +589,12 @@
 
     <template id="detail-view-template">
         <div class="detail-view">
-            <h1></h1>
+            <h2 class="title"></h2>
             <div class="detail"></div>
+            <div class="settings hide-up">
+                <label>Update: </label><input class="auto-update" type="checkbox" checked>
+                <label>Context: </label><select class="context-selection"></select>
+            </div>
         </div>
     </template>
 
@@ -1033,7 +1043,6 @@
                         this.unindent();
                         this.main.focus();
                     });
-                    
                 this.main.addEventListener('keydown', (event) => {
                     if (event.key === 'Tab') {
                         event.preventDefault();
@@ -1099,6 +1108,25 @@
             unindent() {
                 this.modifySelection((line) =>
                     line.charAt(0) === '\t' ? line.slice(1) : line.replace(/^ {1,4}/, ''));
+            }
+        }
+        
+        /**
+         * Specialisation of Editor for data editor
+         */
+        class StructureEditor extends Editor {
+            constructor(title, configuration) {
+                super(title, configuration);
+            }
+            set currentNode(node) {
+                // Show the source node.
+                const lines = this.value.split(/\r?\n/);
+                const position = this.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
+                this.main.focus();
+                this.main.scrollTo(0, position);
+                const start = lines.slice(0, node[symbols.source][0].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
+                this.main.selectionStart = start;
+                this.main.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
             }
         }
 
@@ -1484,7 +1512,7 @@
                     };
                     const rect = this.add('rect', attrs, null, [], group);
                     rect.addEventListener('click', (event) => {
-                        App.select(node.value);
+                        App.currentNode = node.value;
                     });
                     attrs[''] = {
                         x: node.x, y: node.y,
@@ -1663,11 +1691,48 @@
          * View selection component used for empty frames
          */
         class DetailView extends View {
+            static settingsMap = {
+                update: '.auto-update',
+                context: '.context-selection',
+            }
             constructor() {
-                super('detail-view-template');
+                super('detail-view-template', DetailView.settingsMap);
 
+                this.contexts = App.contexts;
                 this.title = 'Detail View';
-                App.detailView = this.node;
+                this.detail = this.node.querySelector('.detail');
+                this.settings.context.addEventListener('change', (event) => this.render());
+            }
+            set currentNode(node) {
+                this._currentNode = node;
+                if (this.settings.update.checked) {
+                    this.render();
+                }
+            }
+            set contexts(contexts) {
+                this.settings.context.innerHTML =
+                    '<option value="" selected>None</option>';
+                if (contexts) {
+                    contexts.forEach((context) => {
+                        const option = document.createElement('option');
+                        option.innerText = context;
+                        option.value = context;
+                        this.settings.context.append(option);
+                    });
+                }
+            }
+            render() {
+                this.node.querySelector('.title').innerText = this._currentNode.name;
+                this.detail.innerHTML = '';
+                Object.entries(this._currentNode).map(([key, value]) =>
+                    this.detail.append(showEntry(key, value, [value])));
+                if (this.settings.context.value) {
+                    const view = this._currentNode[symbols.views][this.settings.context.value];
+                    if (view) {
+                        Object.entries(view).map(([key, value]) =>
+                            this.detail.append(showEntry(key, value, [value])));
+                    }                  
+                }                
             }
         }
 
@@ -1767,7 +1832,7 @@
             }
             makeNode(context) {
                 const node = {
-                    [symbols.source]: [],
+                    [symbols.source]: [this],
                     [symbols.container]: context.container[0],
                     [symbols.content]: [],
                     [symbols.links]: {},
@@ -2623,7 +2688,7 @@
         /**
          * Class for managing tree views
          */
-        class TreeView extends Templated {
+        class TreeView extends View {
             constructor(title = 'Tree', config = {}, content = []) {
                 super('tree-view-template');
                 this.main = this.node.querySelector('.tree');
@@ -2707,131 +2772,154 @@
         /**
          * Toggle the expansion of a node.
          */
-        function toggleExpansion(node, recursive) {
-            node.expanded = !node.expanded;
+        function toggleExpansion(viewNode, recursive) {
+            viewNode.expanded = !viewNode.expanded;
 
-            const expand = (node) => {
+            const expand = (viewNode) => {
                 if (recursive) {
-                    node.expanded = true;
+                    viewNode.expanded = true;
                 }
-                node.nodes.forEach((node) => node.classList.remove('collapse'));
-                if (node.expanded) {
-                    node[symbols.content].forEach((part) => expand(part));
+                viewNode.nodes.forEach((node) => node.classList.remove('collapse'));
+                if (viewNode.expanded) {
+                    viewNode.content.forEach((part) => expand(part));
                 } else {
-                    node.nodes[1].classList.add('collapse');
+                    viewNode.nodes[1].classList.add('collapse');
                 }
             };
 
-            const collapse = (node) => {
+            const collapse = (viewNode) => {
                 if (recursive) {
-                    node.expanded = false;
+                    viewNode.expanded = false;
                 }
-                node.nodes.forEach((node) => node.classList.add('collapse'));
-                node[symbols.content].forEach((part) => collapse(part));
+                viewNode.nodes.forEach((node) => node.classList.add('collapse'));
+                viewNode.content.forEach((part) => collapse(part));
             };
 
-            if (node.expanded) {
-                node[symbols.content].forEach((part) => expand(part));
-                node.nodes[0].innerHTML = '&CircleMinus;';
-                node.nodes[1].classList.remove('collapse');
+            if (viewNode.expanded) {
+                viewNode.content.forEach((part) => expand(part));
+                viewNode.nodes[0].innerHTML = '&CircleMinus;';
+                viewNode.nodes[1].classList.remove('collapse');
             } else {
-                node[symbols.content].forEach((part) => collapse(part));
-                node.nodes[0].innerHTML = '&CirclePlus;';
-                node.nodes[1].classList.add('collapse');
+                viewNode.content.forEach((part) => collapse(part));
+                viewNode.nodes[0].innerHTML = '&CirclePlus;';
+                viewNode.nodes[1].classList.add('collapse');
             }
         }
 
-        var tree = {
-            roots: [],
-            nodes: [],
-        };
+        class GridTreeView extends View {
+            static settingsMap = {
+                
+            }
+            constructor(title = 'GridTree', config = {}, content = []) {
+                super('grid-tree-view-template', GridTreeView.settingsMap);
+                this.main = this.node.querySelector('.tree');
+                this.title = title;
 
-        /**
-         * Generate dom nodes for the given structure
-         */
-        function getView(structure, actions = {}) {
-            const container = document.createElement('div');
-            container.classList.add('grid-tree-view');
+                this.config = config;
 
-            const nodes = [];
+                /*
+                const search = this.node.querySelector('.search');
+                search.addEventListener('input', (event) => this.incrementalSearch());
+                search.addEventListener('change', (event) => this.search());
 
-            const flatten = (node, level = 1) => {
-                node.level = level;
-                nodes.push(node);
-                node[symbols.content].forEach((part) => flatten(part, level + 1));
-            };
-
-            structure.forEach((part) => flatten(part));
-            tree.roots = structure;
-
-            let depth = Math.max(...nodes.map((node) => node.level));
-
-            let row = 0;
-            const addNode = (node) => {
-                row += 1;
-                let text = node.name;
-                node.expanded = true;
-                node.row = row;
-                node.nodes = [];
-                const controlNode = node[symbols.source][0].groupNode || node[symbols.source][0].datNode || node[symbols.source][0].conditional;
-
-                const group = document.createElement('div');
-                container.appendChild(group);
-                group.style.gridColumn = node.level;
-                const expander = document.createElement('div');
-                expander.classList.add('expand');
-                node.nodes.push(expander);
-                node.nodes.push(group);
-                group.appendChild(expander);
-                const content = document.createElement('div');
-                content.classList.add('content');
-
-                if (controlNode) {
-                    content.classList.add('control-node');
-                    if (node.unrolled) {
-                        content.classList.add('range-expanded');
+                this.searchStack = [];
+                this.path = [];
+                */
+                this.structure = content;
+            }
+            set structure(structure) {
+                const actions = {
+                    click: (event, node) => App.currentNode = node,
+                };
+    
+                this.nodes = [];
+    
+                const flatten = (node, level = 1) => {
+                    const viewNode = {
+                        node, level
+                    };
+                    this.nodes.push(viewNode);
+                    viewNode.content = node[symbols.content].map((part) => flatten(part, level + 1));
+                    return viewNode;
+                };
+    
+                const tree = structure.map((part) => flatten(part));
+    
+                let depth = Math.max(...this.nodes.map((node) => node.level));
+    
+                let row = 0;
+                const addNode = (viewNode) => {
+                    row += 1;
+                    let text = viewNode.node.name;
+                    viewNode.expanded = true;
+                    viewNode.row = row;
+                    viewNode.nodes = [];
+    
+                    const group = document.createElement('div');
+                    this.main.appendChild(group);
+                    group.style.gridColumn = viewNode.level;
+                    const expander = document.createElement('div');
+                    expander.classList.add('expand');
+                    viewNode.nodes.push(expander);
+                    viewNode.nodes.push(group);
+                    group.appendChild(expander);
+                    const content = document.createElement('div');
+                    content.classList.add('content');
+    
+                    /*
+                    if (controlNode) {
+                        content.classList.add('control-node');
+                        if (viewNode.unrolled) {
+                            content.classList.add('range-expanded');
+                        }
+                        content.addEventListener('click', (event) => {
+                            viewNode.unrolled = !viewNode.unrolled;
+                            this.main.innerHTML = '';
+                            row = 0;
+                            structure.forEach((part) => addNode(part));
+                        });
                     }
-                    content.addEventListener('click', (event) => {
-                        node.unrolled = !node.unrolled;
-                        container.innerHTML = '';
-                        row = 0;
-                        structure.forEach((part) => addNode(part));
-                    });
+                    */
+                    viewNode.nodes.push(content);
+                    content.style.gridColumn = `${viewNode.level + 1}/${depth + 2}`;
+                    this.main.appendChild(content);
+                    const data = Object.entries(viewNode.node).map(([name, value]) => `${name} = ${value}`).join(', ');
+                    content.innerText = `${text}`;// (${data})`;
+                    content.title = `${viewNode.node.uniqueName} ${data}`;
+                    if (viewNode.node.shape) {
+                        content.classList.add('shape');
+                    }
+                    if (viewNode.node.sceneNode) {
+                        content.classList.add('scene-node');
+                    }
+                    Object.entries(actions).forEach(([event, action]) =>
+                        content.addEventListener(event, (event) => action(event, viewNode.node)));
+    
+                    if (viewNode.content.length) {
+                        group.classList.add('group');
+                        expander.innerHTML = '&CircleMinus;';
+                        expander.addEventListener('click', (event) => toggleExpansion(viewNode, event.ctrlKey));
+                        expander.addEventListener('dblclick', (event) => toggleExpansion(viewNode, true));
+    
+                        const startRow = row;
+                        viewNode.content.forEach((viewNode) => addNode(viewNode));
+                        group.style.gridRow = `${startRow}/${row + 1}`;
+                        group.style.background = `hsl(${360 * Math.random()} 50% 50%)`;
+                    }
+                };
+    
+                const columns = `repeat(${depth}, 1em) max-content 1fr`;
+                this.main.style.gridTemplateColumns = columns;
+    
+                tree.forEach((node) => addNode(node));
+            }
+            set currentNode(node) {
+                for(const domNode of this.node.querySelectorAll('.selected')) {
+                    domNode.classList.remove('selected');
                 }
-                node.nodes.push(content);
-                content.style.gridColumn = `${node.level + 1}/${depth + 2}`;
-                container.appendChild(content);
-                const data = Object.entries(node).map(([name, value]) => `${name} = ${value}`).join(', ');
-                content.innerText = `${text}`;// (${data})`;
-                content.title = `${node.uniqueName} ${data}`;
-                if (node.shape) {
-                    content.classList.add('shape');
-                }
-                if (node.sceneNode) {
-                    content.classList.add('scene-node');
-                }
-                Object.entries(actions).forEach(([event, action]) =>
-                    content.addEventListener(event, (event) => action(event, node)));
-
-                if (node[symbols.content].length) {
-                    group.classList.add('group');
-                    expander.innerHTML = '&CircleMinus;';
-                    expander.addEventListener('click', (event) => toggleExpansion(node, event.ctrlKey));
-                    expander.addEventListener('dblclick', (event) => toggleExpansion(node, true));
-
-                    const startRow = row;
-                    node[symbols.content].forEach((part) => addNode(part));
-                    group.style.gridRow = `${startRow}/${row + 1}`;
-                    group.style.background = `hsl(${360 * Math.random()} 50% 50%)`;
-                }
-                return nodes;
-            };
-
-            const columns = `repeat(${depth}, 1em) max-content 1fr`;
-            container.style.gridTemplateColumns = columns;
-
-            structure.forEach((part) => addNode(part));
-            return container;
+                this.nodes.filter((viewNode) => viewNode.node === node)
+                    .forEach((viewNode) => viewNode.nodes.forEach((node) => node.classList.add('selected')));
+            }
         }
 
         const namedNodes = {};
@@ -3052,15 +3140,6 @@
                 node = new Proxy(node, handler);
                 let index = 0;
                 let positionalName = null;
-
-                /*
-                if (node[symbols.values][index] && (typeof node[symbols.values][index] === 'string' || node[symbols.values][index] instanceof String)) {
-                    //positionalName = node[symbols.values][index].slice(0, 1).toUpperCase() + node[symbols.values][index].slice(1).toLowerCase();
-                    if (positionalName in types) {
-                        ++index;
-                    }
-                }
-                */
                 let position = node.position;
 
                 const shapeName = positionalName || (node?.shape ? node.shape.toLowerCase() : 'none');
@@ -3143,7 +3222,7 @@
                     } else {
                         scene.graph.push(sceneNode);
                     }
-                    sceneNode.sourceNode = node;
+                    sceneNode.sourceNode = original;
                     scene.nodes.unshift(sceneNode);
                     const events = getEvents(node, sceneNode);
                     scene.events.push(...events);
@@ -5748,7 +5827,6 @@
                     if (!event.shiftKey) {
                         node.hit = null;
                     }
-                    node.sourceNode.nodes.forEach((node) => node.classList.remove('selected'));
                 }
             });
             return hits;
@@ -5764,8 +5842,6 @@
                 if (!event.altKey) {
                     hits.slice(1).forEach((node) => node.hit = null);
                 }
-                hits.forEach((hit) => hit.sourceNode.nodes.forEach((node) => node.classList.add('selected')));
-
                 if (event.ctrlKey) {
                     camera.lookAt = hits[0].world.slice(12, 16);
                     if (hits[0].overlay) {
@@ -5776,6 +5852,9 @@
                 }
                 const lookAt = transformed([0, 0, 0], hits[0].world);
                 moveCamera(view.camera, lookAt);
+                
+                App.selectedNodes = hits.map((hit) => hit.sourceNode);
+                App.currentNode = hits[0].sourceNode;
             }
         }
 
@@ -6325,33 +6404,6 @@
         }
 
         /**
-         * Display the details for a deployed node.
-         */
-        function showDeployedNodeDetails(node) {
-            scene.nodes.forEach((node) => node.hit = null);
-            for (const node of document.querySelectorAll('.selected')) {
-                node.classList.remove('selected');
-            }
-            if (node.sceneNode) {
-                node.sceneNode.hit = true;
-            }
-            node.nodes.forEach((node) => node.classList.add('selected'));
-            if (App.detailView) {
-                App.detailView.innerHTML = '';
-                Object.entries(node).map(([key, value]) =>
-                    App.detailView.append(showEntry(key, value, [value])));
-            }
-            // Show the source node.
-            const lines = App.mainEditor.value.split(/\r?\n/);
-            const position = App.mainEditor.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
-            App.mainEditor.main.focus();
-            App.mainEditor.main.scrollTo(0, position);
-            const start = lines.slice(0, node[symbols.source][0].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
-            App.mainEditor.main.selectionStart = start;
-            App.mainEditor.main.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
-        }
-
-        /**
          *
          */
         let state = { time: 0, rate: 1, mode: 'paused', nextEvent: 0 };
@@ -6574,10 +6626,8 @@
                 scene.shaders[definition.name] = makeShader(definition);
                 const shaders = Object.values(scene.shaders);
                 localStorage.setItem('shaders', JSON.stringify(shaders, null, 2));
-
-                App.structure = getStructure(App.mainEditor.value);
-                App.expanded = expand(App.structure, defaultParser);
-                getGraph(App.expanded, scene);
+                
+                App.source = App.mainEditor.value;
             }
 
             buildButton.addEventListener('click', (event) => build());
@@ -6725,17 +6775,7 @@
             //App.source = content;
             editor.value = content;
             if (content) {
-                const sceneNodeActions = {
-                    click: (event, node) => showDeployedNodeDetails(node),
-                };
-
-                App.structure = getStructure(content);
-                App.expanded = expand(App.structure, defaultParser);
-
-                if (App.expandedTree) {
-                    App.expandedTree.innerHTML = '';
-                    App.expandedTree.appendChild(getView(App.expanded, sceneNodeActions));
-                }
+                App.source = content;
 
                 getGraph(App.expanded, scene);
 
@@ -6764,7 +6804,7 @@
             sceneGraphTrees: [],
             views: [],
             initialise() {
-                this.mainEditor = new Editor('Main');
+                this.mainEditor = new StructureEditor('Main');
                 this.viewSelection.addEventListener('change', (event) =>
                     this.currentFrame = this.frames[this.viewSelection.value]);
                 
@@ -6814,31 +6854,39 @@
                 const settings = document.getElementById('view-settings');
                 settings.addEventListener('click', (event) => this?._frame?.content?.toggleSettings());
                 
-                this.mainEditor.main.addEventListener('blur', (event) => {
+                this.mainEditor.main.addEventListener('change', (event) => {
                     this.source = this.mainEditor.value;
-                    this.structure = getStructure(this.source);
-                    this.expanded = expand(this.structure, defaultParser);
-                    this.views.forEach((view) => view.structure = this.expanded);
                 });
+            },
+            process() {
+                this.allNodes = [];
+                const views = new Set();
+                const flatten = (node) => {
+                    Object.keys(node[symbols.views]).forEach((key) => views.add(key));
+                    this.allNodes.push(node);
+                    node[symbols.content].forEach((node) => flatten(node));
+                }
 
+                this.expanded.forEach((node) => flatten(node));
+                this.contexts = Array.from(views);
+                this.views.forEach((view) => view.contexts = this.contexts);
             },
             get source() {
                 return this._source;
             },
             set source(content) {
                 this._source = content;
-                /*
-                this.tree = getStructure(source);
-                this.structure = expand(this.tree, defaultParser);
-                */
+                this.structure = getStructure(content);
+                this.expanded = expand(App.structure, defaultParser);
+                this.process();
+                this.views.forEach((view) => view.structure = this.expanded);
             },
-            select(node) {
-                console.log(node.name);
-                showDeployedNodeDetails(node);
-                if (node.sceneNode) {
-                    const lookAt = transformed([0, 0, 0], node.sceneNode.world);
-                    moveCamera(lookAt);
-                }
+            get currentNode() {
+                return this._currentNode;
+            },
+            set currentNode(node) {
+                this._currentNode = node;
+                this.views.forEach((view) => view.currentNode = node);
             },
             addFrame(frame) {
                 const option = document.createElement('option');
@@ -6921,8 +6969,7 @@
             scene.gl = glView.context;
             const sceneFrame = new Frame(glView);
 
-            App.expandedTree = document.createElement('div');
-            const frame1 = new Frame({ node: App.expandedTree, title: 'Tree' });
+            const frame1 = new Frame(new GridTreeView());
             const frame2 = new Frame(tree);
             const row1 = new FrameRow(editorFrame, sceneFrame);
             const row2 = new FrameRow(frame1, frame2);
@@ -6931,8 +6978,6 @@
             const layout = document.querySelector('.layout');
             layout.append(column.node);
             column.node.classList.add('root-frame');
-
-            //scene.gl = glView.context;
 
             App.sceneGraphTrees.push(tree);
             addLayoutControls();
@@ -6991,28 +7036,16 @@
             const shaders = savedShaders ? JSON.parse(savedShaders) : defaultShaders;
             glView.setShaders(shaders);
 
-            const sceneNodeActions = {
-                click: (event, node) => showDeployedNodeDetails(node),
-            };
-
             App.mainEditor.main.addEventListener('input', (event) => {
                 //localStorage.setItem('structure', input.value);
-                App.structure = getStructure(App.mainEditor.value);
-                App.expanded = expand(App.structure, defaultParser);
+                App.source = App.mainEditor.value;
 
-                //tree.setContent(expanded);
-
-                App.expandedTree.innerHTML = '';
                 getGraph(App.expanded, scene);
 
                 tree.setContent(scene.graph);
 
-                App.expandedTree.appendChild(getView(App.expanded, sceneNodeActions));
                 updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
             });
-
-            App.structure = getStructure(App.mainEditor.value);
-            App.expanded = expand(App.structure, defaultParser);
 
             let configStr;
             try {
