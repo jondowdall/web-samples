@@ -227,7 +227,7 @@
         }
         
         .hide-up {
-            transform: translateY(-100%);
+            transform: translateY(calc(-100% - 5px));
         }
 
         .hide-left {
@@ -269,6 +269,19 @@
             font-variant-numeric: tabular-nums;
         }
 
+        .shader-program-editor {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+        }
+        
+        .shader-program-editor .update {
+            grid-column: 1 / -1;
+        }
+
+        .shader-program-editor .uniforms {
+            grid-column: 1 / -1;
+        }
+        
         .view-selection {
             text-align: center;
         }
@@ -461,7 +474,14 @@
             width: 100%;
 /*            height: 100%; */
             background: lightgray;
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            box-shadow: 0px 3px 5px #333;
             transition: transform 0.3s ease-in-out;
+        }
+        
+        .settings label {
+            text-align: right;
         }
         
         .hidden {
@@ -492,7 +512,8 @@
 
 <body>
     <div id="overlay"></div>
-    <datalist id="shader-list"></datalist>
+    <datalist id="shader-object-list"></datalist>
+    <datalist id="shader-program-list"></datalist>
     <template id="frame-template">
         <div class="frame"></div>
     </template>
@@ -509,6 +530,25 @@
                 <textarea class="line-numbers"></textarea>
                 <textarea class="main" wrap="off"></textarea>
             </div>
+            <div class="settings hide-up">
+                <label>Shader:</label>
+                <input class="shader-name" type="text" placeholder="Shader Name" list="shader-object-list" />
+            </div>
+        </div>
+    </template>
+
+    <template id="shader-program-editor-template">
+        <div class="shader-program-editor">
+            <label>View: </label>
+            <select class="gl-view-selection"></select>
+            <label>Name: </label>
+            <input class="program-name" type="text" list="shader-programs /">
+            <label>Vertex Shader:</label>
+            <select class="vertex-shader"></select>
+            <label>Fragment Shader:</label>
+            <select class="fragment-shader"></select>
+            <button class="update">Update</button>
+            <div class="uniforms"></div>
         </div>
     </template>
 
@@ -531,7 +571,7 @@
                 <input class="regular-expression" title="Regular Expression" type="checkbox" checked />
             </div-->
             <div class="tree"></div>
-            <div class="settings hide-up"></settings>
+            <div class="settings hide-up"></div>
         </div>
     </template>
 
@@ -574,7 +614,11 @@
     <template id="svg-view-template">
         <div class="svg-view">
             <svg class="svg" viewBox="0 0 1024 1024" width="1024" height="1024"></svg>
-            <div class="settings hide-up"></div>
+            <div class="settings hide-up">
+                <label>Nodes: </label><input class="root-nodes" type="text" />
+                <label>Filter: </label><input class="filter" type="text" />
+                <label>Context: </label><select class="context-selection"></select>
+            </div>
         </div>
     </template>
 
@@ -935,6 +979,16 @@
                 const template = document.getElementById(templateName);
                 this.node = template.content.firstElementChild.cloneNode(true);
             }
+            getNodes(map) {
+                this.nodes = {};
+                Object.entries(map).forEach(([name, selector]) => {
+                    this.nodes[name] = this.node.querySelector(selector);
+                    if (!this.nodes[name]) {
+                        console.log(`Warning: selector ${selector} not found in template for ${this.constructor.name}`);
+                    }
+                });
+            }
+
         }
 
         class Frame extends Templated {
@@ -974,6 +1028,57 @@
         }
 
         /**
+         * Process the nodes based on the roots and filters.
+         */
+        function process(action, roots, filter) {
+            const fullName = (node) => {
+                const path = [node];
+                while (node[symbols.container]) {
+                    node = node[symbols.container];
+                    path.unshift(node);
+                }
+                return path;
+            }
+            if (roots) {
+                roots = roots.split(/;/).map((str) => str.trim())
+                    .flatMap((name) => App.find((node) => node.name === name || fullName(node).join('.') === name) || []);
+            } else {
+                roots = App.expanded;
+            }
+
+            if (filter) {
+                const test = filter.split(/( AND | OR | && | \|\| |\(|\))/)
+                    .map((item) => item.trim())
+                    .map((test) => {
+                       if (test === 'AND' || test === '&&') {
+                           return '&&';
+                       } else if (test === 'OR' || test === '||') {
+                           return '||';
+                       } else if (test === '(' || test === ')') {
+                           return test;
+                       } else if (test.startsWith('$')) {
+                           return test.replace(/^\$/, 'node');
+                       } else if (test.includes('=')) {
+                           const [attr, value] = test.split('=');
+                           return `node[${attr}] === ${value}`;
+                       } else {
+                           return `node[${test}] !== undefined`;
+                       }
+                    }).join(' ');
+                filter = new Function('node', `return ${test};`);
+            } else {
+                filter = (node) => true;
+            }
+            
+            const walk = (node) => {
+                action(node);
+                node[symbols.content].filter(filter).forEach((node) => walk(node));
+            }
+            roots.forEach((node) => walk(node));
+        }
+        
+        
+        /**
          * View component
          */
         class View extends Templated {
@@ -990,7 +1095,7 @@
                 Object.entries(settingsMap).forEach(([name, selector]) => {
                     this.settings[name] = this.node.querySelector(selector);
                     if (!this.settings[name]) {
-                        console.log(`Warning: selector ${selector} not found in template`);
+                        console.log(`Warning: selector ${selector} not found in template for ${this.constructor.name}`);
                     }
                 });
             }
@@ -1012,8 +1117,8 @@
          * Editor component
          */
         class Editor extends View {
-            constructor(title = '', config={}) {
-                super('editor-template');
+            constructor(title = '', config={}, settingsMap) {
+                super('editor-template', settingsMap);
                 this.config = config;
                 this.lineNumbers = this.node.querySelector('.line-numbers');
                 this.main = this.node.querySelector('.main');
@@ -1054,6 +1159,7 @@
                         }
                     }
                 });
+                this.updateLineNumbers();
             }
             updateLineNumbers() {
                 const count = this.main.value.split(/\n/g).length;
@@ -1101,7 +1207,8 @@
              * Indent the selected text
              */
             indent() {
-                this.modifySelection((line) => `    ${line}`);
+                const indent = this.config.indent || '    ';
+                this.modifySelection((line) => `${indent}${line}`);
             }
             /**
              * Remove indent from the selected text
@@ -1113,7 +1220,7 @@
         }
         
         /**
-         * Specialisation of Editor for data editor
+         * Specialisation of Editor for editing the structure
          */
         class StructureEditor extends Editor {
             constructor(title, configuration) {
@@ -1130,6 +1237,180 @@
                 this.main.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
             }
         }
+
+        /**
+         * Specialisation of Editor for editing shaders
+         */
+        class ShaderEditor extends Editor {
+            static settingsMap = {
+                name: '.shader-name',
+            }
+            constructor(title, configuration) {
+                super(title, {comment: '//'}, ShaderEditor.settingsMap);
+                this.settings.name.addEventListener('change', (event) => {
+                    const name = this.settings.name.value;
+                    this.shader = shaderObjects.find((shader) => shader.name === name);
+                    this.value = this.shader.source;
+                });
+            }
+        }
+
+        function glTypeName(gl, type) {
+            const types = [];
+            types[gl.FLOAT] = 'gl.FLOAT';
+            types[gl.FLOAT_VEC2] = 'gl.FLOAT_VEC2';
+            types[gl.FLOAT_VEC3] = 'gl.FLOAT_VEC3';
+            types[gl.FLOAT_VEC4] = 'gl.FLOAT_VEC4';
+            types[gl.INT] = 'gl.INT';
+            types[gl.INT_VEC2] = 'gl.INT_VEC2';
+            types[gl.INT_VEC3] = 'gl.INT_VEC3';
+            types[gl.INT_VEC4] = 'gl.INT_VEC4';
+            types[gl.BOOL] = 'gl.BOOL';
+            types[gl.BOOL_VEC2] = 'gl.BOOL_VEC2';
+            types[gl.BOOL_VEC3] = 'gl.BOOL_VEC3';
+            types[gl.BOOL_VEC4] = 'gl.BOOL_VEC4';
+            types[gl.FLOAT_MAT2] = 'gl.FLOAT_MAT2';
+            types[gl.FLOAT_MAT3] = 'gl.FLOAT_MAT3';
+            types[gl.FLOAT_MAT4] = 'gl.FLOAT_MAT4';
+            types[gl.SAMPLER_2D] = 'gl.SAMPLER_2D';
+            types[gl.SAMPLER_CUBE] = 'gl.SAMPLER_CUBE';
+            return types[type];
+
+            /*
+            When using a WebGL 2 context, the following values are possible additionally:
+            gl.UNSIGNED_INT
+            gl.UNSIGNED_INT_VEC2
+            gl.UNSIGNED_INT_VEC3
+            gl.UNSIGNED_INT_VEC4
+            gl.FLOAT_MAT2x3
+            gl.FLOAT_MAT2x4
+            gl.FLOAT_MAT3x2
+            gl.FLOAT_MAT3x4
+            gl.FLOAT_MAT4x2
+            gl.FLOAT_MAT4x3
+            gl.SAMPLER_3D
+            gl.SAMPLER_2D_SHADOW
+            gl.SAMPLER_2D_ARRAY
+            gl.SAMPLER_2D_ARRAY_SHADOW
+            gl.SAMPLER_CUBE_SHADOW
+            gl.INT_SAMPLER_2D
+            gl.INT_SAMPLER_3D
+            gl.INT_SAMPLER_CUBE
+            gl.INT_SAMPLER_2D_ARRAY
+            gl.UNSIGNED_INT_SAMPLER_2D
+            gl.UNSIGNED_INT_SAMPLER_3D
+            gl.UNSIGNED_INT_SAMPLER_CUBE
+            gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+            */
+        }
+        
+        
+        /**
+         * Specialisation of Editor for editing shaders
+         */
+        class ProgramEditor extends View {
+            static nodeMap = {
+                name: '.program-name',
+                viewSelection: '.gl-view-selection',
+                vertexShader: '.vertex-shader',
+                fragmentShader: '.fragment-shader',
+                update: '.update',
+                uniforms: '.uniforms',
+            }
+            constructor(title, configuration) {
+                super('shader-program-editor-template');
+                this.uniforms = {};
+
+                this.getNodes(ProgramEditor.nodeMap);
+
+                this.setOptions();
+                this.nodes.vertexShader.addEventListener('change', (event) =>
+                    this.vertexShader = shaderObjects.find((shader) =>
+                        shader.name === this.nodes.vertexShader.value && shader.type === 'vertex'));
+    
+                this.nodes.fragmentShader.addEventListener('change', (event) =>
+                    this.fragmentShader = shaderObjects.find((shader) =>
+                        shader.name === this.nodes.fragmentShader.value && shader.type === 'fragment'));
+                    
+                this.nodes.update.addEventListener('click', (event) =>
+                    this.updateUniforms());
+
+                this.updateViewSelection();
+                this.view = App.views.find((view) => view.constructor.name === 'GLView');
+            }
+            updateViewSelection() {
+                const views = App.views.filter((view) => view.constructor.name === 'GLView');
+                views.forEach((view, index) => {
+                    const option = document.createElement('option');
+                    option.innerText = view.title || `GL View ${index + 1}`;
+                    option.value = index;
+                    this.nodes.viewSelection.append(option);
+                });
+                this.nodes.viewSelection.addEventListener('change', (event) =>
+                    this.view = views[this.nodes.viewSelection.value]);
+            }
+            setOptions() {
+                shaderObjects.forEach((shader) => {
+                    const option = document.createElement('option');
+                    option.innerText = shader.title || shader.name;
+                    option.value = shader.name;
+                    if (shader.type === 'vertex') {
+                        this.nodes.vertexShader.append(option);
+                    } else {
+                        this.nodes.fragmentShader.append(option);
+                    }
+                });
+                this.vertexShader = shaderObjects.find((shader) => shader.type === 'vertex');
+                this.fragmentShader = shaderObjects.find((shader) => shader.type === 'fragment');
+            }
+            updateUniforms() {
+                if (this.view && this.vertexShader && this.fragmentShader) {
+                    const context = this.view.context;
+                    this.program = initialiseShaders(context, this.vertexShader.source, this.fragmentShader.source);
+                    const numUniforms = context.getProgramParameter(this.program, context.ACTIVE_UNIFORMS);
+                    this.nodes.uniforms.innerHTML = `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th rowspan="2">Name</th>
+                          <th rowspan="2">Type</th>
+                          <th colspan="3">Mapping</th>
+                        </tr>
+                        <tr><th>Scene</th><th>Node</th><th>Shape</th></tr>
+                      </thead>
+                      <tbody></tbody>
+                    </table>`;
+                    const table = this.nodes.uniforms.querySelector('table');
+                    const body = this.nodes.uniforms.querySelector('tbody');
+                    const makeInputCell = (name, type) => {
+                        const cell = document.createElement('td');
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.setAttribute('list', `${type}-parameters`);
+                        input.value = this.uniforms[name][type] || '';
+                        input.addEventListener('input', (event) =>
+                            this.uniforms[name][type] = input.value);
+                        cell.append(input);
+                        return cell;
+                    };
+                    
+                    for(let i = 0; i < numUniforms; ++i) {
+                        const row = document.createElement('tr');
+                        const info = context.getActiveUniform(this.program, i);
+                        this.uniforms[info.name] = this.uniforms[info.name] || {};
+                        row.innerHTML = `<td>${info.name}</td><td>${glTypeName(context, info.type)}</td>`;
+                        let cell = document.createElement('cell');
+                        const scene = document.createElement('input');
+                        row.append(makeInputCell(info.name, 'scene'));
+                        row.append(makeInputCell(info.name, 'node'));
+                        row.append(makeInputCell(info.name, 'shape'));
+                        //console.log("name:", info.name, "type:", info.type, "size:", info.size);
+                        body.append(row);
+                    }
+                }
+            }
+        }
+
 
         /**
          * GLView component
@@ -1191,7 +1472,7 @@
             get context() {
                 return this.canvas.getContext('webgl');
             }
-            setShaders (shaders) {
+            setShaders(shaders) {
                 this.shaders = shaders.reduce((shaders, definition) => {
                     shaders[definition.name] = makeShader(definition, this.context);
                     return shaders;
@@ -1355,8 +1636,14 @@
          * SVGView component
          */
         class SVGView extends View {
+            static ns = 'http://www.w3.org/2000/svg';
+            static settingsMap = {
+                rootNodes: '.root-nodes',
+                filter: '.filter',
+                context: '.context-selection',
+            }
             constructor(title) {
-                super('svg-view-template');
+                super('svg-view-template', SVGView.settingsMap);
                 // Add to the DOM so that safari can get context
                 this.svg = this.node.querySelector('svg');
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
@@ -1365,7 +1652,6 @@
             update(time) {
                 //this.node.innerHTML = App.mainEditor.value;
             }
-            static ns = 'http://www.w3.org/2000/svg';
             oldconstructor(width = 100, height = 100) {
                 this.node = document.createElementNS(Svg.ns, 'svg');
                 this.node.setAttribute('width', `${width}`);
@@ -1401,6 +1687,46 @@
                 const element = this.make(type, attributes, content, classes);
                 parent.appendChild(element);
                 return element;
+            }
+            set contexts(contexts) {
+                this.settings.context.innerHTML =
+                    '<option value="" selected>None</option>';
+                if (contexts) {
+                    contexts.forEach((context) => {
+                        const option = document.createElement('option');
+                        option.innerText = context;
+                        option.value = context;
+                        this.settings.context.append(option);
+                    });
+                }
+            }
+            set structure(structure) {
+                this.svg.innerHTML = '';
+                this._structure = structure;
+                this.render();
+            }
+            render() {
+                // Use a handler to extract data from specified view
+                const view = this.settings.view;
+
+                const handler = {
+                    get(target, prop, receiver) {
+                        if (target[symbols.views][view]) {
+                            if (target[symbols.views][view][prop] !== undefined) {
+                                return target[symbols.views][view][prop];
+                            }
+                        }
+                        return original[prop];
+                    },
+                };
+
+                // Generate SVG nodes from structure
+                const makeSVG = (node) => {
+                    if (view) {
+                        node = new Proxy(node, handler);
+                    }
+                };
+                process((node) => console.log(node.name), this.settings.rootNodes.value, this.settings.filter.value);            
             }
         }
 
@@ -1740,6 +2066,9 @@
         }
 
         const Views = [
+            { name: 'Structure Editor', make() { return new StructureEditor(); }, },
+            { name: 'Shader Editor', make() { return new ShaderEditor(); }, },
+            { name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
             { name: 'Editor', make() { return new Editor(); }, },
             { name: '3D View', make() { 
                    const view = new GLView('New GL View', scene);
@@ -1749,7 +2078,7 @@
             },
             { name: 'Detail View', make() { return new DetailView(); }, },
             { name: 'Tree View', make() { return new TreeView(); }, },
-            { name: 'SVG View', make() { return new SVGView(); }, },
+            { name: 'SVG Diagram', make() { return new SVGView(); }, },
             { name: 'Tree Diagram', make() {
                 return new SVGTreeDiagram('Tree Diagram', App.expanded, {
                     nodeContent: (node) => node[symbols.content],
@@ -1836,16 +2165,31 @@
             makeNode(context) {
                 const node = {
                     [symbols.source]: [this],
-                    [symbols.container]: context.container[0],
+                    [symbols.container]: context.scope[0].node,
                     [symbols.content]: [],
                     [symbols.links]: {},
                     [symbols.values]: '',
                     [symbols.values]: [],
                     [symbols.views]: {},
                 };
-
+                this.startScope(context, node);
                 this.parseValue(context, node);
+                this.endScope(context);
                 return node;
+            }
+            startScope(context, node) {
+                const scope = {
+                    node,
+                    variables: [],
+                }
+                context.scope.unshift(scope);
+                return scope;
+            }
+            endScope(context) {
+                const scope = context.scope.shift();
+                scope.variables.forEach((variable) =>
+                    context.values[variable].shift());
+                
             }
             parseValue(context, node, newNode = true) {
                 node[symbols.source].push(this);
@@ -1860,10 +2204,8 @@
                     context.nodeList.push(node);
                 }
 
-                context.container.unshift(node);
                 node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
-                context.container.shift();
-
+                
                 if (newNode && node.name) {
                     context.names[node.name].shift();
                 }
@@ -1872,22 +2214,47 @@
         }
 
         class ContinuationNode extends MetaNode {
+            static pattern = /^\s*\&(?<value>.+)$/;
             static match(value) {
-                const pattern = /^\s*\&(?<value>.+)$/;
-                return pattern.test(value);
+                return ContinuationNode.pattern.test(value);
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-                const pattern = /^\s*\&(?<value>.+)$/;
-                const match = value.match(pattern);
+                const match = ContinuationNode.value.match(pattern);
                 this.value = match.groups.value;
             }
             expand(context) {
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                context.parse(context.container, this.value);
+                context.parse(context.scope[0].node, this.value);
                 return this.content.flatMap((node) => node.expand(context));
+            }
+        }
+        
+        class VariableNode extends MetaNode {
+            static pattern = /^\s*\$(?<value>.+)$/;
+            static match(value) {
+                return VariableNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+                const match = value.match(VariableNode.pattern);
+                this.value = match.groups.value;
+            }
+            expand(context) {
+                context.modifiers.forEach((modifier) => {
+                    this.value = modifier.apply(this.value);
+                });
+                const variables = {};
+                context.parse(variables, this.value);
+                Object.entries(variables).forEach(([key, value]) => {
+                    context.values[key] = context.values[key] || [];
+                    context.values[key].unshift(value);
+                });
+                const content = this.content.flatMap((node) => node.expand(context));
+                Object.keys(variables).forEach((key) => context.scope.variables.unshift(key));
+                return content;
             }
         }
 
@@ -1924,7 +2291,7 @@
         }
 
         /**
-         * Node in which all content consists of JSON content
+         * Node in which all content consists of JSON definition
          */
         class JSONNode extends MetaNode {
             static pattern = /^\s*!JSON(?<value>.+)$/;
@@ -1948,6 +2315,9 @@
             }
         }
 
+        /**
+         * Update all nodes matching the pattern defined by the node content
+         */
         class UpdateNode extends MetaNode {
             static pattern = /^\s*\~(?<value>.+)$/;
             static match(value) {
@@ -1979,16 +2349,14 @@
                 }
                 const testKeys = Object.keys(testNode).filter((key) => key.startsWith('*'))
                     .map((key) => key.replace(/^\*/, ''));
-                const valueKeys = Object.keys(ExtensionNode).filter((key) => !key.startsWith('*') && key !== 'name');
+                const valueKeys = Object.keys(testNode).filter((key) => !key.startsWith('*') && key !== 'name');
 
                 const test = (node) => testKeys.every((key) => node[key] === testNode[`*${key}`]);
                 nodes = nodes.filter((node) => test(node));
 
                 if (nodes.length) {
                     nodes.forEach((node) => {
-                        this.value = this.value.replace(/\/[^\t\|;]+/g, '');
-                        this.value = this.value.replace(/[\t\|;]\s*\*[^\t\|;]+/g, '');
-                        this.parseValue(context, node, false);
+                        valueKeys.forEach((key) => node[key] = testNode[key]);
                     });
                     return [];
                 }
@@ -2309,8 +2677,8 @@
 
                 if (path.length > 2) {
                     const containerID = numberOrString(path.slice(0, -2).join(''));
-                    const container = context.container.find((node) =>
-                        node[symbols.values][0] === containerID) ||
+                    const container = context.scope.find((scope) =>
+                        scope.node && scope.node[symbols.values][0] === containerID)?.node ||
                         context.nodeList.find((node) =>
                             node[symbols.values][0] === containerID);
                     if (container) {
@@ -2331,6 +2699,7 @@
                 super(value, level, lineNumber);
             }
             expand(context) {
+                this.startScope(context);
                 if (context.defaultValue.length > 0) {
                     this.value = `${this.value};${context.defaultValue.join(' ')}`;
                 }
@@ -2528,6 +2897,7 @@
                 nodeTypes: [
                     PatternNode,
                     ContinuationNode,
+                    VariableNode,
                     DefaultNode,
                     ViewNode,
                     ExtensionNode,
@@ -2543,9 +2913,9 @@
                     PlainNode],
                 values: {},
                 stack: [],
+                scope: [{variables: []}],
                 names: {},
                 nodeList: [],
-                container: [],
                 modifiers: [],
                 parsers: [],
                 defaultValue: [],
@@ -2834,6 +3204,7 @@
                 const actions = {
                     click: (event, node) => App.currentNode = node,
                 };
+                this.main.innerHTML = '';
     
                 this.nodes = [];
     
@@ -3289,6 +3660,254 @@
         /**
          *
          */
+        const shaderObjects = [
+            {
+                name: 'vsSource',
+                type: 'vertex',
+                source: `
+attribute vec4 aVertexPosition;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+
+varying vec4 vPosition;
+
+void main() {
+    gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+    vPosition = gl_Position;
+}
+                `,
+            },
+            {
+                name: 'vsSource2',
+                type: 'vertex',
+                source: `
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat3 uNormalMatrix;
+
+varying vec3 vPosition;
+varying vec3 vNormal;
+
+void main() {
+    // Transform vertex position and normal to eye coordinates
+    vec4 eyePosition = uModelViewMatrix * vec4(aPosition, 1.0);
+    vPosition = eyePosition.xyz;
+    vNormal = normalize(uNormalMatrix * aNormal);
+
+    // Output vertex position in clip coordinates
+    gl_Position = uProjectionMatrix * eyePosition;
+}
+                `,
+            },
+            {
+                name: 'vsSource3',
+                type: 'vertex',
+                source: `
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+attribute vec2 aTextureCoord;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat3 uNormalMatrix;
+
+varying vec3 vPosition;
+varying vec3 vNormal;
+varying highp vec2 vTextureCoord;
+
+void main() {
+    // Transform vertex position and normal to eye coordinates
+    vec4 eyePosition = uModelViewMatrix * vec4(aPosition, 1.0);
+    vPosition = eyePosition.xyz;
+    vNormal = normalize(uNormalMatrix * aNormal);
+
+    // Output vertex position in clip coordinates
+    gl_Position = uProjectionMatrix * eyePosition;
+    vTextureCoord = aTextureCoord;
+}`,
+            },
+            {
+                name: 'fsSource',
+                type: 'fragment',
+                source: `
+precision mediump float;
+varying vec4 vPosition;
+
+uniform vec4 uColour;
+
+void main() {
+    gl_FragColor = vec4(1.0, 1.0, 0.5, 1.0);
+    vec4 colour = vPosition * 0.15 + 0.5;
+    gl_FragColor = uColour;
+}`,
+            },
+            {
+                name: 'fsSource2',
+                type: 'fragment',
+                source: `
+precision mediump float;
+varying vec4 vPosition;
+
+uniform vec4 uColour;
+
+void main() {
+    vec4 colour = vPosition * 0.5 + 0.5;
+    gl_FragColor = colour * uColour;
+}`,
+            },
+            {
+                name: 'fsSource3',
+                type: 'fragment',
+                source: `
+precision highp float;
+
+uniform vec3 uLightPosition;
+uniform vec4 uAmbientColour;
+uniform vec4 uDiffuseColour;
+uniform vec3 uSpecularColour;
+uniform float uShininess;
+
+varying vec3 vPosition;
+varying vec3 vNormal;
+
+void main() {
+    // ambient
+    vec3 ambient = vec3(0.25, 0.25, 0.25) * uDiffuseColour.rgb;
+
+    // Calculate diffuse lighting contribution
+    vec3 lightDirection = normalize(uLightPosition - vPosition);
+    float diffuseIntensity = 0.2 * max(dot(vNormal, lightDirection), 0.0);
+    vec3 diffuse = uDiffuseColour.rgb * diffuseIntensity;
+
+    // Calculate specular lighting contribution
+    vec3 viewDirection = normalize(-vPosition);
+    vec3 reflectionDirection = reflect(-lightDirection, vNormal);
+    float specularIntensity = pow(max(dot(reflectionDirection, viewDirection), 0.0), uShininess);
+    vec3 specular = uSpecularColour * specularIntensity;
+
+    // Combine diffuse and specular contributions
+    vec3 colour = ambient + diffuse + specular;
+
+    // Output final colour
+    gl_FragColor = vec4(colour, uDiffuseColour.a);
+}
+                `,
+            },
+            {
+                name: 'fsSource4',
+                type: 'fragment',
+                source: `
+precision highp float;
+
+uniform vec3 uLightPosition;
+uniform vec4 uAmbientColour;
+uniform vec4 uDiffuseColour;
+uniform vec3 uSpecularColour;
+uniform float uShininess;
+
+varying vec3 vPosition;
+varying vec3 vNormal;
+
+void main() {
+    // ambient
+
+    // Calculate diffuse lighting contribution
+    vec3 lightDirection = normalize(uLightPosition - vPosition);
+    float diffuseIntensity = 0.2 * max(dot(vNormal, lightDirection), 0.0);
+    vec3 diffuse = uDiffuseColour.rgb * diffuseIntensity;
+
+    // Calculate specular lighting contribution
+    vec3 viewDirection = normalize(-vPosition);
+    vec3 reflectionDirection = reflect(-lightDirection, vNormal);
+    float specularIntensity = pow(max(dot(reflectionDirection, viewDirection), 0.0), uShininess);
+    vec3 specular = uSpecularColour * specularIntensity;
+
+    float edge = clamp(1.0 - vNormal.z, 0.0, 1.0);
+    vec3 ambient = edge * vec3(0.25, 0.25, 0.25) * uDiffuseColour.rgb;
+    // Combine diffuse and specular contributions
+    vec3 colour = ambient + diffuse + specular;
+
+    // Output final colour
+    gl_FragColor = vec4(colour, uDiffuseColour.a);
+}
+                `,
+            },
+            {
+                name: 'fsSource5',
+                type: 'fragment',
+                source: `
+precision highp float;
+
+uniform vec3 uLightPosition;
+uniform vec4 uAmbientColour;
+uniform vec4 uDiffuseColour;
+uniform vec3 uSpecularColour;
+uniform float uShininess;
+
+varying vec3 vPosition;
+varying vec3 vNormal;
+
+float rand(float co) {
+    return fract(sin(co*(91.3458)) * 47453.5453);
+}
+
+float rand(vec2 co){
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+float rand(vec3 co){
+    return rand(co.xy+rand(co.z));
+}
+
+void main() {
+    // ambient
+    vec3 ambient = vec3(0.25) * uAmbientColour.rgb;
+
+    // Calculate diffuse lighting contribution
+    vec3 lightDirection = normalize(uLightPosition - vPosition);
+    float diffuseIntensity = 0.2 * max(dot(vNormal, lightDirection), 0.0);
+    vec3 diffuse = uDiffuseColour.rgb * diffuseIntensity;
+
+    // Calculate specular lighting contribution
+    vec3 viewDirection = normalize(-vPosition);
+    vec3 reflectionDirection = reflect(-lightDirection, vNormal);
+    float specularIntensity = pow(max(dot(reflectionDirection, viewDirection), 0.0), uShininess);
+    vec3 specular = uSpecularColour * specularIntensity;
+
+    // Combine diffuse and specular contributions
+    vec3 colour = ambient + diffuse + specular;
+
+    // Output final colour
+    gl_FragColor = vec4(colour, 1.0);
+}
+                `,
+            },
+            {
+                name: 'fsSource6',
+                type: 'fragment',
+                source: `
+precision mediump float;
+varying vec3 vPosition;
+varying highp vec2 vTextureCoord;
+
+uniform vec4 uDiffuseColour;
+uniform sampler2D uSampler;
+
+void main() {
+    gl_FragColor = vec4(1.0, 1.0, 0.5, 1.0);
+    vec4 colour = vec4(vPosition * 0.15 + 0.5, 1);
+    gl_FragColor = uDiffuseColour   ;
+    gl_FragColor = texture2D(uSampler, vTextureCoord);
+}
+                `,
+            },
+        ];
+            
+    
         const vsSource = `
             attribute vec4 aVertexPosition;
 
@@ -6874,6 +7493,9 @@
                 this.contexts = Array.from(views);
                 this.views.forEach((view) => view.contexts = this.contexts);
             },
+            find(test) {
+              return this.allNodes.find(test);  
+            },
             get source() {
                 return this._source;
             },
@@ -7069,7 +7691,23 @@
 
             load(App.mainEditor);
 
-            updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
+            const shaderObjectList = document.getElementById('shader-object-list');
+            shaderObjectList.innerHTML = '';
+            shaderObjects.forEach((shader) => {
+                const node = document.createElement('option');
+                shaderObjectList.appendChild(node);
+                node.innerHTML = shader.title || shader.name;
+                node.value = shader.name;
+            });
+            const shaderProgramList = document.getElementById('shader-program-list');
+            shaderProgramList.innerHTML = '';
+            defaultShaders.forEach((shader) => {
+                const node = document.createElement('option');
+                shaderProgramList.appendChild(node);
+                node.innerHTML = shader.name;
+            });
+
+            //updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
 
             render();
         }
