@@ -2168,7 +2168,7 @@
                     [symbols.container]: context.scope[0].node,
                     [symbols.content]: [],
                     [symbols.links]: {},
-                    [symbols.values]: '',
+                    [symbols.value]: '',
                     [symbols.values]: [],
                     [symbols.views]: {},
                 };
@@ -2180,16 +2180,14 @@
             startScope(context, node) {
                 const scope = {
                     node,
-                    variables: [],
+                    values: {},
+                    modifiers: [],
                 }
                 context.scope.unshift(scope);
                 return scope;
             }
             endScope(context) {
                 const scope = context.scope.shift();
-                scope.variables.forEach((variable) =>
-                    context.values[variable].shift());
-                
             }
             parseValue(context, node, newNode = true) {
                 node[symbols.source].push(this);
@@ -2246,14 +2244,10 @@
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                const variables = {};
-                context.parse(variables, this.value);
-                Object.entries(variables).forEach(([key, value]) => {
-                    context.values[key] = context.values[key] || [];
-                    context.values[key].unshift(value);
-                });
+                const values = {};                
+                context.parse(values, this.value);
+                Object.assign(context.scope[0].values, values);
                 const content = this.content.flatMap((node) => node.expand(context));
-                Object.keys(variables).forEach((key) => context.scope.variables.unshift(key));
                 return content;
             }
         }
@@ -2420,8 +2414,8 @@
                 });
                 setGroupData(this);
                 const content = this.group.flatMap((item, index) => {
-                    context.values[this.name] = item;
-                    context.values[`${this.name}_n`] = index;
+                    context.scope[0].values[this.name] = item;
+                    context.scope[0].values[`${this.name}_n`] = index;
                     return this.content.flatMap((node) => node.expand(context));
                 });
                 return content;
@@ -2453,9 +2447,9 @@
 
                 setGroupData(this);
                 const content = this.group.flatMap((item, index) => {
-                    context.values[this.name || '_'] = item;
-                    context.values[''] = item;
-                    context.values[`${this.name}_n`] = index;
+                    context.scope[0].values[this.name || '_'] = item;
+                    context.scope[0].values[''] = item;
+                    context.scope[0].values[`${this.name}_n`] = index;
                     return super.makeNode(context);
                 });
                 return content;
@@ -2512,8 +2506,10 @@
 
                 const expr = `return ${context.resolve(this.expr)}`;
                 try {
-                    const names = Object.keys(context.values).map((name) => name ? name : '_');
-                    const values = Object.values(context.values);
+                    const variables = context.scope.toReversed().reduce((values, scope) =>
+                        Object.assign(values, scope.values), {});
+                    const names = Object.keys(variables).map((name) => name ? name : '_');
+                    const values = Object.values(variables);
                     const func = new Function(...names, expr);
                     if (func(...values)) {
                         return this.content.flatMap((node) => node.expand(context));
@@ -2531,22 +2527,23 @@
             static match(content) {
                 return this.pattern.test(content);
             }
-            constructor(value, level, lineNumber) {
+            constructor(value, level, lineNumber, context) {
                 super(value, level, lineNumber);
 
                 const match = value.match(PatternNode.pattern);
 
-                this.pattern = match.groups.pattern;
-                this.flags = match.groups.flags;
                 this.replacement = match.groups.replacement.trim();
                 try {
-                    this.contextPattern = new RegExp(this.pattern, this.flags);
+                    this.expression = new RegExp(match.groups.pattern, match.groups.flags);
                 } catch (error) {
 
                 }
             }
+            preprocess(node) {
+                node.value = node.value.replace(this.expression, this.replacement);
+            }
             expand(context) {
-                return this.content.flatMap((node) => node.expand(context));;
+                return this.content.flatMap((node) => node.expand(context));
             }
         }
 
@@ -2699,7 +2696,6 @@
                 super(value, level, lineNumber);
             }
             expand(context) {
-                this.startScope(context);
                 if (context.defaultValue.length > 0) {
                     this.value = `${this.value};${context.defaultValue.join(' ')}`;
                 }
@@ -2818,20 +2814,6 @@
         }
 
         /**
-         * Convert a string to a value or list of values
-         *
-        function getValue(str) {
-            const list = str.split(/\s*,\s* /);
-            if (list.length > 1) {
-                return list.map((i) => {
-                    numberOrString(i)
-                });
-            }
-            return numberOrString(str);
-        }
-        */
-
-        /**
          * Generate an new structure from the definition
          */
         function defaultParser(node, value, context) {
@@ -2911,26 +2893,25 @@
                     TableNode,
                     PathNode,
                     PlainNode],
-                values: {},
-                stack: [],
-                scope: [{variables: []}],
+                scope: [{values: {}, modifiers: []}],
                 names: {},
                 nodeList: [],
                 modifiers: [],
                 parsers: [],
                 defaultValue: [],
                 views: [],
-                patterns: [],
                 warnings: [],
                 resolve(value) {
                     if (value) {
                         // Convert any variables in the string to the values in the context.
+                        const variables = context.scope.toReversed().reduce((values, scope) =>
+                            Object.assign(values, scope.values), {});
                         value = value.replace(/<([^>]*)>/g, (match, name) =>
-                            this.values[name] !== undefined ? this.values[name] : `<${name}>`);
+                            variables[name] !== undefined ? variables[name] : `<${name}>`);
                         value = value.replace(/\{([^:\}]+)(:0+)?\}/g, (match, expr, format) => {
                             let result = match;
-                            const names = Object.keys(context.values).map((name) => name ? name : '_');
-                            const values = Object.values(context.values);
+                            const names = Object.keys(variables).map((name) => name ? name : '_');
+                            const values = Object.values(variables);
                             try {
                                 result = new Function(...names, `return ${expr}`)(...values);
                             } catch (e) {
@@ -2951,18 +2932,21 @@
             };
 
             // Determine node type based on content
+            const definitionScope = [{modifiers: []}];
             const define = (node) => {
-                context.patterns.forEach((pattern) =>
-                    node.value = node.value.replace(pattern.contextPattern, pattern.replacement));
+                const modifiers = definitionScope.flatMap((scope) => scope.modifiers);
+                modifiers.forEach((modifier) => modifier.preprocess(node));
                 const type = context.nodeTypes.find((type) => type.match(node.value));
                 if (type) {
                     const typedNode = new type(node.value, node.level, node.lineNumber);
-                    if (typedNode.contextPattern) {
-                        context.patterns.unshift(typedNode);
+                    if (typedNode.preprocess) {
+                        definitionScope[0].modifiers.push(typedNode);
+                    } else {
+                        definitionScope.unshift({modifiers: []});
                     }
                     typedNode.content = node.content.flatMap((node) => define(node));
-                    if (typedNode.contextPattern) {
-                        context.patterns.shift();
+                    if (definitionScope.length && !typedNode.preprocess || typedNode.content.length) {
+                        definitionScope.shift();
                     }
                     return typedNode;
                 }
@@ -2989,9 +2973,8 @@
                 this.expander.classList.add('expander');
                 this.labelNode = document.createElement('span');
                 this.labelNode.innerText = this.label;
-                const title = this.title;
-                if (title) {
-                    this.labelNode.title = title;
+                if (this.title) {
+                    this.labelNode.title = this.title;
                 }
                 this.node.append(this.labelNode);
                 this.contentNode = document.createElement('div');
