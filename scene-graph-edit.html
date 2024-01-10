@@ -213,6 +213,10 @@
             background: lightgray;
             display: flex;
         }
+        
+        #interactive-update {
+            margin: 0 0.5em;
+        }
 
         #secondary-controls {
             background: lightgray;
@@ -525,10 +529,11 @@
                 <button class="uncomment">Uncomment</button>
                 <button class="unindent">&larr;</button>
                 <button class="indent">&rarr;</button>
+                <input class="spell-check" type="checkbox" />
             </div>
             <div class="editor">
                 <textarea class="line-numbers"></textarea>
-                <textarea class="main" wrap="off"></textarea>
+                <textarea class="main" wrap="off" spellcheck="false"></textarea>
             </div>
             <div class="settings hide-up">
                 <label>Shader:</label>
@@ -556,10 +561,14 @@
         <div class="tree-view">
             <div class="search-controls">
                 <input class="search" type="text" />
-                <input class="case-sensitive" title="Case Sensitive" type="checkbox" />
-                <input class="regular-expression" title="Regular Expression" type="checkbox" checked />
             </div>
             <div class="tree"></div>
+            <div class="settings hide-up">
+                <label>Case Sensitive: </label>
+                <input class="case-sensitive" title="Case Sensitive" type="checkbox" />
+                <label>Regular Expression: </label>
+                <input class="regular-expression" title="Regular Expression" type="checkbox" checked />                
+            </div>
         </div>
     </template>
 
@@ -615,7 +624,7 @@
         <div class="svg-view">
             <svg class="svg" viewBox="0 0 1024 1024" width="1024" height="1024"></svg>
             <div class="settings hide-up">
-                <label>Nodes: </label><input class="root-nodes" type="text" />
+                <label>Nodes: </label><input class="root-nodes" type="text" value="svg" />
                 <label>Filter: </label><input class="filter" type="text" />
                 <label>Context: </label><select class="context-selection"></select>
             </div>
@@ -628,7 +637,10 @@
                 <thead></thead>
                 <tbody></tbody>
             </table>
-            <div class="settings hide-up"></div>
+            <div class="settings hide-up">
+                <label>Headings: </label><select class="headings-list" multiple="true"></select>
+                <label>Hide Empty Rows: </label><input class="hide-empty-rows" type="checkbox" />
+            </div>
         </div>
     </template>
 
@@ -684,6 +696,7 @@
                 <button id="forward" class="media-button">&#x23e9;</button>
                 <button id="end" class="media-button">&#x23ed;</button>
             </div>
+            <input id="interactive-update" type="checkbox" checked />
             <button id="toggle-secondary-controls">&#9776;</button>
         </div>
         <div id="secondary-controls" class="hide-left">
@@ -1225,16 +1238,36 @@
         class StructureEditor extends Editor {
             constructor(title, configuration) {
                 super(title, configuration);
+                this.main.addEventListener('change', (event) => {
+                    App.source = this.value;
+                });
+                            
+                this.main.addEventListener('input', (event) => {
+                    if (document.getElementById('interactive-update').checked) {
+                        App.source = this.value;
+                        getGraph(App.expanded, scene);
+                        //tree.setContent(scene.graph);
+                    }
+                    updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
+                });
+                const spellcheck = this.node.querySelector('.spell-check');
+                spellcheck.addEventListener('change', (event) => {
+                    this.main.spellcheck = spellcheck.checked;
+                    this.main.focus();
+                });
+                
             }
             set currentNode(node) {
                 // Show the source node.
-                const lines = this.value.split(/\r?\n/);
-                const position = this.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
-                this.main.focus();
-                this.main.scrollTo(0, position);
-                const start = lines.slice(0, node[symbols.source][0].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
-                this.main.selectionStart = start;
-                this.main.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
+                if (!(document.activeElement === this.main)) {
+                    const lines = this.value.split(/\r?\n/);
+                    const position = this.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
+                    this.main.focus();
+                    this.main.scrollTo(0, position);
+                    const start = lines.slice(0, node[symbols.source][0].lineNumber - 1).reduce((total, line) => total + line.length + 1, 0);
+                    this.main.selectionStart = start;
+                    this.main.selectionEnd = start + lines[node[symbols.source][0].lineNumber - 1].length;
+                }
             }
         }
 
@@ -1637,6 +1670,7 @@
          */
         class SVGView extends View {
             static ns = 'http://www.w3.org/2000/svg';
+            static namedArributes = Symbol('named attributes');
             static settingsMap = {
                 rootNodes: '.root-nodes',
                 filter: '.filter',
@@ -1648,10 +1682,12 @@
                 this.svg = this.node.querySelector('svg');
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
                 this.title = title;
+                //this.structure = App.expanded;
             }
             update(time) {
                 //this.node.innerHTML = App.mainEditor.value;
             }
+            /*
             oldconstructor(width = 100, height = 100) {
                 this.node = document.createElementNS(Svg.ns, 'svg');
                 this.node.setAttribute('width', `${width}`);
@@ -1665,13 +1701,16 @@
                 //this.defs = document.createElementNS(Svg.ns, 'defs');
                 //this.node = this.node.appendChild(this.defs);
             }
+            */
             make(type, attributes, content, classes) {
                 const element = document.createElementNS(SVGView.ns, type);
-                Object.entries(attributes).forEach(([namespace, values]) =>
-                    Object.entries(values).forEach(([name, value]) =>
-                        namespace ?
-                            element.setAttributeNS(namespace, name, value) :
-                            element.setAttribute(name, value)));
+                Object.entries(attributes).forEach(([name, value]) =>
+                    name !== 'name' ? element.setAttribute(name, value) : null);
+                if (attributes[SVGView.namedAttributes]) {
+                    Object.entries(attributes[SVGView.namedAttributes]).forEach(([namespace, values]) =>
+                        Object.entries(values).forEach(([name, value]) =>
+                            element.setAttributeNS(namespace, name, value)));
+                }
                 //this.node.appendChild(element);
                 if (content) {
                     element.append(content);
@@ -1722,11 +1761,29 @@
 
                 // Generate SVG nodes from structure
                 const makeSVG = (node) => {
+                    if (this._structure.includes(node)) {
+                        return;
+                    }
+                    console.log(node.name);
+                    this.add(node.name, node, node[symbols.content], [], this.svg);
                     if (view) {
                         node = new Proxy(node, handler);
                     }
                 };
-                process((node) => console.log(node.name), this.settings.rootNodes.value, this.settings.filter.value);            
+                process(makeSVG, this.settings.rootNodes.value, this.settings.filter.value);
+                const extents = {
+                    left: 0,
+                    top: 0,
+                    right: 100,
+                    bottom: 100,
+                }
+                this.svg.setAttribute('viewBox', `${extents.left} ${extents.top} ${extents.right} ${extents.bottom}`);
+                this.svg.setAttribute('width', `${extents.right - extents.left}`);
+                this.svg.setAttribute('height', `${extents.bottom - extents.top}`);
+ 
+                this.svg.style.width = `${extents.right - extents.left}px`;
+                this.svg.style.height = `${extents.bottom - extents.top}px`;
+  
             }
         }
 
@@ -1806,7 +1863,8 @@
                                     node.box.y = y;
                                     y += node.box.height + this.configuration.rowGap;
                                 });
-                                treeNode.box.width = Math.max(treeNode.width, ...treeNode.nodes.map((node) => node.box.width + x));
+                                treeNode.box.width = Math.max(treeNode.width, ...treeNode.nodes.map((node) =>
+                                    node.box.width + x));
                                 treeNode.box.height = treeNode.height + this.configuration.rowGap + y - this.configuration.rowGap;
                                 treeNode.x = 0;
                                 treeNode.y = 0;                                
@@ -1834,31 +1892,25 @@
                 
                 let index = 0;
                 const addNode = (node, parent) => {
-                    const attrs = {
-                        '': {
-                            transform: `translate(${node.box.x}, ${node.box.y})`,
-                        },
+                    const groupAttrs = {
+                        transform: `translate(${node.box.x}, ${node.box.y})`,
                     };
-                    const group = this.add('g', attrs, null, [], parent);
+                    const group = this.add('g', groupAttrs, null, [], parent);
                     node.svgNodes.push(group);
 
-                    attrs[''] = {
+                    const boxAttrs = {
                         x: node.x, y: node.y,
                         width: node.width, height: node.height,
                         fill: 'white', stroke: 'black',
                     };
-                    const rect = this.add('rect', attrs, null, [], group);
+                    const rect = this.add('rect', boxAttrs, null, [], group);
                     rect.addEventListener('click', (event) => {
                         App.currentNode = node.value;
                     });
                     node.svgNodes.push(rect);
-                    attrs[''] = {
-                        x: node.x, y: node.y,
-                        width: node.width, height: node.height,
-                    };
-                    const clipRect = this.make('rect', attrs);
-                    this.add('clipPath', { '': {id: `clip${index}`},}, clipRect, [], group);
-                    attrs[''] = {
+                    const clipRect = this.make('rect', {x: node.x, y: node.y, width: node.width, height: node.height});
+                    this.add('clipPath', {id: `clip${index}`}, clipRect, [], group);
+                    const textAttrs = {
                         x: node.x + node.width / 2,
                         y: node.y + 20,
                         font: '13px sans-serif',
@@ -1867,31 +1919,26 @@
                         fill: 'black',
                         'clip-path': `url(#clip${index})`,
                     };
-                    this.add('text', attrs, this.configuration.nodeText(node.value), [], group);
+                    this.add('text', textAttrs, this.configuration.nodeText(node.value), [], group);
                     if (node.nodes.length) {
+                        const pathAttrs = {fill: 'none', stroke: 'black'};
                         if (node.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
                             const x = node.x + this.configuration.columnGap;
                             const start = node.y + node.height;
                             const lastNode = node.nodes[node.nodes.length - 1];
                             const end = lastNode.box.y + lastNode.y + lastNode.height / 2;
-                            attrs[''] = {
-                                d: `M${x} ${start} V${end} `,
-                                fill: 'none', stroke: 'black',
-                            }
-                            attrs[''].d += node.nodes.map((node) =>
+                            pathAttrs.d = `M${x} ${start} V${end} `;
+                            pathAttrs.d += node.nodes.map((node) =>
                                 `M${x} ${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
                         } else {
                             const start = node.nodes[0].box.x + node.nodes[0].box.width / 2;
                             const end = node.nodes[node.nodes.length - 1].box.x + node.nodes[node.nodes.length - 1].box.width / 2;
                             const height = node.y + node.height + this.configuration.rowGap / 2;
-                            attrs[''] = {
-                                d: `M${node.x + node.width / 2} ${node.y + node.height} V${height} M${start} ${height} H${end} `,
-                                fill: 'none', stroke: 'black',
-                            }
-                            attrs[''].d += node.nodes.map((node) =>
+                            pathAttrs.d = `M${node.x + node.width / 2} ${node.y + node.height} V${height} M${start} ${height} H${end} `,
+                            pathAttrs.d += node.nodes.map((node) =>
                                 `M${node.box.x + node.x + node.width / 2} ${node.box.y + node.y} v-${this.configuration.rowGap / 2}`).join(' ');
                         }
-                        this.add('path', attrs, null, [], group);
+                        this.add('path', pathAttrs, null, [], group);
                     }
                     node.nodes.forEach((node) => addNode(node, group));
                     ++index;
@@ -1930,9 +1977,13 @@
          * Display a table view for the selected data
          */
         class TableView extends View {
+            static settingsMap = {
+                headings: '.headings-list',
+                hideEmpty: '.hide-empty-rows',
+            }
             static defaults = {};
             constructor(roots, configuration) {
-                super('table-view-template');
+                super('table-view-template', TableView.settingsMap);
 
                 this.configuration = Object.assign({}, TableView.defaults, configuration);
                 this.roots = roots;
@@ -1941,7 +1992,9 @@
                 this.body = this.node.querySelector('tbody');
                 this.getNodes();
                 this.getHeadings();
-                this.update();
+                this.render();
+                this.settings.headings.addEventListener('change', (event) => this.render());
+                this.settings.hideEmpty.addEventListener('change', (event) => this.render());
             }
             getNodes() {
                 this.nodes = [];
@@ -1957,14 +2010,24 @@
             }
             getHeadings() {
                 this.headings = Array.from(this.fields);
+                this.headings.forEach((heading, index) => {
+                    const option = document.createElement('option');
+                    option.innerText = heading;
+                    option.value = heading;
+                    option.selected = true;
+                    this.settings.headings.append(option);
+                });
             }
-            update() {
+            render() {
                 this.head.innerHTML = '';
                 this.body.innerHTML = '';
                 const row = document.createElement('tr');
                 row.classList.add('heading-row');
                 this.head.append(row);
-                this.headings.forEach((heading, index) => {
+                const headings = Array.from(this.settings.headings.options)
+                    .filter((option) => option.selected)
+                    .map((option) => option.value);
+                headings.forEach((heading, index) => {
                     const cell = document.createElement('th');
                     cell.innerText = heading;
                     cell.classList.add(`column-${index}`);
@@ -1977,7 +2040,7 @@
                         }
                         this.headings.splice(index, 1);
                     });
-                    cell.addEventListener('dragend', (event) => this.update());
+                    cell.addEventListener('dragend', (event) => this.render());
                     cell.addEventListener('dragover', (event) => event.preventDefault());
                     cell.addEventListener('drop', (event) => {
                         event.preventDefault();
@@ -1992,10 +2055,13 @@
                 });
                 this.nodes.forEach((node, rowIndex) => {
                     const row = document.createElement('tr');
-                    this.body.append(row);
-                    this.headings.forEach((heading, index) => {
+                    let show = !this.settings.hideEmpty.checked;
+                    headings.forEach((heading, index) => {
                         const cell = document.createElement('td');
                         cell.innerText = node[heading] !== undefined ? node[heading] : '';
+                        if (index > 0) {
+                            show = show || (node[heading] !== undefined);
+                        }
                         cell.classList.add(`column-${index}`, `row-${rowIndex}`);
                         if (node[heading] === undefined) {
                             cell.classList.add('undefined');
@@ -2010,8 +2076,12 @@
                             const draggedHeading = event.dataTransfer.getData('text/plain');
                             this.headings.splice(index, 0, draggedHeading);
                         });
+                        cell.addEventListener('click', (event) => App.currentNode = node);
                         row.append(cell);
                     });
+                    if (show) {
+                        this.body.append(row);
+                    }
                 });
             }
         }
@@ -2078,7 +2148,12 @@
             },
             { name: 'Detail View', make() { return new DetailView(); }, },
             { name: 'Tree View', make() { return new TreeView(); }, },
-            { name: 'SVG Diagram', make() { return new SVGView(); }, },
+            { name: 'SVG Diagram', make() {
+                    const diagram = new SVGView();
+                    diagram.structure = App.expanded;
+                    return diagram;
+                },
+            },
             { name: 'Tree Diagram', make() {
                 return new SVGTreeDiagram('Tree Diagram', App.expanded, {
                     nodeContent: (node) => node[symbols.content],
@@ -2112,16 +2187,17 @@
         /**
          * Extract group data from match data.
          */
-        function setGroupData(node) {
+        function getGroupData(listDefinition) {
             const rangePattern = /^(?<start>[0-9]+(\.[0-9]+)?)\s*\.\.\s*(?<end>[0-9]+(\.[0-9]+)?)(\s*\|\s*(?<step>[0-9]+(\.[0-9]+)?))?/;
-            const count = Number(node.list);
+            const count = Number(listDefinition);
+            const list = [];
             if (!isNaN(count)) {
                 node.group = [];
                 for (let i = 1; i <= count; ++i) {
-                    node.group.push(i);
+                    list.push(i);
                 }
             } else {
-                node.group = node.list.split(',').filter((item) => item).flatMap((item) => {
+                list.push(...listDefinition.split(',').filter((item) => item).flatMap((item) => {
                     const range = item.match(rangePattern);
                     if (range) {
                         const start = Number(range.groups.start);
@@ -2134,8 +2210,9 @@
                         return values;
                     }
                     return item.trim();
-                });
+                }));
             }
+            return list;
             node.name = (node.name || '').trim();
         }
 
@@ -2143,6 +2220,8 @@
          * Symbols used to provide attributes of the nodes that are independent of user attributes.
          */
         const symbols = {
+            name: Symbol('name'),
+            title: Symbol('title'),
             source: Symbol('source'),
             content: Symbol('content'),
             container: Symbol('container'),
@@ -2150,7 +2229,7 @@
             values: Symbol('values'),
             links: Symbol('links'),
             views: Symbol('views'),
-        }
+        };
 
         /**
          * Classes of the nodes in the template structure.
@@ -2191,22 +2270,14 @@
             }
             parseValue(context, node, newNode = true) {
                 node[symbols.source].push(this);
-                context.parse(node, this.value);
+                context.parse(node, this.value, newNode);
                 context.parsers.forEach((parser) => parser.apply(node, context));
 
                 if (newNode) {
-                    if (node.name) {
-                        context.names[node.name] = context.names[node.name] || [];
-                        context.names[node.name].unshift(node);
-                    }
                     context.nodeList.push(node);
                 }
 
                 node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
-                
-                if (newNode && node.name) {
-                    context.names[node.name].shift();
-                }
                 node[symbols.value] += `${this.value};`;
             }
         }
@@ -2218,14 +2289,14 @@
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-                const match = ContinuationNode.value.match(pattern);
+                const match = value.match(ContinuationNode.pattern);
                 this.value = match.groups.value;
             }
             expand(context) {
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                context.parse(context.scope[0].node, this.value);
+                this.parseValue(context, context.scope[0].node, false);
                 return this.content.flatMap((node) => node.expand(context));
             }
         }
@@ -2246,9 +2317,27 @@
                 });
                 const values = {};                
                 context.parse(values, this.value);
-                Object.assign(context.scope[0].values, values);
                 const content = this.content.flatMap((node) => node.expand(context));
-                return content;
+                if (content.length) {
+                    Object.entries(values).forEach(([key, value]) => {
+                        const data = content.filter((node) => key in node).map((node) => node[key]);
+                        if (value === 'join') {
+                            values[key] = data.join(' ');
+                        } else if (value === 'sum') {
+                            values[key] = data.reduce((sum, value) => sum + value, 0);
+                        } else {
+                            values[key] = data;
+                        }
+                    });
+                    /*
+                    const collapse = (node, key) =>
+                        node[symbols.content].reduce((sum, node) => sum + collapse(node, key), node[key] || '');
+                    Object.entries(values).forEach(([key, value]) =>
+                        values[key] = content.reduce((sum, node) => sum + collapse(node, key), value));
+                        */
+                }
+                Object.assign(context.scope[0].values, values);
+                return [];
             }
         }
 
@@ -2412,7 +2501,8 @@
                     this.list = modifier.apply(this.list);
                     this.name = modifier.apply(this.name);
                 });
-                setGroupData(this);
+                this.group = getGroupData(this.list);
+                this.name = (this.name || '').trim();
                 const content = this.group.flatMap((item, index) => {
                     context.scope[0].values[this.name] = item;
                     context.scope[0].values[`${this.name}_n`] = index;
@@ -2445,7 +2535,8 @@
                     this.value = modifier.apply(this.value);
                 });
 
-                setGroupData(this);
+                this.group = getGroupData(this.list);
+                this.name = (this.name || '').trim();
                 const content = this.group.flatMap((item, index) => {
                     context.scope[0].values[this.name || '_'] = item;
                     context.scope[0].values[''] = item;
@@ -2814,9 +2905,9 @@
         }
 
         /**
-         * Generate an new structure from the definition
+         * Generate a node parameters from the value string and context
          */
-        function defaultParser(node, value, context) {
+        function valueParser(node, value, context, newNode) {
             node[symbols.values] = [];
             if (value) {
                 const nodes = context.views.length ? context.views.map((view) => {
@@ -2825,15 +2916,19 @@
                 }) : [node];
                 
                 nodes.forEach((node) => {
-                const [...data] = value.split(/[\|\t;]/g);
-                node.name = data[0].trim();
+                    const [...data] = value.split(/[\|\t;]/g);
+                    if (newNode) {
+                        node.name = data[0].trim();
+                    }
                     data.forEach((item) => {
                         item = item.trim();
                         if (item.includes('=')) {
                             const [name, ...valueArr] = item.split(/=/);
                             const value = valueArr.join('=');
-                            if (/^"[^"]+"$/.test(value)) {
-                                node[name] = value;
+                            if (value.trim() === '') {
+                                node[name] = null;
+                            } else if (/^"[^"]+"$/.test(value)) {
+                                node[name] = value.replace(/^"([^"]+)"$/, '$1');
                             } else if (value.startsWith('^')) {
                                 const referenced = value.length > 1 ? value.slice(1) : name;
                                 let container = context.container.find((container) => container[referenced] !== undefined);
@@ -2908,14 +3003,26 @@
                             Object.assign(values, scope.values), {});
                         value = value.replace(/<([^>]*)>/g, (match, name) =>
                             variables[name] !== undefined ? variables[name] : `<${name}>`);
-                        value = value.replace(/\{([^:\}]+)(:0+)?\}/g, (match, expr, format) => {
+                        value = value.replace(/\{([^:\}]+)(:0+)?\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, format, loop, loopVar) => {
                             let result = match;
                             const names = Object.keys(variables).map((name) => name ? name : '_');
                             const values = Object.values(variables);
-                            try {
-                                result = new Function(...names, `return ${expr}`)(...values);
-                            } catch (e) {
-                                console.log(`Info: expression ${expr} unresolved`);
+                            if (loop) {
+                                const list = getGroupData(loop.replace(/\[([^\]]+)\][^\s;\t\|]+/, '$1'));
+                                names.push(loopVar);
+                                try {
+                                    const func = new Function(...names, `return ${expr}`);
+                                    result = list.reduce((ans, value) => ans + func(...values, value), '');
+                                } catch (e) {
+                                    console.log(`Info: expression ${expr} unresolved`);
+                                }
+                                
+                            } else {
+                                try {
+                                    result = new Function(...names, `return ${expr}`)(...values);
+                                } catch (e) {
+                                    console.log(`Info: expression ${expr} unresolved`);
+                                }
                             }
                             if (format) {
                                 result = (result + '').pad(format.length - 1, format[1]);
@@ -2925,9 +3032,8 @@
                         return value;
                     }
                 },
-                parse(node, value) {
-                    const resolved = this.resolve(value);
-                    return parser(node, this.resolve(value), this);
+                parse(node, value, newNode) {
+                    return parser(node, this.resolve(value), this, newNode);
                 },
             };
 
@@ -3045,8 +3151,12 @@
          * Class for managing tree views
          */
         class TreeView extends View {
+            static settingsMap = {
+                caseSensitive: '.case-sensitive',
+                regularExpression: '.regular-expression',
+            }
             constructor(title = 'Tree', config = {}, content = []) {
-                super('tree-view-template');
+                super('tree-view-template', TreeView.settingsMap);
                 this.main = this.node.querySelector('.tree');
                 this.title = title;
 
@@ -3060,6 +3170,7 @@
 
                 this.searchStack = [];
                 this.path = [];
+                this.resetSearch();
             }
             setContent(content) {
                 this.main.innerHTML = '';
@@ -3088,19 +3199,19 @@
                 this.searchStack.length = 0;
                 this.path = [];
                 this.first = true;
+                this.stack = [...this.content];
             }
             search() {
                 const search = this.node.querySelector('.search');
 
                 if (search.value) {
-                    const caseSensitive = this.node.querySelector('.case-sensitive').checked;
-                    const regularExpression = this.node.querySelector('.regular-expression').checked;
+                    const caseSensitive = this.settings.caseSensitive.checked;
+                    const regularExpression = this.settings.regularExpression.checked;
                     const flags = caseSensitive ? '' : 'i';
                     const pattern = new RegExp(search.value, flags);
 
                     const content = this.config.getContent || ((item) => item.content);
                     this.items = [];
-                    //this.stack = [...this.content];
                     while (this.stack.length) {
                         const item = this.stack.shift();
                         if (item) {
@@ -3118,6 +3229,8 @@
                     if (this.path) {
                         this.expand();
                     }
+                } else {
+                    this.resetSearch();
                 }
             }
             incrementalSearch() {
@@ -7458,10 +7571,6 @@ void main() {
                 
                 const settings = document.getElementById('view-settings');
                 settings.addEventListener('click', (event) => this?._frame?.content?.toggleSettings());
-                
-                this.mainEditor.main.addEventListener('change', (event) => {
-                    this.source = this.mainEditor.value;
-                });
             },
             process() {
                 this.allNodes = [];
@@ -7483,11 +7592,18 @@ void main() {
                 return this._source;
             },
             set source(content) {
+                const name = this?.currentNode?.name;
                 this._source = content;
                 this.structure = getStructure(content);
-                this.expanded = expand(App.structure, defaultParser);
+                this.expanded = expand(App.structure, valueParser);
                 this.process();
                 this.views.forEach((view) => view.structure = this.expanded);
+                if (name) {
+                    const current = this.allNodes.find((node) => node.name === name);
+                    if (current) {
+                        this.currentNode = current;
+                    }
+                }
             },
             get currentNode() {
                 return this._currentNode;
@@ -7643,17 +7759,6 @@ void main() {
 
             const shaders = savedShaders ? JSON.parse(savedShaders) : defaultShaders;
             glView.setShaders(shaders);
-
-            App.mainEditor.main.addEventListener('input', (event) => {
-                //localStorage.setItem('structure', input.value);
-                App.source = App.mainEditor.value;
-
-                getGraph(App.expanded, scene);
-
-                tree.setContent(scene.graph);
-
-                updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
-            });
 
             let configStr;
             try {
