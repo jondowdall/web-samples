@@ -731,6 +731,7 @@
                 </svg>
             </button>
 
+            <button id="save-png">PNG</button>
             <button id="close-current-frame">&#10006;</button>
             
             <select id="view-type-selection"></select>
@@ -836,6 +837,26 @@
             link.remove();
         }
 
+        /**
+         * Save a canvas as png
+         */
+        function savePNG(canvas) {            
+            const data = canvas.toDataURL('image/png');
+                //.replace(/^data:image\/[^;]*/, 'data:application/octet-stream');
+                //.replace(/^data:image\/[^;]*/, 'data:application/octet-stream;headers=Content-Disposition%3A%20attachment%3B%20filename=canvas.png');
+            
+            // Create an anchor, and set the href value to our data URL
+            const link = document.createElement('a');
+            link.href = data;
+        
+            // This is the name of our downloaded file
+            link.download = "download-this-canvas";
+        
+            // Click the download button, causing a download, and then remove it
+            link.click();
+            link.remove();
+        }
+        
         class FrameRow {
             constructor(...content) {
                 this.node = document.createElement('div');
@@ -1238,6 +1259,7 @@
         class StructureEditor extends Editor {
             constructor(title, configuration) {
                 super(title, configuration);
+                this.value = App.source;
                 this.main.addEventListener('change', (event) => {
                     App.source = this.value;
                 });
@@ -1660,6 +1682,10 @@
     
                 if (this.scene.overlays) {
                     this.scene.overlays.forEach((overlay) => overlay.updateOverlay(projectionMatrix));
+                }
+                if (this.savePNG) {
+                    savePNG(this.canvas);
+                    this.savePNG = false;
                 }
                 glErrors(gl, `${this.title} update end`);
             }
@@ -2147,20 +2173,21 @@
                 },
             },
             { name: 'Detail View', make() { return new DetailView(); }, },
-            { name: 'Tree View', make() { return new TreeView(); }, },
+
             { name: 'SVG Diagram', make() {
                     const diagram = new SVGView();
                     diagram.structure = App.expanded;
                     return diagram;
                 },
             },
+            { name: 'Table', make() { return new TableView(App.expanded, {}); }, },
+            { name: 'Tree View', make() { return new TreeView(App.expanded); }, },
             { name: 'Tree Diagram', make() {
                 return new SVGTreeDiagram('Tree Diagram', App.expanded, {
                     nodeContent: (node) => node[symbols.content],
                     nodeText: (node) => node.name,
                 });
             }, },
-            { name: 'Table', make() { return new TableView(App.expanded, { }); }, },
         ];
 
         /**
@@ -3097,6 +3124,12 @@
 
                 this.expander.addEventListener('click', (event) => this.toggle(event.ctrlKey));
                 this.expander.innerHTML = this.indicator;
+                
+                if (tree.config.actions) {
+                    Object.entries(tree.config.actions).forEach(([event, action]) =>
+                        this.labelNode.addEventListener(event, (event) =>
+                            action(event, this)));
+                }
             }
             expand(recursive) {
                 const content = this.content;
@@ -3109,6 +3142,7 @@
                     if (recursive) {
                         node.expand(recursive);
                     }
+                    return node;
                 });
                 this.expanded = true;
                 this.expander.innerHTML = this.indicator;
@@ -3161,21 +3195,27 @@
                 caseSensitive: '.case-sensitive',
                 regularExpression: '.regular-expression',
             }
-            constructor(title = 'Tree', config = {}, content = []) {
+            static defaults = {
+                getContent(node) {return node[symbols.content]},
+                getLabel(node) { return node.item[symbols.name] || node.item.name},
+                getTitle(node) { return node.item[symbols.description] || node.item[symbols.name] || node.item.name},
+                actions: {
+                    'click': (event, node) => App.currentNode = node.item,
+                }
+            }
+            constructor(content=[], title = 'Tree', config = {}) {
                 super('tree-view-template', TreeView.settingsMap);
                 this.main = this.node.querySelector('.tree');
                 this.title = title;
 
-                this.config = config;
-
+                this.config = Object.assign({}, TreeView.defaults, config);
+                this.searchStack = [];
+                this.path = [];
                 this.setContent(content);
 
                 const search = this.node.querySelector('.search');
                 search.addEventListener('input', (event) => this.incrementalSearch());
                 search.addEventListener('change', (event) => this.search());
-
-                this.searchStack = [];
-                this.path = [];
                 this.resetSearch();
             }
             setContent(content) {
@@ -3186,20 +3226,35 @@
                     this.main.append(node.node);
                     return node;
                 });
+                this.resetSearch();
             }
-            test(node, pattern) {
-                if (this.config.test) {
-                    return this.config.test(node, pattern);
+            set currentNode(node) {
+                const allNodes = [];
+                const stack = [...this.nodes];
+                while (stack.length) {
+                    const next = stack.shift();
+                    allNodes.push(next);
+                    next.labelNode.classList.remove('selected');
+                    stack.unshift(...(next.nodes || []));
                 }
-                return pattern.test(node.label);
+                
+                const treeNode = allNodes.find((treeNode) => treeNode.item === node);
+                if (treeNode) {
+                    treeNode.labelNode.classList.add('selected');
+                    treeNode.node.scrollIntoView();
+                }
             }
-            expand() {
+            expand(path) {
                 let nodes = this.nodes;
-                this.path.forEach((item) => {
-                    const node = nodes.find((node) => node.item === item);
+                let node;
+                path.forEach((item) => {
+                    node = nodes.find((node) => node.item === item);
                     node.expand();
-                    nodes = node.content;
+                    nodes = node.nodes;
                 });
+                if (node) {
+                    App.currentNode = node.item;
+                }
             }
             resetSearch() {
                 this.searchStack.length = 0;
@@ -3217,23 +3272,24 @@
                     const pattern = new RegExp(search.value, flags);
 
                     const content = this.config.getContent || ((item) => item.content);
-                    this.items = [];
+                    const test = (node) => this.config.test ? this.config.test(node, pattern) : pattern.test(node.name);
+           
                     while (this.stack.length) {
                         const item = this.stack.shift();
                         if (item) {
-                            if (this.test(item, pattern)) {
-                                this.path.push(item);
+                            this.path.push(item);
+                            if (test(item)) {
                                 break;
                             }
-                            this.path.push(item);
-                            this.items.push(item, null);
-                            this.stack.unshift(...content(item));
+                            this.stack.unshift(...content(item), null);
                         } else {
                             this.path.pop();
                         }
                     }
-                    if (this.path) {
-                        this.expand();
+                    console.log(this.path);
+
+                    if (this.path.length) {
+                        this.expand(this.path);
                     }
                 } else {
                     this.resetSearch();
@@ -7547,7 +7603,10 @@ void main() {
                 const hsplit = document.getElementById('add-row');
                 hsplit.addEventListener('click', (event) => 
                     this._frame ? this._frame.container.horizontalSplit(this._frame) : undefined);
-
+                    
+                const saveCanvas = document.getElementById('save-png');
+                saveCanvas.addEventListener('click', (event) => this._frame.content.savePNG = true);
+                
                 const tabbed = document.getElementById('toggle-tabbed-layout');
                 tabbed.addEventListener('click', (event) => this.toggleSingleFrame());
 
@@ -7658,6 +7717,9 @@ void main() {
                     layout.querySelector('.root-frame').classList.remove('hidden');
                 }
             },
+            get currentFrame() {
+                return this._frame;
+            },
             set currentFrame(frame) {
                 if (this._frame !== frame) {
                     this.frames.forEach((frame) => frame.node.classList.remove('selected-frame'));
@@ -7678,6 +7740,8 @@ void main() {
                     if (frame.content && frame.content.focus) {
                         frame.content.focus();
                     }
+                    const saveCanvas = document.getElementById('save-png');
+                    saveCanvas.disabled = frame?.content?.canvas === undefined;
                 }
             }
         }
@@ -7687,10 +7751,11 @@ void main() {
          */
         function main() {
             App.initialise();
-            const tree = new TreeView('Scene Graph', {
+            const tree = new TreeView([], 'Scene Graph', {
                 //getContent: (node) => node[symbols.content],
                 getContent: (node) => node.children || [],
                 getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
+                actions: {},
             });
 
             const editorFrame = new Frame(App.mainEditor);
