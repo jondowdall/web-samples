@@ -176,7 +176,10 @@
             display: flex;
             flex-direction: column;
             max-height: 100%;
-            opacity: 100%;
+            background: lightgray;
+            transition: filter 0.3s ease-in;
+            filter: blur(0.5px);
+            filter: brightness(75%);
         }
         
         .selected-frame {
@@ -187,7 +190,7 @@
             border-radius: 2px;
             z-index: 10;
             */
-            opacity: 100%;
+            filter: none;
         }
 
         .frame-content {
@@ -244,13 +247,6 @@
 
         #playback-contols {
             grid-column: 4 / 7;
-        }
-
-        #edit {
-            position: relative;
-            display: grid;
-            grid-template-rows: max-content 1fr;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
         }
 
         .editor-container {
@@ -311,6 +307,20 @@
             /*white-space: nowrap;*/
         }
 
+        .diagram-view {
+            position: relative;
+            overflow: hidden;
+            height: 100%;
+            max-width: 100%;
+        }
+
+        .diagram {
+            position: relative;
+            overflow: hidden;
+            height: 100%;
+            width: 100%;
+        }
+        
         .gl-view {
             position: relative;
             overflow: hidden;
@@ -588,6 +598,13 @@
         <div class="shader-controls">
             <input class="shader-name" placeholder="Shader Name" list="shader-list">
             <button class="build-shader">Build</button>
+        </div>
+    </template>
+
+    <template id="diagram-view-template">
+        <div class="diagram-view">
+            <canvas class="diagram" tabindex="1"></canvas>
+            <div class="settings hide-up">
         </div>
     </template>
 
@@ -1110,8 +1127,7 @@
             }
             roots.forEach((node) => walk(node));
         }
-        
-        
+
         /**
          * View component
          */
@@ -1121,7 +1137,6 @@
                 if (settingsMap) {
                     this.getSettingsNodes(settingsMap);
                 }
-
                 App.views.push(this);
             }
             getSettingsNodes(settingsMap) {
@@ -1466,7 +1481,165 @@
             }
         }
 
+        /**
+         * Diagram class
+         */
+        class DiagramView extends View {
+            static settingsMap = {
+                
+            }
+            constructor() {
+                super('diagram-view-template');
+                this.title = 'Diagram';
+                this.transform = [1, 0, 0, 1, 0, 0];
+                this.canvas = this.node.querySelector('.diagram');
+                this.context = this.canvas.getContext('2d');
+                this.context.setTransform(1, 0, 0, 1, 0, 0);
+                this.addControls();
+            }
+            addControls() {
+                const last = {};
+                let action;
+                const drag = (event, x, y) => {
+                    const dx = x - last.x;
+                    const dy = y - last.y;
+                    
+                    this.context.transform(1, 0, 0, 1, dx, dy);
+                    
+                    last.x = x;
+                    last.y = y;
+                };
+                const transform = (event, x, y) => {
+                    const c = this.context.getTransform();
+                    const m = [c.a, c.b, c.e, c.c, c.d, c.f, 0, 0, 1];
+                    const t = c.inverse();
+                    const inverse = [t.a, t.b, t.e, t.c, t.d, t.f, 0, 0, 1];
 
+                    const box = this.canvas.getBoundingClientRect();
+                    
+                    if (event.touches.length === 2) {
+                        const p1 = {x: last.x - box.x, y: last.y - box.y};
+                        const p2 = {x: last.second.x - box.x, y: last.second.y - box.y};
+                        const q1 = {x: event.touches[0].clientX - box.x, y: event.touches[0].clientY - box.y};
+                        const q2 = {x: event.touches[1].clientX - box.x, y: event.touches[1].clientY - box.y};
+
+                        const v1 = {x: p2.x - p1.x, y: p2.y - p1.y};
+                        const v2 = {x: q2.x - q1.x, y: q2.y - q1.y};
+
+                        const l2 = v1.x * v1.x + v1.y * v1.y;
+                        const scaledCosAngle = (v2.x * v1.x + v1.y * v2.y) / l2;
+                        const scaledSinAngle = (v1.x * v2.y - v1.y * v2.x) / l2;
+                        const tx = (v1.x * (q1.x * p2.x - p1.x * q2.x) + v1.y * (q1.x * p2.y - q2.x * p1.y) + v2.y * (p2.x * p1.y - p1.x * p2.y)) / l2;
+                        const ty = (v2.x * (p1.x * p2.y - p2.x * p1.y) + v1.y * (q1.y * p2.y - q2.y * p1.y) + v1.x * (q1.y * p2.x - q2.y * p1.x)) / l2;
+                                                
+                        this.context.setTransform(
+                            scaledCosAngle,
+                            scaledSinAngle,
+                            -scaledSinAngle,
+                            scaledCosAngle,
+                            tx,
+                            ty);
+                        /*
+                        last.x = event.touches[0].clientX;
+                        last.y = event.touches[0].clientY;
+                        last.second.x = event.touches[1].clientX;
+                        last.second.y = event.touches[1].clientY;
+                        */
+                    }
+                };
+                this.canvas.addEventListener('touchstart', (event) => {
+                    last.x = event.touches[0].clientX;
+                    last.y = event.touches[0].clientY;
+    
+                    if (event.touches.length === 1) {
+                        action = drag;
+                    } else if (event.touches.length === 2) {
+                        event.preventDefault();
+                        last.second = {
+                            x: event.touches[1].clientX,
+                            y: event.touches[1].clientY,
+                        };
+                        action = transform;
+                    }
+                    //report(action);
+                });
+    
+                this.canvas.addEventListener('touchmove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.touches[0].clientX, event.touches[0].clientY);
+                    }
+                });
+    
+                this.canvas.addEventListener('touchend', (event) => {
+                    event.preventDefault();
+                    action = null;
+                });
+    
+                this.canvas.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    last.x = event.clientX;
+                    last.y = event.clientY;
+                    action = drag;
+                });
+    
+                this.canvas.addEventListener('mousemove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.clientX, event.clientY);
+                    }
+                });
+    
+                this.canvas.addEventListener('mouseup', (event) => {
+                    event.preventDefault();
+                    action = null;
+                });
+    
+                this.canvas.addEventListener('wheel', (event) => {
+                    const dist = event.deltaY / 1000;
+                    this.transform[0] *= delta;
+                    this.transform[1] *= delta;
+                    this.transform[2] *= delta;
+                    this.transform[3] *= delta;
+                });
+    
+                this.canvas.addEventListener('keydown', (event) => {
+                    report(event.key);
+                    event.preventDefault();
+                    const scale = event.ctrlKey ? 0.1 : 1;
+                    if (event.key === 'u') {
+                        view.camera.up = [0,1,0];
+                    }
+                    if (event.key === 'ArrowUp') {
+                    }
+                    if (event.key === 'ArrowDown') {
+                    }
+                    if (event.key === 'ArrowLeft') {
+                    }
+                    if (event.key === 'ArrowRight') {
+                    }
+                });
+            }
+            update(time) {
+                const width = this.canvas.clientWidth;
+                const height = this.canvas.clientHeight;
+                //console.log(`${width}, ${height}`);
+                if (this.canvas.width != width || this.canvas.height != height) {
+                    this.canvas.width = width;
+                    this.canvas.height = height;
+                }
+
+                this.context.save();
+                this.context.setTransform(1, 0, 0, 1, 0, 0);
+                this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.context.restore();
+                
+                this.context.fillStyle = 'lightgreen';
+                this.context.strokeStyle = 'blue';
+                this.context.fillRect(this.canvas.width * 0.3, this.canvas.height * 0.2, this.canvas.width * 0.8, this.canvas.height * 0.75);
+            }
+        }
+        
         /**
          * GLView component
          */
@@ -1541,7 +1714,7 @@
                 this.graph = graph;
             }
             updateBuffers(data) {
-                const gl = this.context;
+                const gl = this.context; 
                 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.vertex), gl.STATIC_DRAW);
@@ -2166,6 +2339,7 @@
             { name: 'Shader Editor', make() { return new ShaderEditor(); }, },
             { name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
             { name: 'Editor', make() { return new Editor(); }, },
+            { name: 'Diagram', make() { return new DiagramView(); }, }, 
             { name: '3D View', make() { 
                    const view = new GLView('New GL View', scene);
                    view.setShaders(defaultShaders);
@@ -6222,29 +6396,29 @@ void main() {
          *
          */
         function invert3x3(input) {
-            let a00 = input[0], a01 = input[1], a02 = input[2];
-            let a10 = input[3], a11 = input[4], a12 = input[5];
-            let a20 = input[6], a21 = input[7], a22 = input[8];
+            const a00 = input[0], a01 = input[1], a02 = input[2];
+            const a10 = input[3], a11 = input[4], a12 = input[5];
+            const a20 = input[6], a21 = input[7], a22 = input[8];
 
-            let b01 = a22 * a11 - a12 * a21;
-            let b11 = -a22 * a10 + a12 * a20;
-            let b21 = a21 * a10 - a11 * a20;
+            const b01 = a22 * a11 - a12 * a21;
+            const b11 = -a22 * a10 + a12 * a20;
+            const b21 = a21 * a10 - a11 * a20;
             // Calculate the determinant
-            let det = a00 * b01 + a01 * b11 + a02 * b21;
+            const det = a00 * b01 + a01 * b11 + a02 * b21;
             if (!det) {
                 return null;
             }
-            det = 1.0 / det;
+            const idet = 1.0 / det;
             return [
-                b01 * det,
-                (-a22 * a01 + a02 * a21) * det,
-                (a12 * a01 - a02 * a11) * det,
-                b11 * det,
-                (a22 * a00 - a02 * a20) * det,
-                (-a12 * a00 + a02 * a10) * det,
-                b21 * det,
-                (-a21 * a00 + a01 * a20) * det,
-                (a11 * a00 - a01 * a10) * det];
+                b01 * idet,
+                (-a22 * a01 + a02 * a21) * idet,
+                (a12 * a01 - a02 * a11) * idet,
+                b11 * idet,
+                (a22 * a00 - a02 * a20) * idet,
+                (-a12 * a00 + a02 * a10) * idet,
+                b21 * idet,
+                (-a21 * a00 + a01 * a20) * idet,
+                (a11 * a00 - a01 * a10) * idet];
         }
 
         /**
@@ -6413,6 +6587,17 @@ void main() {
             [v[0], v[1], v[2]] = add(p1, add(p2, p3));
 
             return add(p1, add(p2, p3));
+        }
+
+        /**
+         *
+         */
+        function transformVector2d(v, matrix) {
+            const x = matrix[0] * v[0] + matrix[1] * v[1] + matrix[2];
+            const y = matrix[3] * v[0] + matrix[4] * v[1] + matrix[5];
+            v[0] = x;
+            v[1] = y;
+            return v;
         }
 
         /**
