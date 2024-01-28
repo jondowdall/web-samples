@@ -1283,7 +1283,6 @@
                     if (document.getElementById('interactive-update').checked) {
                         App.source = this.value;
                         getGraph(App.expanded, scene);
-                        //tree.setContent(scene.graph);
                     }
                     updateLineNumbers(App.mainEditor.main, App.mainEditor.lineNumbers);
                 });
@@ -1292,7 +1291,9 @@
                     this.main.spellcheck = spellcheck.checked;
                     this.main.focus();
                 });
-                
+            }
+            set source(source) {
+                this.value = source;
             }
             set currentNode(node) {
                 // Show the source node.
@@ -1531,25 +1532,24 @@
                         const scaledSinAngle = (v1.x * v2.y - v1.y * v2.x) / l2;
                         const tx = (v1.x * (q1.x * p2.x - p1.x * q2.x) + v1.y * (q1.x * p2.y - q2.x * p1.y) + v2.y * (p2.x * p1.y - p1.x * p2.y)) / l2;
                         const ty = (v2.x * (p1.x * p2.y - p2.x * p1.y) + v1.y * (q1.y * p2.y - q2.y * p1.y) + v1.x * (q1.y * p2.x - q2.y * p1.x)) / l2;
-                                                
+                        
+                        const transform = matrixMultiply3x3([
+                            scaledCosAngle, scaledSinAngle, tx,
+                            -scaledSinAngle, scaledCosAngle, ty,
+                            0, 0, 1], last.transform);
+                            
                         this.context.setTransform(
-                            scaledCosAngle,
-                            scaledSinAngle,
-                            -scaledSinAngle,
-                            scaledCosAngle,
-                            tx,
-                            ty);
-                        /*
-                        last.x = event.touches[0].clientX;
-                        last.y = event.touches[0].clientY;
-                        last.second.x = event.touches[1].clientX;
-                        last.second.y = event.touches[1].clientY;
-                        */
+                            transform[0], transform[1], transform[3], transform[4], transform[2], transform[5]);
                     }
                 };
                 this.canvas.addEventListener('touchstart', (event) => {
                     last.x = event.touches[0].clientX;
                     last.y = event.touches[0].clientY;
+                    const before = this.context.getTransform();
+                    last.transform = [
+                       before.a, before.b, before.e,
+                       before.c, before.d, before.f,
+                       0, 0, 1];
     
                     if (event.touches.length === 1) {
                         action = drag;
@@ -1561,7 +1561,6 @@
                         };
                         action = transform;
                     }
-                    //report(action);
                 });
     
                 this.canvas.addEventListener('touchmove', (event) => {
@@ -2035,9 +2034,38 @@
                 }));
                 const stack = [...roots];
 
+                const rightEdge = [];
+                const getX = (node, pad = 0) => {
+                    if (rightEdge.lenght === 0) {
+                        rightEdge.push(
+                            { height: node.y, x: node.width + pad },
+                            { height: node.y + node.height, x: 0 },
+                        );
+                        return 0;
+                    }
+                    const right = [...rightEdge];
+                    const left = [...node.leftEdge];
+                    right.push({
+                        height: right.reduce((max, step) => Math.max(max, step.height), 0),
+                        delta: 0,
+                    });
+
+                    const steps = [...rightEdge, ...left];
+                    rightEdge.sort((a, b) => a.height - b.height);
+                    let current = 0;
+                    console.log(steps);
+                    const x = steps.reduce((max, step) => {
+                        current += step.delta;
+                        return Math.max(max, current);
+                    }, 0);
+                    return x;
+                };
+                
+                // Perform a depth first walk of the graph creating a 'treenode' for each node
                 while (stack.length > 0) {
                     const treeNode = stack.shift();
                     if (treeNode.nodes === undefined) {
+                        // Put this node on the stack to be processed after its contents
                         stack.unshift(treeNode);
                         const nodes = this.configuration.nodeContent(treeNode.value) || [];
                         treeNode.nodes = nodes.map((node) => ({
@@ -2052,20 +2080,51 @@
                         stack.unshift(...treeNode.nodes);
                     } else {
                         this.all.push(treeNode);
+                        treeNode.leftEdge = [
+                            {height: 0, delta: treeNode.width / 2 },
+                            {height: treeNode.height, delta: -treeNode.width / 2 },
+                        ];
+                        treeNode.rightEdge = [
+                            {height: 0, delta: treeNode.width / 2 },
+                            {height: treeNode.height, delta: -treeNode.width / 2 },
+                        ];
+
                         if (treeNode.nodes.length) {
                             if (treeNode.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
                                 const x = 2 * this.configuration.columnGap;
                                 let y = treeNode.height + this.configuration.rowGap;
+                                const first = treeNode.nodes[0];    
+                                const last = treeNode.nodes[treeNode.nodes.length - 1];    
+                                treeNode.rightEdge.push({
+                                    height: y,
+                                    delta: x + first.width / 2,
+                                });
                                 treeNode.nodes.forEach((node) => {
                                     node.box.x = x;
                                     node.box.y = y;
+                                    
+                                    treeNode.rightEdge.push(...node.rightEdge.map((step) => ({
+                                        height: y + step.height,
+                                        delta: step.delta,
+                                    })));
+                                    
                                     y += node.box.height + this.configuration.rowGap;
                                 });
                                 treeNode.box.width = Math.max(treeNode.width, ...treeNode.nodes.map((node) =>
                                     node.box.width + x));
                                 treeNode.box.height = treeNode.height + this.configuration.rowGap + y - this.configuration.rowGap;
                                 treeNode.x = 0;
-                                treeNode.y = 0;                                
+                                treeNode.y = 0;
+
+                                treeNode.leftEdge.push({
+                                   height: treeNode.height,
+                                   delta: -this.configuration.columnGap + treeNode.width / 2,
+                                },
+                                { height: y - last.height / 2 , delta: -this.configuration.columnGap, },
+                                {
+                                   height: y,
+                                   delta: (2 * this.configuration.columnGap) - (treeNode.width / 2),
+                                });
                             } else {
                                 let x = this.configuration.columnGap / 2;
                                 const y = treeNode.height + this.configuration.rowGap;
@@ -2078,6 +2137,30 @@
                                 treeNode.box.height = treeNode.height + this.configuration.rowGap + Math.max(...treeNode.nodes.map((node) => node.box.height));
                                 treeNode.x = (treeNode.box.width - treeNode.width) / 2;
                                 treeNode.y = 0;
+                                
+                                // Add edge for lines
+                                const first = treeNode.nodes[0];
+                                const last = treeNode.nodes[treeNode.nodes.length - 1];
+                                if (treeNode.nodes.length > 1) {
+                                    // Allow for the line to lower nodes
+                                    treeNode.leftEdge.push({
+                                        height: treeNode.height + this.configuration.rowGap / 2,
+                                        delta: (first.width - treeNode.box.width) / 2,
+                                    });
+                                    treeNode.rightEdge.push({
+                                        height: treeNode.height + this.configuration.rowGap / 2,
+                                        delta: (treeNode.box.width - last.width) / 2,
+                                    });
+                                }
+                                // Add the edge of child nodes
+                                treeNode.leftEdge.push(...first.leftEdge.map((step, i) => ({
+                                    height: step.height + first.y,
+                                    delta: step.delta,
+                                })));
+                                treeNode.rightEdge.push(...last.rightEdge.map((step, i) => ({
+                                    height: step.height + last.y,
+                                    delta: step.delta,
+                                })));
                             }
                         } else {
                             treeNode.box.width = treeNode.width;
@@ -2085,6 +2168,8 @@
                             treeNode.x = 0;
                             treeNode.y = 0;
                         }
+                        treeNode.xOffset = getX(treeNode);
+                        console.log(treeNode.xOffset);
                     }
                 }
                 
@@ -2118,6 +2203,8 @@
                         'clip-path': `url(#clip${index})`,
                     };
                     this.add('text', textAttrs, this.configuration.nodeText(node.value), [], group);
+                    textAttrs.y += 20;
+                    this.add('text', textAttrs, node.xOffset, [], group);
                     if (node.nodes.length) {
                         const pathAttrs = {fill: 'none', stroke: 'black'};
                         if (node.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
@@ -6348,6 +6435,25 @@ void main() {
         /**
          *
          */
+        function matrixMultiply3x3(a, b) {
+            return [
+                a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+                a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+                a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+
+                a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+                a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+                a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+
+                a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+                a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+                a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+            ];
+        }
+        
+        /**
+         *
+         */
         function matrixMultiply(a, b) {
             return [
                 a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12],
@@ -7737,8 +7843,7 @@ void main() {
 
             const response = await fetch(`${name}`);
             const content = await response.text();
-            //App.source = content;
-            editor.value = content;
+
             if (content) {
                 App.source = content;
 
@@ -7759,6 +7864,7 @@ void main() {
         let config = {
             files: [],
             current: 'New Scene',
+            saveState: false,
         };
 
         const App = {
@@ -7847,6 +7953,7 @@ void main() {
                 this.structure = getStructure(content);
                 this.expanded = expand(App.structure, valueParser);
                 this.process();
+                this.views.forEach((view) => view.source = content);
                 this.views.forEach((view) => view.structure = this.expanded);
                 if (name) {
                     const current = this.allNodes.find((node) => node.name === name);
