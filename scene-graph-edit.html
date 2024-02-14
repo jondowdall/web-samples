@@ -2043,91 +2043,56 @@
                     rightEdge: [],
                 }));
                 const stack = [...roots];
+                
+                const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
+                    (point.y - line[0].y) / (line[1].y - line[0].y);
 
                 const getOffset = (rightEdge, leftEdge) => {
                     let offset = Infinity;
                     let left = [...leftEdge];
                     let right = [...rightEdge];
 
-                    left.sort((a, b) => a.height - b.height);
-                    right.sort((a, b) => a.height - b.height);
+                    left.sort((a, b) => a.y - b.y);
+                    right.sort((a, b) => a.y - b.y);
 
-                    let r, l;
-                    while (left.length && right.length) {
-                        if (left[0].height > right[0].height) {
-                            r = right.shift();
-                            if (l && r) {
-                                offset = Math.min(offset, r.pos - l.pos)
+                    while ((left.length > 1) && (right.length > 1)) {
+                        if (left[0].y > right[0].y) {
+                            if (left[0].y < right[1].y) {
+                                offset = Math.min(offset, lerp(right, left[0]) - left[0].x);
                             }
-                        } else if (left[0].height > right[0].height) {
-                            if (l && r) {
-                                offset = Math.min(offset, r.pos - l.pos)
+                            right.shift();
+                        } else if (right[0].y > left[0].y) {
+                            if (right[0].y < left[1].y) {
+                                offset = Math.min(offset, right[0].x - lerp(left, right[0]));
                             }
+                            left.shift();
                         } else {
-                            r = right.shift();
-                            l = left.shift();
-                            offset = Math.min(offset, r.pos - l.pos)
+                            offset = Math.min(offset, right[0].x - left[0].x);
+                            if (left[1].y < right[1].y) {
+                                left.shift();
+                            } else if (left[1].y > right[1].y) {
+                                right.shift();
+                            } else {
+                                right.shift();
+                                left.shift();
+                            }
                         }
-
                     }
-                    if (offset === Infinity || offset === -Infinity) {
+                    if (offset === Infinity) {
                         return 0;
                     }
                     return offset + this.configuration.columnGap;
                 };
 
                 const root = {
+                    height: 0,
                     rightEdge: [],
                     value: {[symbols.views]: {'Tree Diagram': {layout: 'Horizontal'}}},
-                }
-                
-                const makeNode = (sourceNode) => {
-                    const childNodes = this.configuration.nodeContent(treeNode.value) || [];
-                    const node = {
-                        value: sourceNode,
-                        width: 100,
-                        height: 60,
-                        box: {},
-                        svgNodes: [],
-                        leftEdge: [],
-                        rightEdge: [],
-                        nodes: childNodes.map((child) => makeNode(child)),
-                    };
-                    if (nodes.length) {
-                        if (treeNode.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
-                            let y = node.height + this.configuration.rowGap;
-                            node.nodes.forEach((childNode) => {
-                                childNode.box.x = this.configuration.columnGap;
-                                childNode.box.y = y;
-                                y += childNode.box.height + this.configuration.rowGap;
-                                node.right.push(...childNode.rightEdge.map((point) => ({
-                                    height: y + point.height, pos: point.pos,
-                                })));
-                            });
-                        } else {
-                            const right = [];
-                            node.nodes.forEach((childNode) => {
-                                const offset = getOffset(right, node.leftEdge);
-                                childNode.x = offset;
-                                childNode.y = node.height + this.configuration.rowGap;
-                                
-                                const max = Math.max(...childNode.rightEdge.map((point) => point.height));
-                                const filtered = right.filter((point) => point.height > max);
-                                right.length = 0;
-                                right.push(...filtered, ...childNode.rightEdge.map((point) => ({
-                                    height: point.height, pos: point.pos + offset + this.configuration.columnGap,
-                                })));
-                            });
-                        }
-                    }
-                    return node;
-                }
-                
+                }                
                 
                 // Perform a depth first walk of the graph creating a 'treenode' for each node
                 while (stack.length > 0) {
                     const treeNode = stack.shift();
-                    const parent = treeNode.parent || root;
                     if (treeNode.nodes === undefined) {
                         // Put this node on the stack to be processed after its contents
                         stack.unshift(treeNode);
@@ -2144,6 +2109,7 @@
                         }));
                         stack.unshift(...treeNode.nodes);
                     } else {
+                        const parent = treeNode.parent || root;
                         this.all.push(treeNode);
                         // Determine the width and height of the 'box' and the position of the label
                         // calculate the edges
@@ -2152,71 +2118,91 @@
                         if (treeNode.nodes.length) {
                             const first = treeNode.nodes[0];
                             const last = treeNode.nodes[treeNode.nodes.length - 1];
+                            treeNode.box.width = Math.max(treeNode.width, ...treeNode.nodes.map((node) => node.box.x + node.box.width));
+                            treeNode.box.height = Math.max(treeNode.height, ...treeNode.nodes.map((node) => node.box.y + node.box.height));
+
                             if (treeNode.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
                                 treeNode.x = 0;
 
-                                treeNode.box.width = treeNode.width;
-                                treeNode.box.height = treeNode.height;
                                 treeNode.leftEdge = [
-                                    { height: 0, pos: 0 },
-                                    { height: treeNode.height, pos: this.configuration.columnGap },
-                                    { height: last.height / 2 - this.configuration.rowGap, pos: 2 * this.configuration.columnGap },
+                                    { y: 0, x: 0 },
+                                    { y: treeNode.height, x: 0 },
+                                    { y: treeNode.height, x: this.configuration.columnGap },
+                                    { y: last.height / 2 - this.configuration.rowGap, x: 2 * this.configuration.columnGap },
                                 ];
-                                treeNode.rightEdge = treeNode.nodes.flatMap((node) =>
-                                    node.rightEdge.map((point) => (
-                                        { height: point.height + node.box.y, pos: treeNode.box.width - node.box.x + node.box.width + point.pos })));
+                                treeNode.rightEdge = treeNode.nodes.flatMap((childNode) =>
+                                    childNode.rightEdge.map((point) => ({
+                                        x: childNode.box.x + point.x,
+                                        y: childNode.box.y + point.y, })));
                             } else {
-                                treeNode.box.width = Math.max(treeNode.width, ...treeNode.rightEdge.map((point) => point.pos));
-                                treeNode.box.height = treeNode.height + this.configuration.rowGap + Math.max(...treeNode.nodes.map((node) => node.box.height));
-                                
-                                treeNode.leftEdge = [
-                                    { height: 0, pos: (treeNode.box.width - treeNode.width) / 2 },
-                                    { height: treeNode.height, pos: treeNode.box.width / 2 },
-                                    { height: treeNode.height + this.configuration.rowGap / 2, pos: treeNode.nodes[0].box.width / 2 },
-                                    ...treeNode.nodes[0].leftEdge.map((point) => ({
-                                        height: point.height, pos: point.pos,
-                                    })),
-                                ];
-
                                 treeNode.x = (first.box.x + first.x + first.width / 2 + 
                                     last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
                                 
-                                treeNode.rightEdge = [{ height: 0, pos: treeNode.width }, { height: treeNode.height, pos: 0 }];
+                                treeNode.leftEdge = [
+                                    { y: 0, x: treeNode.x },
+                                    { y: treeNode.height, x: treeNode.x },
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
+                                    ...first.leftEdge.map((point) => ({
+                                        y: point.y + first.box.y, x: point.x + first.box.x,
+                                    })),
+                                ];
+                                let y = Math.max(...first.leftEdge.map((point) => point.y));
+                                treeNode.nodes.forEach((childNode) => {
+                                    const points = childNode.leftEdge.map((point) => ({
+                                        y: point.y + childNode.box.y, x: point.x + childNode.box.x,
+                                    })).filter((point) => point.y > y);
+                                    treeNode.leftEdge.push(...points);
+                                    y = Math.max(...points.map((point) => point.y));
+                                });
+                                
+                                treeNode.rightEdge = [
+                                    { y: 0, x: treeNode.x + treeNode.width },
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width},
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
+                                    ...last.rightEdge.map((point) => ({
+                                        y: point.y + last.box.y, x: point.x + last.box.x,
+                                    })),
+                                ];
+                                y = Math.max(...last.rightEdge.map((point) => point.y));
+                                treeNode.nodes.toReversed().forEach((childNode) => {
+                                    const points = childNode.rightEdge.map((point) => ({
+                                        y: point.y + childNode.box.y, x: point.x + childNode.box.x,
+                                    })).filter((point) => point.y > y);
+                                    treeNode.rightEdge.push(...points);
+                                    y = Math.max(...points.map((point) => point.y));
+                                });
                             }
                         } else {
                             treeNode.x = 0;
                             treeNode.box.width = treeNode.width;
                             treeNode.box.height = treeNode.height;
-                            treeNode.leftEdge = [{ height: 0, pos: 0 }, { height: treeNode.height, pos: Infinity }];
-                            treeNode.rightEdge = [{ height: 0, pos: treeNode.width }, { height: treeNode.height, pos: 0 }];
+                            treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
+                            treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
                         }
 
                         // Calculate the position of the box based on its parent layout data
                         if (parent.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
                             treeNode.box.x = 2 * this.configuration.columnGap;
-                            treeNode.box.y = parent.nextY || this.configuration.rowGap;;
+                            treeNode.box.y = parent.nextY || (parent.height + this.configuration.rowGap);
                             parent.nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
 
                         } else {
-                            
                             const rightEdge = parent.rightEdge;
                             const offset = getOffset(rightEdge, treeNode.leftEdge);
-                            
-                            console.log(treeNode.value.name);
-                            console.log(rightEdge);
-                            console.log(treeNode.rightEdge);
-                            console.log(treeNode.leftEdge);
-                            console.log('Offset: ' + offset);
                             
                             treeNode.box.x = offset;
                             treeNode.box.y = treeNode.parent ? treeNode.parent.height + this.configuration.rowGap : 0;
 
-                            const max = Math.max(...rightEdge.map((point) => point.height));
-                            const filtered = rightEdge.filter((point) => point.height > max);
+                            const max = Math.max(...rightEdge.map((point) => point.y));
+                            const filtered = rightEdge.filter((point) => point.y > max);
                             rightEdge.length = 0;
-                            rightEdge.push(...filtered, ...treeNode.rightEdge.map((point) => ({
-                                height: point.height, pos: point.pos + offset,
-                            })));
+                            rightEdge.push(
+                                ...treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,})),
+                                ...filtered);
                         }
                     }
                 }
@@ -2273,36 +2259,37 @@
                         }
                         this.add('path', pathAttrs, null, [], group);
                     }
+                    if (node.rightEdge.length > 1) {
+                        const pathAttrs = { fill: 'none', stroke: 'red' };
+                        pathAttrs.d = `M${node.rightEdge[0].x} ${node.rightEdge[0].y} ${node.rightEdge.map((p) => `L${p.x} ${p.y}`).join(' ')}`;
+                        this.add('path', pathAttrs, null, [], group);
+                    }
                     node.nodes.forEach((node) => addNode(node, group));
                     ++index;
                 }
 
-                let x = this.configuration.leftMargin;
-                let y = this.configuration.topMargin;
-                let width = this.configuration.leftMargin;
-                let height = 0;
-                roots.forEach((node) => {
-                    height = Math.max(height, node.box.height);
-                    width += node.box.width;
-                    node.box.x = x;
-                    node.box.y = y;
-                    addNode(node);
-                    x += node.box.width + this.configuration.columnGap;
-                });
+                const width = Math.max(...roots.map((node) => node.box.x + node.box.width));
+                const height = Math.max(...roots.map((node) => node.box.y + node.box.height));
+                console.log(roots);
+                console.log(roots.map((node) => node.box.x));
+                console.log(roots.map((node) => node.box.width));
+                console.log(width);
 
-                width = x - this.configuration.columnGap + this.configuration.rightMargin;
                 const extents = {
                     top: 0,
                     left: 0,
-                    right: width,
+                    right: this.configuration.leftMargin + width + this.configuration.rightMargin,
                     bottom: this.configuration.topMargin + height + this.configuration.bottomMargin,
                 }
+                console.log(extents);
                 this.svg.setAttribute('viewBox', `${extents.left} ${extents.top} ${extents.right} ${extents.bottom}`);
                 this.svg.setAttribute('width', `${extents.right - extents.left}`);
                 this.svg.setAttribute('height', `${extents.bottom - extents.top}`);
 
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
+                
+                roots.forEach((node) => addNode(node));
             }
         }
 
@@ -2713,7 +2700,6 @@
 
                 // If the name is found add the data otherwise return a new node
                 if (referencedNode) {
-                    console.log(referencedNode[symbols.fullName]());
                     this.parseValue(context, referencedNode, false);
                     return [];
                 }
