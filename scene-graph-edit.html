@@ -1480,7 +1480,6 @@
                         row.append(makeInputCell(info.name, 'scene'));
                         row.append(makeInputCell(info.name, 'node'));
                         row.append(makeInputCell(info.name, 'shape'));
-                        //console.log("name:", info.name, "type:", info.type, "size:", info.size);
                         body.append(row);
                     }
                 }
@@ -1627,7 +1626,7 @@
             update(time) {
                 const width = this.canvas.clientWidth;
                 const height = this.canvas.clientHeight;
-                //console.log(`${width}, ${height}`);
+
                 if (this.canvas.width != width || this.canvas.height != height) {
                     this.canvas.width = width;
                     this.canvas.height = height;
@@ -2430,7 +2429,6 @@
             render() {
                 this.node.querySelector('.title').innerText = this._currentNode.name;
                 this.detail.innerHTML = '';
-                console.log(this._currentNode);
                 Object.entries(this._currentNode).map(([key, value]) =>
                     this.detail.append(showEntry(key, value, [value])));
                 if (this.settings.context.value) {
@@ -2671,52 +2669,71 @@
                 this.value = match.groups.value;
             }
             expand(context) {
-                // Generate a temporary node
-                if (context.defaultValue.length > 0) {
-                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
-                }
-                context.modifiers.forEach((modifier) => {
-                    this.value = modifier.apply(this.value);
-                });
+                // Check for template node
+                const templateMatch = this.value.match(/ \[(?<definition>[^\[\]]+)\]$/);
+                const values = [];
+                let value;
+                const defaults = (context.defaultValue.length > 0) ? `;${context.defaultValue.join(' ')}` : '';
 
-                const name = this.value.split(/[\t\|;]/)[0].trim();
-
-                let referencedNode;
-                let level = 0;
-                const indexed = name.match(/^(?<name>[^\[]+)\[(?<index>[^\]]+)\]$/);
-
-                if (indexed) {
-                    const name = indexed.groups.name;
-                    const index = parseInt(indexed.groups.index);
-
-                    while(!referencedNode && level < context.scope.length) {
-                        const nodes = context.scope[level]?.node[symbols.content].filter((child) => child.name === name);
-                        referencedNode = nodes[index];
-                        ++level;
-                    }
-                    
-                    if (!referencedNode) {
-                        referencedNode = context.nodeList.filter((existing) => existing.name === name)[index];
-                    }                    
+                if (templateMatch) {
+                    const list = getGroupData(templateMatch.groups.definition);
+                    const rawValue = `${this.value.replace(/ \[[^\[\]]+\]$/, '')}${defaults}`;
+                    list.forEach((item, index) => {
+                        context.scope[0].values[''] = context.scope[0].values['_'] = item;
+                        context.scope[0].values['_n'] = index;
+                        value = rawValue;
+                        context.modifiers.forEach((modifier) => value = modifier.apply(value));
+                        values.push(context.resolve(value));
+                    });
                 } else {
-                    while(!referencedNode && level < context.scope.length) {
-                        referencedNode = context.scope[level]?.node[symbols.content].find((child) => child.name === name);
-                        ++level;
-                    }
+                    value = `${this.value}${defaults}`;
+                    context.modifiers.forEach((modifier) => value = modifier.apply(value));
+                    values.push(context.resolve(value));
+                }
+                
+                values.forEach((value) => {
+                    this.value = value;
+                    const name = value.split(/[\t\|;]/)[0].trim();
                     
-                    if (!referencedNode) {
-                        referencedNode = context.nodeList.find((existing) => existing.name === name);
+                    // Generate a temporary node    
+                    let referencedNode;
+                    let level = 0;
+                    const indexed = name.match(/^(?<name>[^\[]+)\[(?<index>[^\]]+)\]$/);
+    
+                    if (indexed) {
+                        const name = indexed.groups.name;
+                        const index = parseInt(indexed.groups.index);
+    
+                        while(!referencedNode && level < context.scope.length) {
+                            const nodes = context.scope[level]?.node[symbols.content].filter((child) => child.name === name);
+                            referencedNode = nodes[index];
+                            ++level;
+                        }
+                        
+                        if (!referencedNode) {
+                            referencedNode = context.nodeList.filter((existing) => existing.name === name)[index];
+                        }                    
+                    } else {
+                        while(!referencedNode && level < context.scope.length) {
+                            referencedNode = context.scope[level]?.node[symbols.content].find((child) => child.name === name);
+                            ++level;
+                        }
+                        
+                        if (!referencedNode) {
+                            referencedNode = context.nodeList.find((existing) => existing.name === name);
+                        }
                     }
-                }
-
-                // If the name is found add the data otherwise return a new node
-                if (referencedNode) {
-                    this.startScope(context, referencedNode);
-                    this.parseValue(context, referencedNode, false);
-                    this.endScope(context);
-                    return [];
-                }
-                return super.makeNode(context);
+    
+                    // If the name is found add the data otherwise return a new node
+                    if (referencedNode) {
+                        this.startScope(context, referencedNode);
+                        this.parseValue(context, referencedNode, false);
+                        this.endScope(context);
+                    } else {
+                        console.log(`NO MATCH for ${name}`);
+                    }
+                });
+                return [];//super.makeNode(context);
             }
         }
 
@@ -3639,7 +3656,6 @@
                             this.path.pop();
                         }
                     }
-                    console.log(this.path);
 
                     if (this.path.length) {
                         this.expand(this.path);
@@ -4039,6 +4055,7 @@
                     scene.shapes.push(shape);
                 }
 
+                let endScope = false;
                 if (node.name === 'Camera') {
                     if (node.lookAt && node.lookAt.length === 3) {
                         //camera.lookAt = node.lookAt;
@@ -4099,7 +4116,7 @@
 
                     }
 
-                    const sceneNode = addNode(node, node.name, transform, shape, shader, colour, node.specular || 4, node.specularColour);
+                    const sceneNode = addNode(node.name, transform, shape, shader, colour, node.specular || 4, node.specularColour, node.texture);
                     node.sceneNode = sceneNode;
                     namedNodes[node.name] = sceneNode;
                     if (stack.length > 0) {
@@ -4112,6 +4129,7 @@
                     const events = getEvents(node, sceneNode);
                     scene.events.push(...events);
                     stack.unshift(sceneNode);
+                    endScope = true;
                 } else {
                     //console.log(node.name + ': ' + position);
                 }
@@ -4120,7 +4138,7 @@
                     node[symbols.content].forEach((part) => add(part));
                 }
 
-                if (node.sceneNode) {
+                if (endScope) {
                     stack.shift();
                 }
             };
@@ -6015,7 +6033,7 @@ void main() {
         /**
          *
          */
-        function addNode(source, name, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour) {
+        function addNode(name, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour, texture) {
 
             shininess = shininess || 1 + 5 * Math.random();
 
@@ -6023,8 +6041,8 @@ void main() {
                 name, parent, transform, movement: identityMatrix(),
                 shape, shader, colour, shininess, specularColour, children: [],
             });
-            if (source.texture) {
-                node.texture = getTexture(source.texture, scene);
+            if (texture) {
+                node.texture = getTexture(texture, scene);
             }
             return node;
         }
