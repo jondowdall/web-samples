@@ -1506,23 +1506,49 @@
             }
             set structure(structure) {
                 this.content = [];
-                const types = {
+                const actions = {
                     rect: ([x, y, w, h]) => (context) => context.strokeRect(x, y, w, y),
                     path: (d) => {
                         const path = new Path2D(d);
                         return (context) => context.stroke(path);
                     },
+                    text: ([text, x, y]) => (context) => context.fillText(text, x || 0, y || 0),
                 }
+                const stateChange = {
+                    stokeStyle: (colour) => (context) => context.strokeStyle = colour,
+                    fillStyle: (colour) => (context) => context.fillStyle = colour,
+                    font: (font) => (context) => context.font = font,
+                }
+                const stack = [this];
                 const processNode = (node) => {
+                    let pop = false;
                     if (node[symbols.views] && node[symbols.views]['diagram']) {
+                        const item = {
+                            actions: [],
+                            content: [],
+                        };
+                        stack[0].content.push(item);
+                        stack.unshift(item);
+                        pop = true;
                         Object.entries(node[symbols.views]['diagram']).forEach(([key, value]) => {
-                            if (types[key]) {
-                                this.content.push(types[key](value));
-                            } 
+                            value = value || [];
+                            if (actions[key]) {
+                                item.actions.push(actions[key](value));
+                            } else if (stateChange[key]) {
+                                item.actions.unshift(stateChange[key](value));
+                                
+                            } else if (key === 'position') {
+                                item.transform = [1, 0, 0, 1, ...value];
+                            } else if (key === 'transform') {
+                                item.transform = [...value];
+                            }
                         });
                     }
                     if (node[symbols.content]) {
                         node[symbols.content].forEach((node) => processNode(node));
+                    }
+                    if (pop) {
+                        stack.shift();
                     }
                 }
                 structure.forEach((node) => processNode(node));
@@ -1666,11 +1692,21 @@
                 this.context.strokeStyle = 'blue';
                 this.context.fillRect(this.canvas.width * 0.3, this.canvas.height * 0.2, this.canvas.width * 0.8, this.canvas.height * 0.75);
                 
-                this.context.fillStyle = 'none';
+                this.context.fillStyle = 'black';
                 this.context.strokeStyle = 'black';
                 
-                this.content.forEach((item) => item(this.context));
-                
+                const draw = (node) => {
+                    if (node.transform) {
+                        this.context.save();
+                        this.context.transform(...node.transform);
+                    }
+                    node.actions.forEach((action) => action(this.context));
+                    node.content.forEach((item) => draw(item));
+                    if (node.transform) {
+                        this.context.restore();
+                    }
+                }
+                this.content.forEach((item) => draw(item));
             }
         }
 
