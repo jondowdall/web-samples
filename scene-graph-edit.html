@@ -1500,7 +1500,32 @@
                 this.canvas = this.node.querySelector('.diagram');
                 this.context = this.canvas.getContext('2d');
                 this.context.setTransform(1, 0, 0, 1, 0, 0);
+                this.content = [];
                 this.addControls();
+                this.structure = App.structure;
+            }
+            set structure(structure) {
+                this.content = [];
+                const types = {
+                    rect: ([x, y, w, h]) => (context) => context.strokeRect(x, y, w, y),
+                    path: (d) => {
+                        const path = new Path2D(d);
+                        return (context) => context.stroke(path);
+                    },
+                }
+                const processNode = (node) => {
+                    if (node[symbols.views] && node[symbols.views]['diagram']) {
+                        Object.entries(node[symbols.views]['diagram']).forEach(([key, value]) => {
+                            if (types[key]) {
+                                this.content.push(types[key](value));
+                            } 
+                        });
+                    }
+                    if (node[symbols.content]) {
+                        node[symbols.content].forEach((node) => processNode(node));
+                    }
+                }
+                structure.forEach((node) => processNode(node));
             }
             addControls() {
                 const last = {};
@@ -1599,7 +1624,7 @@
                 });
 
                 this.canvas.addEventListener('wheel', (event) => {
-                    const dist = event.deltaY / 1000;
+                    const delta = event.deltaY / 1000;
                     this.transform[0] *= delta;
                     this.transform[1] *= delta;
                     this.transform[2] *= delta;
@@ -1640,6 +1665,12 @@
                 this.context.fillStyle = 'lightgreen';
                 this.context.strokeStyle = 'blue';
                 this.context.fillRect(this.canvas.width * 0.3, this.canvas.height * 0.2, this.canvas.width * 0.8, this.canvas.height * 0.75);
+                
+                this.context.fillStyle = 'none';
+                this.context.strokeStyle = 'black';
+                
+                this.content.forEach((item) => item(this.context));
+                
             }
         }
 
@@ -1709,6 +1740,9 @@
                     return shaders;
                 }, {});
                 glErrors(this.context, `${this.title} setShaders`);
+            }
+            get structure() {
+                return this._structure || [];
             }
             set structure(structure) {
                 this._structure = structure;
@@ -5918,15 +5952,12 @@ void main() {
             }
         }
 
-
         /**
          * Find the first node that matches the name or undefined if no match found
          */
         function findNode(name) {
             return namedNodes[name];
         }
-
-
 
         /**
          * Connection between two nodes
@@ -5985,10 +6016,12 @@ void main() {
                 }
 
                 if (this.fromNode?.world && this.toNode?.world) {
-                    // Update points based on object positions
+                    const from = this.fromNode === node.parent ?
+                        [0, 0, 0] : transformed(transformed([0, 0, 0], this.fromNode.world), inverse);
 
-                    const from = this.fromNode === node.parent ? [0, 0, 0] : transformed(transformed([0, 0, 0], this.fromNode.world), inverse);
-                    const to = this.toNode === node.parent ? [0, 0, 0] : transformed(transformed([0, 0, 0], this.toNode.world), inverse);
+                    const to = this.toNode === node.parent ?
+                        [0, 0, 0] : transformed(transformed([0, 0, 0], this.toNode.world), inverse);
+
                     scene.data.vertex[this.pointIndex] = from[0];
                     scene.data.vertex[this.pointIndex + 1] = from[1];
                     scene.data.vertex[this.pointIndex + 2] = from[2];
@@ -6187,7 +6220,6 @@ void main() {
                     4 * (3 + 3));
                 context.enableVertexAttribArray(shader.attribLocations.vertexTexture);
             }
-
             shader.setSceneData(scene);
         }
 
@@ -6232,6 +6264,7 @@ void main() {
             yAxis() {
                 const zAxis = normalised(subtract(this.lookAt, this.position));
                 const xAxis = normalised(cross(zAxis, this.up));
+
                 return cross(xAxis, zAxis);
             }
             axes() {
@@ -6322,6 +6355,7 @@ void main() {
                 const yaxis = cross(xaxis, zaxis);
                 const d = 1 / Math.tan(fov / 2);
                 const direction = normalised(add(scaled(xaxis, x * aspect), scaled(yaxis, y), scaled(zaxis, d)));
+
                 return { point: this.position, direction };
             }
         }
@@ -6333,7 +6367,7 @@ void main() {
         const background = { colour: [0, 0, 0] };
 
         /**
-         * Management of a 2 view using a canvas
+         * Management of a 2d view using a canvas
          */
         class View2d {
             constructor(scene, canvasId) {
