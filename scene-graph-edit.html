@@ -1486,6 +1486,32 @@
             }
         }
 
+        
+        /**
+         * Split text into lines based on the given width
+         */
+        function fitText(text, width, measure, split=/(\s+)/) {
+            const lines = [];
+            const parts = text.split(/(\s+)/).filter((i) => i);
+            
+            let count;
+            while (parts.length) {
+                count = 2;
+                while ((count <= parts.length) && (measure(parts.slice(0, count)) < width)) {
+                    ++count;
+                }
+                --count;
+                if ((count === 1) && (measure(parts[0]) > length) && (split !== '')) {
+                    lines.push(...fitText(parts[0], width, measure, ''));
+                    parts.shift();
+                } else {
+                    lines.push(parts.splice(0, count).join('').trim());
+                }                
+            }
+            return lines.filter((line) => line.trim());
+        }
+        
+        
         /**
          * Diagram class
          */
@@ -1507,16 +1533,37 @@
             set structure(structure) {
                 this.content = [];
                 const actions = {
-                    rect: ([x, y, w, h]) => (context) => context.strokeRect(x, y, w, y),
-                    path: (d) => {
+                    rect: (contxt, [x, y, w, h]) => (context) => context.strokeRect(x, y, w, h),
+                    path: (context, d) => {
                         const path = new Path2D(d);
                         return (context) => context.stroke(path);
                     },
-                    text: ([text, x, y]) => (context) => context.fillText(text, x || 0, y || 0),
+                    text: (context, [text, x, y, width, lineHeight]) => {
+                        let lines;
+                        
+                        if (width) {
+                            lines = fitText(text, width, (text) => context.measureText(text).width);
+                            lineHeight =  lineHeight || Math.max(...lines.map((line) => {
+                                const metrics = context.measureText(text);
+                                return metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+                            }));
+                        } else {
+                            lines = [text];
+                            context.fillText(text, x || 0, y || 0);
+                        }    
+                        return (context) => {
+                            let tx = x || 0;
+                            let ty = y || 0;
+                            lines.forEach((line) =>     {
+                                context.fillText(line, tx, ty);
+                                ty += lineHeight;
+                            });
+                        }
+                    },
                 }
                 const stateChange = {
-                    stokeStyle: (colour) => (context) => context.strokeStyle = colour,
-                    fillStyle: (colour) => (context) => context.fillStyle = colour,
+                    stoke: (colour) => (context) => context.strokeStyle = colour,
+                    fill: (colour) => (context) => context.fillStyle = colour,
                     font: (font) => (context) => context.font = font,
                 }
                 const stack = [this];
@@ -1533,10 +1580,9 @@
                         Object.entries(node[symbols.views]['diagram']).forEach(([key, value]) => {
                             value = value || [];
                             if (actions[key]) {
-                                item.actions.push(actions[key](value));
+                                item.actions.push(actions[key](this.context, [value].flatMap((v) => v)));
                             } else if (stateChange[key]) {
                                 item.actions.unshift(stateChange[key](value));
-                                
                             } else if (key === 'position') {
                                 item.transform = [1, 0, 0, 1, ...value];
                             } else if (key === 'transform') {
