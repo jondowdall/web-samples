@@ -131,6 +131,49 @@
             width: 1.1em;
             cursor: default;
         }
+        
+        .sidebar {
+            position: fixed;
+            top: 5%;
+            right: 1%;
+            width: 30%;
+            height: 93%;
+            overflow: auto;
+            padding: 0.5em;
+            z-index: 100;
+        }
+        
+        .sidebar-box {
+            aspect-ratio: 4 / 3;
+            padding-top: 0.5em;
+            background: lightblue;
+            box-shadow: 0px 3px 5px #333;
+            border-radius: 0.5em;
+            overflow: hidden;
+            margin-bottom: 0.5em;
+        }
+
+        .sidebar-window {
+            background: white;
+            overflow: auto;
+            height: 100%;
+        }
+
+        .sidebar-window:focus-within {
+            box-shadow: 3px 5px 8px #333;
+        }
+        
+        .close-button {
+            position: absolute;
+            right: 0;
+            top: 0;
+            background: white;
+            text-align: center;
+            border: none;
+            border-radius: 0.5em;
+            width: 1em;
+            height: 1em;
+        }
 
         .layout {
             display: grid;
@@ -680,6 +723,8 @@
         </div>
     </template>
 
+    <div class="sidebar"></div>
+    
     <div class="layout">
         <div class="controls">
             <div class="main-controls">
@@ -689,16 +734,6 @@
                     <button id="save">&#x1F4BE;</button>
                     <button id="load">&#x1F4C2;</button>
                 </div>
-                <!--select id="view-selection">
-                <option value="0">Scene</option>
-                <Option value="1">Source</Option>
-                <Option value="2">Tree</Option>
-                <Option value="3">3d</Option>
-                <Option value="4">Top</Option>
-                <Option value="5">Details</Option>
-                <Option value="6">Shader</Option>
-            </select>
-            <span id="title"></span-->
                 <select id="view-selection"></select>
                 <button id="view-settings">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
@@ -717,6 +752,7 @@
                     <button id="end" class="media-button">&#x23ed;</button>
                 </div>
                 <input id="interactive-update" type="checkbox" checked />
+                <select id="add-view-selection"></select>
                 <button id="toggle-secondary-controls">&#9776;</button>
             </div>
             <div id="secondary-controls" class="hide-left">
@@ -760,34 +796,6 @@
                 <button id="hide-menu">&ShortLeftArrow;</button>
             </div>
         </div>
-        <!--
-        <!--div id="top-view-container"><canvas id="top-view"></canvas></div->
-        <!--div class="tree"></div->
-        <div class="horizontal-bar" data-row="2"></div>
-        <div class="layout-row">
-
-            <div class="expanded-tree"></div>
-            <div class="vertical-bar" data-column="1"></div>
-
-            <div class="detail"></div>
-        </div>
-        <div id="external-names" class="hidden">
-            <h2>Name Mapping</h2>
-            <div class="attributes">
-                <span class="header">Attribute</span>
-                <span class="header" title="Offset in bytes into vertex data">Offset</span>
-                <span class="header">Type</span>
-            </div>
-            <br>
-            <div class="uniforms">
-                <span class="header">Uniform</span>
-                <span class="header">Name</span>
-                <span class="header">Type</span>
-                <span class="header">Default</span>
-            </div>
-        </div>
-    -->
-
     </div>
 
     <script>
@@ -2681,7 +2689,7 @@
                     [symbols.fullName]() {
                         const name = this[symbols.name] || this.name;
                         return (this[symbols.container] ? [this[symbols.container], this] : [this]).map((node) => node.name);
-                    }
+                    },
                 };
                 this.startScope(context, node);
                 this.parseValue(context, node);
@@ -2707,6 +2715,9 @@
 
                 if (newNode) {
                     context.nodeList.push(node);
+                    if (context.scope.length < 3) {
+                        context.rootNodes.push(node);
+                    }
                 }
 
                 node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
@@ -2849,6 +2860,55 @@
                     }
                 });
                 return [];//super.makeNode(context);
+            }
+        }
+
+
+        class GeneratorNode extends MetaNode {
+            static pattern = /^\+(?<value>.+)$/;
+            static match(value) {
+                return GeneratorNode.pattern.test(value);
+            }
+            constructor(value, level, lineNumber) {
+                super(value, level, lineNumber);
+                const match = value.match(GeneratorNode.pattern);
+                this.value = match.groups.value;
+            }
+            select(rules, context) {
+                const nodes = rules.startsWith('*') ? context.nodeList : context.rootNodes;
+                rules = rules.replace(/^\*/, '');
+                rules = rules.split(/,/).flatMap((rule) => {
+                    const match = rule.match(/(?<name>[^=><]+)(?<test>[=\/><])(?<values>.*)/);
+                    if (!match) {
+                        return [];
+                    }
+                    const name = match.groups.name;
+                    const test = match.groups.test;
+                    const values = match.groups.values.split(',').map((v) => numberOrString(v));
+                    switch (test) {
+                        case '=':
+                            return (node) => values.includes(node[name]);
+                        case '/':
+                            const patterns = values.map((value) => new RegExp(value));
+                            return (node) => patterns.some((pattern) => pattern.test(node[name]));
+                        case '<':
+                            return (node) => values.some((value) => value > node[name]);
+                        case '>':
+                            return (node) => values.some((value) => value < node[name]);
+                    }
+                    return [];
+                });
+                return nodes.filter((node) => rules.some((rule) => rule(node)));
+            }
+            map(node, mapping) {
+                return newNode;
+            }
+            expand(context) {
+                // ToDo: allow for templated generator
+                const [selector, ...values] = this.value.split(/;/);
+                const nodes = this.select(selector, context);
+                console.log(nodes);
+                return [];//[nodes.map((node) => this.map(node, values))];
             }
         }
 
@@ -3490,6 +3550,7 @@
                     DefaultNode,
                     ViewNode,
                     ExtensionNode,
+                    GeneratorNode,
                     UpdateNode,
                     ConditionalNode,
                     GroupNode,
@@ -3502,6 +3563,7 @@
                     PlainNode],
                 scope: [{ node: {[symbols.values]: [],[symbols.content]: []}, values: {}, modifiers: [] }],
                 names: {},
+                rootNodes: [],
                 nodeList: [],
                 modifiers: [],
                 parsers: [],
@@ -8129,6 +8191,40 @@ void main() {
                 const close = document.getElementById('close-current-frame');
                 close.addEventListener('click', (event) => this._frame ? this._frame.remove() : undefined);
 
+                const addViewSelection = document.getElementById('add-view-selection');
+                Views.forEach((view, index) => {
+                    const option = document.createElement('option');
+                    option.innerHTML = view.name;
+                    option.value = index;
+                    addViewSelection.append(option);
+                });
+                addViewSelection.addEventListener('change', (event) => {
+                    const view = Views[addViewSelection.value].make();
+                    const box = document.createElement('div');
+                    box.classList.add('sidebar-box');
+                    
+                    const closeButton = document.createElement('button');
+                    closeButton.classList = 'close-button';
+                    closeButton.innerHTML = '&#10006;';
+                    box.append(closeButton);
+                    
+                    view.node.classList.add('sidebar-window');
+                    const sidebar = document.querySelector('.sidebar');
+                    box.draggable = true;
+                    box.append(view.node);
+                    sidebar.append(box);
+                    
+                    box.addEventListener('dragstart', (event) => {
+                        event.dataTransfer.setData('text/heading-index', 1);
+                        event.dataTransfer.setData('text/plain', 'name');
+                    });
+                    box.addEventListener('dragend', (event) => event.preventDefault());
+                    box.addEventListener('dragover', (event) => event.preventDefault());
+                    box.addEventListener('drop', (event) => {});
+
+                });
+                
+                
                 const viewTypeSelection = document.getElementById('view-type-selection');
                 Views.forEach((view, index) => {
                     const option = document.createElement('option');
