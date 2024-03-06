@@ -257,13 +257,6 @@
         }
 
         .selected-frame {
-            /*
-            outline: 2px solid rgb(100, 100, 255, 0.7);
-            outline-offset: -2px;
-            box-shadow: 0px 3px 5px rgb(100, 100, 255, 0.5);
-            border-radius: 2px;
-            z-index: 10;
-            */
             filter: none;
         }
 
@@ -1603,6 +1596,38 @@
                             });
                         }
                     },
+                    pie: (context, [radius, rules, attribute]) => {
+                        if (radius, rules, attribute) {
+                            const nodes = App.select(rules).filter((node) => node[attribute]);
+                            const total = nodes.reduce((sum, node) => sum += node[attribute] || 0, 0);
+                            let angle = -Math.PI / 2;
+                            const segments = nodes.map((node) => {
+                                const span = 2 * node[attribute] * Math.PI / total;
+                                const path = new Path2D();
+                                path.moveTo(0, 0);
+                                path.arc(0, 0, radius, angle, angle + span);
+                                path.lineTo(0, 0);
+                                angle += span;
+                                return {
+                                    path, fill: `hsl(${angle}rad 50% 50%)`, label: node.name,
+                                }
+                            });
+                            const lineHeight = Math.max(...segments.map((segment) => {
+                                const metrics = context.measureText(segment.label);
+                                return metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+                            }));
+                            return (context) => {
+                                let y = lineHeight - radius;
+                                segments.forEach((segment) => {
+                                    context.fillStyle = segment.fill;
+                                    context.fill(segment.path);
+                                    context.stroke(segment.path);
+                                    context.fillText(segment.label, 5 + radius, y );
+                                    y += lineHeight;
+                                });
+                            };
+                        }
+                    },
                 }
                 const stateChange = {
                     stoke: (colour) => (context) => context.strokeStyle = colour,
@@ -1623,10 +1648,17 @@
                         Object.entries(node[symbols.views]['diagram']).forEach(([key, value]) => {
                             value = value || [];
                             if (actions[key]) {
-                                item.actions.push(actions[key](this.context, [value].flatMap((v) => v)));
+                                const action = actions[key](this.context, [value].flatMap((v) => v));
+                                if (action) {
+                                    item.actions.push(action);
+                                }
                             } else if (stateChange[key]) {
-                                item.actions.unshift(stateChange[key](value));
-                            } else if (key === 'position') {
+                                const change = stateChange[key](value);
+                                if (change) {
+                                    change(this.context);
+                                    item.actions.unshift(change);
+                                }
+                            } else if (key === 'position' && Array.isArray(value)) {
                                 item.transform = [1, 0, 0, 1, ...value];
                             } else if (key === 'transform') {
                                 item.transform = [...value];
@@ -1784,7 +1816,7 @@
                 this.context.strokeStyle = 'black';
                 
                 const draw = (node) => {
-                    if (node.transform) {
+                    if (node.transform && node.transform.length === 6) {
                         this.context.save();
                         this.context.transform(...node.transform);
                     }
@@ -8402,6 +8434,40 @@ void main() {
             find(test) {
                 return this.allNodes.find(test);
             },
+            select(rules) {
+                const nodes = rules.startsWith('*') ? this.allNodes : this.expanded;
+                rules = rules.replace(/^\*/, '');
+                rules = rules.split(/,/).flatMap((rule) => {
+                    const match = rule.match(/(?<name>[^=><]+)(?<test>[=\/><])(?<values>.*)/);
+                    if (!match) {
+                        let parent = this.expanded.find((node) => node.name === rule);
+                        if (parent) {
+                            return (node) => node[symbols.container] === parent;
+                        }
+                        parent = this.allNodes.find((node) => node.name === rule);
+                        if (parent) {
+                            return (node) => node[symbols.container] === parent;
+                        }
+                        return [];
+                    }
+                    const name = match.groups.name;
+                    const test = match.groups.test;
+                    const values = match.groups.values.split(',').map((v) => numberOrString(v));
+                    switch (test) {
+                        case '=':
+                            return (node) => values.includes(node[name]);
+                        case '/':
+                            const patterns = values.map((value) => new RegExp(value));
+                            return (node) => patterns.some((pattern) => pattern.test(node[name]));
+                        case '<':
+                            return (node) => values.some((value) => value > node[name]);
+                        case '>':
+                            return (node) => values.some((value) => value < node[name]);
+                    }
+                    return [];
+                });
+                return nodes.filter((node) => rules.some((rule) => rule(node)));
+            },
             get source() {
                 return this._source;
             },
@@ -9286,5 +9352,4 @@ void main() {
         }
     </script>
 </body>
-
 </html>
