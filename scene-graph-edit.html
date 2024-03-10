@@ -1665,7 +1665,48 @@
                             };
                         }
                     },
-                    histogram: (context, [height, width, rules, attribute, sort]) => {
+                    xy: (context, [width, height, rules, xAttribute, yAttribute, sort, xOrigin, yOrigin]) => {
+                        if (height, width, rules, xAttribute, yAttribute) {
+                            const values = (nodes) => {
+                                const blockWidth = width / nodes.length;
+                                nodes = nodes.filter((node) => node[xAttribute] && node[yAttribute]);
+                                const xMin = xOrigin === '*' ? Math.min(...nodes.map((node) => node[xAttribute])) : (xOrigin || 0);
+                                const xMax = Math.max(...nodes.map((node) => node[xAttribute]));
+                                const yMin = yOrigin === '*' ? Math.min(...nodes.map((node) => node[yAttribute])) : (yOrigin || 0);
+                                const yMax = Math.max(...nodes.map((node) => node[yAttribute]));
+
+                                if (sort) {
+                                    nodes.sort((a, b) => a[xAttribute] - b[xAttribute]);
+                                }
+                                return nodes.map((node, i) => ({
+                                    label: name,
+                                    xValue: node[xAttribute], yValue: node[yAttribute],
+                                    x: width * (node[xAttribute] - xMin) / (xMax - xMin),
+                                    y: height * (1 - ((node[yAttribute] - yMin)  / (yMax - yMin))),
+                                }));
+                            };
+
+                            const nodes = App.select(rules);
+                            let action = values;
+                            
+                            const points = action(nodes);
+
+                            return (context) => {
+                                context.strokeStyle = 'black';
+                                context.beginPath();
+                                context.moveTo(0, 0);
+                                context.lineTo(0, height);
+                                context.lineTo(width, height);
+                                context.stroke();
+                                context.strokeStyle = 'red';
+                                context.beginPath();
+                                context.moveTo(points[0].x, points[0].y);
+                                points.forEach((point) => context.lineTo(point.x, point.y));
+                                context.stroke();
+                            };
+                        }
+                    },
+                    line: (context, [width, height, rules, attribute, sort]) => { 
                         if (height, width, rules, attribute) {
                             const count = (nodes) => {
                                 const groups = nodes.reduce((groups, node) => {
@@ -1682,8 +1723,8 @@
                                 return keys.map((name, i) => ({
                                     fill: `hsl(${2 * Math.PI * i / keys.length}rad 50% 50%)`,
                                     label: name,
-                                    x: i * blockWidth, y: 5,
-                                    width: blockWidth, height: -height * groups[name].length / max,
+                                    x: (i + 0.5) * blockWidth, y: height * (1 - groups[name].length / max),
+                                    width: blockWidth, height: height * groups[name].length / max,
                                 }));                                  
                             };
                             const values = (nodes) => {
@@ -1696,11 +1737,63 @@
                                 return nodes.map((node, i) => ({
                                     fill: `hsl(${2 * Math.PI * i / nodes.length}rad 50% 50%)`,
                                     label: name,
-                                    x: i * blockWidth, y: 5,
-                                    width: blockWidth, height: -height * node[attribute] / max,
+                                    x: i * blockWidth, y: height * (1 - node[attribute] / max),
+                                    width: blockWidth, height: height * node[attribute] / max,
                                 }));  
                             };
-                            
+
+                            const nodes = App.select(rules);
+                            let action = values;     
+                            if (nodes.some((node) => isNaN(Number(node[attribute] || 0)))) {
+                                action = count;
+                            }
+
+                            const points = action(nodes);
+                            return (context) => {
+                                context.strokeStyle = 'red';
+                                context.beginPath();
+                                context.moveTo(points[0].x, points[0].y);
+                                points.forEach((point) => context.lineTo(point.x, point.y));
+                                context.stroke();
+                            };
+                        }
+                    },
+                    histogram: (context, [width, height, rules, attribute, sort]) => {
+                        if (height, width, rules, attribute) {
+                            const count = (nodes) => {
+                                const groups = nodes.reduce((groups, node) => {
+                                    groups[node[attribute]] = groups[node[attribute]] || [];
+                                    groups[node[attribute]].push(node);
+                                    return groups;
+                                }, {});
+                                const keys = Object.keys(groups);
+                                const blockWidth = width / keys.length;
+                                const max = Math.max(...Object.values(groups).map((value) => value.length));
+                                if (sort) {
+                                    keys.sort((a, b) => groups[b].length - groups[a].length);
+                                }
+                                return keys.map((name, i) => ({
+                                    fill: `hsl(${2 * Math.PI * i / keys.length}rad 50% 50%)`,
+                                    label: name,
+                                    x: i * blockWidth, y: height * (1 - groups[name].length / max),
+                                    width: blockWidth, height: height * groups[name].length / max,
+                                }));                                  
+                            };
+                            const values = (nodes) => {
+                                const blockWidth = width / nodes.length;
+                                nodes = nodes.filter((node) => node[attribute]);
+                                const max = Math.max(...nodes.map((node) => node[attribute]));
+                                if (sort) {
+                                    nodes.sort((a, b) => b[attribute] - a[attribute]);
+                                }
+                                return nodes.map((node, i) => ({
+                                    fill: `hsl(${2 * Math.PI * i / nodes.length}rad 50% 50%)`,
+                                    label: name,
+                                    x: i * blockWidth, y: height * (1 - node[attribute] / max),
+                                    width: blockWidth, height: height * node[attribute] / max,
+                                }));  
+                            };
+
                             const nodes = App.select(rules);
                             let action = values;     
                             if (nodes.some((node) => isNaN(Number(node[attribute] || 0)))) {
@@ -1713,11 +1806,15 @@
                                 return metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
                             }));
                             return (context) => {
+                                context.textAlign = "end";
+                                context.textBaseline="middle";
                                 blocks.forEach((block) => {
                                     context.fillStyle = block.fill;
                                     context.fillRect(block.x, block.y, block.width, block.height);
                                     context.strokeRect(block.x, block.y, block.width, block.height);
-                                    context.fillText(block.label, block.x + block.width / 2, 5);
+                                    context.rotate(-Math.PI/2);
+                                    context.fillText(block.label, -height - lineHeight / 2, block.x + block.width / 2);
+                                    context.rotate(Math.PI/2); 
                                 });
                             };
                         }
