@@ -2716,7 +2716,7 @@
             }
             render() {
                 if (this._currentNode) {
-                    console.log(this.node.querySelector('.title'));
+                    //console.log(this.node.querySelector('.title'));
                     this.node.querySelector('.title').innerText = this._currentNode.name;
                     this.detail.innerHTML = '';
                     Object.entries(this._currentNode).map(([key, value]) =>
@@ -3072,15 +3072,6 @@
                 return nodes.filter((node) => rules.some((rule) => rule(node)));
             }
             map(context, node, mapping) {
-                /*
-                if (mapping.options.includes('content')) {
-                    const newMap = {
-                        options: mapping.options.filter((v) => v !== 'content'),
-                        values: mapping.values,
-                    };
-                    return node[symbols.content].map((node) => this.map(context, node, newMap));
-                }
-                */
                 const newNode = {
                     [symbols.source]: [node[symbols.source][0], this],
                     [symbols.container]: context.scope[0].node,
@@ -3095,7 +3086,17 @@
                         return (this[symbols.container] ? [this[symbols.container], this] : [this]).map((node) => node.name);
                     },
                 };
-                mapping.values.forEach(([to, from]) => newNode[to] = from(node));
+                if (mapping.values.length > 0) {
+                    mapping.values.forEach(([to, from]) => newNode[to] = from(node));
+                } else {
+/*                    Object.entries(([key, value]) => node[key] = value);
+                    console.log(newNode);
+                    console.log(node);
+*/
+                    Object.assign(newNode, node);   
+                    console.log(newNode);
+                    console.log(node);
+                }
                 return newNode;
             }
             expand(context) {
@@ -3110,6 +3111,10 @@
                     }),
                 };
                 const expanded = mapping.options.includes('content') ? nodes.flatMap((node) => node[symbols.content]) : nodes;
+                if (mapping.options.includes('flatten')) {
+                    const flat = (node) => [node, ...node[symbols.content].flatMap((node) => flat(node))];
+                    expanded.splice(0, expanded.length, ...expanded.flatMap((node) => flat(node)));
+                }
                 if (mapping.options.includes('count')) {
                     const values = {};
                     if (mapping.values.length === 0) {
@@ -3142,6 +3147,17 @@
                         name: key,
                         value: nodes.length,
                     }));
+                }
+                if (mapping.options.includes('transpose')) {
+                    const keys = {};
+                    expanded.forEach((node) =>
+                        Object.keys(node).forEach((key) => {
+                            if (key !== 'name') {
+                                keys[key] = keys[key] || { name: key, [symbols.source] : node[symbols.source]};
+                                keys[key][node.name] = node[key];
+                            }
+                        }));
+                    return Object.values(keys).map((node) => this.map(context, node, mapping));
                 }
                 if (!mapping.values.find((map) => map[0] === 'name')) {
                     mapping.values.push(['name', (node) => `(${node.name})`]);
@@ -3413,6 +3429,37 @@
             }
             expand(context) {
                 return this.content.flatMap((node) => node.expand(context));
+            }
+        }
+        
+        class ImportNode extends MetaNode {
+            static cache = {};
+            static pattern = /^<(?<url>[^>]+)>\s*/;
+            static match(content) {
+                return this.pattern.test(content);
+            }
+            static clearCache() {
+                ImportNode.cache = {};
+            } 
+            constructor(value, level, lineNumber, context) {
+                super(value, level, lineNumber);
+
+                const match = value.match(ImportNode.pattern);
+
+                this.url = match.groups.url.trim();
+            }
+            expand(context) {
+                if (ImportNode.cache[this.url] === undefined) {
+                    ImportNode.cache[this.url] = '';                    
+                    fetch(this.url).then((response) => {
+                        response.text().then((text) => {
+                            ImportNode.cache[this.url] = text;
+                            App.parse();
+                        });
+                    });
+                }
+                const structure = getStructure(ImportNode.cache[this.url]);
+                return expand(structure, valueParser);//this.content.flatMap((node) => node.expand(context));
             }
         }
 
@@ -3782,6 +3829,7 @@
         function expand(structure, parser) {
             const context = {
                 nodeTypes: [
+                    ImportNode,
                     PatternNode,
                     ContinuationNode,
                     VariableNode,
@@ -8593,7 +8641,12 @@ void main() {
                 this.allNodes = [];
                 const views = new Set();
                 const flatten = (node) => {
+                    try {
                     Object.keys(node[symbols.views]).forEach((key) => views.add(key));
+                } catch (e) {
+                    console.log(node);
+                    console.log(node[symbols.views]);
+                }
                     this.allNodes.push(node);
                     node[symbols.content].forEach((node) => flatten(node));
                 }
@@ -8643,12 +8696,15 @@ void main() {
                 return this._source;
             },
             set source(content) {
-                const name = this?.currentNode?.name;
                 this._source = content;
-                this.structure = getStructure(content);
+                this.views.forEach((view) => view.source = content);
+                this.parse();
+            },
+            parse() {
+                const name = this?.currentNode?.name;
+                this.structure = getStructure(this.source);
                 this.expanded = expand(App.structure, valueParser);
                 this.process();
-                this.views.forEach((view) => view.source = content);
                 this.views.forEach((view) => view.structure = this.expanded);
                 if (name) {
                     const current = this.allNodes.find((node) => node.name === name);
