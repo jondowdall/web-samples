@@ -431,6 +431,17 @@
             overflow: auto;
         }
 
+
+        .calendar {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            justify-items: center;
+            overflow: hidden;
+        }
+
+
+
+
         .vector-sliders {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -734,6 +745,30 @@
         <div class="detail-view">
             <h2 class="title"></h2>
             <div class="detail"></div>
+            <div class="settings hide-up">
+                <label>Update: </label><input class="auto-update" type="checkbox" checked>
+                <label>Context: </label><select class="context-selection"></select>
+            </div>
+        </div>
+    </template>
+
+    <template id="calendar-view-template">
+        <div class="calendar-view">
+
+            <h2 class="month">
+                <button class="previous-month">&lt;</button>
+                <button class="next-month">&gt;</button>
+            </h2>
+            <div class="calendar">
+                <span>Mon</span>
+                <span>Tue</span>
+                <span>Wed</span>
+                <span>Thu</span>
+                <span>Fri</span>
+                <span>Sat</span>
+                <span>Sun</span>
+            </div>
+            
             <div class="settings hide-up">
                 <label>Update: </label><input class="auto-update" type="checkbox" checked>
                 <label>Context: </label><select class="context-selection"></select>
@@ -1063,6 +1098,139 @@
         }
 
 
+        class FrameContainer {
+            constructor(...content) {
+                this._row = true;
+                this.bar = this._row ? layoutControls.newVerticalBar : layoutControls.newHorizontalBar;
+                this.content = [];
+                this.node = document.createElement('div');
+                this.node.classList.add('layout-row');
+                this.style = window.getComputedStyle(this.node);
+                if (content.length) {
+                    this.setContent(content);
+                }
+            }
+            row() {
+                if (this._row) {
+                    return;
+                }
+                this._row = true;
+                this.node.classList.add('layout-row');
+                this.node.classList.remove('layout-column');
+
+                this.node.style.gridTemplateColumns = this.style.gridTemplateRows;
+                this.node.style.gridTemplateRows = '1fr';
+                this.bar = layoutControls.newVerticalBar;
+
+                for (const node of this.node.querySelectorAll(':scope > .horizontal-bar')) {
+                    node.replaceWith(layoutControls.newVerticalBar());
+                }
+            }
+            column() {
+                if (!this._row) {
+                    return;
+                }
+                this._row = false;
+                this.node.classList.add('layout-column');
+                this.node.classList.remove('layout-row');
+
+                this.node.style.gridTemplateRows = this.style.gridTemplateColumns;
+                this.node.style.gridTemplateColumns = '1fr';
+                this.bar = layoutControls.newHorizontalBar;
+
+                for (const node of this.node.querySelectorAll(':scope > .vertical-bar')) {
+                    node.replaceWith(layoutControls.newHorizontalBar());
+                }
+            }
+            setContent(content) {
+                if (content.length < 2) {
+                    content.push(new Frame());
+                }
+                this.content = content;
+                content.forEach((frame, index) => {
+                    frame.container = this;
+                    this.node.append(frame.node);
+                    if (index < this.content.length - 1) {
+                        this.node.append(this.bar());
+                    }
+                });
+                if (this._row) {
+                    this.node.style.gridTemplateColumns = this.content.map((item) => '1fr').join(' min-content ');
+                    this.node.style.gridTemplateRows = '1fr';
+                } else {
+                    this.node.style.gridTemplateRows = this.content.map((item) => '1fr').join(' min-content ');
+                    this.node.style.gridTemplateColumns = '1fr';
+                }
+            }
+            split(frame) {
+                const child = new FrameContainer();
+                child.row = !this._row;
+                child.container = this;
+                frame.node.replaceWith(child.node);
+                child.setContent([frame, new Frame()]);
+            }
+            inlineSplit(frame) {
+                const content = Array.from(this.node.children);
+                const index = content.indexOf(frame.node);
+                const gridTemplate = this._row ? 'gridTemplateColumns' : 'gridTemplateRows';
+                if (index > -1) {
+                    const sizes = this.style[gridTemplate].split(' ').map((height) => parseFloat(height));
+                    const total = sizes.reduce((sum, size, index) => sum + (index % 2) ? 0 : size, 0);
+                    const count = (sizes.length + 1) / 2;
+                    const templateString = sizes.map((size, index) => (index % 2) ? 'min-content' : `${size}fr`);
+                    const bar = this.bar();
+                    frame.node.after(bar);
+                    const newFrame = new Frame();
+                    newFrame.container = this;
+                    bar.after(newFrame.node);
+                    templateString.splice(index + 1, 0, 'min-content', `${total / count}fr`);
+                    this.node.style[gridTemplate] = templateString.join(' ');
+                }
+            }
+            verticalSplit(frame) {
+                if (this._row) {
+                    this.split(frame);
+                } else {
+                    this.inlineSplit(frame);
+                }                
+            }
+            horizontalSplit(Frame) {
+                if (this._row) {
+                    this.inlineSplit(frame);
+                } else {
+                    this.split(frame);
+                }
+            }
+            remove(frame) {
+                const content = Array.from(this.node.children);
+                const heights = this.style.gridTemplateRows.split(' ').map((height) => parseFloat(height));
+                const index = content.indexOf(frame.node);
+                if (index === 0) {
+                    frame.node.nextSibling.remove();
+                    frame.node.remove();
+                    heights.splice(index, 2);
+                } else if (index > 0) {
+                    frame.node.previousSibling.remove();
+                    frame.node.remove();
+                    heights.splice(index - 1, 2);
+                }
+                if (heights.length > 1) {
+                    const sizes = heights.map((height, index) =>
+                        (index % 2) ? 'min-content' : `${height}fr`);
+                    this.node.style.gridTemplateRows = sizes.join(' ');
+                } else {
+                    const other = this.content.find((other) => other != frame);
+                    this.node.replaceWith(other.node);
+                    other.container = this.container;
+                    if (this.container) {
+                        this.container.content = this.container.content.map((frame) => frame === this ? other : frame);
+                    }
+                }
+            }
+        }
+        
+        
+        
         /**
          * Create nodes from a template
          */
@@ -2737,6 +2905,53 @@
             }
         }
 
+        /**
+         * View component for calendar display
+         */
+        class CalendarView extends View {
+            static settingsMap = {
+                update: '.auto-update',
+                context: '.context-selection',
+            }
+            constructor(date) {
+                super('calendar-view-template', CalendarView.settingsMap);
+                this.date = date || new Date();
+                this.contexts = App.contexts;
+                this.title = 'Calendar View';
+                this.calendarNode = this.node.querySelector('.calendar');
+                this.settings.context.addEventListener('change', (event) => this.render());
+                this.render();
+            }
+            previousMonth() {
+                this.date.setMonth(this.date.getMonth() - 1);
+                this.render();
+            }
+            nextMonth() {
+                this.date.setMonth(this.date.getMonth() + 1);
+                this.render();
+            }
+            set currentNode(node) {
+                this._currentNode = node;
+                if (this.settings.update.checked) {
+                    this.render();
+                }
+            }
+            render() {
+                const day = new Date(this.date.getTime());
+                day.setDate(1);
+                const dayOfWeek = (day.getDay() + 6) % 7;
+                day.setDate(1 - dayOfWeek);
+                
+                while (day.getMonth() <= this.date.getMonth()) {
+                    const dayNode = document.createElement('div');
+                    dayNode.innerHTML = day.getDate();
+                    dayNode.classList.add('calendar-day');
+                    this.calendarNode.append(dayNode);
+                    day.setDate(day.getDate() + 1);
+                }
+            }
+        }
+        
         const Views = [
             { name: 'Structure Editor', make() { return new StructureEditor(); }, },
             { name: 'Shader Editor', make() { return new ShaderEditor(); }, },
@@ -2751,6 +2966,7 @@
                 },
             },
             { name: 'Detail View', make() { return new DetailView(); }, },
+            { name: 'Calendar View', make() { return new CalendarView(); }, },
 
             {
                 name: 'SVG Diagram', make() {
@@ -8856,9 +9072,10 @@ void main() {
 
             const frame1 = new Frame(new GridTreeView());
             const frame2 = new Frame(tree);
-            const row1 = new FrameRow(editorFrame, sceneFrame);
-            const row2 = new FrameRow(frame1, frame2);
-            const column = new FrameColumn(row1, row2);
+            const row1 = new FrameContainer(editorFrame, sceneFrame);
+            const row2 = new FrameContainer(frame1, frame2);
+            const column = new FrameContainer(row1, row2);
+            column.column();
 
             const layout = document.querySelector('.layout-main');
             layout.append(column.node);
