@@ -134,14 +134,14 @@
             flex-direction: column;
             max-height: 100%;
             background: lightblue;
-            padding-left: 0.5em;
-            border-radius: 0.5em;
+            padding-left: 1rem;
+            border-radius: 0.5rem;
             
             box-shadow: 1px 3px 5px 2px rgb(100, 100, 100, 0.75);
-            margin-top: 0.1em;
-            margin-left: 0.1em;
-            margin-bottom: 0.5em;
-            margin-right: 0.5em;
+            margin-top: 0.1rem;
+            margin-left: 0.1rem;
+            margin-bottom: 0.5rem;
+            margin-right: 0.5rem;
 
             transition: width 0.3s ease-in-out, height 0.3s ease-in-out;
 
@@ -202,7 +202,7 @@
         }
         
         .frame:not(.sidebar *) {
-            height: 100%;
+            min-height: 100%;
         }
 
         .placeholder {
@@ -283,12 +283,12 @@
         }
 
         .vertical-bar {
-            width: 0.8em;
+            width: 0.8rem;
             cursor: ew-resize;
         }
 
         .horizontal-bar {
-            height: 0.8em;
+            height: 1.8rem;
             cursor: ns-resize;
         }
 
@@ -1088,7 +1088,7 @@
             }
             insert(view, bar) {
                 const container = bar.parentElement;
-                const gridTemplate = this.node.classList.contains('layout-row') ? 'gridTemplateColumns' : 'gridTemplateRows';
+                const gridTemplate = container.classList.contains('layout-row') ? 'gridTemplateColumns' : 'gridTemplateRows';
                 const content = Array.from(container.children);
                 const style = window.getComputedStyle(container);
                 const sizes = style[gridTemplate].split(' ').map((v) => parseFloat(v)).filter((s, i) => (i % 2) === 0);
@@ -1098,9 +1098,12 @@
                 const newSize = sizes.map((size) => `${size / total}fr`);
                 newSize.splice(index, 0, `${1 / sizes.length}fr`);
 
+                if (container.classList.contains('layout-row')) {
+                    container.insertBefore(uiControls.newVerticalBar(), bar);
+                } else {
+                    container.insertBefore(uiControls.newHorizontalBar(), bar);       
+                }
                 container.insertBefore(view, bar);
-                container.insertBefore(this.bar(), view);
-                
                 container.style[gridTemplate] = newSize.join(' min-content ');
             }
             split(newFrame, existing, after) {
@@ -8173,6 +8176,56 @@ void main() {
                 }
             });
             
+            const insertFrame = (frame, bar) => {
+                const container = bar.parentElement;
+                const gridTemplate = container.classList.contains('layout-row') ? 'gridTemplateColumns' : 'gridTemplateRows';
+                const content = Array.from(container.children);
+                const style = window.getComputedStyle(container);
+                const sizes = style[gridTemplate].split(' ').map((v) => parseFloat(v)).filter((s, i) => (i % 2) === 0);
+                
+                const index = (1 + content.indexOf(bar)) / 2;
+                const total = sizes.reduce((sum, size) => sum + size, 0);
+                const newSize = sizes.map((size) => `${size / total}fr`);
+                newSize.splice(index, 0, `${1 / sizes.length}fr`);
+
+                container.insertBefore(frame, bar);
+                if (container.classList.contains('layout-row')) {
+                    container.insertBefore(uiControls.newVerticalBar(), frame);
+                } else {
+                    container.insertBefore(uiControls.newHorizontalBar(), frame);       
+                }
+                container.style[gridTemplate] = newSize.join(' min-content ');
+            }
+            
+            const removeFrame = (frame) => {
+                const container = frame.parentElement;
+                
+                const content = Array.from(container.children);
+                const index = content.indexOf(frame) / 2;
+
+                if (frame.nextSibling) {
+                    container.removeChild(frame.nextSibling);
+                } else {
+                    container.removeChild(frame.previousSibling);
+                }
+                container.removeChild(frame);
+                if (container.childNodes.length === 1) {
+                    container.replaceWith(container.firstChild);
+                } else {
+                    const gridTemplate = container.classList.contains('layout-row') ? 'gridTemplateColumns' : 'gridTemplateRows';
+                    const style = window.getComputedStyle(container);
+
+                    const sizes = style[gridTemplate].split(' ').map((v) => parseFloat(v)).filter((s, i) => (i % 2) === 0);
+                    sizes.splice(index, 1);
+                        
+                    const total = sizes.reduce((sum, size) => sum + size, 0);
+                    const newSize = sizes.map((size) => `${size / total}fr`);
+    
+                    container.style[gridTemplate] = newSize.join(' min-content ');
+                }
+            }
+            
+            
             const newFrame = (view) => {
                 const frame = document.createElement('div');
                 frame.addEventListener('focusin', (event) => frame.classList.add('selected-frame'));
@@ -8181,6 +8234,8 @@ void main() {
                 frame.classList.add('frame')
                 const actions = {};
                 const start = {};
+                
+                const frames = [];
                 
                 const dragStart = (event, x, y) => {
                     const position = frame.getBoundingClientRect();
@@ -8195,7 +8250,10 @@ void main() {
                     frame.parentElement.insertBefore(placeholder, frame);
                     sidebar.classList.remove('hide-right');
                     sidebar.classList.add('hide-right90');
-                }
+                    frames.length = 0;
+                    frames.push(...Array.from(document.querySelectorAll('.frame'))
+                        .map((frame) => ({frame, bounds: frame.getBoundingClientRect()})));
+                };
                 
                 const dragBox = (event, x, y) => {
                     const dx = x - start.x;
@@ -8222,12 +8280,6 @@ void main() {
                     }
                 };
 
-                const dragCancel = (event) => {
-                    frame.classList.remove('dragging');
-                    actions.move = null;
-                    actions.end = null;
-                };
-
                 const dragEnd = (event) => {
                     frame.classList.remove('dragging');
                     if (actions.x !== undefined && actions.y !== undefined) {
@@ -8235,57 +8287,80 @@ void main() {
                         if (elements[0].classList.contains('layout-main')) {
                             report('swap single');
                             elements[0].appendChild(frame);
-                            placeholder.remove();                            
                         } else if (elements[0].classList.contains('sidebar')) {
                             report('add to sidebar');
-                            placeholder.remove();
-                            const container = frame.parentElement;
-                            if (frame.nextSibling) {
-                                frame.nextSibling.remove();
+                            
+                            if (sidebar.contains(frame)) {
+                                
                             } else {
-                                frame.previousSibling.remove();
-                            }
-
-                            container.removeChild(frame);
-                            sidebar.appendChild(frame);
-                            if (container.childNodes.length === 1) {
-                                container.replaceWith(container.firstChild);
+                                placeholder.remove();
+                                removeFrame(frame);
+                                sidebar.appendChild(frame)
                             }
                         } else {
                             const bar = elements.find((element) => element.classList.contains('vertical-bar')) ||
                                 elements.find((element) => element.classList.contains('horizontal-bar'));
-                            const targetFrame = elements.find((element) => element !== frame && element.classList.contains('frame'));
+                            const target = frames.find((test) => {
+                                return (test.bounds.x < actions.x) && (actions.x < test.bounds.x + test.bounds.width) &&
+                                    (test.bounds.y < actions.y) && (actions.y < test.bounds.y + test.bounds.height) &&
+                                    test.frame !== frame;
+                            });
     
                             if (bar) {
                                 report('insert');
                                 const container = FrameContainer.all.find((container) => container.node === bar.parentElement);
-                                container.insert(frame, bar);
-                            } else if (targetFrame) {
+                                if (sidebar.contains(frame)) {
+                                    container.insert(frame, bar);
+                                } else if (bar.parentElement === frame.parentElement) {
+                                    report('reorder');
+                                    //*
+                                    const container = bar.parentElement;
+                                    if (frame.nextSibling) {
+                                        container.insertBefore(frame.nextSibling, bar);
+                                        container.insertBefore(frame, bar);
+                                    } else {
+                                        container.insertBefore(frame.previousSibling, bar);
+                                        container.insertBefore(frame, bar);
+                                    }
+                                    /*/
+                                    removeFrame(frame);
+                                    insertFrame(frame, bar);
+                                    //*/
+                                } else {
+                                    removeFrame(frame);
+                                    container.insert(frame, bar);
+                                }
+                                frame.classList.remove('vbar-hover');
+                                frame.classList.remove('hbar-hover');
+                            } else if (target) {
                                 report('swap');
                                 if (event.ctrlKey) {
-                                    const container = FrameContainer.all.find((container) => container.node === targetFrame.parentElement);
+                                    const container = FrameContainer.all.find((container) => container.node === target.frame.parentElement);
                                     if (container) {
-                                        container.split(frame, targetFrame);
+                                        container.split(frame, target.frame);
                                     } else {
-                                        const parent = targetFrame.parentElement;
-                                        const container = new FrameContainer(targetFrame, frame);
+                                        const parent = target.frame.parentElement;
+                                        const container = new FrameContainer(target.frame, frame);
                                         parent.appendChild(container.node);
                                     }
                                 } else {
-                                    targetFrame.replaceWith(frame);
-                                    placeholder.replaceWith(targetFrame);
+                                    target.frame.replaceWith(frame);
+                                    placeholder.replaceWith(target.frame);
                                 }
                             } else {
-                                console.log(elements);
                                 report('remove');
                                 view.node.remove();
-                                frame.remove();
+                                removeFrame(frame);
                             }
                         }
                     }
+                    frame.style.left = `unset`;
+                    frame.style.top = `unset`;
                     actions.move = null;
                     actions.end = null;
                     sidebar.classList.remove('hide-right90');
+                    sidebar.classList.add('hide-right');
+                    placeholder.remove();
                 };
 
                 frame.addEventListener('mousedown', (event) => {
@@ -8331,7 +8406,6 @@ void main() {
             
             const newSidebarFrame = (view) => {
                 const frame = newFrame(view);
-                frame.classList.add('sidebar-frame');                
                 view.node.classList.add('sidebar-view');
                 sidebar.append(frame);
                 sidebar.classList.remove('hide-right');
