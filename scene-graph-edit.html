@@ -436,6 +436,11 @@
             background: black;
         }
 
+        .detail-view {
+            height: 100%;
+            width: 100%;
+            padding: 0.25rem;
+        }
         
         .diagram-view {
             position: relative;
@@ -1466,6 +1471,8 @@
                     if (document.getElementById('interactive-update').checked) {
                         Core.source = this.value;
                         getGraph(Core.structure, scene);
+                        Core.sceneGraphTrees.forEach((tree) =>
+                            tree.setContent(scene.graph));
                     }
                     updateLineNumbers(Core.mainEditor.main, Core.mainEditor.lineNumbers);
                 });
@@ -2085,9 +2092,24 @@
                 super('gl-view-template', GLView.settingsMap);
                 // Add to the DOM so that safari can get context
                 document.body.append(this.node);
+                this.canvas = this.node.querySelector('.scene');
+
+                this.shapes = [];
+                this.points = [];
+                this.lines = [];
+                this.graph = [];
+                this.nodes = [];
+                this.overlays = [];
+                this.events = [];
+                this.activeEvents = [];
+                this.light = [{ position: [-75, -90, 0] }];
+                this.data = {
+                    vertex: [],
+                    indices: [],
+                };
+                this.gl = this.context;
 
                 this.title = title;
-                this.canvas = this.node.querySelector('.scene');
                 this.camera = camera || new Camera([14.638, -0.074, 27.731], [6.762, 1.357, 7.673], [0, 1, 0]);
                 this.background = [0.9, 0.9, 1, 1];
 
@@ -2142,9 +2164,10 @@
             }
             set structure(structure) {
                 this._structure = structure;
+                getGraph(this._structure, this);
             }
             setGraph(graph) {
-                this.graph = graph;
+                //this.graph = graph;
             }
             updateBuffers(data) {
                 const gl = this.context;
@@ -3088,6 +3111,19 @@
             { name: 'Detail View', make() { return new DetailView(); }, },
             { name: 'Diagram', make() { return new DiagramView(); }, },
             { name: 'Editor', make() { return new Editor(); }, },
+            { name: 'Scene Graph', make() {
+                    const tree = new TreeView([], 'Scene Graph', {
+                        //getContent: (node) => node.children || [],
+                        getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
+                        actions: {},
+                    });
+                    Core.sceneGraphTrees.push(tree);
+                    if (scene.graph) {
+                        tree.setContent(scene.graph);
+                    }
+                    return tree;
+                }, 
+            },            
             { name: 'Shader Editor', make() { return new ShaderEditor(); }, },
             { name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
             { name: 'Structure Editor', make() { return new StructureEditor(); }, },
@@ -3530,7 +3566,7 @@
                     this.value = modifier.apply(this.value);
                 });
                 const testNode = this.makeNode(context);
-                ///this.parseValue(context, testNode);
+
                 let nodes = [...context.nodeList];
                 if (testNode.name && testNode.name.startsWith('/')) {
                     try {
@@ -4054,7 +4090,6 @@
          * Generate a node parameters from the value string and context
          */
         function valueParser(node, value, context, newNode) {
-            //node[symbols.values] = [];   - why was this reset?
             if (value) {
                 const nodes = context.views.length ? context.views.map((view) => {
                     node[symbols.views][view] = node[symbols.views][view] || { [symbols.values]: [] };
@@ -4091,8 +4126,6 @@
                     }
                 }
                 */
-                
-                
                 
                 nodes.forEach((node) => {
                     if (newNode) {
@@ -4904,7 +4937,7 @@
                     node.sceneNode = sceneNode;
                     namedNodes[node.name] = sceneNode;
                     if (stack.length > 0) {
-                        stack[0].children.push(sceneNode);
+                        stack[0][symbols.content].push(sceneNode);
                     } else {
                         scene.graph.push(sceneNode);
                     }
@@ -6810,7 +6843,7 @@ void main() {
             if (this.shape) {
                 this.shape.updateBuffers(scene, this);
             }
-            this.children.forEach((child) => child.update(scene, this.world, time));
+            this[symbols.content].forEach((child) => child.update(scene, this.world, time));
         }
 
         /**
@@ -6822,7 +6855,7 @@ void main() {
 
             const node = Object.assign(Object.create({ update }), {
                 name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, specularColour, children: [],
+                shape, shader, colour, shininess, specularColour, [symbols.content]: [],
             });
             if (texture) {
                 node.texture = getTexture(texture, scene);
@@ -6847,8 +6880,8 @@ void main() {
             if (node.shape) {
                 node.shape.draw3d(gl, node.shader);
             }
-            node.children.sort((a, b) => a.z - b.z);
-            node.children.forEach((child) => drawNode(gl, node.world, child, shaders, time));
+            node[symbols.content].sort((a, b) => a.z - b.z);
+            node[symbols.content].forEach((child) => drawNode(gl, node.world, child, shaders, time));
             node.movement = identityMatrix();
         }
 
@@ -6857,7 +6890,7 @@ void main() {
          */
         function positionNode(origin, node) {
             node.world = matrixMultiply(node.transform, origin);
-            node.children.forEach((child) => positionNode(node.world, child));
+            node[symbols.content].forEach((child) => positionNode(node.world, child));
         }
 
         /**
@@ -6878,8 +6911,8 @@ void main() {
                     node.shape.draw3d(gl, node.shader);
                 }
             }
-            node.children.sort((a, b) => a.z - b.z);
-            node.children.forEach((child) => drawNode2(gl, child, shader));
+            node[symbols.content].sort((a, b) => a.z - b.z);
+            node[symbols.content].forEach((child) => drawNode2(gl, child, shader));
             node.movement = identityMatrix();
         }
 
@@ -9271,12 +9304,6 @@ void main() {
          */
         function main() {
             Core.initialise();
-            const tree = new TreeView([], 'Scene Graph', {
-                //getContent: (node) => node[symbols.content],
-                getContent: (node) => node.children || [],
-                getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
-                actions: {},
-            });
 
             const editorFrame = uiControls.newFrame(Core.mainEditor);
 
@@ -9285,10 +9312,10 @@ void main() {
             const sceneFrame = uiControls.newFrame(glView);
 
             const gridTreeframe = uiControls.newFrame(new GridTreeView());
-            const treeFrame = uiControls.newFrame(tree);
+            const detailFrame = uiControls.newFrame(new DetailView());
             
             const column1 = new FrameContainer(editorFrame, gridTreeframe);
-            const column2 = new FrameContainer(treeFrame, sceneFrame);
+            const column2 = new FrameContainer(sceneFrame, detailFrame);
             const row = new FrameContainer(column1, column2);
             column1.column();
             column2.column();
@@ -9296,9 +9323,6 @@ void main() {
             const layout = document.querySelector('.layout-main');
             layout.append(row.node);
             row.node.classList.add('root-frame');
-
-            Core.sceneGraphTrees.push(tree);
-            //adduiControls();
 
             document.body.addEventListener('mousemove', (event) => {
                 if (actions.mouseMove) {
