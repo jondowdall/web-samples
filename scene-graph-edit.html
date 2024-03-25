@@ -2164,7 +2164,7 @@
             }
             set structure(structure) {
                 this._structure = structure;
-                getGraph(this._structure, this);
+                getGraph(this._structure, this, this);
             }
             setGraph(graph) {
                 //this.graph = graph;
@@ -2301,9 +2301,9 @@
                 gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
                 if (this.settings.split.checked) {
-                    drawScene2(gl, this.graph, this.shaders, time);
+                    drawScene2(this, gl, this.structure, this.shaders, time);
                 } else {
-                    drawScene(gl, this.graph, this.shaders, time);
+                    drawScene(this, gl, this.structure, this.shaders, time);
                 }
                 glErrors(gl, `${this.title} update 6`);
 
@@ -3186,6 +3186,7 @@
             values: Symbol('values'),
             links: Symbol('links'),
             views: Symbol('views'),
+            viewData: Symbol('view data'),
             name: Symbol('name'),
             fullName: Symbol('fullName'),
         };
@@ -3209,6 +3210,7 @@
                     [symbols.value]: '',
                     [symbols.values]: [],
                     [symbols.views]: {},
+                    [symbols.viewData]: new Map(),
                     [symbols.name]: '',
                     [symbols.fullName]() {
                         const name = this[symbols.name] || this.name;
@@ -4797,7 +4799,7 @@
         /**
          * Generate scene graph for the given structure
          */
-        function getGraph(structure, scene, view = '3D Scene') {
+        function getGraph(structure, scene, view, viewName='3D Scene') {
             scene.data.vertex.length = 0;
             scene.data.indices.length = 0;
 
@@ -4848,9 +4850,9 @@
             const add = (node) => {
                 const original = node;
                 handler.get = (target, prop, receiver) => {
-                    if (target[symbols.views][view]) {
-                        if (target[symbols.views][view][prop] !== undefined) {
-                            return target[symbols.views][view][prop];
+                    if (target[symbols.views][viewName]) {
+                        if (target[symbols.views][viewName][prop] !== undefined) {
+                            return target[symbols.views][viewName][prop];
                         }
                     }
                     return original[prop];
@@ -4933,8 +4935,9 @@
 
                     }
 
-                    const sceneNode = addNode(node.name, transform, shape, shader, colour, node.specular || 4, node.specularColour, node.texture);
-                    node.sceneNode = sceneNode;
+                    const sceneNode = addNode(node, transform, shape, shader, colour);
+                    //node.sceneNode = sceneNode;
+                    node[symbols.viewData].set(view, sceneNode);
                     namedNodes[node.name] = sceneNode;
                     if (stack.length > 0) {
                         stack[0][symbols.content].push(sceneNode);
@@ -4964,7 +4967,7 @@
             scene.events.sort((a, b) => (a.startTime) - (b.startTime));
 
             glErrors(scene.gl, '>>> Update Buffers');
-            Core.views.filter((view) => view.setGraph).forEach((view) => view.setGraph(scene.graph));
+            //Core.views.filter((view) => view.setGraph).forEach((view) => view.setGraph(scene.graph));
         }
 
         /**
@@ -6849,15 +6852,15 @@ void main() {
         /**
          *
          */
-        function addNode(name, transform, shape, shader, colour = [1, 0, 1, 1], shininess, specularColour, texture) {
+        function addNode(source, transform, shape, shader, colour = [1, 0, 1, 1]) {
 
-            shininess = shininess || 1 + 5 * Math.random();
+            shininess = source.specular || 1 + 5 * Math.random();
 
             const node = Object.assign(Object.create({ update }), {
-                name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, specularColour, [symbols.content]: [],
+                name: source.name, parent, transform, movement: identityMatrix(),
+                shape, shader, colour, shininess, specularColour: source.specularColour, [symbols.content]: [],
             });
-            if (texture) {
+            if (source.texture) {
                 node.texture = getTexture(texture, scene);
             }
             return node;
@@ -6866,22 +6869,26 @@ void main() {
         /**
          *
          */
-        function drawNode(gl, origin, node, shaders, time) {
-            const shader = shaders[node.shader];
-            node.world = matrixMultiply(matrixMultiply(node.transform, node.movement), origin);
-            const transform = matrixMultiply(node.world, scene.modelViewMatrix);
-            node.z = transform[14];
-
-            gl.useProgram(shader.program);
-            gl.uniformMatrix4fv(shader.modelViewMatrix, false, transform);
-            const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
-            gl.uniformMatrix3fv(shader.normalMatrix, false, normalMatrix);
-            shader.setNodeData(gl, node);
-            if (node.shape) {
-                node.shape.draw3d(gl, node.shader);
+        function drawNode(view, gl, origin, node, shaders, time) {
+            const sceneNode = node[symbols.viewData]?.get(view);
+            if (sceneNode) {
+                const shader = shaders[sceneNode.shader];
+                sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
+                const transform = matrixMultiply(sceneNode.world, scene.modelViewMatrix);
+                sceneNode.z = transform[14];
+    
+                gl.useProgram(shader.program);
+                gl.uniformMatrix4fv(shader.modelViewMatrix, false, transform);
+                const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
+                gl.uniformMatrix3fv(shader.normalMatrix, false, normalMatrix);
+                shader.setNodeData(gl, sceneNode);
+                if (sceneNode.shape) {
+                    sceneNode.shape.draw3d(gl, sceneNode.shader);
+                }
+                origin = sceneNode.world;
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
-            node[symbols.content].forEach((child) => drawNode(gl, node.world, child, shaders, time));
+            node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, shaders, time));
             node.movement = identityMatrix();
         }
 
@@ -6896,47 +6903,48 @@ void main() {
         /**
          *
          */
-        function drawNode2(gl, node, shader, time) {
-            if (node.shader === shader) {
-                node.world = matrixMultiply(matrixMultiply(node.transform, node.movement), origin);
-                const transform = matrixMultiply(node.world, scene.modelViewMatrix);
-                node.z = transform[14];
+        function drawNode2(view, gl, node, shader, time) {
+            const sceneNode = node[symbols.viewData].get(view);
+            if (sceneNode && sceneNode.shader === shader) {
+                sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
+                const transform = matrixMultiply(sceneNode.world, scene.modelViewMatrix);
+                sceneNode.z = transform[14];
 
-                gl.uniformMatrix4fv(node.shader.modelViewMatrix, false, transform);
+                gl.uniformMatrix4fv(sceneNode.shader.modelViewMatrix, false, transform);
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
 
-                gl.uniformMatrix3fv(node.shader.normalMatrix, false, normalMatrix);
-                node.shader.setNodeData(gl, node);
-                if (node.shape) {
-                    node.shape.draw3d(gl, node.shader);
+                gl.uniformMatrix3fv(sceneNode.shader.normalMatrix, false, normalMatrix);
+                sceneNode.shader.setNodeData(gl, sceneNode);
+                if (sceneNode.shape) {
+                    sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
-            node[symbols.content].forEach((child) => drawNode2(gl, child, shader));
+            node[symbols.content].forEach((child) => drawNode2(view, gl, child, shader, time));
             node.movement = identityMatrix();
         }
 
         /**
          *
          */
-        function drawScene(context, graph, shaders, time) {
+        function drawScene(view, context, graph, shaders, time) {
             glErrors(context, 'drawScene start');
             graph.forEach((node) =>
-                drawNode(context, identityMatrix(), node, shaders, time));
+                drawNode(view, context, identityMatrix(), node, shaders, time));
             glErrors(context, 'drawScene end');
         }
 
         /**
          *
          */
-        function drawScene2(context, graph, time) {
+        function drawScene2(view, context, graph, time) {
             const origin = identityMatrix();
             graph.forEach((node) => positionNode(origin, node));
 
             gl.useProgram(scene.shaders.shader3.program);
-            graph.forEach((node) => drawNode2(context, node, scene.shaders.shader3, time));
+            graph.forEach((node) => drawNode2(view, context, node, scene.shaders.shader3, time));
             gl.useProgram(scene.shaders.shader4.program);
-            graph.forEach((node) => drawNode2(context, node, scene.shaders.shader4, time));
+            graph.forEach((node) => drawNode2(view, context, node, scene.shaders.shader4, time));
             glErrors(gl, 'drawScene2');
         }
 
