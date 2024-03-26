@@ -1470,9 +1470,6 @@
                 this.main.addEventListener('input', (event) => {
                     if (document.getElementById('interactive-update').checked) {
                         Core.source = this.value;
-                        getGraph(Core.structure, scene);
-                        Core.sceneGraphTrees.forEach((tree) =>
-                            tree.setContent(scene.graph));
                     }
                     updateLineNumbers(Core.mainEditor.main, Core.mainEditor.lineNumbers);
                 });
@@ -2088,7 +2085,7 @@
                 upright: '.upright',
                 depthTest: '.depth-test',
             };
-            constructor(title, scene, camera) {
+            constructor(title, camera) {
                 super('gl-view-template', GLView.settingsMap);
                 // Add to the DOM so that safari can get context
                 document.body.append(this.node);
@@ -2117,25 +2114,21 @@
                 const lightY = this.node.querySelector('.light-y');
                 const lightZ = this.node.querySelector('.light-z');
 
-                lightX.value = scene.light[0].position[0] || -75;
-                lightY.value = scene.light[0].position[1] || -90;
-                lightZ.value = scene.light[0].position[2] || 0;
-                scene.lightPosition = scene.light[0].position;
+                lightX.value = -75;
+                lightY.value = -90;
+                lightZ.value = 0;
 
                 lightX.addEventListener('input', (event) =>
-                    scene.light[0].position[0] = lightX.value);
+                    this.light[0].position[0] = lightX.value);
                 lightY.addEventListener('input', (event) =>
-                    scene.light[0].position[1] = lightY.value);
+                    this.light[0].position[1] = lightY.value);
                 lightZ.addEventListener('input', (event) =>
-                    scene.light[0].position[2] = lightZ.value);
+                    this.light[0].position[2] = lightZ.value);
 
                 addControls(this.canvas, this);
 
                 this.vertexBuffer = this.context.createBuffer();
                 this.indexBuffer = this.context.createBuffer();
-
-                this.scene = scene;
-                this.graph = scene.graph;
 
                 this.settings.reset.addEventListener('click', () => {
                     this.camera.reset();
@@ -2244,7 +2237,7 @@
                     context.enableVertexAttribArray(shader.attribLocations.vertexTexture);
                 }
 
-                shader.setSceneData(this.scene);
+                shader.setSceneData(this);
 
                 glErrors(this.context, `${this.title} initialiseShaders`);
             }
@@ -2252,7 +2245,7 @@
                 const gl = this.context;
                 this.updateSize();
 
-                this.scene.modelViewMatrix = this.camera.viewMatrix();
+                this.modelViewMatrix = this.camera.viewMatrix();
 
                 glErrors(gl, `${this.title} update 1`);
                 // Create a perspective matrix, a special matrix that is
@@ -2264,11 +2257,11 @@
                 const zNear = 0.1;
                 const zFar = 1000.0;
                 const projectionMatrix = perspective(fieldOfView, aspect, zNear, zFar);
-                this.scene.projectionMatrix = projectionMatrix;// matrixMultiply(projectionMatrix, scene.modelViewMatrix);
+                this.projectionMatrix = projectionMatrix;
 
-                this.scene.graph.forEach((node) => node.update(scene, identityMatrix(), node, time));
+                this.graph.forEach((node) => node.update(this, identityMatrix(), node, time));
 
-                this.updateBuffers(this.scene.data);
+                this.updateBuffers(this.data);
 
                 glErrors(gl, `${this.title} update 2`);
 
@@ -2292,7 +2285,7 @@
                     gl.enable(gl.DEPTH_TEST);           // Enable depth testing
                 } else {
                     gl.disable(gl.DEPTH_TEST);           // Enable depth testing
-                    scene.graph.sort((a, b) => a.z - b.z);
+                    this.graph.sort((a, b) => a.z - b.z);
                 }
                 gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
                 glErrors(gl, `${this.title} update 5`);
@@ -2309,8 +2302,8 @@
 
                 //topView.render();
 
-                if (this.scene.overlays) {
-                    this.scene.overlays.forEach((overlay) => overlay.updateOverlay(projectionMatrix));
+                if (this.overlays) {
+                    this.overlays.forEach((overlay) => overlay.updateOverlay(projectionMatrix));
                 }
                 if (this.savePNG) {
                     savePNG(this.canvas);
@@ -3103,7 +3096,7 @@
             { name: 'Clock View', make() { return new ClockView(); }, },
             {
                 name: '3D View', make() {
-                    const view = new GLView('New GL View', scene);
+                    const view = new GLView('New GL View');
                     view.setShaders(defaultShaders);
                     return view;
                 },
@@ -3113,14 +3106,9 @@
             { name: 'Editor', make() { return new Editor(); }, },
             { name: 'Scene Graph', make() {
                     const tree = new TreeView([], 'Scene Graph', {
-                        //getContent: (node) => node.children || [],
                         getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
                         actions: {},
                     });
-                    Core.sceneGraphTrees.push(tree);
-                    if (scene.graph) {
-                        tree.setContent(scene.graph);
-                    }
                     return tree;
                 }, 
             },            
@@ -4800,20 +4788,20 @@
          * Generate scene graph for the given structure
          */
         function getGraph(structure, scene, view, viewName='3D Scene') {
-            scene.data.vertex.length = 0;
-            scene.data.indices.length = 0;
+            view.data.vertex.length = 0;
+            view.data.indices.length = 0;
 
             let links = 0;
 
             const types = {
                 Box, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Torus, Prism, Link,
             }
-            scene.shapes = [];
+            view.shapes = [];
             const shapes = {};
 
             const stack = [];
-            scene.graph = [];
-            scene.nodes = [];
+            view.graph = [];
+            view.nodes = [];
 
             function getEvents(node, sceneNode) {
                 const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<transition>[^=]+)/
@@ -4869,9 +4857,9 @@
                 let shape;
                 if (typeName && types[typeName]) {
                     const hash = types[typeName].hash(node);
-                    shapes[hash] = shapes[hash] || types[typeName].make(scene.gl, scene.data, node, index, namedNodes);
+                    shapes[hash] = shapes[hash] || types[typeName].make(view.context, view.data, node, index, namedNodes);
                     shape = shapes[hash];
-                    scene.shapes.push(shape);
+                    view.shapes.push(shape);
                 }
 
                 let endScope = false;
@@ -4936,18 +4924,14 @@
                     }
 
                     const sceneNode = addNode(node, transform, shape, shader, colour);
-                    //node.sceneNode = sceneNode;
                     node[symbols.viewData].set(view, sceneNode);
                     namedNodes[node.name] = sceneNode;
                     if (stack.length > 0) {
                         stack[0][symbols.content].push(sceneNode);
                     } else {
-                        scene.graph.push(sceneNode);
+                        view.graph.push(sceneNode);
                     }
                     sceneNode.sourceNode = original;
-                    scene.nodes.unshift(sceneNode);
-                    const events = getEvents(node, sceneNode);
-                    scene.events.push(...events);
                     stack.unshift(sceneNode);
                     endScope = true;
                 } else {
@@ -4964,10 +4948,9 @@
             };
 
             structure.forEach((part) => add(part));
-            scene.events.sort((a, b) => (a.startTime) - (b.startTime));
+            //view.events.sort((a, b) => (a.startTime) - (b.startTime));
 
-            glErrors(scene.gl, '>>> Update Buffers');
-            //Core.views.filter((view) => view.setGraph).forEach((view) => view.setGraph(scene.graph));
+            glErrors(view.gl, '>>> Update Buffers');
         }
 
         /**
@@ -4987,27 +4970,7 @@
         }
 
         /**
-         *
-         */
-        const scene = {
-            shapes: [],
-            points: [],
-            lines: [],
-            graph: [],
-            nodes: [],
-            overlays: [],
-            events: [],
-            activeEvents: [],
-            light: [{ position: [-75, -90, 0] }],
-            data: {
-                vertex: [],
-                indices: [],
-            },
-        }
-
-        // Vertex shader program
-        /**
-         *
+         * Vertex shader program
          */
         const shaderObjects = [
             {
@@ -5812,10 +5775,10 @@ void main() {
         /**
          * Add a texture to teh library
          */
-        function getTexture(url, scene) {
+        function getTexture(url, view) {
             const current = textures.find((texture) => texture.url === url);
             if (!current) {
-                textures.push({ url, texture: loadTexture(scene.gl, url) });
+                textures.push({ url, texture: loadTexture(view.gl, url) });
             }
             return current;
         }
@@ -6016,7 +5979,7 @@ void main() {
          */
         class Diamond extends shape {
             static make(gl, data, node, index) {
-                return new Diamond(scene.gl, data, node.size);
+                return new Diamond(gl, data, node.size);
             }
             static hash(node) {
                 return `diamond ${node.size}`;
@@ -6145,7 +6108,7 @@ void main() {
                 const strips = node.strips || values[index++] || 12;
                 const mode = node.mode || values[index++] || 'solid';
 
-                return new Ball(scene.gl, data, width, depth, height, sides, strips);
+                return new Ball(gl, data, width, depth, height, sides, strips);
             }
             static hash(node) {
                 return `ball ${node.size} ${node.height} ${node.depth} ${node.sides} ${node.strips}`;
@@ -6228,7 +6191,7 @@ void main() {
                 const start = node.start || values[index++] || 0;
                 const mode = node.mode || values[index++] || 'solid';
 
-                return new Torus(scene.gl, data, size, thickness, sides, strips, start, mode);
+                return new Torus(gl, data, size, thickness, sides, strips, start, mode);
             }
             static hash(node) {
                 return `torus ${node.size} ${node.thickness} ${node.sides} ${node.strips}`;
@@ -6299,7 +6262,7 @@ void main() {
          */
         class Frustrum extends shape {
             static make(gl, data, node, index) {
-                return new Frustrum(scene.gl, data, node.baseRadius, node.topRadius, node.height, node.sides);
+                return new Frustrum(gl, data, node.baseRadius, node.topRadius, node.height, node.sides);
             }
             static hash(node) {
                 return `frustrum ${node.baseRadius} ${node.topRadius} ${node.height} ${node.sides}`;
@@ -6415,7 +6378,7 @@ void main() {
                 const radius = node.radius || values[index++];
                 const height = node.height || values[index++];
                 const sides = node.sides || values[index++];
-                return new Cylinder(scene.gl, data, node.radius, node.height, node.sides);
+                return new Cylinder(gl, data, node.radius, node.height, node.sides);
             }
             static hash(node) {
                 return `cylinder ${node.radius} ${node.height} ${node.sides}`;
@@ -6432,7 +6395,7 @@ void main() {
          */
         class Cone extends Frustrum {
             static make(gl, data, node) {
-                return new Cone(scene.gl, data, node.radius, node.height, node.sides);
+                return new Cone(gl, data, node.radius, node.height, node.sides);
             }
             static hash(node) {
                 return `cone ${node.radius} ${node.height} ${node.sides}`;
@@ -6449,7 +6412,7 @@ void main() {
          */
         class Tetrahedron extends shape {
             static make(gl, data, node, index) {
-                return new Tetrahedron(scene.gl, data, node.size);
+                return new Tetrahedron(gl, data, node.size);
             }
             static hash(node) {
                 return `tetrahedron ${node.size}`;
@@ -6874,7 +6837,7 @@ void main() {
             if (sceneNode) {
                 const shader = shaders[sceneNode.shader];
                 sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
-                const transform = matrixMultiply(sceneNode.world, scene.modelViewMatrix);
+                const transform = matrixMultiply(sceneNode.world, view.modelViewMatrix);
                 sceneNode.z = transform[14];
     
                 gl.useProgram(shader.program);
@@ -7139,7 +7102,6 @@ void main() {
                 updateCamera(this.getString());
             }
             getLine(aspect, x, y, fieldOfView) {
-                //const aspect = 1;//scene.gl.canvas.clientWidth / scene.gl.canvas.clientHeight;
                 const fov = fieldOfView * Math.PI / 180;
                 const zaxis = normalised(subtract(this.lookAt, this.position));
                 const xaxis = normalised(cross(zaxis, this.up));
@@ -7258,6 +7220,7 @@ void main() {
          *
          */
         function processActiveEvents(time) {
+            return;
             //report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
             scene.activeEvents.filter((event) => event.endTime <= time).forEach((event) => event.transition.finish());
             scene.activeEvents = scene.activeEvents.filter((event) => event.endTime > time);
@@ -7270,19 +7233,19 @@ void main() {
         /**
          * Resize the canvas based on the node size
          */
-        function updateCanvasSize(scene) {
+        function updateCanvasSize(view) {
             //return;
             // Lookup the size the browser is displaying the canvas in CSS pixels.
-            const width = scene.gl.canvas.clientWidth;
-            const height = scene.gl.canvas.clientHeight;
+            const width = view.gl.canvas.clientWidth;
+            const height = view.gl.canvas.clientHeight;
 
             // Check if the canvas is not the same size.
-            const resize = scene.gl.canvas.width !== width || scene.gl.canvas.height !== height;
+            const resize = view.gl.canvas.width !== width || view.gl.canvas.height !== height;
 
             if (resize) {
                 // Make the canvas the same size
-                scene.gl.canvas.width = width;
-                scene.gl.canvas.height = height;
+                view.gl.canvas.width = width;
+                view.gl.canvas.height = height;
 
                 scene.gl.viewport(0, 0, width, height);
             }
@@ -7814,10 +7777,10 @@ void main() {
         function pickNodes(view, x, y) {
             const aspect = view.canvas.width / view.canvas.height;
             const ray = view.camera.getLine(aspect, x, y, 45);
-            scene.ray = ray;
-            scene.points.length = 0;
-            scene.lines.length = 0;
-            const hits = scene.nodes.filter((node) => {
+            view.ray = ray;
+            view.points.length = 0;
+            view.lines.length = 0;
+            const hits = view.nodes.filter((node) => {
                 if (node.shape) {
                     const inverse = invert(node.world);
                     const point = transformed(ray.point, inverse);
@@ -8784,12 +8747,12 @@ void main() {
                 lines.push(...shader.definition.fragment.split('\n'));
 
                 setters = {
-                    mat4: (location, value) => scene.gl.uniformMatrix4fv(location, false, value),
-                    mat3: (location, value) => scene.gl.uniformMatrix3fv(location, false, value),
-                    vec3: (location, value) => scene.gl.uniform3fv(location, value),
-                    vec4: (location, value) => scene.gl.uniform4fv(location, value),
-                    float: (location, value) => scene.gl.uniform1f(location, value),
-                    sampler2D: (location, value) => scene.gl.uniform1i(location, value),
+                    mat4: (location, value) => view.gl.uniformMatrix4fv(location, false, value),
+                    mat3: (location, value) => view.gl.uniformMatrix3fv(location, false, value),
+                    vec3: (location, value) => view.gl.uniform3fv(location, value),
+                    vec4: (location, value) => view.gl.uniform4fv(location, value),
+                    float: (location, value) => view.gl.uniform1f(location, value),
+                    sampler2D: (location, value) => view.gl.uniform1i(location, value),
                 };
 
                 lines.forEach((line) => {
@@ -9047,8 +9010,6 @@ void main() {
 
             if (content) {
                 Core.source = content;
-
-                getGraph(Core.structure, scene);
 
                 config.current = name;
                 localStorage.setItem('scene-config', JSON.stringify(config));
@@ -9315,8 +9276,7 @@ void main() {
 
             const editorFrame = uiControls.newFrame(Core.mainEditor);
 
-            const glView = new GLView('3D View', scene);
-            scene.gl = glView.context;
+            const glView = new GLView('3D View');
             const sceneFrame = uiControls.newFrame(glView);
 
             const gridTreeframe = uiControls.newFrame(new GridTreeView());
