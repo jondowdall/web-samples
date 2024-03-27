@@ -3178,12 +3178,14 @@
                     node,
                     values: {},
                     modifiers: [],
+                    finalisation: [],
                 }
                 context.scope.unshift(scope);
                 return scope;
             }
             endScope(context) {
                 const scope = context.scope.shift();
+                scope.finalisation.forEach((finaliser) => finaliser(context));
             }
             parseValue(context, node, newNode = true) {
                 node[symbols.source].push(this);
@@ -4039,6 +4041,32 @@
             }
         }
 
+        const sum = (list) => list.reduce((t, i) => t + i, 0);
+        const mean = (list) => list.reduce((t, i) => t + i, 0) / list.length;
+        const mediam = (list) => {
+            list.sort((a, b) => a - b);
+            if (list.length % 2) {
+                return (list[(list.length / 2) - 1] + list[list.length / 2]) / 2;
+            }
+            return list[(list.length - 1) / 2];
+        }
+        const mode = (list) => {
+            const counts = list.reduce((o, i) => {
+                o[i] ? ++o[i] : 1;
+                return o[i]; 
+            }, {});
+            let mode;
+            let max = 0;
+            Object.entries(counts).forEach(([value, count]) => {
+                if (count > max) {
+                    mode = value;
+                    max = count;
+                }
+            });
+            return mode;
+        };  
+        const concat = (list) => list.join();
+        
         /**
          * Generate a node parameters from the value string and context
          */
@@ -4089,7 +4117,16 @@
                         if (item.includes('=')) {
                             const [name, ...valueArr] = item.split(/=/);
                             const value = valueArr.join('=');
-                            if (value.trim() === '') {
+                            if (value.includes('...')) {
+                                context.scope[0].finalisation.push((context) => {
+                                    const values = node[symbols.content].map((node) => node[name]);
+                                    if (value.trim() === 'sum(...)') {
+                                        node[name] = sum(values);
+                                    } else {
+                                        node[name] = values;
+                                    }
+                                });
+                            } else if (value.trim() === '') {
                                 node[name] = null;
                             } else if (/^"[^"]+"$/.test(value)) {
                                 node[name] = value.replace(/^"([^"]+)"$/, '$1');
@@ -4171,7 +4208,7 @@
                         value = value.replace(/<([^>]*)>/g, (match, name) =>
                             variables[name] !== undefined ? variables[name] : `<${name}>`);
                         //value = value.replace(/\{([^:\}]+)(:0+)?\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, format, loop, loopVar) => {
-                        value = value.replace(/\{([^\}]+)\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, loop, loopVar) => {
+                        value = value.replace(/\{([^\+][^\}]*)\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, loop, loopVar) => {
                             let result = match;
                             const names = Object.keys(variables).map((name) => name ? name : '_');
                             const values = Object.values(variables);
@@ -4184,7 +4221,6 @@
                                 } catch (e) {
                                     console.log(`Info: expression ${expr} unresolved`);
                                 }
-
                             } else {
                                 try {
                                     result = new Function(...names, `return ${expr}`)(...values);
