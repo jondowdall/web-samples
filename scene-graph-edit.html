@@ -126,6 +126,7 @@
             display: inline-block;
             width: 1.1em;
             cursor: default;
+            font-size: 70%;
         }
 
         .frame {
@@ -2061,7 +2062,7 @@
                 this.overlays = [];
                 this.events = [];
                 this.activeEvents = [];
-                this.light = [{ position: [-75, -90, 0] }];
+                this.lightPosition = [-75, -90, 0];
                 this.data = {
                     vertex: [],
                     indices: [],
@@ -2081,11 +2082,11 @@
                 lightZ.value = 0;
 
                 lightX.addEventListener('input', (event) =>
-                    this.light[0].position[0] = lightX.value);
+                    this.lightPosition[0] = lightX.value);
                 lightY.addEventListener('input', (event) =>
-                    this.light[0].position[1] = lightY.value);
+                    this.lightPosition[1] = lightY.value);
                 lightZ.addEventListener('input', (event) =>
-                    this.light[0].position[2] = lightZ.value);
+                    this.lightPosition[2] = lightZ.value);
 
                 addControls(this.canvas, this);
 
@@ -3141,7 +3142,7 @@
             name: Symbol('name'),
             fullName: Symbol('fullName'),
         };
-
+        
         /**
          * Classes of the nodes in the template structure.
          */
@@ -4041,31 +4042,38 @@
             }
         }
 
-        const sum = (list) => list.reduce((t, i) => t + i, 0);
-        const mean = (list) => list.reduce((t, i) => t + i, 0) / list.length;
-        const mediam = (list) => {
-            list.sort((a, b) => a - b);
-            if (list.length % 2) {
-                return (list[(list.length / 2) - 1] + list[list.length / 2]) / 2;
-            }
-            return list[(list.length - 1) / 2];
-        }
-        const mode = (list) => {
-            const counts = list.reduce((o, i) => {
-                o[i] ? ++o[i] : 1;
-                return o[i]; 
-            }, {});
-            let mode;
-            let max = 0;
-            Object.entries(counts).forEach(([value, count]) => {
-                if (count > max) {
-                    mode = value;
-                    max = count;
+        const funcs = {
+            sum: (list) => list.reduce((t, i) => t + i, 0),
+            mean: (list) => list.reduce((t, i) => t + i, 0) / list.length,
+            median: (list) => {
+                list.sort((a, b) => a - b);
+                if (list.length % 2) {
+                    return list[(list.length - 1) / 2];
                 }
-            });
-            return mode;
-        };  
-        const concat = (list) => list.join();
+                return (list[(list.length / 2) - 1] + list[list.length / 2]) / 2;
+            },
+            mode: (list) => {
+                list.sort((a, b) => a - b);
+                let max = 0;
+                let mode;
+                let last = undefined;
+                let count = 0;
+                list.forEach((value) => {
+                    if (value === last) {
+                        count += 1;
+                    } else {
+                        count = 0;
+                    }
+                    if (count > max) {
+                        mode = value;
+                        max = count;
+                    }
+                    last = value;
+                });
+                return mode;
+            },  
+            concat: (list) => list.join(),
+        };
         
         /**
          * Generate a node parameters from the value string and context
@@ -4118,12 +4126,25 @@
                             const [name, ...valueArr] = item.split(/=/);
                             const value = valueArr.join('=');
                             if (value.includes('...')) {
+                                const descendents = (nodes) => nodes.flatMap((node) => [node, ...descendents(node[symbols.content])]);
                                 context.scope[0].finalisation.push((context) => {
                                     const values = node[symbols.content].map((node) => node[name]);
-                                    if (value.trim() === 'sum(...)') {
-                                        node[name] = sum(values);
-                                    } else {
-                                        node[name] = values;
+                                    node[name] = value.replace(/([^\(]+)\s*\(\s*(\.\.\.\.?)\s*\)/, (match, func, elements) => {
+                                        const action = funcs[func.trim()];
+                                        if (action) {
+                                            const defined = (value) => value !== undefined;
+                                            if (elements === '...') {
+                                                return action(node[symbols.content].map((node) => node[name]).filter(defined));
+                                            } else {
+                                                return action(descendents(node[symbols.content]).map((node) => node[name]).filter(defined));
+                                            }
+                                        }
+                                        return match;
+                                    });
+                                    if (value.trim() === '...') {
+                                        node[name] = node[symbols.content].map((node) => node[name]);
+                                    } else if (value.trim() === '....') {
+                                        node[name] = descendents(node[symbols.content]).map((node) => node[name]);
                                     }
                                 });
                             } else if (value.trim() === '') {
@@ -4387,16 +4408,16 @@
                 this.config = Object.assign({}, TreeView.defaults, config);
                 this.searchStack = [];
                 this.path = [];
-                this.setContent(content);
+                this.structure = content;
 
                 const search = this.node.querySelector('.search');
                 search.addEventListener('input', (event) => this.incrementalSearch());
                 search.addEventListener('change', (event) => this.search());
                 this.resetSearch();
             }
-            setContent(content) {
+            set structure(structure) {
                 this.main.innerHTML = '';
-                this.content = content;
+                this.content = structure;
                 this.nodes = this.content.map((item) => {
                     const node = new TreeViewNode(item, this);
                     this.main.append(node.node);
@@ -6848,10 +6869,10 @@ void main() {
                     sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
                 origin = sceneNode.world;
+                sceneNode.movement = identityMatrix();
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
             node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, shaders, time));
-            node.movement = identityMatrix();
         }
 
         /**
@@ -6880,10 +6901,10 @@ void main() {
                 if (sceneNode.shape) {
                     sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
+                sceneNode.movement = identityMatrix();
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
             node[symbols.content].forEach((child) => drawNode2(view, gl, child, shader, time));
-            node.movement = identityMatrix();
         }
 
         /**
@@ -6973,7 +6994,7 @@ void main() {
                     4 * (3 + 3));
                 context.enableVertexAttribArray(shader.attribLocations.vertexTexture);
             }
-            shader.setSceneData(scene);
+            //shader.setSceneData(scene);
         }
 
         /**
@@ -9274,7 +9295,7 @@ void main() {
             const glView = new GLView('3D Scene');
             const sceneFrame = uiControls.newFrame(glView);
 
-            const gridTreeframe = uiControls.newFrame(new GridTreeView());
+            const gridTreeframe = uiControls.newFrame(new TreeView(Core.structure));
             const detailFrame = uiControls.newFrame(new DetailView());
             
             const column1 = new FrameContainer(editorFrame, gridTreeframe);
