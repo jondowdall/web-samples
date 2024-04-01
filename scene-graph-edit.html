@@ -36,6 +36,7 @@
         th {
             border: 1px solid darkgray;
             padding: 0.2rem;
+            width: 100%;
         }
 
         th {
@@ -135,7 +136,7 @@
             display: flex;
             flex-direction: column;
             max-height: 100%;
-            background: lightblue;
+            background: #c4cccf;
             padding-left: 1rem;
             border-radius: 0.5rem;
             
@@ -154,7 +155,7 @@
 
         .selected-frame {
             filter: none;
-            background: blue;
+            background: lightblue;
         }
         
         .frame-title {
@@ -221,6 +222,10 @@
             min-height: 100%;
         }
 
+        .view {
+            height: 100%;
+        }
+        
         .placeholder {
             border-radius: 2em;
             border: 4px dashed gray;
@@ -234,14 +239,14 @@
             
         }
                 
-        .sidebar-view {
+        .sidebar .view {
             background: white;
             overflow: auto;
             height: 100%;
             transition: opacity width height 0.2s;
         }
 
-        .sidebar-view:focus-within {
+        .sidebar .view:focus-within {
             box-shadow: 3px 5px 8px #333;
         }
         
@@ -422,6 +427,11 @@
             /*white-space: nowrap;*/
         }
 
+        .new-heading {
+            display: inline-block;
+            min-width: 1em;
+        }
+        
         .clock-view {
             position: relative;
             overflow: hidden;
@@ -1431,6 +1441,12 @@
                 });
 
                 this.main.addEventListener('input', (event) => {
+                    try {
+                        localStorage.setItem('current_source', this.value);
+                    } catch(e) {
+                        console.log(e);
+                    }
+
                     if (document.getElementById('interactive-update').checked) {
                         Core.source = this.value;
                     }
@@ -2802,6 +2818,200 @@
             }
         }
 
+        
+        
+        /**
+         * Display a tree table for the selected data, allowing expansion of nodes.
+         */
+        class TreeTableView extends View {
+            static settingsMap = {
+                headings: '.headings-list',
+                hideEmpty: '.hide-empty-rows',
+            }
+            static defaults = {};
+            constructor(roots, configuration) {
+                super('table-view-template', TreeTableView.settingsMap);
+
+                this.configuration = Object.assign({}, TreeTableView.defaults, configuration);
+                this.roots = roots || [];
+                this.title = 'Table View';
+                this.head = this.node.querySelector('thead');
+                this.body = this.node.querySelector('tbody');
+                this.getNodes();
+                this.getHeadings();
+                this.render();
+                this.settings.headings.addEventListener('change', (event) => this.render());
+                this.settings.hideEmpty.addEventListener('change', (event) => this.render());
+                this.state = {};
+            }
+            set structure(structure = []) {
+                this.roots = structure;
+                this.restoreState();
+                this.getNodes();
+                this.getHeadings();
+                this.render();
+            }
+            restoreState() {
+                Object.entries(this.state).forEach(([path, state]) => {
+                    const node = findNodes(path)[0];
+                    if (node) {
+                        node[symbols.viewData].set(this, state);
+                    }
+                });
+            }
+            getNodes() {
+                this.nodes = [];
+                this.fields = new Set();
+                const stack = [...this.roots];
+                while (stack.length) {
+                    const node = stack.shift();
+                    this.nodes.push(node);
+                    const data = node[symbols.viewData].get(this);
+                    if (data?.expanded) {
+                        stack.unshift(...node[symbols.content]);
+                    }
+                    Object.keys(node).forEach((key) => this.fields.add(key));
+                }
+            }
+            getHeadings() {
+                this.settings.headings.innerHTML = '';
+                this.headings = Array.from(this.fields);
+                this.headings.forEach((heading, index) => {
+                    const option = document.createElement('option');
+                    option.innerText = heading;
+                    option.value = heading;
+                    option.selected = true;
+                    this.settings.headings.append(option);
+                });
+            }
+            render() {
+                this.head.innerHTML = '';
+                this.body.innerHTML = '';
+                const row = document.createElement('tr');
+                row.classList.add('heading-row');
+                this.head.append(row);
+                const headings = Array.from(this.settings.headings.options)
+                    .filter((option) => option.selected)
+                    .map((option) => option.value);
+                headings.forEach((heading, index) => {
+                    const cell = document.createElement('th');
+                    cell.innerText = heading;
+                    cell.classList.add(`column-${index}`);
+                    cell.draggable = true;
+                    cell.addEventListener('dragstart', (event) => {
+                        event.dataTransfer.setData('text/heading-index', index);
+                        event.dataTransfer.setData('text/plain', heading);
+                        for (const node of this.node.querySelectorAll(`.column-${index}`)) {
+                            node.classList.add('dragging');
+                        }
+                        this.headings.splice(index, 1);
+                    });
+                    cell.addEventListener('dragend', (event) => this.render());
+                    cell.addEventListener('dragover', (event) => event.preventDefault());
+                    cell.addEventListener('drop', (event) => {
+                        event.preventDefault();
+                        const draggedIndex = parseInt(event.dataTransfer.getData('text/heading-index'));
+                        for (const node of this.body.querySelectorAll(`column-${draggedIndex}`)) {
+                            node.classList.remove('dragging');
+                        }
+                        const draggedHeading = event.dataTransfer.getData('text/plain');
+                        this.headings.splice(index, 0, draggedHeading);
+                    });
+                    row.append(cell);
+                });
+                const newHeading = document.createElement('span');
+                newHeading.contentEditable = true;
+                newHeading.classList.add('new-heading');
+                const cell = document.createElement('th');
+                cell.append(newHeading);
+                row.append(cell);
+                newHeading.addEventListener('keypress', (event) => {
+                    report(event.key);
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        this.fields.add(newHeading.innerText);
+                        this.getHeadings();
+                        this.render();
+                    }
+                });
+                
+                
+                const toggle = (node) => {
+                    const data = node[symbols.viewData].get(this) || {};
+                    data.expanded = !data.expanded;
+                    node[symbols.viewData].set(this, data);
+                    this.state[fullName(node)] = data;
+                    this.getNodes();
+                    this.getHeadings();
+                    this.render();
+                }
+                
+                const stack = [...this.roots];
+                let rowIndex = 0;
+                const addRow= (node, level=0) => {
+                    this.nodes.push(node);
+                    const data = node[symbols.viewData].get(this);
+                    const expandable = node[symbols.content].length > 0;
+                    if (data?.expanded) {
+                        stack.unshift(...node[symbols.content]);
+                    }
+                    const row = document.createElement('tr');
+                    let show = !this.settings.hideEmpty.checked;
+                    const viewHeading = (node, heading) => {
+                        const view = Object.keys(node[symbols.views]).find((key) => node[symbols.views][key][heading]);
+                        if (view) {
+                            return `::${view}.${node[symbols.views][view][heading]}`;
+                        }
+                    }
+                    headings.forEach((heading, index) => {
+                        const cell = document.createElement('td');
+                        if (index > 0) {
+                            show = show || (node[heading] !== undefined);
+                        } else {
+                            const expander = document.createElement('span');
+                            expander.classList.add('expander');
+                            if (expandable) {
+                                expander.innerHTML = data?.expanded ? '&#9661' : '&#9655';
+                            }
+                            expander.addEventListener('click', (event) => toggle(node, event));
+                            cell.style.paddingLeft = `${level}em`;
+                            cell.style.whiteSpace = 'nowrap';
+                            cell.append(expander);
+                        }
+                        
+                        cell.append(node[heading] ?? viewHeading(node, heading) ?? '');
+                        cell.classList.add(`column-${index}`, `row-${rowIndex}`);
+                        if (node[heading] === undefined) {
+                            cell.classList.add('undefined');
+                        }
+                        cell.addEventListener('dragover', (event) => event.preventDefault());
+                        cell.addEventListener('drop', (event) => {
+                            event.preventDefault();
+                            const draggedIndex = parseInt(event.dataTransfer.getData('text/heading-index'));
+                            for (const node of this.body.querySelectorAll(`column-${draggedIndex}`)) {
+                                node.classList.remove('dragging');
+                            }
+                            const draggedHeading = event.dataTransfer.getData('text/plain');
+                            this.headings.splice(index, 0, draggedHeading);
+                        });
+                        cell.addEventListener('click', (event) => Core.currentNode = node);
+                        row.append(cell);
+                    });
+                    if (show) {
+                        this.body.append(row);
+                        ++rowIndex;
+                        if (data?.expanded) {
+                            node[symbols.content].forEach((node) => addRow(node, level + 1));
+                        }
+                    }
+                }
+                this.roots.forEach((node) => addRow(node));
+            }
+        }
+        
+        
+        
+        
         /**
          * View selection component used for empty frames
          */
@@ -3056,19 +3266,19 @@
         }
         
         const Views = [
-            { name: 'Calendar View', make() { return new CalendarView(); }, },
-            { name: 'Clock View', make() { return new ClockView(); }, },
+            { group: 'Utiltiy', name: 'Calendar View', make() { return new CalendarView(); }, },
+            { group: 'Utiltiy', name: 'Clock View', make() { return new ClockView(); }, },
             {
-                name: '3D View', make() {
+                group: 'Diagrams', name: '3D View', make() {
                     const view = new GLView('3D Scene');
                     view.setShaders(defaultShaders);
                     return view;
                 },
             },
-            { name: 'Detail View', make() { return new DetailView(); }, },
-            { name: 'Diagram', make() { return new DiagramView(); }, },
-            { name: 'Editor', make() { return new Editor(); }, },
-            { name: 'Scene Graph', make() {
+            { group: 'Data', name: 'Detail View', make() { return new DetailView(); }, },
+            { group: 'Diagrams', name: 'Diagram', make() { return new DiagramView(); }, },
+            { group: 'Editors', name: 'Editor', make() { return new Editor(); }, },
+            { group: 'Data', name: 'Scene Graph', make() {
                     const tree = new TreeView([], 'Scene Graph', {
                         getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
                         actions: {},
@@ -3076,20 +3286,21 @@
                     return tree;
                 }, 
             },            
-            { name: 'Shader Editor', make() { return new ShaderEditor(); }, },
-            { name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
-            { name: 'Structure Editor', make() { return new StructureEditor(); }, },
-            { name: 'SVG Diagram', make() { return new SVGView(Core.structure); }, },
-            { name: 'Table', make() { return new TableView(Core.structure, {}); }, },
-            { name: 'Tree View', make() { return new TreeView(Core.structure); }, },
+            { group: 'Shaders', name: 'Shader Editor', make() { return new ShaderEditor(); }, },
+            { group: 'Shaders', name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
+            { group: 'Editors', name: 'Structure Editor', make() { return new StructureEditor(); }, },
+            { group: 'Diagrams', name: 'SVG Diagram', make() { return new SVGView(Core.structure); }, },
+            { group: 'Data', name: 'Table', make() { return new TableView(Core.structure, {}); }, },
             {
-                name: 'Tree Diagram', make() {
+                group: 'Diagrams', name: 'Tree Diagram', make() {
                     return new SVGTreeDiagram('Tree Diagram', Core.structure, {
                         nodeContent: (node) => node[symbols.content],
                         nodeText: (node) => node.name,
                     });
                 },
             },
+            { group: 'Data', name: 'Tree View', make() { return new TreeView(Core.structure); }, },
+            { group: 'Data', name: 'Tree Table View', make() { return new TreeTableView(Core.structure); }, },
         ];
         const addAllViews = () => {
             Views.forEach((view) => uiControls.newSidebarFrame(view.make()));
@@ -3143,6 +3354,56 @@
             fullName: Symbol('fullName'),
         };
         
+        
+        /**
+         * Return an array of the ancestors of a node, including the node itself
+         */
+        function getAncestors(node) {
+            const ancestors = [node];
+            while (ancestors[0][symbols.container][symbols.container]) {
+                ancestors.unshift(ancestors[0][symbols.container]);
+            }
+            return ancestors;
+        }
+        
+        /**
+         * Return the full name of a node
+         */
+        function fullName(node, sep='.') {
+            const viewName = (node) => {
+                const view = Object.keys(node[symbols.views]).find((key) => node[symbols.views][key].name);
+                if (view) {
+                    return `::${view}.${node[symbols.views][view].name}`;
+                }
+            }
+            return getAncestors(node).map((node) =>
+                node.name ?? viewName(node) ?? '').join(sep);
+        }
+        
+        /**
+         * find a node based on it's name / path
+         */
+        function findNodes(path) {
+            const allNodes = flatten(Core.structure);
+            const nodes = allNodes.filter((node) => node.name === path);
+            if (nodes.length > 0) {
+                return nodes;
+            } else {
+                const pathList = path.split(/[-\/\.]/);
+                if (pathList.length > 1) {
+                    const first = pathList.shift();
+                    let matches = allNodes.filter((node) => node.name === first);
+                    while (pathList.length && matches.length) {
+                        const name = pathList.shift();
+                        matches = matches.flatMap((node) =>
+                            node[symbols.content].filter((node) => node.name === name));
+                    }
+                    return matches;
+                }
+            }
+            return [];
+        }
+        
         /**
          * Classes of the nodes in the template structure.
          */
@@ -3164,10 +3425,6 @@
                     [symbols.views]: {},
                     [symbols.viewData]: new Map(),
                     [symbols.name]: '',
-                    [symbols.fullName]() {
-                        const name = this[symbols.name] || this.name;
-                        return (this[symbols.container] ? [this[symbols.container], this] : [this]).map((node) => node.name);
-                    },
                 };
                 this.startScope(context, node);
                 this.parseValue(context, node);
@@ -3181,6 +3438,7 @@
                     modifiers: [],
                     finalisation: [],
                 }
+                scope.propagated = Object.assign({}, context.scope[0].propagated);
                 context.scope.unshift(scope);
                 return scope;
             }
@@ -3199,7 +3457,6 @@
                         context.rootNodes.push(node);
                     }
                 }
-
                 node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
                 node[symbols.value] += `${this.value};`;
             }
@@ -3389,11 +3646,8 @@
                     [symbols.value]: '',
                     [symbols.values]: [],
                     [symbols.views]: {},
+                    [symbols.viewData]: new Map(),
                     [symbols.name]: '',
-                    [symbols.fullName]() {
-                        const name = this[symbols.name] || this.name;
-                        return (this[symbols.container] ? [this[symbols.container], this] : [this]).map((node) => node.name);
-                    },
                 };
                 if (mapping.values.length > 0) {
                     mapping.values.forEach(([to, from]) => newNode[to] = from(node));
@@ -3448,11 +3702,8 @@
                         [symbols.value]: nodes.length,
                         [symbols.values]: [],
                         [symbols.views]: {},
+                        [symbols.viewData]: new Map(),
                         [symbols.name]: '',
-                        [symbols.fullName]() {
-                            const name = this[symbols.name] || this.name;
-                            return (this[symbols.container] ? [this[symbols.container], this] : [this]).map((node) => node.name);
-                        },
                         name: key,
                         value: nodes.length,
                     }));
@@ -4084,10 +4335,76 @@
                     node[symbols.views][view] = node[symbols.views][view] || { [symbols.values]: [] };
                     return node[symbols.views][view];
                 }) : [node];
-
-                const [...data] = value.split(/[\|\t;]/g);
                 
-                /*. todo add view parsing
+                const namedValues = {};
+                const unnamed = [];
+                const references = [];
+
+                const getReference = (name) => {
+                    const nodes = context.nodeList.filter((node) => node.name === name);
+                    if (nodes.length > 0) {
+                        return nodes;
+                    } else {
+                        const path = name.split(/[-\/\.]/);
+                        if (path.length > 1) {
+                            const first = path.shift();
+                            let matches = context.nodeList.filter((node) => node.name === first);
+                            let last = [];
+                            let index = 0;
+                            while ((index < path.length) && matches.length) {
+                                last = matches;
+                                matches = matches.flatMap((node) =>
+                                    node[symbols.content].filter((node) => node.name === path[index]));
+                                ++index;
+                            }
+                            if (matches.length > 0) {
+                                return matches;
+                            }
+                            matches = last;
+
+                            --index;
+                            while ((index < path.length) && matches.length) {
+                                matches = last.flatMap((node) => node[path[index]] ?? []);
+                                ++index;
+                            }
+                            --index;
+                            namedValues[path[index]] = matches[0];
+                        }
+                    }
+                }
+
+                const data = value.split(/[\|\t;\u{1f}]/gu);
+                data.forEach((item) => {
+                    item = item.trim();
+                    if (item.includes('=')) {
+                        const [nameDef, ...valueArr] = item.split(/=/);
+                        const name = nameDef.replace(/^\\/,'').replace(/\\$/, '').trim();
+                        const value = valueArr.join('=').trim();
+                        if (nameDef.endsWith('\\')) {
+                            context.scope[0].propagated[name] = value;
+                        }
+                        namedValues[name] = value;
+                    } else if (item.startsWith('@')) {
+                        const nodes = getReference(item.replace(/^@\s*/, ''));
+                        if (nodes) {
+                            references.push(...nodes);
+                        } else {
+                            unnamed.push(item);
+                        }
+                    } else if (item.startsWith('^')) {
+                        const name = item.slice(1).trim();
+                        const value = context.scope.find((scope) => scope.node[name]);
+                        if (value) {
+                            namedValues[name] = value.node[name];
+                        } else {
+                            unnamed.push(name);
+                        }
+                    } else {
+                        unnamed.push(item);
+                    }
+                });
+                
+                /* todo add view parsing
                 data.forEach((item) => {
                     item = item.trim();
                     if (item.includes('=')) {
@@ -4115,75 +4432,74 @@
                     }
                 }
                 */
-                
+                if (value.includes('LOG')) {
+                    console.log(references);
+                }
                 nodes.forEach((node) => {
                     if (newNode) {
                         node.name = data[0].trim();
                     }
-                    data.forEach((item) => {
-                        item = item.trim();
-                        if (item.includes('=')) {
-                            const [name, ...valueArr] = item.split(/=/);
-                            const value = valueArr.join('=');
-                            if (value.includes('...')) {
-                                const descendents = (nodes) => nodes.flatMap((node) => [node, ...descendents(node[symbols.content])]);
-                                context.scope[0].finalisation.push((context) => {
-                                    const values = node[symbols.content].map((node) => node[name]);
-                                    node[name] = value.replace(/([^\(]+)\s*\(\s*(\.\.\.\.?)\s*\)/, (match, func, elements) => {
-                                        const action = funcs[func.trim()];
-                                        if (action) {
-                                            const defined = (value) => value !== undefined;
-                                            if (elements === '...') {
-                                                return action(node[symbols.content].map((node) => node[name]).filter(defined));
-                                            } else {
-                                                return action(descendents(node[symbols.content]).map((node) => node[name]).filter(defined));
-                                            }
+
+                    references.reverse();
+                    const values = Object.assign({}, context.scope[0].propagated, ...references, namedValues)
+                    
+                    Object.entries(values).forEach(([name, value]) => {
+                        value = value + '';
+                        if (value.includes('...')) {
+                            const descendents = (nodes) => nodes.flatMap((node) => [node, ...descendents(node[symbols.content])]);
+                            context.scope[0].finalisation.push((context) => {
+                                const values = node[symbols.content].map((node) => node[name]);
+                                node[name] = numberOrString(value.replace(/([^\(]+)\s*\(\s*(\.\.\.\.?)\s*\)/, (match, func, elements) => {
+                                    const action = funcs[func.trim()];
+                                    if (action) {
+                                        const defined = (value) => value !== undefined;
+                                        if (elements === '...') {
+                                            return action(node[symbols.content].map((node) => node[name]).filter(defined));
+                                        } else {
+                                            return action(descendents(node[symbols.content]).map((node) => node[name]).filter(defined));
                                         }
-                                        return match;
-                                    });
-                                    if (value.trim() === '...') {
-                                        node[name] = node[symbols.content].map((node) => node[name]);
-                                    } else if (value.trim() === '....') {
-                                        node[name] = descendents(node[symbols.content]).map((node) => node[name]);
                                     }
-                                });
-                            } else if (value.trim() === '') {
-                                node[name] = null;
-                            } else if (/^"[^"]+"$/.test(value)) {
-                                node[name] = value.replace(/^"([^"]+)"$/, '$1');
-                            } else if (value.startsWith('^')) {
-                                const referenced = value.length > 1 ? value.slice(1) : name;
-                                let container = context.container.find((container) => container[referenced] !== undefined);
-                                if (container) {
-                                    node[name] = container[referenced];
-                                } else {
-                                    node[name] = value;
+                                    return match;
+                                }));
+                                if (value.trim() === '...') {
+                                    node[name] = node[symbols.content].map((node) => node[name]);
+                                } else if (value.trim() === '....') {
+                                    node[name] = descendents(node[symbols.content]).map((node) => node[name]);
                                 }
-                            } else if (value.includes(',')) {
-                                node[name] = [];
-                                value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
+                            });
+                        } else if (value.trim() === '') {
+                            node[name] = null;
+                        } else if (/^"[^"]+"$/.test(value)) {
+                            node[name] = value.replace(/^"([^"]+)"$/, '$1');
+                        } else if (value.startsWith('^')) {
+                            const referenced = value.length > 1 ? value.slice(1) : name;
+                            let container = context.container.find((container) => container[referenced] !== undefined);
+                            if (container) {
+                                node[name] = container[referenced];
                             } else {
-                                setProperty(node, name, value);
+                                node[name] = value;
                             }
-                        } else if (item.startsWith('@')) {
-                            const name = item.slice(1);
-                            const referencedNode = context.nodeList.find((node) => node.name === name);
-                            if (referencedNode) {
-                                Object.entries(referencedNode).forEach(([key, value]) =>
-                                    node[key] = key in node ? node[key] : value);
-                            } else {
-                                node[symbols.values].push(item);
-                            }
+                        } else if (value.includes(',')) {
+                            node[name] = [];
+                            value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
                         } else {
-                            if (/^"[^"]+"$/.test(item)) {
-                                node[symbols.values].push(item);
-                            } else if (item.includes(',')) {
-                                node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
-                            } else {
-                                node[symbols.values].push(numberOrString(item));
-                            }
+                            setProperty(node, name, value);
                         }
                     });
+
+                    unnamed.forEach((item) => {
+                        if (/^"[^"]+"$/.test(item)) {
+                            node[symbols.values].push(item);
+                        } else if (item.includes(',')) {
+                            node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
+                        } else {
+                            node[symbols.values].push(numberOrString(item));
+                        }
+                    });
+
+                    if (newNode) {
+                        node.name = data[0].trim();
+                    }
                 });
             }
         }
@@ -4212,7 +4528,7 @@
                     TableNode,
                     PathNode,
                     PlainNode],
-                scope: [{ node: {[symbols.values]: [],[symbols.content]: []}, values: {}, modifiers: [] }],
+                scope: [{ node: {[symbols.values]: [],[symbols.content]: []}, values: {}, modifiers: [], propagated: {}, }],
                 names: {},
                 rootNodes: [],
                 nodeList: [],
@@ -8368,6 +8684,7 @@ void main() {
                 title.classList.add('frame-title');
                 frame.appendChild(title);
                 frame.addEventListener('focusin', (event) => frame.classList.add('selected-frame'));
+                frame.addEventListener('focusout', (event) => frame.classList.remove('selected-frame'));
                 frame.append(view.node);
 
                 frame.classList.add('frame')
@@ -9023,18 +9340,29 @@ void main() {
         /**
          * Load a selected file
          */
-        async function load(editor) {
-            const name = 'test-scene.txt';//document.getElementById('filename').value;
-
-            const response = await fetch(`${name}`);
-            const content = await response.text();
-
-            if (content) {
-                Core.source = content;
-
-                config.current = name;
-                localStorage.setItem('scene-config', JSON.stringify(config));
-                document.getElementById('filename').classList.add('existing-file');
+        async function load(event) {
+            if (event.shiftKey) {
+                try {
+                    const content = localStorage.getItem('current_source');
+                    if (content) {
+                        Core.source = content;
+                    }
+                } catch(e) {
+                    console.log(e);
+                }
+            } else {
+                const name = document.getElementById('filename').value;
+    
+                const response = await fetch(`${name}`);
+                const content = await response.text();
+    
+                if (content) {
+                    Core.source = content;
+    
+                    config.current = name;
+                    localStorage.setItem('scene-config', JSON.stringify(config));
+                    document.getElementById('filename').classList.add('existing-file');
+                }
             }
         }
 
@@ -9086,13 +9414,23 @@ void main() {
                 close.addEventListener('click', (event) => this._frame ? this._frame.remove() : undefined);
 
                 const addViewSelection = document.getElementById('add-view-selection');
-                addViewSelection.innerHTML = `<option value="">Add View</option>`
+                addViewSelection.innerHTML = `<option value="">Add View</option>`;
+                
+                const groups = Views.reduce((groups, view) => groups.add(view.group), new Set());
+                const groupMap = {};
+                Array.from(groups).sort().forEach((group) => {
+                   const optGroup = document.createElement('optGroup');
+                   optGroup.label = group;
+                   addViewSelection.append(optGroup);
+                   groupMap[group] = optGroup;
+                });
 
                 Views.forEach((view, index) => {
                     const option = document.createElement('option');
                     option.innerHTML = view.name;
                     option.value = index;
-                    addViewSelection.append(option);
+                    groupMap[view.group].append(option);
+                    //addViewSelection.append(option);
                 });
                 const option = document.createElement('option');
                 option.innerHTML = '<strong>All</strong>';
@@ -9105,6 +9443,7 @@ void main() {
                     } else if (addViewSelection.value !== '') {
                         uiControls.newSidebarFrame(Views[addViewSelection.value].make());
                     }
+                    addViewSelection.value = '';
                 });
                 
                 const viewTypeSelection = document.getElementById('view-type-selection');
@@ -9260,7 +9599,9 @@ void main() {
             },
             set currentFrame(frame) {
                 if (this._frame !== frame) {
-                    this.frames.forEach((frame) => frame.classList.remove('selected-frame'));
+                    for (const node of document.querySelectorAll('.selected-frame')) {
+                        node.classList.remove('selected-frame');
+                    }
                     if (this.singleFrame) {
                         this.frames.forEach((frame) => frame.classList.add('hidden'));
                         // put previous frame back
@@ -9295,7 +9636,7 @@ void main() {
             const glView = new GLView('3D Scene');
             const sceneFrame = uiControls.newFrame(glView);
 
-            const gridTreeframe = uiControls.newFrame(new TreeView(Core.structure));
+            const gridTreeframe = uiControls.newFrame(new TreeTableView(Core.structure));
             const detailFrame = uiControls.newFrame(new DetailView());
             
             const column1 = new FrameContainer(editorFrame, gridTreeframe);
@@ -9379,7 +9720,7 @@ void main() {
             }
             document.getElementById('filename').value = config.current;
 
-            load(Core.mainEditor);
+            load({shiftKey:true});
 
             const shaderObjectList = document.getElementById('shader-object-list');
             shaderObjectList.innerHTML = '';
