@@ -132,7 +132,7 @@
 
         .frame {
             position: relative;
-            overflow: auto;
+            overflow: hidden;
             display: flex;
             flex-direction: column;
             max-height: 100%;
@@ -224,6 +224,7 @@
 
         .view {
             height: 100%;
+            overflow: auto;
         }
         
         .placeholder {
@@ -473,6 +474,14 @@
             height: 100%;
             display: flex;
             flex-direction: column;
+        }
+        
+        .gl-view .texture {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 1000;
         }
 
         .svg-view {
@@ -832,6 +841,7 @@
                 </button>
                 <label for="depth-test">Depth Test</label><input class="depth-test" type="checkbox" checked>
             </div>
+            <canvas class="texture"></canvas>
         </div>
     </template>
 
@@ -2069,6 +2079,7 @@
                 // Add to the DOM so that safari can get context
                 document.body.append(this.node);
                 this.canvas = this.node.querySelector('.scene');
+                this.textureCanvas = this.node.querySelector('.texture');
 
                 this.shapes = [];
                 this.points = [];
@@ -2084,6 +2095,7 @@
                     indices: [],
                 };
                 this.gl = this.context;
+                this.textureContext = this.textureCanvas.getContext('2d');
 
                 this.title = title;
                 this.camera = camera || new Camera([14.638, -0.074, 27.731], [6.762, 1.357, 7.673], [0, 1, 0]);
@@ -2121,6 +2133,7 @@
                     this.canvas.focus();
                 });
                 this.structure = Core.structure;
+                this.addText(this.title);   
             }
             get context() {
                 return this.canvas.getContext('webgl');
@@ -2142,6 +2155,56 @@
             setGraph(graph) {
                 //this.graph = graph;
             }
+            addText(text) {
+                const width = 150;//this.node.clientWidth;
+                const height = 50;//this.node.clientHeight;
+                this.textureCanvas.width = width;
+                this.textureCanvas.height = height;
+                this.textureContext.clearRect(0, 0, width, height);
+                
+                /*
+                this.textureContext.fillStyle = 'purple';
+                this.textureContext.fillRect(0, 0, width, height);
+                */
+                
+                this.textureContext.fillStyle = 'black';
+                this.textureContext.strokeStyle = 'black';
+                this.textureContext.font = '24px sans-serif';
+                this.textureContext.textBaseline = 'hanging';
+                this.textureContext.fillText(text, 0, 0);
+                this.loadTexture(this.context, this.textureCanvas);
+            }
+            /**
+             * Initialise a texture and copy an image from the specified canvas.
+             * When the image finished loading copy it into the texture.
+             */
+            loadTexture(gl, source) {
+                this.textureId = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, this.textureId);
+        
+                const internalFormat = gl.RGBA;
+                const srcFormat = gl.RGBA;
+                const srcType = gl.UNSIGNED_BYTE;
+        
+                gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, srcFormat, srcType, source);
+        
+                // WebGL1 has different requirements for power of 2 images
+                // vs non power of 2 images so check if the image is a
+                // power of 2 in both dimensions.
+                if (isPowerOf2(source.width) && isPowerOf2(source.height)) {
+                    // Yes, it's a power of 2. Generate mips.
+                    gl.generateMipmap(gl.TEXTURE_2D);
+                } else {
+                    // No, it's not a power of 2. Turn of mips and set
+                    // wrapping to clamp to edge
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                }
+                textures.push({ url: '', texture: this.textureId });
+                glErrors(gl, 'Load Texture');
+            }
+
             updateBuffers(data) {
                 const gl = this.context;
 
@@ -2180,8 +2243,14 @@
                 const numComponents = 3;
                 const type = context.FLOAT;    // the data in the buffer is 32bit floats
                 const normalize = false;  // don't normalize
-                const stride = 4 * (3 + 3 + 2);         // how many bytes to get from one set of values to the next
+                const stride = 4 * (3 + 3 + 2);
+                /*
+                    (shader.attribLocations.vertexNormal ? 3 : 0) +
+                    (shader.attribLocations.vertexTexture ? 2 : 0) + 
+                    (shader.attribLocations.offset ? 2 : 0));         // how many bytes to get from one set of values to the next
                 // 0 = use type and numComponents above
+                //*/
+
                 const offset = 0;         // how many bytes inside the buffer to start from
                 context.useProgram(shader.program);
                 context.bindBuffer(context.ARRAY_BUFFER, this.vertexBuffer);
@@ -2215,6 +2284,16 @@
                         stride,
                         4 * (3 + 3));
                     context.enableVertexAttribArray(shader.attribLocations.vertexTexture);
+                }
+                if (shader.attribLocations.offset) {
+                    context.vertexAttribPointer(
+                        shader.attribLocations.offset,
+                        2,     // numcomponents
+                        type,
+                        normalize,
+                        stride,
+                        4 * (3 + 3 + 2));
+                    context.enableVertexAttribArray(shader.attribLocations.offset);
                 }
 
                 shader.setSceneData(this);
@@ -2276,7 +2355,7 @@
                 if (this.settings.split.checked) {
                     drawScene2(this, gl, this.structure, this.shaders, time);
                 } else {
-                    drawScene(this, gl, this.structure, this.shaders, time);
+                    drawScene(this, gl, this.structure, time);
                 }
                 glErrors(gl, `${this.title} update 6`);
 
@@ -4259,10 +4338,10 @@
             const num = Number(input);
             if (isNaN(num)) {
                 const date = new Date(input);
-                if (isNaN(date.getTime())) {
-                    return input.trim();
+                if (/[0-9]{1,4}[-\/ ]([0-9]{1,2}|[a-zA-Z]{2,})[-\/ ][0-9]{1,4}/.test(input) && !isNaN(date.getTime())) {
+                    return date;
                 }
-                return date;                
+                return input.trim();          
             }
             return num;
         }
@@ -5130,7 +5209,7 @@
             let links = 0;
 
             const types = {
-                Box, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Torus, Prism, Link,
+                Box, Quad, Ball, Frustrum, Cylinder, Cone, Diamond, Tetrahedron, Torus, Prism, Link,
             }
             view.shapes = [];
             const shapes = {};
@@ -5215,7 +5294,7 @@
                     }
                 } else if (position && position.length === 3) {
                     position = position.map((v) => isNaN(v) ? 0 : v);
-                    const shader = node.shader || 'shader4';
+                    const shader = view.shaders[node.shader] || view.shaders['shader4'];
                     const transform = [];
                     if (node.rotation && node.rotation.length === 4) {
                         node.rotation = node.rotation.map((v) => isNaN(v) ? 0 : v);
@@ -5260,6 +5339,9 @@
                     }
 
                     const sceneNode = addNode(node, transform, shape, shader, colour);
+                    if (node.texture) {
+                        sceneNode.texture = getTexture(texture, scene);
+                    }
                     node[symbols.viewData].set(view, sceneNode);
                     namedNodes[node.name] = sceneNode;
                     if (stack.length > 0) {
@@ -5621,6 +5703,35 @@ void main() {
             }`;
 
         /**
+         * Vertex shader
+         */
+        const vsSource4 = `
+            attribute vec3 aPosition;
+            attribute vec3 aNormal;
+            attribute vec2 aTextureCoord;
+
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            uniform mat3 uNormalMatrix;
+
+            varying vec3 vPosition;
+            varying vec3 vNormal;
+            varying highp vec2 vTextureCoord;
+
+            void main() {
+                // Transform vertex position and normal to eye coordinates
+                vec4 eyePosition = uModelViewMatrix * vec4(aPosition, 1.0);
+                vPosition = eyePosition.xyz;
+                vNormal = normalize(uNormalMatrix * vec3(0.0, 0.0, 1.0));
+
+                // Output vertex position in clip coordinates
+                gl_Position = uProjectionMatrix * eyePosition;
+                gl_Position.x += aNormal.x * gl_Position.w;
+                gl_Position.y += aNormal.y * gl_Position.w;
+                vTextureCoord = aTextureCoord;
+            }`;
+
+        /**
          *
          */
         const fsSource = `
@@ -5879,6 +5990,26 @@ void main() {
                     { name: 'texture', uniform: 'uSampler', type: 'sampler2D' },
                 ],
             },
+            {
+                name: 'textured2',
+                vertex: vsSource4, fragment: fsSource6,
+                attributes: [
+                    { name: 'vertexPosition', attribute: 'aPosition' },
+                    { name: 'vertexNormal', attribute: 'aNormal' },
+                    { name: 'vertexTexture', attribute: 'aTextureCoord' },
+                ],
+                uniforms: [
+                    { name: 'projectionMatrix', uniform: 'uProjectionMatrix', type: 'mat4' },
+                    { name: 'modelViewMatrix', uniform: 'uModelViewMatrix', type: 'mat4' },
+                    { name: 'normalMatrix', uniform: 'uNormalMatrix', type: 'mat3' },
+
+                    { name: 'lightPosition', uniform: 'uLightPosition', type: 'vec3' },
+                    { name: 'colour', uniform: 'uDiffuseColour', type: 'vec4' },
+                    { name: 'specularColour', uniform: 'uSpecularColour', type: 'vec3' },
+                    { name: 'shininess', uniform: 'uShininess', type: 'float' },
+                    { name: 'texture', uniform: 'uSampler', type: 'sampler2D' },
+                ],
+            },
         ];
 
         //
@@ -6109,12 +6240,12 @@ void main() {
         const textures = [];
 
         /**
-         * Add a texture to teh library
+         * Add a texture to the library
          */
         function getTexture(url, view) {
             const current = textures.find((texture) => texture.url === url);
             if (!current) {
-                textures.push({ url, texture: loadTexture(view.gl, url) });
+                textures.push({ url, texture: loadTexture(view.context, url) });
             }
             return current;
         }
@@ -6272,44 +6403,49 @@ void main() {
                 ];
                 return convexHullIntercept(line, planes);
             }
-            draw2d(context, transform) {
-                const w = this.width / 2;
-                const h = this.height / 2;
-                const d = this.depth / 2;
-                const points = [
-                    [-w, -h, -d,],
-                    [w, -h, -d,],
-                    [w, -h, d,],
-                    [-w, -h, d,],
-
-                    [-w, h, -d,],
-                    [w, h, -d,],
-                    [w, h, d,],
-                    [-w, h, d,],
-                ].map((p) => transformed(p, transform));
-
-                context.beginPath();
-                context.moveTo(points[0][0], points[0][1]);
-                context.lineTo(points[1][0], points[1][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.lineTo(points[3][0], points[3][1]);
-                context.lineTo(points[0][0], points[0][1]);
-                context.lineTo(points[4][0], points[4][1]);
-                context.lineTo(points[5][0], points[5][1]);
-                context.lineTo(points[6][0], points[6][1]);
-                context.lineTo(points[7][0], points[7][1]);
-                context.lineTo(points[4][0], points[4][1]);
-
-                context.moveTo(points[1][0], points[1][1]);
-                context.lineTo(points[5][0], points[5][1]);
-                context.moveTo(points[2][0], points[2][1]);
-                context.lineTo(points[6][0], points[6][1]);
-                context.moveTo(points[4][0], points[4][1]);
-                context.lineTo(points[7][0], points[7][1]);
-                context.stroke();
-            }
         }
 
+        /**
+         *
+         */
+        class Quad extends shape {
+            static parameters(node) {
+                const size = node.size || [1, 1];
+                const width = node.width || size[0];
+                const height = node.height || size[1] || size[0];
+                return [width, height];
+            }
+            static make(gl, data, node, index) {
+                return new Quad(gl, data, ...Quad.parameters(node));
+            }
+            static hash(node) {
+                return `quad ${Quad.parameters(node)}`;
+            }
+            constructor(gl, data, width = 1, height = 1) {
+                super();
+                this.width = width;
+                this.height = height;
+                const w = width;
+                const h = height;
+                const start = data.vertex.length / 8;
+                const indexStart = data.indices.length;
+
+                data.vertex.push(0, 0, 0, -0.3, -0.1, 1, 0, 1);
+                data.vertex.push(0, 0, 0, -0.3, 0.1, 1, 0, 0);
+                data.vertex.push(0, 0, 0, 0.3, -0.1, 1, 1, 1);
+                data.vertex.push(0, 0, 0, 0.3, 0.1, 1, 1, 0);
+                
+                data.indices.push(...[0, 1, 2, 1, 3, 2, 0, 1, 3, 2].map((i) => i + start));
+                
+                this.elements = [];
+                this.elements.push({ mode: gl.TRIANGLES, count: 6, offset: indexStart * 2 },
+                    { mode: gl.LINE_STRIP, count: 5, offset: (5 + indexStart) * 2, colour: [1, 1, 1, 1] }, );
+            }
+            intersects(line) {
+                return false;
+            }
+        }
+        
         /**
          *
          */
@@ -6397,37 +6533,6 @@ void main() {
 
                 return convexHullIntercept(line, planes);
             }
-            draw2d(context, transform) {
-                const points = [
-                    [0, this.size, 0,],
-
-                    [-this.size, 0, 0,],
-                    [0, 0, -this.size,],
-                    [this.size, 0, 0,],
-                    [0, 0, this.size,],
-
-                    [0, -this.size, 0,],
-                ].map((p) => transformed(p, transform));
-
-                context.beginPath();
-                context.moveTo(points[0][0], points[0][1]);
-                context.lineTo(points[1][0], points[1][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.lineTo(points[0][0], points[0][1]);
-                context.lineTo(points[3][0], points[3][1]);
-                context.lineTo(points[4][0], points[4][1]);
-                context.lineTo(points[0][0], points[0][1]);
-
-                context.moveTo(points[5][0], points[5][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.lineTo(points[3][0], points[3][1]);
-                context.lineTo(points[5][0], points[5][1]);
-                context.lineTo(points[4][0], points[4][1]);
-                context.lineTo(points[1][0], points[1][1]);
-                context.lineTo(points[5][0], points[5][1]);
-
-                context.stroke();
-            }
         }
 
         /**
@@ -6510,8 +6615,6 @@ void main() {
                 }
                 return convexHullIntercept(line, planes);
             }
-            draw2d(context, transform) {
-            }
         }
 
         /**
@@ -6588,8 +6691,6 @@ void main() {
                     }
                 }
                 return convexHullIntercept(line, planes);
-            }
-            draw2d(context, transform) {
             }
         }
 
@@ -6700,8 +6801,6 @@ void main() {
 
                 return convexHullIntercept(line, planes);
             }
-            draw2d(context, transform) {
-            }
         }
 
         /**
@@ -6722,8 +6821,6 @@ void main() {
             constructor(gl, data, radius = 1, height = 2, sides = 12) {
                 super(gl, data, radius, radius, height, sides);
             }
-            draw2d(context, transform) {
-            }
         }
 
         /**
@@ -6738,8 +6835,6 @@ void main() {
             }
             constructor(gl, data, radius = 1, height = 2, sides = 12) {
                 super(gl, data, radius, 0, height, sides);
-            }
-            draw2d(context, transform) {
             }
         }
 
@@ -6804,27 +6899,6 @@ void main() {
 
                 const planes = sides.map((side) => planeFromPoints(...side));
                 return convexHullIntercept(line, planes);
-            }
-            draw2d(context, transform) {
-                const l = Math.cos(30 * Math.PI / 180);
-                const points = [
-                    [0, 1, 0],
-                    [0, -0.5, l,],
-                    [l * l, -0.5, -0.5 * l],
-                    [-l * l, -0.5, -0.5 * l],
-                ].map((p) => transformed(scaled(p, this.size), transform));
-
-                context.beginPath();
-                context.moveTo(points[0][0], points[0][1]);
-                context.lineTo(points[1][0], points[1][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.lineTo(points[0][0], points[0][1]);
-                context.lineTo(points[3][0], points[3][1]);
-                context.lineTo(points[1][0], points[1][1]);
-
-                context.moveTo(points[3][0], points[3][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.stroke();
             }
         }
 
@@ -7014,27 +7088,6 @@ void main() {
                 });
                 return convexHullIntercept(line, planes);
             }
-            draw2d(context, transform) {
-                const l = Math.cos(30 * Math.PI / 180);
-                const points = [
-                    [0, 1, 0],
-                    [0, -0.5, l,],
-                    [l * l, -0.5, -0.5 * l],
-                    [-l * l, -0.5, -0.5 * l],
-                ].map((p) => transformed(scaled(p, this.size), transform));
-
-                context.beginPath();
-                context.moveTo(points[0][0], points[0][1]);
-                context.lineTo(points[1][0], points[1][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.lineTo(points[0][0], points[0][1]);
-                context.lineTo(points[3][0], points[3][1]);
-                context.lineTo(points[1][0], points[1][1]);
-
-                context.moveTo(points[3][0], points[3][1]);
-                context.lineTo(points[2][0], points[2][1]);
-                context.stroke();
-            }
         }
 
         /**
@@ -7126,15 +7179,6 @@ void main() {
                     });
                 }
             }
-            draw2d(context, transform) {
-                if (this.fromNode && this.toNode) {
-                    const points2d = this.points.map((point) => transform4(point, transform));
-
-                    context.beginPath();
-                    points2d.forEach((point) => context.lineTo(point[0], point[1]));
-                    context.stroke();
-                }
-            }
         }
 
         /**
@@ -7159,28 +7203,24 @@ void main() {
                 name: source.name, parent, transform, movement: identityMatrix(),
                 shape, shader, colour, shininess, specularColour: source.specularColour, [symbols.content]: [],
             });
-            if (source.texture) {
-                node.texture = getTexture(texture, scene);
-            }
             return node;
         }
 
         /**
          *
          */
-        function drawNode(view, gl, origin, node, shaders, time) {
+        function drawNode(view, gl, origin, node, time) {
             const sceneNode = node[symbols.viewData]?.get(view);
             if (sceneNode) {
-                const shader = shaders[sceneNode.shader];
                 sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
                 const transform = matrixMultiply(sceneNode.world, view.modelViewMatrix);
                 sceneNode.z = transform[14];
     
-                gl.useProgram(shader.program);
-                gl.uniformMatrix4fv(shader.modelViewMatrix, false, transform);
+                gl.useProgram(sceneNode.shader.program);
+                gl.uniformMatrix4fv(sceneNode.shader.modelViewMatrix, false, transform);
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
-                gl.uniformMatrix3fv(shader.normalMatrix, false, normalMatrix);
-                shader.setNodeData(gl, sceneNode);
+                gl.uniformMatrix3fv(sceneNode.shader.normalMatrix, false, normalMatrix);
+                sceneNode.shader.setNodeData(gl, sceneNode);
                 if (sceneNode.shape) {
                     sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
@@ -7188,7 +7228,7 @@ void main() {
                 sceneNode.movement = identityMatrix();
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
-            node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, shaders, time));
+            node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, time));
         }
 
         /**
@@ -7226,10 +7266,10 @@ void main() {
         /**
          *
          */
-        function drawScene(view, context, graph, shaders, time) {
+        function drawScene(view, context, graph, time) {
             glErrors(context, 'drawScene start');
             graph.forEach((node) =>
-                drawNode(view, context, identityMatrix(), node, shaders, time));
+                drawNode(view, context, identityMatrix(), node, time));
             glErrors(context, 'drawScene end');
         }
 
@@ -7454,84 +7494,6 @@ void main() {
          */
         //const camera = new Camera([0, 0, 20], [0, 0, 0], [0, 1, 0]);
         const background = { colour: [0, 0, 0] };
-
-        /**
-         * Management of a 2d view using a canvas
-         */
-        class View2d {
-            constructor(scene, canvasId) {
-                this.projection = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-                this.scene = scene;
-                this.canvas = document.getElementById(canvasId);
-                this.context = this.canvas.getContext('2d');
-                const scale = Math.min(this.canvas.width, this.canvas.height) / 20;
-                this.projection[8] = scale;
-                this.projection[5] = scale;
-                /*
-                this.projection[1] = scale;
-                this.projection[9] = scale;
-                */
-
-                this.projection[12] = this.canvas.width / 2;
-                this.projection[13] = this.canvas.height / 2;
-            }
-            render() {
-                if (!this.canvas) return;
-
-                this.context.globalCompositeOperation = 'source-over';
-                this.context.shadowBlur = 0;
-                this.context.fillStyle = 'rgb(0,0,0)';
-                this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
-                //context.globalCompositeOperation = 'lighter';
-
-                this.context.lineWidth = 1;
-                this.context.strokeStyle = 'rgba(255, 240, 100, 0.9)';
-                const renderNode = (node) => {
-                    if (node.world && node.shape) {
-                        if (node.colour) {
-                            this.context.strokeStyle = `rgba(${node.colour[0] * 255}, ${node.colour[1] * 255}, ${node.colour[2] * 255}, ${node.colour[3]})`;
-                        } else {
-                            this.context.strokeStyle = 'rgba(255, 240, 100, 0.9)';
-                        }
-                        const transform = matrixMultiply(node.world, this.projection);
-                        node.shape.draw2d(this.context, transform);
-                    }
-                }
-                scene.nodes.forEach(node => renderNode(node));
-
-                if (scene.ray) {
-                    const start = transformed(scene.ray.point, this.projection);
-                    const endPoint = add(scene.ray.point, scaled(scene.ray.direction, 500));
-                    const end = transformed(endPoint, this.projection);
-
-                    this.context.strokeStyle = 'rgb(255, 255, 255, 0.9)';
-                    this.context.beginPath();
-                    this.context.moveTo(start[0], start[1]);
-                    this.context.lineTo(end[0], end[1]);
-                    this.context.stroke();
-                }
-                if (scene.points) {
-                    this.context.strokeStyle = 'rgb(255, 200, 255, 0.9)';
-                    scene.points.forEach((point) => {
-                        const centre = transformed(point, this.projection);
-                        this.context.beginPath();
-                        this.context.arc(centre[0], centre[1], 3, 0, Math.PI * 2);
-                        this.context.stroke();
-                    });
-                }
-                if (scene.lines) {
-                    this.context.strokeStyle = 'rgb(255, 200, 255, 0.9)';
-                    this.context.beginPath();
-                    scene.lines.forEach((line) => {
-                        const start = transformed(line.start, this.projection);
-                        const end = transformed(line.end, this.projection);
-                        this.context.moveTo(start[0], start[1]);
-                        this.context.lineTo(end[0], end[1]);
-                    });
-                    this.context.stroke();
-                }
-            }
-        }
 
         /**
          *
