@@ -924,7 +924,7 @@
                     <button id="save">&#x1F4BE;</button>
                     <button id="load">&#x1F4C2;</button>
                 </div>
-                <select id="view-selection"></select>
+                <button id="clear">Clear</button>
                 <button id="view-settings">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
                         <circle cx="12" cy="12" r="4" stroke="black" fill="none" />
@@ -1473,7 +1473,7 @@
             }
             set currentNode(node) {
                 // Show the source node.
-                if (!(document.activeElement === this.main)) {
+                if (!(document.activeElement === this.main) && node) {
                     const lines = this.value.split(/\r?\n/);
                     const position = this.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
                     this.main.focus();
@@ -2096,6 +2096,9 @@
                 };
                 this.gl = this.context;
                 this.textureContext = this.textureCanvas.getContext('2d');
+                this.textureCanvas.width = 1024;
+                this.textureCanvas.height = 1024
+                this.nextLine = 0;
 
                 this.title = title;
                 this.camera = camera || new Camera([14.638, -0.074, 27.731], [6.762, 1.357, 7.673], [0, 1, 0]);
@@ -2151,37 +2154,36 @@
                 this._structure = structure;
                 getGraph(this._structure, this);
             }
+            set currentNode(node) {
+                this._structure = node ? [node] : Core.structure;
+                getGraph(this._structure, this);
+            }
             setGraph(graph) {
                 //this.graph = graph;
             }
-            addText(text) {
-                const width = 150;//this.node.clientWidth;
-                const height = 50;//this.node.clientHeight;
-                this.textureCanvas.width = width;
-                this.textureCanvas.height = height;
-                this.textureContext.clearRect(0, 0, width, height);
-                
-                /*
-                this.textureContext.fillStyle = 'purple';
-                this.textureContext.fillRect(0, 0, width, height);
-                */
-                
-                this.textureContext.fillStyle = 'black';
-                this.textureContext.strokeStyle = 'black';
-                this.textureContext.font = '24px sans-serif';
+            addText(text, colour='black', font='24px sans-serif') {
+                const width = this.textureCanvas.width;//this.node.clientWidth;
+                const height = this.textureCanvas.height;//this.node.clientHeight;
+                //this.textureContext.clearRect(0, 0, width, height);
+                                
+                this.textureContext.fillStyle = colour;
+                this.textureContext.font = font;
                 this.textureContext.textBaseline = 'hanging';
-                this.textureContext.fillText(text, 0, 0);
+                this.textureContext.fillText(text, 0, this.nextLine);
                 this.loadTexture(this.context, this.textureCanvas);
                 const metrics = this.textureContext.measureText(text);
-                return [{x:0, y: (metrics.fontBoundingBoxDescent - metrics.fontBoundingBoxAscent) / height},
-                    {x: metrics.width / width, y: 0} ];
+                const pos = this.nextLine;
+                this.nextLine += metrics.fontBoundingBoxDescent - metrics.fontBoundingBoxAscent;
+
+                return [{x:0, y: (pos + metrics.fontBoundingBoxDescent - metrics.fontBoundingBoxAscent) / height},
+                    {x: metrics.width / width, y: pos / height} ];
             }
             /**
              * Initialise a texture and copy an image from the specified canvas.
              * When the image finished loading copy it into the texture.
              */
             loadTexture(gl, source) {
-                this.textureId = gl.createTexture();
+                this.textureId = this.textureId ?? gl.createTexture();
                 gl.bindTexture(gl.TEXTURE_2D, this.textureId);
         
                 const internalFormat = gl.RGBA;
@@ -3129,7 +3131,6 @@
             }
             render() {
                 if (this._currentNode) {
-                    //console.log(this.node.querySelector('.title'));
                     this.node.querySelector('.title').innerText = this._currentNode.name;
                     this.detail.innerHTML = '';
                     Object.entries(this._currentNode).map(([key, value]) =>
@@ -3141,10 +3142,7 @@
                                 this.detail.append(showEntry(key, value, [value])));
                         }
                     }
-                } else {
-                    console.log('Current node undefined');
                 }
-                
             }
         }
 
@@ -4683,7 +4681,6 @@
                     }
                     return typedNode;
                 }
-                console.log(`Unrecognised node type on line: ${lineNumber}`);
                 return [];
             }
             const defined = structure.flatMap((node) => define(node));
@@ -5354,8 +5351,6 @@
                     sceneNode.sourceNode = original;
                     stack.unshift(sceneNode);
                     endScope = true;
-                } else {
-                    //console.log(node.name + ': ' + position);
                 }
 
                 if (node[symbols.content].length) {
@@ -6270,15 +6265,19 @@ void main() {
 
 
         class shape {
-            constructor(data) { }
+            constructor(data) {
+                this.depthMask = true;
+            }
             updateBuffers(gl) { }
             draw3d(gl, shader) {
+                gl.depthMask(this.depthMask);
                 this.elements.forEach((shape) => {
                     if (shape.colour) {
                         gl.uniform4fv(shader.colour, shape.colour);
                     }
                     gl.drawElements(shape.mode, shape.count, gl.UNSIGNED_SHORT, shape.offset);
                 });
+                gl.depthMask(true);
             }
         }
 
@@ -6418,7 +6417,9 @@ void main() {
                 const width = node.width || size[0];
                 const height = node.height || size[1] || size[0];
                 const text = node.text || node.name;
-                return [width, height, text];
+                const colour = node.colour;
+                const font = node.font;
+                return [width, height, text, colour, font];
             }
             static make(view, node, index) {
                 return new Text(view, ...Text.parameters(node));
@@ -6426,23 +6427,24 @@ void main() {
             static hash(node) {
                 return `text ${Text.parameters(node)}`;
             }
-            constructor(view, width = 1, height = 1, text) {
+            constructor(view, width = 1, height = 1, text, colour, font) {
                 super();
+                this.depthMask = false;
                 const gl = view.context;
                 const data = view.data;
-                this.uv = view.addText(text);
+                this.uv = view.addText(text, colour, font);
                 this.width = width;
                 this.height = height;
                 this.text = text;
-                const w = width;
-                const h = height;
+                const w = width / 20;
+                const h = height / 20;
                 const start = data.vertex.length / 8;
                 const indexStart = data.indices.length;
 
-                data.vertex.push(0, 0, 0, -0.3, -0.1, 1, this.uv[0].x, this.uv[0].y);
-                data.vertex.push(0, 0, 0, -0.3, 0.1, 1, this.uv[0].x, this.uv[1].y);
-                data.vertex.push(0, 0, 0, 0.3, -0.1, 1, this.uv[1].x, this.uv[0].y);
-                data.vertex.push(0, 0, 0, 0.3, 0.1, 1, this.uv[1].x, this.uv[1].y);
+                data.vertex.push(0, 0, 0, -w, -h, 1, this.uv[0].x, this.uv[0].y);
+                data.vertex.push(0, 0, 0, -w, h, 1, this.uv[0].x, this.uv[1].y);
+                data.vertex.push(0, 0, 0, w, -h, 1, this.uv[1].x, this.uv[0].y);
+                data.vertex.push(0, 0, 0, w, h, 1, this.uv[1].x, this.uv[1].y);
                 
                 data.indices.push(...[0, 1, 2, 1, 3, 2, 0, 1, 3, 2].map((i) => i + start));
                 
@@ -9358,7 +9360,6 @@ void main() {
         };
 
         const Core = {
-            viewSelection: document.getElementById('view-selection'),
             singleFrame: false,
             frames: [],
             mainTrees: [],
@@ -9366,8 +9367,6 @@ void main() {
             views: [],
             initialise() {
                 this.mainEditor = new StructureEditor('Main');
-                this.viewSelection.addEventListener('change', (event) =>
-                    this.currentFrame = this.frames[this.viewSelection.value]);
 
                 const toggle = document.getElementById('toggle-secondary-controls');
                 toggle.addEventListener('click', (event) =>
@@ -9376,6 +9375,9 @@ void main() {
                 const toggleSidebar = document.getElementById('toggle-sidebar');
                 toggleSidebar.addEventListener('click', (event) =>
                     document.querySelector('.sidebar').classList.toggle('hide-right'));
+
+                const clearSelection = document.getElementById('clear');
+                clearSelection.addEventListener('click', (event) => Core.currentNode = null);
 
                 const hideMenu = document.getElementById('hide-menu');
                 hideMenu.addEventListener('click', (event) =>
@@ -9600,7 +9602,6 @@ void main() {
 
                     frame.classList.remove('hidden');
                     frame.classList.add('selected-frame');
-                    this.viewSelection.value = this.frames.indexOf(frame);
                     if (frame.firstChild && frame.firstChild.focus) {
                         frame.firstChild.focus();
                     }
