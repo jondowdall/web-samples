@@ -488,6 +488,10 @@
             width: 100%;
             height: 100%
         }
+        
+        .svg-view .tree {
+            display: none;
+        }
 
         #top-view-container {
             position: relative;
@@ -698,6 +702,8 @@
             grid-template-columns: max-content 1fr;
             box-shadow: 0px 3px 5px #333;
             transition: transform 0.3s ease-in-out;
+            grid-gap: 3px;
+            padding: 0.5em;
         }
 
         .settings label {
@@ -852,6 +858,13 @@
                 <label>Nodes: </label><input class="root-nodes" type="text" value="svg" />
                 <label>Filter: </label><input class="filter" type="text" />
                 <label>Context: </label><select class="context-selection"></select>
+                <label class="tree">Left to Right: </label><input class="left-to-right tree" type="checkbox" />
+                <label class="tree">Connector Style: </label><select class="connector-style tree">
+                    <option value="Straight">Straight</option>
+                    <option value="Rectilinear">Rectilinear</option>
+                    <option value="Curve 1">Curve 1</option>
+                    <option value="Curve 2">Curve 2</option>
+                </select>
             </div>
         </div>
     </template>
@@ -1309,6 +1322,11 @@
                     this.getSettingsNodes(settingsMap);
                 }
                 Core.views.push(this);
+                const settings = this.node.querySelector('.settings');
+                if (settings) {
+                    this.node.addEventListener('click', (event) =>
+                        settings.contains(event.target) ? '' : settings.classList.add('hide-up'));
+                }
             }
             getSettingsNodes(settingsMap) {
                 this.settings = {};
@@ -2386,6 +2404,8 @@
                 rootNodes: '.root-nodes',
                 filter: '.filter',
                 context: '.context-selection',
+                leftToRight: '.left-to-right',
+                connectorStyle: '.connector-style',
             }
             constructor(structure, title) {
                 super('svg-view-template', SVGView.settingsMap);
@@ -2395,24 +2415,6 @@
                 this.title = title || 'SVG Diagram';
                 this.structure = structure;
             }
-            update(time) {
-                //this.node.innerHTML = Core.mainEditor.value;
-            }
-            /*
-            oldconstructor(width = 100, height = 100) {
-                this.node = document.createElementNS(Svg.ns, 'svg');
-                this.node.setAttribute('width', `${width}`);
-                this.node.setAttribute('height', `${height}`);
-                this.node.setAttribute('viewBox', `0 0 ${width} ${height}`);
-                this.node.setAttribute('stroke', 'black');
-                this.node.setAttribute('fill', 'white');
-                this.node.setAttribute('xmlns', 'http://www.w3.org/2000/xmlns/');
-                this.node.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
-                this.node.classList.add('svg');
-                //this.defs = document.createElementNS(Svg.ns, 'defs');
-                //this.node = this.node.appendChild(this.defs);
-            }
-            */
             make(type, attributes, content, classes) {
                 const element = document.createElementNS(SVGView.ns, type);
                 Object.entries(attributes).forEach(([name, value]) =>
@@ -2493,7 +2495,6 @@
 
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
-
             }
         }
 
@@ -2509,44 +2510,70 @@
                 columnGap: 10,
                 rowGap: 22,
                 nodeContent(node) {
-                    return node.content;
+                    return [...node[symbols.content]];
                 },
                 nodeText(node) {
-                    return node.value;
+                    return node.name;
                 },
-            };
-            constructor(title = "SVG Tree Diagram", structure, configuration) {
-                super(title);
+            }
+            constructor(title = "SVG Tree Diagram", structure, configuration={}) {
+                super(structure, title);
+                for (const node of this.node.querySelectorAll('.tree')) {
+                    node.classList.remove('tree');
+                }
+                this.vertical = true;
+                document.body.append(this.node); // Temporarily add node to DOM so text measurement works
                 this.configuration = Object.assign({}, SVGTreeDiagram.defaults, configuration);
                 this.structure = structure;
+                this.settings.leftToRight.addEventListener('change', (event) => this.redraw());
+                this.settings.connectorStyle.addEventListener('change', (event) => this.redraw());
+            }
+            redraw() {
+                this.svg.innerHTML = '';
+                this.render();
             }
             set structure(structure) {
-                this.svg.innerHTML = '';
-                this._structure = structure;
-                this.render();
+                if (this.configuration) {
+                    this.svg.innerHTML = '';
+                    this._structure = structure;
+                    this.render();
+                }
+            }
+            set selectedNodes(selection) {
+                // Set the roots as the selected nodes that are not descendents of other selected nodes
+                const roots = [];
+                selection.forEach((node) => {
+                    const ancestors = getAncestors(node).slice(0, -1);
+                    if (!ancestors.some((ancestor) => selection.includes(ancestor))) {
+                        roots.push(node);
+                    }
+                })
+                this.structure = roots;
             }
             set currentNode(node) {
                 for (const svgNode of this.node.querySelectorAll('.selected')) {
                     svgNode.classList.remove('selected');
                 }
-                this.all.filter((treeNode) => treeNode.value === node)
-                    .forEach((treeNode) => treeNode.svgNodes.forEach((node) => node.classList.add('selected')));
+                node[symbols.viewData].get(this).svgNodes.forEach((node) => node.classList.add('selected'));
             }
             render() {
                 // Construct a new tree that maps to the structure but includes the layout data
                 const layout = [];
-                this.all = [];
-                const leaves = [];
-                const roots = this._structure.map((node) => ({
-                    value: node,
-                    width: 100,
-                    height: 60,
-                    box: {},
-                    svgNodes: [],
-                    leftEdge: [],
-                    rightEdge: [],
-                }));
-                const stack = [...roots];
+                
+                const stack = [...this._structure];
+                while (stack.length > 0) {
+                    const node = stack.shift();
+                    const nodes = this.configuration.nodeContent(node) || [];
+                    stack.unshift(...nodes);
+                    node[symbols.viewData].set(this, {
+                        width: 100,
+                        height: 60,
+                        box: {},
+                        svgNodes: [],
+                        leftEdge: [],
+                        rightEdge: [],
+                    });
+                }
                 
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
                     (point.y - line[0].y) / (line[1].y - line[0].y);
@@ -2589,130 +2616,130 @@
                 };
 
                 const root = {
+                    [symbols.viewData]: new Map(),
                     height: 0,
                     rightEdge: [],
-                    value: {[symbols.views]: {'Tree Diagram': {layout: 'Horizontal'}}},
+                    [symbols.views]: {'Tree Diagram': {layout: 'Horizontal'}},
                 }                
+                root[symbols.viewData].set(this, {height: 0, rightEdge: []});
                 
-                // Perform a depth first walk of the graph creating a 'treenode' for each node
-                while (stack.length > 0) {
-                    const treeNode = stack.shift();
-                    if (treeNode.nodes === undefined) {
-                        // Put this node on the stack to be processed after its contents
-                        stack.unshift(treeNode);
-                        const nodes = this.configuration.nodeContent(treeNode.value) || [];
-                        treeNode.nodes = nodes.map((node) => ({
-                            value: node,
-                            parent: treeNode,
-                            width: 100,
-                            height: 60,
-                            box: {},
-                            svgNodes: [],
-                            leftEdge: [],
-                            rightEdge: [],
-                        }));
-                        stack.unshift(...treeNode.nodes);
-                    } else {
-                        const parent = treeNode.parent || root;
-                        this.all.push(treeNode);
-                        // Determine the width and height of the 'box' and the position of the label
-                        // calculate the edges
-                        treeNode.y = 0;
+                const getData = (node) => node[symbols.viewData].get(this);
 
-                        if (treeNode.nodes.length) {
-                            const first = treeNode.nodes[0];
-                            const last = treeNode.nodes[treeNode.nodes.length - 1];
-                            treeNode.box.width = Math.max(treeNode.width, ...treeNode.nodes.map((node) => node.box.x + node.box.width));
-                            treeNode.box.height = Math.max(treeNode.height, ...treeNode.nodes.map((node) => node.box.y + node.box.height));
+                const setNodeData = (node, parent) => {
+                    // Position descendents first
+                    const treeNode = node[symbols.viewData].get(this);
+                    const nodes = this.configuration.nodeContent(node) || [];
+                    nodes.forEach((child) => setNodeData(child, node));
+                    
+                    // Determine the width and height of the 'box' and the position of the label
+                    // calculate the edges
+                    treeNode.y = 0;
 
-                            if (treeNode.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
-                                treeNode.x = 0;
+                    if (nodes.length) {
+                        const first = getData(nodes[0]);
+                        const last = getData(nodes[nodes.length - 1]);
+                        treeNode.box.width = Math.max(treeNode.width,
+                            ...nodes.map((node) => getData(node).box.x + getData(node).box.width));
+                        treeNode.box.height = Math.max(treeNode.height,
+                            ...nodes.map((node) => getData(node).box.y + getData(node).box.height));
 
-                                treeNode.leftEdge = [
-                                    { y: 0, x: 0 },
-                                    { y: treeNode.height, x: 0 },
-                                    { y: treeNode.height, x: this.configuration.columnGap },
-                                    { y: last.height / 2 - this.configuration.rowGap, x: 2 * this.configuration.columnGap },
-                                ];
-                                treeNode.rightEdge = treeNode.nodes.flatMap((childNode) =>
-                                    childNode.rightEdge.map((point) => ({
-                                        x: childNode.box.x + point.x,
-                                        y: childNode.box.y + point.y, })));
-                            } else {
-                                treeNode.x = (first.box.x + first.x + first.width / 2 + 
-                                    last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
-                                
-                                treeNode.leftEdge = [
-                                    { y: 0, x: treeNode.x },
-                                    { y: treeNode.height, x: treeNode.x },
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
-                                    ...first.leftEdge.map((point) => ({
-                                        y: point.y + first.box.y, x: point.x + first.box.x,
-                                    })),
-                                ];
-                                let y = Math.max(...first.leftEdge.map((point) => point.y));
-                                treeNode.nodes.forEach((childNode) => {
-                                    const points = childNode.leftEdge.map((point) => ({
-                                        y: point.y + childNode.box.y, x: point.x + childNode.box.x,
-                                    })).filter((point) => point.y >= y);
-                                    treeNode.leftEdge.push(...points);
-                                    y = Math.max(...points.map((point) => point.y));
-                                });
-                                
-                                treeNode.rightEdge = [
-                                    { y: 0, x: treeNode.x + treeNode.width },
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width},
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
-                                    ...last.rightEdge.map((point) => ({
-                                        y: point.y + last.box.y, x: point.x + last.box.x,
-                                    })),
-                                ];
-                                y = Math.max(...last.rightEdge.map((point) => point.y));
-                                treeNode.nodes.toReversed().forEach((childNode) => {
-                                    const points = childNode.rightEdge.map((point) =>
-                                        ({ y: point.y + childNode.box.y, x: point.x + childNode.box.x, }))
-                                        .filter((point) => point.y >= y);
-                                    treeNode.rightEdge.push(...points);
-                                    y = Math.max(...points.map((point) => point.y));
-                                });
-                            }
-                        } else {
+                        if (this.settings.leftToRight.checked) {
+                            treeNode.x = Math.max(...nodes.map((node) =>
+                                getData(node).box.x + getData(node).box.width)) + 3 * this.configuration.columnGap;
+                            treeNode.y = (treeNode.box.height - treeNode.height) / 2;
+                            treeNode.box.width = treeNode.x + treeNode.width;
+                        } else if (node[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
                             treeNode.x = 0;
-                            treeNode.box.width = treeNode.width;
-                            treeNode.box.height = treeNode.height;
-                            treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
-                            treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
-                        }
 
-                        // Calculate the position of the box based on its parent layout data
-                        if (parent.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
-                            treeNode.box.x = 2 * this.configuration.columnGap;
-                            treeNode.box.y = parent.nextY || (parent.height + this.configuration.rowGap);
-                            parent.nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
+                            treeNode.leftEdge = [
+                                { y: 0, x: 0 },
+                                { y: treeNode.height, x: 0 },
+                                { y: treeNode.height, x: this.configuration.columnGap },
+                                { y: last.height / 2 - this.configuration.rowGap, x: 2 * this.configuration.columnGap },
+                            ];
+                            treeNode.rightEdge = nodes.flatMap((childNode) =>
+                                getData(childNode).rightEdge.map((point) => ({
+                                    x: getData(childNode).box.x + point.x,
+                                    y: getData(childNode).box.y + point.y, })));
                         } else {
-                            const rightEdge = parent.rightEdge;
-
-                            const offset = getOffset(rightEdge, treeNode.leftEdge);
-
-                            treeNode.box.x = offset;
-                            treeNode.box.y = treeNode.parent ? treeNode.parent.height + this.configuration.rowGap : 0;
-
-                            const max = Math.max(...rightEdge.map((point) => point.y));
-                            const filtered = rightEdge.filter((point) => point.y >= max);
-                            rightEdge.length = 0;
-                            rightEdge.push(
-                                ...treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,})),
-                                ...filtered);
+                            treeNode.x = (first.box.x + first.x + first.width / 2 + 
+                                last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
+                            
+                            treeNode.leftEdge = [
+                                { y: 0, x: treeNode.x },
+                                { y: treeNode.height, x: treeNode.x },
+                                { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
+                                ...first.leftEdge.map((point) => ({
+                                    y: point.y + first.box.y, x: point.x + first.box.x,
+                                })),
+                            ];
+                            let y = Math.max(...first.leftEdge.map((point) => point.y));
+                            nodes.forEach((childNode) => {
+                                const points = getData(childNode).leftEdge.map((point) => ({
+                                    y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x,
+                                })).filter((point) => point.y >= y);
+                                treeNode.leftEdge.push(...points);
+                                y = Math.max(...points.map((point) => point.y));
+                            });
+                            
+                            treeNode.rightEdge = [
+                                { y: 0, x: treeNode.x + treeNode.width },
+                                { y: treeNode.height, x: treeNode.x + treeNode.width},
+                                { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
+                                ...last.rightEdge.map((point) => ({
+                                    y: point.y + last.box.y, x: point.x + last.box.x,
+                                })),
+                            ];
+                            y = Math.max(...last.rightEdge.map((point) => point.y));
+                            nodes.toReversed().forEach((childNode) => {
+                                const points = getData(childNode).rightEdge.map((point) =>
+                                    ({ y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x, }))
+                                    .filter((point) => point.y >= y);
+                                treeNode.rightEdge.push(...points);
+                                y = Math.max(...points.map((point) => point.y));
+                            });
                         }
+                    } else {
+                        treeNode.x = 0;
+                        treeNode.box.width = treeNode.width;
+                        treeNode.box.height = treeNode.height;
+                        treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
+                        treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
+                    }
+                    // Calculate the position of the box based on its parent layout data
+                    if (this.settings.leftToRight.checked) {
+                        treeNode.box.x = getData(parent).width ? 0 : this.configuration.columnGap;
+                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
+                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
+                    } else if (parent[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
+                        treeNode.box.x = 2 * this.configuration.columnGap;
+                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
+                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
+                    } else {
+                        const rightEdge = getData(parent).rightEdge;
+
+                        const offset = getOffset(rightEdge, treeNode.leftEdge);
+
+                        treeNode.box.x = offset;
+                        treeNode.box.y = getData(parent).height + this.configuration.rowGap;
+
+                        const max = Math.max(...rightEdge.map((point) => point.y));
+                        const filtered = rightEdge.filter((point) => point.y >= max);
+                        rightEdge.length = 0;
+                        rightEdge.push(
+                            ...treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,})),
+                            ...filtered);
                     }
                 }
+                this._structure.forEach((node) => setNodeData(node, root));
 
                 let index = 0;
-                const addNode = (node, parent) => {
+                const addNode = (source, parent) => {
+                    const node = getData(source);
                     const groupAttrs = {
                         transform: `translate(${node.box.x}, ${node.box.y})`,
                     };
@@ -2725,12 +2752,10 @@
                         fill: 'white', stroke: 'black',
                     };
                     const rect = this.add('rect', boxAttrs, null, [], group);
-                    rect.addEventListener('click', (event) => {
-                        Core.currentNode = node.value;
-                    });
+                    rect.addEventListener('click', (event) => clickNode(node, event));
                     node.svgNodes.push(rect);
                     const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
-                    //this.add('clipPath', { id: `clip${index}` }, clipRect, [], group);
+                    this.add('clipPath', { id: `clip${index}` }, clipRect, [], group);
                     const textAttrs = {
                         x: node.x + node.width / 2,
                         y: node.y + 20,
@@ -2738,37 +2763,77 @@
                         'text-anchor': 'middle',
                         'dominant-baseline': 'Auto',
                         fill: 'black',
-                        //'clip-path': `url(#clip${index})`,
+                        'clip-path': `url(#clip${index})`,
                     };
-                    this.add('text', textAttrs, this.configuration.nodeText(node.value), [], group);
-                    textAttrs.y += 20;
+                    const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, (text) => {
+                        const node = this.add('text', textAttrs, text, [], group);
+                        const length = node.getComputedTextLength();
+                        node.remove();
+                        return length;
+                    });
+                    lines.forEach((line) => {
+                        this.add('text', textAttrs, line, [], group);                    
+                        textAttrs.y += 20;
+                    });
                     this.add('text', textAttrs, node.xOffset, [], group);
-                    if (node.nodes.length) {
+                    const nodes = this.configuration.nodeContent(source);
+                    if (nodes.length) {
+                        const dataNodes = nodes.map((node) => getData(node));
                         const pathAttrs = { fill: 'none', stroke: 'black' };
-                        if (node.value[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
-                            const x = node.x + this.configuration.columnGap;
-                            const start = node.y + node.height;
-                            const lastNode = node.nodes[node.nodes.length - 1];
-                            const end = lastNode.box.y + lastNode.y + lastNode.height / 2;
-                            pathAttrs.d = `M${x} ${start} V${end} `;
-                            pathAttrs.d += node.nodes.map((node) =>
-                                `M${x} ${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
+                        if (this.settings.leftToRight.checked) {
+                            if (nodes.length) {
+                                const endX = node.x;
+                                const endY = node.y + node.height / 2;
+                                pathAttrs.d = '';
+                                dataNodes.forEach((node) => {
+                                    const startX = node.box.x + node.x + node.width;
+                                    const startY = node.box.y + node.y + node.height / 2;
+                                    if (this.settings.connectorStyle.value === 'Straight') {
+                                        pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
+                                    } else if (this.settings.connectorStyle.value === 'Rectilinear') {
+                                        pathAttrs.d += `M${startX} ${startY} L${endX - this.configuration.columnGap} ${startY} `;
+                                        pathAttrs.d += `L${endX - this.configuration.columnGap} ${endY} L${endX} ${endY} `;
+                                    } else if (this.settings.connectorStyle.value === 'Curve 1') {
+                                        pathAttrs.d += `M${startX} ${startY} C${(startX + endX) / 2} ${startY} ${endX - this.configuration.columnGap} ${endY} ${endX} ${endY} `;
+                                    } else {
+                                        const dy = startY > endY ? -Math.min(this.configuration.rowGap, (startY - endY) / 2) : Math.min(this.configuration.rowGap, (endY - startY) / 2);
+                                        const col = this.configuration.columnGap;
+                                        pathAttrs.d += `M${startX} ${startY} `;
+                                        pathAttrs.d += `L${endX - 2 * col} ${startY} `;
+                                        pathAttrs.d += `Q${endX - col} ${startY} ${endX - col} ${startY + dy}`;
+                                        pathAttrs.d += `L${endX - col} ${endY - dy} `;
+                                        pathAttrs.d += `Q${endX - col} ${endY} ${endX} ${endY}`;
+                                    }
+                                });
+                            }
                         } else {
-                            const start = node.nodes[0].box.x + node.nodes[0].box.width / 2;
-                            const end = node.nodes[node.nodes.length - 1].box.x + node.nodes[node.nodes.length - 1].box.width / 2;
-                            const height = node.y + node.height + this.configuration.rowGap / 2;
-                            pathAttrs.d = `M${node.x + node.width / 2} ${node.y + node.height} V${height} M${start} ${height} H${end} `,
-                                pathAttrs.d += node.nodes.map((node) =>
-                                    `M${node.box.x + node.x + node.width / 2} ${node.box.y + node.y} v-${this.configuration.rowGap / 2}`).join(' ');
+                            if (source[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
+                                const x = node.x + this.configuration.columnGap;
+                                const start = node.y + node.height;
+                                const lastNode = dataNodes[dataNodes.length - 1];
+                                const end = lastNode.box.y + lastNode.y + lastNode.height / 2;
+                                pathAttrs.d = `M${x} ${start} V${end} `;
+                                pathAttrs.d += dataNodes.map((node) =>
+                                    `M${x} ${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
+                            } else {
+                                const first = dataNodes[0];
+                                const last = dataNodes[nodes.length - 1];
+                                const start = first.box.x + first.box.width / 2;
+                                const end = last.box.x + last.box.width / 2;
+                                const height = node.y + node.height + this.configuration.rowGap / 2;
+                                pathAttrs.d = `M${node.x + node.width / 2} ${node.y + node.height} V${height} M${start} ${height} H${end} `,
+                                    pathAttrs.d += dataNodes.map((node) =>
+                                        `M${node.box.x + node.x + node.width / 2} ${node.box.y + node.y} v-${this.configuration.rowGap / 2}`).join(' ');
+                            }
                         }
                         this.add('path', pathAttrs, null, [], group);
                     }
-                    node.nodes.forEach((node) => addNode(node, group));
+                    nodes.forEach((node) => addNode(node, group));
                     ++index;
                 }
 
-                const width = Math.max(...roots.map((node) => node.box.x + node.box.width));
-                const height = Math.max(...roots.map((node) => node.box.y + node.box.height));
+                const width = Math.max(...this._structure.map((node) => getData(node).box.x + getData(node).box.width));
+                const height = Math.max(...this._structure.map((node) => getData(node).box.y + getData(node).box.height));
 
                 const extents = {
                     top: 0,
@@ -2784,7 +2849,7 @@
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
                 
-                roots.forEach((node) => addNode(node));
+                this._structure.forEach((node) => addNode(node));
             }
         }
 
@@ -2891,7 +2956,7 @@
                             const draggedHeading = event.dataTransfer.getData('text/plain');
                             this.headings.splice(index, 0, draggedHeading);
                         });
-                        cell.addEventListener('click', (event) => Core.currentNode = node);
+                        cell.addEventListener('click', (event) => clickNode(node, event));
                         row.append(cell);
                     });
                     if (show) {
@@ -2901,7 +2966,16 @@
             }
         }
 
-        
+        /**
+         * Process a click on a node
+         */
+        function clickNode(node, event) {
+            if (event.shiftKey) {
+                Core.selectionToggle(node);
+            } else {
+                Core.currentNode = node;
+            }
+        }
         
         /**
          * Display a tree table for the selected data, allowing expansion of nodes.
@@ -3077,7 +3151,7 @@
                             const draggedHeading = event.dataTransfer.getData('text/plain');
                             this.headings.splice(index, 0, draggedHeading);
                         });
-                        cell.addEventListener('click', (event) => Core.currentNode = node);
+                        cell.addEventListener('click', (event) => clickNode(node, event));
                         row.append(cell);
                     });
                     if (show) {
@@ -3372,10 +3446,7 @@
             { group: 'Data', name: 'Table', make() { return new TableView(Core.structure, {}); }, },
             {
                 group: 'Diagrams', name: 'Tree Diagram', make() {
-                    return new SVGTreeDiagram('Tree Diagram', Core.structure, {
-                        nodeContent: (node) => node[symbols.content],
-                        nodeText: (node) => node.name,
-                    });
+                    return new SVGTreeDiagram('Tree Diagram', Core.structure);
                 },
             },
             { group: 'Data', name: 'Tree View', make() { return new TreeView(Core.structure); }, },
@@ -8727,6 +8798,7 @@ void main() {
                 const dragEnd = (event) => {
                     frame.classList.remove('dragging');
                     placeholder.remove();
+                    Core.currentFrame = frame;
                     if (actions.x !== undefined && actions.y !== undefined) {
                         const elements = document.elementsFromPoint(actions.x, actions.y);
                         if (elements[0].classList.contains('layout-main')) {
@@ -9365,6 +9437,7 @@ void main() {
             mainTrees: [],
             sceneGraphTrees: [],
             views: [],
+            selectedNodes: new Set(),
             initialise() {
                 this.mainEditor = new StructureEditor('Main');
 
@@ -9540,6 +9613,15 @@ void main() {
             set currentNode(node) {
                 this._currentNode = node;
                 this.views.forEach((view) => view.currentNode = node);
+            },
+            selectionToggle(node) {
+                if (this.selectedNodes.has(node)) {
+                    this.selectedNodes.delete(node);
+                } else {
+                    this.selectedNodes.add(node);
+                }
+                const selection = Array.from(this.selectedNodes);
+                this.views.forEach((view) => view.selectedNodes = selection);
             },
             addFrame(frame) {
                 const option = document.createElement('option');
