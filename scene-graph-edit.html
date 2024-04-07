@@ -940,7 +940,7 @@
                     <button id="save">&#x1F4BE;</button>
                     <button id="load">&#x1F4C2;</button>
                 </div>
-                <button id="clear">Clear</button>
+                <button id="save-layout">&#x1F4BE;</button>
                 <button id="view-settings">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
                         <circle cx="12" cy="12" r="4" stroke="black" fill="none" />
@@ -1098,24 +1098,129 @@
             link.remove();
         }
 
+        /**
+         * Get a string representation of the current window configuration.
+         */
         function getLayout() {
             const node = document.querySelector('.layout-main');
+            const lines = [];
             const content = (node, level=0) => {
                 const indent = ''.padStart(level * 2, ' ');
-                console.log(`${indent}${level}`);
                 for(const child of node.children) {
                     if (child.classList.contains('layout-row')) {
-                        console.log(`${indent}row`);
+                        lines.push(`${indent}row;${getRowSizes(child).join(',')}`);
                         content(child, level + 1);
                     } else if (child.classList.contains('layout-column')) {
-                        console.log(`${indent}column`);
+                        lines.push(`${indent}column;${getColumnSizes(child).join(',')}`);
                         content(child, level + 1);
                     } else if (child.classList.contains('frame')) {
-                        console.log(`${indent}view`);
+                        const viewNode = child.querySelector('.view');
+                        const view = Core.views.find((view) => view.node === viewNode);
+                        lines.push(`${indent}view;${view.getSettingsString()}`);
                     }
                 }
             }
             content(node);
+            const sidebar = document.querySelector('.sidebar');
+            if (sidebar.children.length > 0) {
+                lines.push(`sidebar`);
+                const indent = '  ';
+                for(const child of sidebar.children) {
+                    const viewNode = child.querySelector('.view');
+                    const view = Core.views.find((view) => view.node === viewNode);
+                    lines.push(`${indent}view;${view.getSettingsString()}`);
+                }
+            }
+            return lines.join('\n');
+        }
+        
+        /**
+         * Set the window layout based on the given defintion string.
+         */
+        function restoreLayout(definition) {
+            // Clear current views
+            Core.views = [];
+            const records = definition.split(/\r?\n|\u{1e}/u);
+            const roots = [];
+            const stack = [];
+            
+            const layout = document.querySelector('.layout-main');
+            const rootNode = layout.querySelector('.root-frame');
+            if (rootNode) {
+                layout.querySelector('.root-frame').remove();
+            }
+
+            const processRecord = (record) => {
+                const units = record.definition.split(/;|\u{1f}/u)
+                let item;
+                if (units[0] === 'view') {
+                    const viewClass = Views.find((view) => view.cls.name === units[1]);
+                    item = uiControls.newFrame(new viewClass.cls());
+                } else if (units[0] === 'row') {
+                    item = new FrameContainer(...record.children);
+                    const sizes = units[1].split(',').map((str) => `${str}fr`);
+                    item.node.style.gridTemplateColumns = sizes.join(' min-content ');
+                } else if (units[0] === 'column') {
+                    item = new FrameContainer(...record.children);
+                    item.column();
+                    const sizes = units[1].split(',').map((str) => `${str}fr`);
+                    item.node.style.gridTemplateRows = sizes.join(' min-content ');
+                } else if (units[0] === 'sidebar') {
+                    item = document.querySelector('.sidebar');
+                    record.children.forEach((child) => item.append(child));
+                }
+                if (stack.length) {
+                    stack[0].data.children.push(item);
+                } else {
+                    roots.push(item);
+                    if (units[0] === 'view') {
+                        layout.append(item);
+                        item.classList.add('root-frame');
+                    } else if ((units[0] === 'column') || (units[0] === 'row')) {
+                        layout.append(item.node);
+                        item.node.classList.add('root-frame');
+                    }
+                }   
+            }
+            
+            records.forEach((record) => {
+                const trimmed = record.trim();
+                if (!(record === '' || record.startsWith('#'))) {
+                    const level = record.length - record.trimStart().length;
+                    while (stack.length && stack[0].level >= level) {
+                        processRecord(stack.shift().data);
+                    }
+                    stack.unshift({level, data: {children: [], definition: trimmed, }, });
+                }
+            });
+            
+            while (stack.length) {
+                processRecord(stack.shift().data);
+            }
+        }
+        
+        /**
+         * Get sizes in a row container as a proportion of total sizes.
+         */
+        function getRowSizes(node) {
+            const style = window.getComputedStyle(node);
+            if (style.gridTemplateColumns) {
+                const sizes = style.gridTemplateColumns.split(' ').map((v) => parseFloat(v)).filter((s, i) => (i % 2) === 0); 
+                const total = sizes.reduce((sum, size) => sum + size, 0);
+                return sizes.map((size) => size / total);
+            }
+        }
+
+        /**
+         * Get sizes in a column container as a proportion of total sizes.
+         */
+        function getColumnSizes(node) {
+            const style = window.getComputedStyle(node);
+            if (style.gridTemplateRows) {
+                const sizes = style.gridTemplateRows.split(' ').map((v) => parseFloat(v)).filter((s, i) => (i % 2) === 0); 
+                const total = sizes.reduce((sum, size) => sum + size, 0);
+                return sizes.map((size) => size / total);
+            }
         }
 
         class FrameContainer {
@@ -1359,6 +1464,10 @@
                         console.log(`Warning: selector ${selector} not found in template for ${this.constructor.name}`);
                     }
                 });
+            }
+            getSettingsString() {
+                console.log(window[this.constructor.name]);
+                return `${this.constructor.name};title=${this.title}`;
             }
             toggleSettings() {
                 const settings = this.node.querySelector('.settings');
@@ -2122,7 +2231,7 @@
                 upright: '.upright',
                 depthTest: '.depth-test',
             };
-            constructor(title, camera) {
+            constructor(title='3D Scene', camera, shaders=defaultShaders) {
                 super('gl-view-template', GLView.settingsMap);
                 // Add to the DOM so that safari can get context
                 document.body.append(this.node);
@@ -2130,6 +2239,7 @@
                 this.textureCanvas = this.node.querySelector('.texture');
 
                 this.shapes = [];
+                this.textures = [];
                 this.points = [];
                 this.lines = [];
                 this.graph = [];
@@ -2151,6 +2261,7 @@
                 this.title = title;
                 this.camera = camera || new Camera([14.638, -0.074, 27.731], [6.762, 1.357, 7.673], [0, 1, 0]);
                 this.background = [0.9, 0.9, 1, 1];
+                this.setShaders(shaders);
 
                 const lightX = this.node.querySelector('.light-x');
                 const lightY = this.node.querySelector('.light-y');
@@ -2217,7 +2328,7 @@
                 this.textureContext.font = font;
                 this.textureContext.textBaseline = 'hanging';
                 this.textureContext.fillText(text, 0, this.nextLine);
-                this.loadTexture(this.context, this.textureCanvas);
+                this.copyTexture(this.textureCanvas);
                 const metrics = this.textureContext.measureText(text);
                 const pos = this.nextLine;
                 this.nextLine += metrics.fontBoundingBoxDescent - metrics.fontBoundingBoxAscent;
@@ -2230,9 +2341,10 @@
              * Initialise a texture and copy an image from the specified canvas.
              * When the image finished loading copy it into the texture.
              */
-            loadTexture(gl, source) {
-                this.textureId = this.textureId ?? gl.createTexture();
-                gl.bindTexture(gl.TEXTURE_2D, this.textureId);
+            copyTexture(source) {
+                const gl = this.context;
+                this.textTexture = this.textTexture ?? gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, this.textTexture);
         
                 const internalFormat = gl.RGBA;
                 const srcFormat = gl.RGBA;
@@ -2253,10 +2365,9 @@
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
                 }
-                textures.push({ url: '', texture: this.textureId });
+                this.textures.push({ url: '', texture: this.textTexture });
                 glErrors(gl, 'Load Texture');
             }
-
             updateBuffers(data) {
                 const gl = this.context;
 
@@ -2266,6 +2377,97 @@
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.STATIC_DRAW);
                 glErrors(this.context, `${this.title} updateBuffers`);
+            }
+            /**
+             * Initialize a texture and load an image.
+             * When the image finished loading copy it into the texture.
+             */
+            loadTexture(url) {
+                const gl = this.context;
+                const texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+    
+                // Because images have to be downloaded over the internet
+                // they might take a moment until they are ready.
+                // Until then put a single pixel in the texture so we can
+                // use it immediately. When the image has finished downloading
+                // we'll update the texture with the contents of the image.
+                const level = 0;
+                const internalFormat = gl.RGBA;
+                const width = 1;
+                const height = 1;
+                const border = 0;
+                const srcFormat = gl.RGBA;
+                const srcType = gl.UNSIGNED_BYTE;
+                const pixel = new Uint8Array([0, 0, 255, 255]); // opaque blue
+                gl.texImage2D(
+                    gl.TEXTURE_2D,
+                    level,
+                    internalFormat,
+                    width,
+                    height,
+                    border,
+                    srcFormat,
+                    srcType,
+                    pixel,
+                );
+    
+                const image = new Image();
+                image.onload = () => {
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(
+                        gl.TEXTURE_2D,
+                        level,
+                        internalFormat,
+                        srcFormat,
+                        srcType,
+                        image,
+                    );
+    
+                    // WebGL1 has different requirements for power of 2 images
+                    // vs. non power of 2 images so check if the image is a
+                    // power of 2 in both dimensions.
+                    if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+                        // Yes, it's a power of 2. Generate mips.
+                        gl.generateMipmap(gl.TEXTURE_2D);
+                    } else {
+                        // No, it's not a power of 2. Turn off mips and set
+                        // wrapping to clamp to edge
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    }
+                };
+                image.src = url;
+    
+                return texture;
+            }
+
+            /**
+             * Add a texture to the library
+             */
+            getTexture(url) {
+                const current = this.textures.find((texture) => texture.url === url);
+                if (!current) {
+                    this.textures.push({ url, texture: this.loadTexture(url) });
+                }
+                return current;
+            }
+    
+            /**
+             * 
+             */
+            bindTextures() {
+                this.textures.forEach((texture, index) => {
+                    // Tell WebGL we want to affect texture unit 0
+                    this.context.activeTexture(this.context.TEXTURE0 + index);
+    
+                    // Bind the texture to texture unit 0
+                    this.context.bindTexture(this.context.TEXTURE_2D, texture.texture);
+    
+                    // Tell the shader we bound the texture to texture unit 0
+                    //gl.uniform1i(programInfo.uniformLocations.uSampler, index);
+                });
             }
             focus() {
                 this.canvas.focus();
@@ -2380,7 +2582,7 @@
                     this.initialiseShader(shader, projectionMatrix));
 
                 // if (this.title ==='New GL View') return;
-                bindTextures(gl);
+                this.bindTextures();
                 glErrors(gl, `${this.title} update 3`);
                 gl.enable(gl.BLEND)
                 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -2443,7 +2645,7 @@
                 this.svg = this.node.querySelector('svg');
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
                 this.title = title || 'SVG Diagram';
-                this.structure = structure;
+                this.structure = structure || Core.structure;
             }
             make(type, attributes, content, classes) {
                 const element = document.createElementNS(SVGView.ns, type);
@@ -2546,7 +2748,7 @@
                     return node.name;
                 },
             }
-            constructor(title = "SVG Tree Diagram", structure, configuration={}) {
+            constructor(title = 'Tree Diagram', structure, configuration={}) {
                 super(structure, title);
                 for (const node of this.node.querySelectorAll('.tree')) {
                     node.classList.remove('tree');
@@ -2554,7 +2756,7 @@
                 this.vertical = true;
                 document.body.append(this.node); // Temporarily add node to DOM so text measurement works
                 this.configuration = Object.assign({}, SVGTreeDiagram.defaults, configuration);
-                this.structure = structure;
+                this.structure = structure || Core.structure;
                 this.settings.leftToRight.addEventListener('change', (event) => this.redraw());
                 this.settings.connectorStyle.addEventListener('change', (event) => this.redraw());
             }
@@ -2896,7 +3098,7 @@
                 super('table-view-template', TableView.settingsMap);
 
                 this.configuration = Object.assign({}, TableView.defaults, configuration);
-                this.roots = roots;
+                this.roots = roots || Core.structure;
                 this.title = 'Table View';
                 this.head = this.node.querySelector('thead');
                 this.body = this.node.querySelector('tbody');
@@ -3006,6 +3208,207 @@
                 Core.currentNode = node;
             }
         }
+
+        /**
+         * Node in a tree View
+         */
+        class TreeViewNode {
+            constructor(item, tree, container) {
+                this.item = item;
+                this.container = container;
+                this.tree = tree;
+                this.node = document.createElement('div');
+                this.expander = document.createElement('span');
+                this.node.append(this.expander);
+                this.expander.classList.add('expander');
+                this.labelNode = document.createElement('span');
+                this.labelNode.innerText = this.label;
+                if (this.title) {
+                    this.labelNode.title = this.title;
+                }
+                this.node.append(this.labelNode);
+                this.contentNode = document.createElement('div');
+                this.node.append(this.contentNode);
+                this.contentNode.classList.add('branch-content');
+                this.contentNode.classList.remove('hide');
+                this.structure = false;
+
+                this.expander.addEventListener('click', (event) => this.toggle(event.ctrlKey));
+                this.expander.innerHTML = this.indicator;
+
+                if (tree.config.actions) {
+                    Object.entries(tree.config.actions).forEach(([event, action]) =>
+                        this.labelNode.addEventListener(event, (event) =>
+                            action(event, this)));
+                }
+            }
+            expand(recursive) {
+                const content = this.content;
+                this.contentNode.innerHTML = '';
+                this.contentNode.classList.remove('hide');
+                this.nodes = content.map((item) => {
+                    const node = this.content.find((existing) => existing.item === item) ||
+                        new TreeViewNode(item, this.tree, this);
+                    this.contentNode.append(node.node);
+                    if (recursive) {
+                        node.expand(recursive);
+                    }
+                    return node;
+                });
+                this.structure = true;
+                this.expander.innerHTML = this.indicator;
+            }
+            collapse(recursive) {
+                this.contentNode.classList.add('hide');
+                if (recursive) {
+                    this.content.forEach((item) => node.collapse(recursive));
+                }
+                this.structure = false;
+                this.expander.innerHTML = this.indicator;
+            }
+            toggle(recursive) {
+                if (this.structure) {
+                    this.collapse(recursive);
+                } else {
+                    this.expand(recursive);
+                }
+            }
+            get indicator() {
+                if (this.content.length > 0) {
+                    return this.structure ? '&#9661' : '&#9655';
+                }
+                return '';
+            }
+            get label() {
+                if (this.tree.config.getLabel) {
+                    return this.tree.config.getLabel(this);
+                }
+                return this.item.name;
+            }
+            get title() {
+                if (this.tree.config.getTitle) {
+                    return this.tree.config.getTitle(this);
+                }
+            }
+            get content() {
+                if (this.tree.config.getContent) {
+                    return this.tree.config.getContent(this.item);
+                }
+                return this.item.content || [];
+            }
+        }
+
+        /**
+         * Class for managing tree views
+         */
+        class TreeView extends View {
+            static settingsMap = {
+                caseSensitive: '.case-sensitive',
+                regularExpression: '.regular-expression',
+            }
+            static defaults = {
+                getContent(node) { return node[symbols.content] },
+                getLabel(node) { return node.item[symbols.name] || node.item.name },
+                getTitle(node) { return node.item[symbols.description] || node.item[symbols.name] || node.item.name },
+                actions: {
+                    'click': (event, node) => Core.currentNode = node.item,
+                }
+            }
+            constructor(content, title = 'Tree', config = {}) {
+                super('tree-view-template', TreeView.settingsMap);
+                this.main = this.node.querySelector('.tree');
+                this.title = title;
+
+                this.config = Object.assign({}, TreeView.defaults, config);
+                this.searchStack = [];
+                this.path = [];
+                this.structure = content || Core.structure;
+
+                const search = this.node.querySelector('.search');
+                search.addEventListener('input', (event) => this.incrementalSearch());
+                search.addEventListener('change', (event) => this.search());
+                this.resetSearch();
+            }
+            set structure(structure) {
+                this.main.innerHTML = '';
+                this.content = structure;
+                this.nodes = this.content.map((item) => {
+                    const node = new TreeViewNode(item, this);
+                    this.main.append(node.node);
+                    return node;
+                });
+                this.resetSearch();
+            }
+            set currentNode(node) {
+                const allNodes = [];
+                const stack = [...this.nodes];
+                while (stack.length) {
+                    const next = stack.shift();
+                    allNodes.push(next);
+                    next.labelNode.classList.remove('selected');
+                    stack.unshift(...(next.nodes || []));
+                }
+
+                const treeNode = allNodes.find((treeNode) => treeNode.item === node);
+                if (treeNode) {
+                    treeNode.labelNode.classList.add('selected');
+                    treeNode.node.scrollIntoView();
+                }
+            }
+            expand(path) {
+                let nodes = this.nodes;
+                let node;
+                path.forEach((item) => {
+                    node = nodes.find((node) => node.item === item);
+                    node.expand();
+                    nodes = node.nodes;
+                });
+                if (node) {
+                    Core.currentNode = node.item;
+                }
+            }
+            resetSearch() {
+                this.searchStack.length = 0;
+                this.path = [];
+                this.first = true;
+                this.stack = [...this.content];
+            }
+            search() {
+                const search = this.node.querySelector('.search');
+
+                if (search.value) {
+                    const caseSensitive = this.settings.caseSensitive.checked;
+                    const regularExpression = this.settings.regularExpression.checked;
+                    const flags = caseSensitive ? '' : 'i';
+                    const pattern = new RegExp(search.value, flags);
+
+                    const content = this.config.getContent || ((item) => item.content);
+                    const test = (node) => this.config.test ? this.config.test(node, pattern) : pattern.test(node.name);
+
+                    while (this.stack.length) {
+                        const item = this.stack.shift();
+                        if (item) {
+                            this.path.push(item);
+                            if (test(item)) {
+                                break;
+                            }
+                            this.stack.unshift(...content(item), null);
+                        } else {
+                            this.path.pop();
+                        }
+                    }
+
+                    if (this.path.length) {
+                        this.expand(this.path);
+                    }
+                } else {
+                    this.resetSearch();
+                }
+            }
+            incrementalSearch() {
+
+            }
+        }
         
         /**
          * Display a tree table for the selected data, allowing expansion of nodes.
@@ -3020,7 +3423,7 @@
                 super('table-view-template', TreeTableView.settingsMap);
 
                 this.configuration = Object.assign({}, TreeTableView.defaults, configuration);
-                this.roots = roots || [];
+                this.roots = roots || Core.structure || [];
                 this.title = 'Table View';
                 this.head = this.node.querySelector('thead');
                 this.body = this.node.querySelector('tbody');
@@ -3449,38 +3852,20 @@
         }
         
         const Views = [
-            { group: 'Utiltiy', name: 'Calendar View', make() { return new CalendarView(); }, },
-            { group: 'Utiltiy', name: 'Clock View', make() { return new ClockView(); }, },
-            {
-                group: 'Diagrams', name: '3D View', make() {
-                    const view = new GLView('3D Scene');
-                    view.setShaders(defaultShaders);
-                    return view;
-                },
-            },
-            { group: 'Data', name: 'Detail View', make() { return new DetailView(); }, },
-            { group: 'Diagrams', name: 'Diagram', make() { return new DiagramView(); }, },
-            { group: 'Editors', name: 'Editor', make() { return new Editor(); }, },
-            { group: 'Data', name: 'Scene Graph', make() {
-                    const tree = new TreeView([], 'Scene Graph', {
-                        getTitle: (node) => node.item[symbols.value] + '\n' + Object.entries(node.item).map(([key, value]) => `${key}: ${value}`).join('\n'),
-                        actions: {},
-                    });
-                    return tree;
-                }, 
-            },            
-            { group: 'Shaders', name: 'Shader Editor', make() { return new ShaderEditor(); }, },
-            { group: 'Shaders', name: 'Shader Program Editor', make() { return new ProgramEditor(); }, },
-            { group: 'Editors', name: 'Structure Editor', make() { return new StructureEditor(); }, },
-            { group: 'Diagrams', name: 'SVG Diagram', make() { return new SVGView(Core.structure); }, },
-            { group: 'Data', name: 'Table', make() { return new TableView(Core.structure, {}); }, },
-            {
-                group: 'Diagrams', name: 'Tree Diagram', make() {
-                    return new SVGTreeDiagram('Tree Diagram', Core.structure);
-                },
-            },
-            { group: 'Data', name: 'Tree View', make() { return new TreeView(Core.structure); }, },
-            { group: 'Data', name: 'Tree Table View', make() { return new TreeTableView(Core.structure); }, },
+            { group: 'Utiltiy', name: 'Calendar View', cls: CalendarView, },
+            { group: 'Utiltiy', name: 'Clock View', cls: ClockView, },
+            { group: 'Diagrams', name: '3D View', cls: GLView, },
+            { group: 'Data', name: 'Detail View', cls: DetailView, },
+            { group: 'Diagrams', name: 'Diagram', cls: DiagramView, },
+            { group: 'Editors', name: 'Editor', cls: Editor, },
+            { group: 'Shaders', name: 'Shader Editor', cls: ShaderEditor, },
+            { group: 'Shaders', name: 'Shader Program Editor', cls: ProgramEditor, },
+            { group: 'Editors', name: 'Structure Editor', cls: StructureEditor, },
+            { group: 'Diagrams', name: 'SVG Diagram', cls: SVGView, },
+            { group: 'Data', name: 'Table', cls: TableView, },
+            { group: 'Diagrams', name: 'Tree Diagram', cls: SVGTreeDiagram, },
+            { group: 'Data', name: 'Tree View', cls: TreeView, },
+            { group: 'Data', name: 'Tree Table View', cls: TreeTableView, },
         ];
         const addAllViews = () => {
             Views.forEach((view) => uiControls.newSidebarFrame(view.make()));
@@ -4791,207 +5176,6 @@
         }
 
         /**
-         * Node in a tree View
-         */
-        class TreeViewNode {
-            constructor(item, tree, container) {
-                this.item = item;
-                this.container = container;
-                this.tree = tree;
-                this.node = document.createElement('div');
-                this.expander = document.createElement('span');
-                this.node.append(this.expander);
-                this.expander.classList.add('expander');
-                this.labelNode = document.createElement('span');
-                this.labelNode.innerText = this.label;
-                if (this.title) {
-                    this.labelNode.title = this.title;
-                }
-                this.node.append(this.labelNode);
-                this.contentNode = document.createElement('div');
-                this.node.append(this.contentNode);
-                this.contentNode.classList.add('branch-content');
-                this.contentNode.classList.remove('hide');
-                this.structure = false;
-
-                this.expander.addEventListener('click', (event) => this.toggle(event.ctrlKey));
-                this.expander.innerHTML = this.indicator;
-
-                if (tree.config.actions) {
-                    Object.entries(tree.config.actions).forEach(([event, action]) =>
-                        this.labelNode.addEventListener(event, (event) =>
-                            action(event, this)));
-                }
-            }
-            expand(recursive) {
-                const content = this.content;
-                this.contentNode.innerHTML = '';
-                this.contentNode.classList.remove('hide');
-                this.nodes = content.map((item) => {
-                    const node = this.content.find((existing) => existing.item === item) ||
-                        new TreeViewNode(item, this.tree, this);
-                    this.contentNode.append(node.node);
-                    if (recursive) {
-                        node.expand(recursive);
-                    }
-                    return node;
-                });
-                this.structure = true;
-                this.expander.innerHTML = this.indicator;
-            }
-            collapse(recursive) {
-                this.contentNode.classList.add('hide');
-                if (recursive) {
-                    this.content.forEach((item) => node.collapse(recursive));
-                }
-                this.structure = false;
-                this.expander.innerHTML = this.indicator;
-            }
-            toggle(recursive) {
-                if (this.structure) {
-                    this.collapse(recursive);
-                } else {
-                    this.expand(recursive);
-                }
-            }
-            get indicator() {
-                if (this.content.length > 0) {
-                    return this.structure ? '&#9661' : '&#9655';
-                }
-                return '';
-            }
-            get label() {
-                if (this.tree.config.getLabel) {
-                    return this.tree.config.getLabel(this);
-                }
-                return this.item.name;
-            }
-            get title() {
-                if (this.tree.config.getTitle) {
-                    return this.tree.config.getTitle(this);
-                }
-            }
-            get content() {
-                if (this.tree.config.getContent) {
-                    return this.tree.config.getContent(this.item);
-                }
-                return this.item.content || [];
-            }
-        }
-
-        /**
-         * Class for managing tree views
-         */
-        class TreeView extends View {
-            static settingsMap = {
-                caseSensitive: '.case-sensitive',
-                regularExpression: '.regular-expression',
-            }
-            static defaults = {
-                getContent(node) { return node[symbols.content] },
-                getLabel(node) { return node.item[symbols.name] || node.item.name },
-                getTitle(node) { return node.item[symbols.description] || node.item[symbols.name] || node.item.name },
-                actions: {
-                    'click': (event, node) => Core.currentNode = node.item,
-                }
-            }
-            constructor(content = [], title = 'Tree', config = {}) {
-                super('tree-view-template', TreeView.settingsMap);
-                this.main = this.node.querySelector('.tree');
-                this.title = title;
-
-                this.config = Object.assign({}, TreeView.defaults, config);
-                this.searchStack = [];
-                this.path = [];
-                this.structure = content;
-
-                const search = this.node.querySelector('.search');
-                search.addEventListener('input', (event) => this.incrementalSearch());
-                search.addEventListener('change', (event) => this.search());
-                this.resetSearch();
-            }
-            set structure(structure) {
-                this.main.innerHTML = '';
-                this.content = structure;
-                this.nodes = this.content.map((item) => {
-                    const node = new TreeViewNode(item, this);
-                    this.main.append(node.node);
-                    return node;
-                });
-                this.resetSearch();
-            }
-            set currentNode(node) {
-                const allNodes = [];
-                const stack = [...this.nodes];
-                while (stack.length) {
-                    const next = stack.shift();
-                    allNodes.push(next);
-                    next.labelNode.classList.remove('selected');
-                    stack.unshift(...(next.nodes || []));
-                }
-
-                const treeNode = allNodes.find((treeNode) => treeNode.item === node);
-                if (treeNode) {
-                    treeNode.labelNode.classList.add('selected');
-                    treeNode.node.scrollIntoView();
-                }
-            }
-            expand(path) {
-                let nodes = this.nodes;
-                let node;
-                path.forEach((item) => {
-                    node = nodes.find((node) => node.item === item);
-                    node.expand();
-                    nodes = node.nodes;
-                });
-                if (node) {
-                    Core.currentNode = node.item;
-                }
-            }
-            resetSearch() {
-                this.searchStack.length = 0;
-                this.path = [];
-                this.first = true;
-                this.stack = [...this.content];
-            }
-            search() {
-                const search = this.node.querySelector('.search');
-
-                if (search.value) {
-                    const caseSensitive = this.settings.caseSensitive.checked;
-                    const regularExpression = this.settings.regularExpression.checked;
-                    const flags = caseSensitive ? '' : 'i';
-                    const pattern = new RegExp(search.value, flags);
-
-                    const content = this.config.getContent || ((item) => item.content);
-                    const test = (node) => this.config.test ? this.config.test(node, pattern) : pattern.test(node.name);
-
-                    while (this.stack.length) {
-                        const item = this.stack.shift();
-                        if (item) {
-                            this.path.push(item);
-                            if (test(item)) {
-                                break;
-                            }
-                            this.stack.unshift(...content(item), null);
-                        } else {
-                            this.path.pop();
-                        }
-                    }
-
-                    if (this.path.length) {
-                        this.expand(this.path);
-                    }
-                } else {
-                    this.resetSearch();
-                }
-            }
-            incrementalSearch() {
-
-            }
-        }
-
-        /**
          * Toggle the expansion of a node.
          */
         function toggleExpansion(viewNode, recursive) {
@@ -5440,7 +5624,7 @@
 
                     const sceneNode = addNode(node, transform, shape, shader, colour);
                     if (node.texture) {
-                        sceneNode.texture = getTexture(texture, scene);
+                        sceneNode.texture = view.getTexture(texture, scene);
                     }
                     node[symbols.viewData].set(view, sceneNode);
                     namedNodes[node.name] = sceneNode;
@@ -6266,104 +6450,9 @@ void main() {
             return { mode: gl.LINE_STRIP, count, offset, colour: [0, 0, 0.2, 1.0] };
         }
 
-
-        /**
-         * Initialize a texture and load an image.
-         * When the image finished loading copy it into the texture.
-         */
-        function loadTexture(gl, url) {
-            const texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-
-            // Because images have to be downloaded over the internet
-            // they might take a moment until they are ready.
-            // Until then put a single pixel in the texture so we can
-            // use it immediately. When the image has finished downloading
-            // we'll update the texture with the contents of the image.
-            const level = 0;
-            const internalFormat = gl.RGBA;
-            const width = 1;
-            const height = 1;
-            const border = 0;
-            const srcFormat = gl.RGBA;
-            const srcType = gl.UNSIGNED_BYTE;
-            const pixel = new Uint8Array([0, 0, 255, 255]); // opaque blue
-            gl.texImage2D(
-                gl.TEXTURE_2D,
-                level,
-                internalFormat,
-                width,
-                height,
-                border,
-                srcFormat,
-                srcType,
-                pixel,
-            );
-
-            const image = new Image();
-            image.onload = () => {
-                gl.bindTexture(gl.TEXTURE_2D, texture);
-                gl.texImage2D(
-                    gl.TEXTURE_2D,
-                    level,
-                    internalFormat,
-                    srcFormat,
-                    srcType,
-                    image,
-                );
-
-                // WebGL1 has different requirements for power of 2 images
-                // vs. non power of 2 images so check if the image is a
-                // power of 2 in both dimensions.
-                if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-                    // Yes, it's a power of 2. Generate mips.
-                    gl.generateMipmap(gl.TEXTURE_2D);
-                } else {
-                    // No, it's not a power of 2. Turn off mips and set
-                    // wrapping to clamp to edge
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                }
-            };
-            image.src = url;
-
-            return texture;
-        }
-
         function isPowerOf2(value) {
             return (value & (value - 1)) === 0;
         }
-
-        const textures = [];
-
-        /**
-         * Add a texture to the library
-         */
-        function getTexture(url, view) {
-            const current = textures.find((texture) => texture.url === url);
-            if (!current) {
-                textures.push({ url, texture: loadTexture(view.context, url) });
-            }
-            return current;
-        }
-
-        /**
-         * 
-         */
-        function bindTextures(gl) {
-            textures.forEach((texture, index) => {
-                // Tell WebGL we want to affect texture unit 0
-                gl.activeTexture(gl.TEXTURE0 + index);
-
-                // Bind the texture to texture unit 0
-                gl.bindTexture(gl.TEXTURE_2D, texture.texture);
-
-                // Tell the shader we bound the texture to texture unit 0
-                //gl.uniform1i(programInfo.uniformLocations.uSampler, index);
-            });
-        }
-
 
         class shape {
             constructor(data) {
@@ -9479,8 +9568,17 @@ void main() {
                 toggleSidebar.addEventListener('click', (event) =>
                     document.querySelector('.sidebar').classList.toggle('hide-right'));
 
-                const clearSelection = document.getElementById('clear');
-                clearSelection.addEventListener('click', (event) => getLayout());
+                const saveLayoutSelection = document.getElementById('save-layout');
+                saveLayoutSelection.addEventListener('click', (event) => {
+                    const layout = getLayout();
+                    console.log(layout);
+                    try {
+                        localStorage.setItem('scene-graph-editor-layout', layout);
+                    } catch (error) {
+                        console.log('error');
+                        console.log(error);
+                    }
+                });
                 //clearSelection.addEventListener('click', (event) => Core.currentNode = null);
 
                 const hideMenu = document.getElementById('hide-menu');
@@ -9532,7 +9630,7 @@ void main() {
                     if (addViewSelection.value === 'all') {
                         addAllViews();
                     } else if (addViewSelection.value !== '') {
-                        uiControls.newSidebarFrame(Views[addViewSelection.value].make());
+                        uiControls.newSidebarFrame(new Views[addViewSelection.value].cls());
                     }
                     addViewSelection.value = '';
                 });
@@ -9730,24 +9828,22 @@ void main() {
         function main() {
             Core.initialise();
 
-            const editorFrame = uiControls.newFrame(Core.mainEditor);
-
-            const glView = new GLView('3D Scene');
-            const sceneFrame = uiControls.newFrame(glView);
-
-            const gridTreeframe = uiControls.newFrame(new TreeTableView(Core.structure));
-            const detailFrame = uiControls.newFrame(new DetailView());
-            
-            const column1 = new FrameContainer(editorFrame, gridTreeframe);
-            const column2 = new FrameContainer(sceneFrame, detailFrame);
-            const row = new FrameContainer(column1, column2);
-            column1.column();
-            column2.column();
-
-            const layout = document.querySelector('.layout-main');
-            layout.append(row.node);
-            row.node.classList.add('root-frame');
-
+            let definition;
+            try {
+                definition = localStorage.getItem('scene-graph-editor-layout');
+            } catch (error) {
+                console.log('error');
+                console.log(error);
+            }
+            definition = definition || `row;0.75,0.25
+  column;0.5,0.5
+    view;StructureEditor;title=Main
+    view;TreeTableView;title=Table View
+  column;0.5,0.5
+    view;GLView;title=3D Scene
+    view;DetailView;title=Detail View`;
+            restoreLayout(definition);
+    
             document.body.addEventListener('mousemove', (event) => {
                 if (actions.mouseMove) {
                     actions.mouseMove(event);
@@ -9800,7 +9896,6 @@ void main() {
             }
 
             const shaders = savedShaders ? JSON.parse(savedShaders) : defaultShaders;
-            glView.setShaders(shaders);
 
             let configStr;
             try {
