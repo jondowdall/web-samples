@@ -931,16 +931,20 @@
         <div class="controls">
             <div class="main-controls">
                 <datalist id="files"></datalist>
-                <!--div id="file-controls"-->
-                    <input id="filename" list="files" placeholder="Name" value="New Scene">
-                    <button id="save">
-                        <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
-                            <path d="M1 19 L1 23 L23 23 L23 19 M12 3 L12 19" stroke="black" fill="none" />
-                            <path d="M12 19 L8 13 L16 13 Z" stroke="black" fill="black" />
-                        </svg>
-                    </button>
-                    <button id="load">&#x1F4C2;</button>
-                <!--/div-->
+                <input id="filename" list="files" placeholder="Name" value="New Scene">
+                <button id="save">
+                    <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
+                        <path d="M1 19 L1 23 L23 23 L23 19 M12 3 L12 19" stroke="black" fill="none" />
+                        <path d="M12 19 L8 13 L16 13 Z" stroke="black" fill="black" />
+                    </svg>
+                </button>
+                <button id="load">&#x1F4C2;</button>
+                <button id="export-frame">
+                    <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
+                        <path d="M1 19 L1 23 L23 23 L23 19 M12 6 L12 19 M5 3 h14 v10 h-14 Z" stroke="black" fill="none" />
+                        <path d="M12 20 L8 15 L16 15 Z" stroke="black" fill="black" />
+                    </svg>
+                </button>
                 <button id="save-layout">&#x1F4BE;</button>
                 <button id="view-settings">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
@@ -1079,6 +1083,33 @@
             link.remove();
         }
 
+        
+        /**
+         * Export frame
+         */
+        function exportFrame() {
+            const svg = Core.currentFrame.querySelector('svg');
+            if (svg) {
+                download(svg.parentElement.innerHTML, 'image.svg');
+            } else {
+                const canvas = Core.currentFrame.querySelector('canvas');
+                if (canvas) {
+                    savePNG(canvas);
+                }
+            }
+            
+        }
+         
+        
+        function downloadCanvasAsImage(canvas){
+            const downloadLink = document.createElement('a');
+            downloadLink.setAttribute('download', 'CanvasAsImage.png');
+            canvas.toBlob(function(blob) {
+                const url = URL.createObjectURL(blob);
+                downloadLink.setAttribute('href', url);
+                downloadLink.click();
+            });
+        }
         /**
          * Save a canvas as png
          */
@@ -2812,8 +2843,9 @@
                     const nodes = this.configuration.nodeContent(node) || [];
                     stack.unshift(...nodes);
                     node[symbols.viewData].set(this, {
-                        width: 100,
-                        height: 60,
+                        width: node[symbols.views]?.[this.title]?.width ?? 100,
+                        height: node[symbols.views]?.[this.title]?.height ?? 60,
+                        shape: node[symbols.views]?.[this.title]?.shape ?? 'box',
                         box: {},
                         svgNodes: [],
                         leftEdge: [],
@@ -2867,7 +2899,7 @@
                     rightEdge: [],
                     [symbols.views]: {'Tree Diagram': {layout: 'Horizontal'}},
                 }                
-                root[symbols.viewData].set(this, {height: 0, rightEdge: []});
+                root[symbols.viewData].set(this, {nextY: this.configuration.rowGap, height: 0, rightEdge: []});
                 
                 const getData = (node) => node[symbols.viewData].get(this);
 
@@ -2992,31 +3024,116 @@
                     const group = this.add('g', groupAttrs, null, [], parent);
                     node.svgNodes.push(group);
 
-                    const boxAttrs = {
-                        x: node.x, y: node.y,
-                        width: node.width, height: node.height,
-                        fill: 'white', stroke: 'black',
-                    };
-                    const rect = this.add('rect', boxAttrs, null, [], group);
-                    rect.addEventListener('click', (event) => clickNode(node, event));
-                    node.svgNodes.push(rect);
-                    const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
-                    this.add('clipPath', { id: `clip${index}` }, clipRect, [], group);
                     const textAttrs = {
                         x: node.x + node.width / 2,
                         y: node.y + 20,
                         font: '13px sans-serif',
                         'text-anchor': 'middle',
-                        'dominant-baseline': 'Auto',
+                        'dominant-baseline': 'middle',
                         fill: 'black',
-                        'clip-path': `url(#clip${index})`,
                     };
-                    const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, (text) => {
+                    
+                    const getLength = (text) => {
                         const node = this.add('text', textAttrs, text, [], group);
                         const length = node.getComputedTextLength();
                         node.remove();
                         return length;
-                    });
+                    };
+                    const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, getLength);
+                    textAttrs.y = node.y + node.height / 2 - (lines.length - 1) * 10;
+                    
+                    if (node.shape === 'circle') {
+                        const attrs = {
+                            cx: node.x + node.width / 2, cy: node.y + node.width / 2,
+                            r: node.width / 2,
+                            fill: 'white', stroke: 'black',
+                        };
+                        const circle = this.add('circle', attrs, null, [], group);
+                        circle.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(circle);
+                    } else if (node.shape === 'ellipse') {
+                        const attrs = {
+                            cx: node.x + node.width / 2, cy: node.y + node.height / 2,
+                            rx: node.width / 2, ry: node.height / 2,
+                            fill: 'white', stroke: 'black',
+                        };
+                        const ellipse = this.add('ellipse', attrs, null, [], group);
+                        ellipse.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(ellipse);
+                    } else if (node.shape === 'diamond') {
+                        const x1 = node.x;
+                        const y1 = node.y;
+                        const x2 = node.x + node.width / 2;
+                        const y2 = node.y + node.height / 2;
+                        const x3 = node.x + node.width;
+                        const y3 = node.y + node.height;
+                        const attrs = {
+                            d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
+                            fill: 'white', stroke: 'black',
+                        };
+                        const diamond = this.add('path', attrs, null, [], group);
+                        diamond.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(diamond);
+                    } else if (node.shape === 'left diamond') {
+                        const attrs = { fill: 'black', stroke: 'black', };
+                        if (this.settings.leftToRight.checked) {
+                            const x1 = node.x - 5;
+                            const y1 = node.y - 5 + node.height / 2;
+                            const x2 = node.x;
+                            const y2 = node.y + node.height / 2;
+                            const x3 = node.x + 5;
+                            const y3 = node.y + 5 + node.height / 2;
+                            attrs.d = `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`;
+                            textAttrs.x = node.x + 10;
+                            textAttrs['text-anchor'] = 'start';                        
+                        } else {
+                            const x1 = node.x - 5 + node.width / 2;
+                            const y1 = node.y - 5 + node.height / 2;
+                            const x2 = node.x + node.width / 2;
+                            const y2 = node.y + node.height / 2;
+                            const x3 = node.x + 5 + node.width / 2;
+                            const y3 = node.y + 5 + node.height / 2;
+                            attrs.d = `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z M${x2} ${node.y} v${node.height}`;
+                            textAttrs.x = node.x + 10 + node.width / 2;
+                            textAttrs['text-anchor'] = 'start';                        
+                        }
+                        const diamond = this.add('path', attrs, null, [], group);
+                        diamond.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(diamond);
+                    } else if (node.shape === 'top diamond') {
+                        const x1 = node.x - 5 + node.width / 2;
+                        const y1 = node.y - 5 + node.height / 2;
+                        const x2 = node.x + node.width / 2;
+                        const y2 = node.y + node.height / 2;
+                        const x3 = node.x + 5 + node.width / 2;
+                        const y3 = node.y + 5 + node.height / 2;
+                        const attrs = {
+                            d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
+                            fill: 'black', stroke: 'black',
+                        };
+                        if (this.settings.leftToRight.checked) {
+                            attrs.d += `M${node.x} ${node.y + node.height / 2} h${node.width}`;
+                        }
+                        const diamond = this.add('path', attrs, null, [], group);
+                        diamond.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(diamond);
+                        textAttrs.y = node.y + node.height / 2 + 15;
+                        node.cx = node.x - 5 + node.width / 2;
+                            
+                    } else {
+                        const attrs = {
+                            x: node.x, y: node.y,
+                            width: node.width, height: node.height,
+                            fill: 'white', stroke: 'black',
+                        };
+                        const rect = this.add('rect', attrs, null, [], group);
+                        rect.addEventListener('click', (event) => clickNode(node, event));
+                        node.svgNodes.push(rect);
+                    }
+                    const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
+                    this.add('clipPath', { id: `clip${index}` }, clipRect, [], group);
+
+                    textAttrs['clip-path'] = `url(#clip${index})`;
                     lines.forEach((line) => {
                         this.add('text', textAttrs, line, [], group);                    
                         textAttrs.y += 20;
@@ -3437,7 +3554,7 @@
                 super('table-view-template', TreeTableView.settingsMap);
 
                 this.configuration = Object.assign({}, TreeTableView.defaults, configuration);
-                this.roots = roots || Core.structure || [];
+                this.roots = roots || Core.structure;
                 this.title = 'Table View';
                 this.head = this.node.querySelector('thead');
                 this.body = this.node.querySelector('tbody');
@@ -9573,6 +9690,7 @@ void main() {
         };
 
         const Core = {
+            structure: [],
             singleFrame: false,
             frames: [],
             mainTrees: [],
@@ -9909,6 +10027,9 @@ void main() {
             const fullscreen = document.getElementById('fullscreen');
             fullscreen.addEventListener('click', toggleFullscreen);
 
+            const exportButton = document.getElementById('export-frame');
+            exportButton.addEventListener('click', exportFrame);
+            
             let savedShaders;
             try {
                 savedShaders = localStorage.getItem('shaders');
