@@ -860,15 +860,17 @@
 
     <template id="svg-view-template">
         <div class="view svg-view">
-            <svg class="svg" viewBox="0 0 1024 1024" width="1024" height="1024"></svg>
+            <div>
+                <svg class="svg" viewBox="0 0 1024 1024" width="1024" height="1024"></svg>
+            </div>
             <div class="settings hide-up">
                 <label>Nodes: </label><input class="root-nodes" type="text" value="svg" />
                 <label>Filter: </label><input class="filter" type="text" />
                 <label>Context: </label><select class="context-selection"></select>
                 <label class="tree">Left to Right: </label><input class="left-to-right tree" type="checkbox" />
                 <label class="tree">Connector Style: </label><select class="connector-style tree">
-                    <option value="Straight">Straight</option>
                     <option value="Rectilinear">Rectilinear</option>
+                    <option value="Straight">Straight</option>
                     <option value="Curve 1">Curve 1</option>
                     <option value="Curve 2">Curve 2</option>
                 </select>
@@ -1088,16 +1090,20 @@
          * Export frame
          */
         function exportFrame() {
-            const svg = Core.currentFrame.querySelector('svg');
-            if (svg) {
-                download(svg.parentElement.innerHTML, 'image.svg');
-            } else {
-                const canvas = Core.currentFrame.querySelector('canvas');
-                if (canvas) {
-                    savePNG(canvas);
+            if (Core.currentFrame) {
+                const svg = Core.currentFrame.querySelector('svg');
+                if (svg) {
+                    const text = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+${svg.parentElement.innerHTML}`;
+                    download(svg.parentElement.innerHTML, 'image.svg');
+                } else {
+                    const canvas = Core.currentFrame.querySelector('canvas');
+                    if (canvas) {
+                        savePNG(canvas);
+                    }
                 }
             }
-            
         }
          
         
@@ -2688,6 +2694,7 @@
                 super('svg-view-template', SVGView.settingsMap);
                 // Add to the DOM so that safari can get context
                 this.svg = this.node.querySelector('svg');
+                this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
                 this.title = title || 'SVG Diagram';
                 this.structure = structure || Core.structure;
@@ -2846,6 +2853,8 @@
                         width: node[symbols.views]?.[this.title]?.width ?? 100,
                         height: node[symbols.views]?.[this.title]?.height ?? 60,
                         shape: node[symbols.views]?.[this.title]?.shape ?? 'box',
+                        fontSize: node[symbols.views]?.[this.title]?.['font size'] ?? 10,
+                        lineSpacing: node[symbols.views]?.[this.title]?.['line spacing'] ?? 1.4,
                         box: {},
                         svgNodes: [],
                         leftEdge: [],
@@ -2858,11 +2867,12 @@
 
                 const getOffset = (rightEdge, leftEdge) => {
                     let offset = 0;
-                    let left = [...leftEdge];
-                    let right = [...rightEdge];
+                    const left = [...leftEdge];
+                    const right = [...rightEdge];
 
                     left.sort((a, b) => a.y - b.y);
                     right.sort((a, b) => a.y - b.y);
+                    
 
                     while ((left.length > 1) && (right.length > 1)) {
                         if (left[0].y > right[0].y) {
@@ -2895,10 +2905,8 @@
 
                 const root = {
                     [symbols.viewData]: new Map(),
-                    height: 0,
-                    rightEdge: [],
                     [symbols.views]: {'Tree Diagram': {layout: 'Horizontal'}},
-                }                
+                }
                 root[symbols.viewData].set(this, {nextY: this.configuration.rowGap, height: 0, rightEdge: []});
                 
                 const getData = (node) => node[symbols.viewData].get(this);
@@ -2933,12 +2941,15 @@
                                 { y: 0, x: 0 },
                                 { y: treeNode.height, x: 0 },
                                 { y: treeNode.height, x: this.configuration.columnGap },
-                                { y: last.height / 2 - this.configuration.rowGap, x: 2 * this.configuration.columnGap },
+                                { y: last.box.y + last.height / 2, x: this.configuration.columnGap },
+                                ...last.leftEdge.slice(1).filter((pt) => pt.y > (last.box.y + last.height / 2))
+                                    .map((point) => ({ y: point.y + last.box.y, x: point.x + last.box.x,})),
                             ];
                             treeNode.rightEdge = nodes.flatMap((childNode) =>
                                 getData(childNode).rightEdge.map((point) => ({
                                     x: getData(childNode).box.x + point.x,
                                     y: getData(childNode).box.y + point.y, })));
+
                         } else {
                             treeNode.x = (first.box.x + first.x + first.width / 2 + 
                                 last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
@@ -2999,18 +3010,22 @@
                         getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
                     } else {
                         const rightEdge = getData(parent).rightEdge;
-
+                        
                         const offset = getOffset(rightEdge, treeNode.leftEdge);
+                        if (node[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
+                            console.log(node.name);
+                            console.log(rightEdge);
+                            console.log(treeNode.leftEdge);
+                            console.log(offset);
+                        }
 
                         treeNode.box.x = offset;
                         treeNode.box.y = getData(parent).height + this.configuration.rowGap;
 
                         const max = Math.max(...rightEdge.map((point) => point.y));
                         const filtered = rightEdge.filter((point) => point.y >= max);
-                        rightEdge.length = 0;
-                        rightEdge.push(
-                            ...treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,})),
-                            ...filtered);
+                        getData(parent).rightEdge = treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,}));
+                        getData(parent).rightEdge.push(...filtered);
                     }
                 }
                 this._structure.forEach((node) => setNodeData(node, root));
@@ -3026,8 +3041,9 @@
 
                     const textAttrs = {
                         x: node.x + node.width / 2,
-                        y: node.y + 20,
-                        font: '13px sans-serif',
+                        y: node.y,
+                        'font-size': `${node.fontSize}pt`,
+                        'font-family': 'sans-serif',
                         'text-anchor': 'middle',
                         'dominant-baseline': 'middle',
                         fill: 'black',
@@ -3040,7 +3056,7 @@
                         return length;
                     };
                     const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, getLength);
-                    textAttrs.y = node.y + node.height / 2 - (lines.length - 1) * 10;
+                    textAttrs.y = node.y + (node.height - (lines.length - 1) * node.fontSize * node.lineSpacing) / 2;
                     
                     if (node.shape === 'circle') {
                         const attrs = {
@@ -3119,7 +3135,6 @@
                         node.svgNodes.push(diamond);
                         textAttrs.y = node.y + node.height / 2 + 15;
                         node.cx = node.x - 5 + node.width / 2;
-                            
                     } else {
                         const attrs = {
                             x: node.x, y: node.y,
@@ -3127,7 +3142,7 @@
                             fill: 'white', stroke: 'black',
                         };
                         const rect = this.add('rect', attrs, null, [], group);
-                        rect.addEventListener('click', (event) => clickNode(node, event));
+                        rect.addEventListener('click', (event) => clickNode(source, event));
                         node.svgNodes.push(rect);
                     }
                     const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
@@ -3136,67 +3151,79 @@
                     textAttrs['clip-path'] = `url(#clip${index})`;
                     lines.forEach((line) => {
                         this.add('text', textAttrs, line, [], group);                    
-                        textAttrs.y += 20;
+                        textAttrs.y += node.fontSize * node.lineSpacing;
                     });
                     this.add('text', textAttrs, node.xOffset, [], group);
                     const nodes = this.configuration.nodeContent(source);
                     if (nodes.length) {
                         const dataNodes = nodes.map((node) => getData(node));
-                        const pathAttrs = { fill: 'none', stroke: 'black' };
+                        const pathAttrs = { fill: 'none', stroke: 'black', d: '' };
                         if (this.settings.leftToRight.checked) {
-                            if (nodes.length) {
-                                const endX = node.x;
-                                const endY = node.y + node.height / 2;
-                                pathAttrs.d = '';
+                            const endX = node.x;
+                            const endY = node.y + node.height / 2;
+                            dataNodes.forEach((node) => {
+                                const startX = node.box.x + node.x + node.width;
+                                const startY = node.box.y + node.y + node.height / 2;
+                                if (this.settings.connectorStyle.value === 'Straight') {
+                                    pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
+                                } else if (this.settings.connectorStyle.value === 'Rectilinear') {
+                                    pathAttrs.d += `M${startX} ${startY} L${endX - this.configuration.columnGap} ${startY} `;
+                                    pathAttrs.d += `L${endX - this.configuration.columnGap} ${endY} L${endX} ${endY} `;
+                                } else if (this.settings.connectorStyle.value === 'Curve 1') {
+                                    pathAttrs.d += `M${startX} ${startY} C${(startX + endX) / 2} ${startY} ${endX - this.configuration.columnGap} ${endY} ${endX} ${endY} `;
+                                } else {
+                                    const dy = startY > endY ? -Math.min(this.configuration.rowGap, (startY - endY) / 2) : Math.min(this.configuration.rowGap, (endY - startY) / 2);
+                                    const col = this.configuration.columnGap;
+                                    pathAttrs.d += `M${startX} ${startY} `;
+                                    pathAttrs.d += `L${endX - 2 * col} ${startY} `;
+                                    pathAttrs.d += `Q${endX - col} ${startY} ${endX - col} ${startY + dy}`;
+                                    pathAttrs.d += `L${endX - col} ${endY - dy} `;
+                                    pathAttrs.d += `Q${endX - col} ${endY} ${endX} ${endY}`;
+                                }
+                            });
+                        } else {
+                            if (source[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
+                                const startX = node.x + this.configuration.columnGap;
+                                const startY = node.y + node.height;
+                                pathAttrs.d = dataNodes.map((node) =>
+                                    `M${startX} ${startY} V${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
+                            } else {
+                                const startX = node.x + node.width / 2;
+                                const startY = node.y + node.height;
+                                
                                 dataNodes.forEach((node) => {
-                                    const startX = node.box.x + node.x + node.width;
-                                    const startY = node.box.y + node.y + node.height / 2;
+                                    const endX = node.box.x + node.x + node.width / 2;
+                                    const endY = node.box.y + node.y;
+                                
                                     if (this.settings.connectorStyle.value === 'Straight') {
                                         pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
                                     } else if (this.settings.connectorStyle.value === 'Rectilinear') {
-                                        pathAttrs.d += `M${startX} ${startY} L${endX - this.configuration.columnGap} ${startY} `;
-                                        pathAttrs.d += `L${endX - this.configuration.columnGap} ${endY} L${endX} ${endY} `;
+                                        pathAttrs.d += `M${startX} ${startY} v${this.configuration.rowGap / 2} `;
+                                        pathAttrs.d += `H${node.box.x + node.x + node.width / 2} `;
+                                        pathAttrs.d += `v${this.configuration.rowGap / 2} `; 
                                     } else if (this.settings.connectorStyle.value === 'Curve 1') {
-                                        pathAttrs.d += `M${startX} ${startY} C${(startX + endX) / 2} ${startY} ${endX - this.configuration.columnGap} ${endY} ${endX} ${endY} `;
+                                        pathAttrs.d += `M${startX} ${startY} C${startX} ${endY} `;
+                                        pathAttrs.d += `${endX} ${startY} ${endX} ${endY} `;
                                     } else {
-                                        const dy = startY > endY ? -Math.min(this.configuration.rowGap, (startY - endY) / 2) : Math.min(this.configuration.rowGap, (endY - startY) / 2);
-                                        const col = this.configuration.columnGap;
+                                        const dx = startX > endX ? -Math.min(this.configuration.columnGap, (startX - endX) / 2) : Math.min(this.configuration.columnGap, (endX - startX) / 2);
+                                        const row = this.configuration.rowGap / 2;
                                         pathAttrs.d += `M${startX} ${startY} `;
-                                        pathAttrs.d += `L${endX - 2 * col} ${startY} `;
-                                        pathAttrs.d += `Q${endX - col} ${startY} ${endX - col} ${startY + dy}`;
-                                        pathAttrs.d += `L${endX - col} ${endY - dy} `;
-                                        pathAttrs.d += `Q${endX - col} ${endY} ${endX} ${endY}`;
-                                    }
+                                        pathAttrs.d += `Q${startX} ${startY + row} ${startX + dx} ${startY + row}`;
+                                        pathAttrs.d += `H${endX - dx}`;
+                                        pathAttrs.d += `Q${endX} ${startY + row} ${endX} ${endY}`;
+                                        pathAttrs.d += `V${endY}`;
+                                     }
                                 });
-                            }
-                        } else {
-                            if (source[symbols.views]['Tree Diagram']?.layout === 'Vertical') {
-                                const x = node.x + this.configuration.columnGap;
-                                const start = node.y + node.height;
-                                const lastNode = dataNodes[dataNodes.length - 1];
-                                const end = lastNode.box.y + lastNode.y + lastNode.height / 2;
-                                pathAttrs.d = `M${x} ${start} V${end} `;
-                                pathAttrs.d += dataNodes.map((node) =>
-                                    `M${x} ${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
-                            } else {
-                                const first = dataNodes[0];
-                                const last = dataNodes[nodes.length - 1];
-                                const start = first.box.x + first.box.width / 2;
-                                const end = last.box.x + last.box.width / 2;
-                                const height = node.y + node.height + this.configuration.rowGap / 2;
-                                pathAttrs.d = `M${node.x + node.width / 2} ${node.y + node.height} V${height} M${start} ${height} H${end} `,
-                                    pathAttrs.d += dataNodes.map((node) =>
-                                        `M${node.box.x + node.x + node.width / 2} ${node.box.y + node.y} v-${this.configuration.rowGap / 2}`).join(' ');
                             }
                         }
                         this.add('path', pathAttrs, null, [], group);
                     }
-                    nodes.forEach((node) => addNode(node, group));
                     ++index;
+                    nodes.forEach((node) => addNode(node, group));
                 }
 
-                const width = Math.max(...this._structure.map((node) => getData(node).box.x + getData(node).box.width));
-                const height = Math.max(...this._structure.map((node) => getData(node).box.y + getData(node).box.height));
+                const width = Math.max(0, ...this._structure.map((node) => getData(node).box.x + getData(node).box.width));
+                const height = Math.max(0, ...this._structure.map((node) => getData(node).box.y + getData(node).box.height));
 
                 const extents = {
                     top: 0,
@@ -3773,6 +3800,8 @@
                     this.detail.innerHTML = '';
                     Object.entries(this._currentNode).map(([key, value]) =>
                         this.detail.append(showEntry(key, value, [value])));
+                    Object.entries(this._currentNode[symbols.views]).map(([key, value]) =>
+                        this.detail.append(showEntry(key, value, [value])));
                     if (this.settings.context.value) {
                         const view = this._currentNode[symbols.views][this.settings.context.value];
                         if (view) {
@@ -4121,7 +4150,7 @@
             makeNode(context) {
                 const node = {
                     [symbols.source]: [this],
-                    [symbols.container]: context.scope[0].node,
+                    [symbols.container]: context.ancestors[0],
                     [symbols.content]: [],
                     [symbols.links]: {},
                     [symbols.value]: '',
@@ -4132,6 +4161,9 @@
                 };
                 this.startScope(context, node);
                 this.parseValue(context, node);
+                context.ancestors.unshift(node);
+                node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
+                context.ancestors.shift();
                 this.endScope(context);
                 return node;
             }
@@ -4141,7 +4173,8 @@
                     values: {},
                     modifiers: [],
                     finalisation: [],
-                }
+                    defaults: [],
+                };
                 scope.propagated = Object.assign({}, context.scope[0].propagated);
                 context.scope.unshift(scope);
                 return scope;
@@ -4161,11 +4194,13 @@
                         context.rootNodes.push(node);
                     }
                 }
-                node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
                 node[symbols.value] += `${this.value};`;
             }
         }
 
+        /**
+         * Append values to the current node
+         */
         class ContinuationNode extends MetaNode {
             static pattern = /^\&(?<value>.+)$/;
             static match(value) {
@@ -4180,11 +4215,14 @@
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
-                this.parseValue(context, context.scope[0].node, false);
+                this.parseValue(context, context.ancestors[0], false);
                 return this.content.flatMap((node) => node.expand(context));
             }
         }
 
+        /**
+         * Set a variable for use in processing following nodes
+         */
         class VariableNode extends MetaNode {
             static pattern = /^\$(?<value>.+)$/;
             static match(value) {
@@ -4225,6 +4263,9 @@
             }
         }
 
+        /**
+         * Extend the given node
+         */
         class ExtensionNode extends MetaNode {
             static pattern = /^\*(?<value>.+)$/;
             static match(value) {
@@ -4240,11 +4281,11 @@
                 const templateMatch = this.value.match(/ \[(?<definition>[^\[\]]+)\]$/);
                 const values = [];
                 let value;
-                const defaults = (context.defaultValue.length > 0) ? `;${context.defaultValue.join(' ')}` : '';
+                const defaults = `${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
 
                 if (templateMatch) {
                     const list = getGroupData(templateMatch.groups.definition);
-                    const rawValue = `${this.value.replace(/ \[[^\[\]]+\]$/, '')}${defaults}`;
+                    const rawValue = `${this.value.replace(/ \[[^\[\]]+\]$/, '')};${defaults}`;
                     list.forEach((item, index) => {
                         context.scope[0].values[''] = context.scope[0].values['_'] = item;
                         context.scope[0].values['_n'] = index;
@@ -4253,7 +4294,7 @@
                         values.push(context.resolve(value));
                     });
                 } else {
-                    value = `${this.value}${defaults}`;
+                    value = `${this.value};${defaults}`;
                     context.modifiers.forEach((modifier) => value = modifier.apply(value));
                     values.push(context.resolve(value));
                 }
@@ -4271,8 +4312,8 @@
                         const name = indexed.groups.name;
                         const index = parseInt(indexed.groups.index);
     
-                        while(!referencedNode && level < context.scope.length) {
-                            const nodes = context.scope[level]?.node[symbols.content].filter((child) => child.name === name);
+                        while(!referencedNode && level < context.ancestors.length) {
+                            const nodes = context.ancestors[level]?.[symbols.content].filter((child) => child.name === name);
                             referencedNode = nodes[index];
                             ++level;
                         }
@@ -4281,8 +4322,8 @@
                             referencedNode = context.nodeList.filter((existing) => existing.name === name)[index];
                         }                    
                     } else {
-                        while(!referencedNode && level < context.scope.length) {
-                            referencedNode = context.scope[level]?.node[symbols.content].find((child) => child.name === name);
+                        while(!referencedNode && level < context.ancestors.length) {
+                            referencedNode = context.ancestors[level]?.[symbols.content].find((child) => child.name === name);
                             ++level;
                         }
                         
@@ -4293,9 +4334,7 @@
     
                     // If the name is found add the data otherwise return a new node
                     if (referencedNode) {
-                        this.startScope(context, referencedNode);
                         this.parseValue(context, referencedNode, false);
-                        this.endScope(context);
                     } else {
                         console.log(`NO MATCH for ${name}`);
                     }
@@ -4344,7 +4383,7 @@
             map(context, node, mapping) {
                 const newNode = {
                     [symbols.source]: [node[symbols.source][0], this],
-                    [symbols.container]: context.scope[0].node,
+                    [symbols.container]: context.ancestors[0],
                     [symbols.content]: [],
                     [symbols.links]: {},
                     [symbols.value]: '',
@@ -4400,7 +4439,7 @@
                     }
                     return Object.entries(values).map(([key, nodes]) => ({
                         [symbols.source]: nodes.map((node) => node[symbols.source][0]),
-                        [symbols.container]: context.scope[0].node,
+                        [symbols.container]: context.ancestors[0],
                         [symbols.content]: [],
                         [symbols.links]: {},
                         [symbols.value]: nodes.length,
@@ -4470,9 +4509,7 @@
             }
             expand(context) {
                 // Generate a temporary node
-                if (context.defaultValue.length > 0) {
-                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
-                }
+                this.value = `${this.value};${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
@@ -4515,10 +4552,15 @@
                 this.value = match.groups.value;
             }
             expand(context) {
-                context.defaultValue.push(this.value);
-                const content = this.content.flatMap((node) => node.expand(context));
-                context.defaultValue.pop();
-                return content;
+                if (this.content.length) {
+                    this.startScope(context);   
+                    context.scope[0].defaults.push(this.value);
+                    const content = this.content.flatMap((node) => node.expand(context));
+                    this.endScope(context);
+                    return content;
+                }
+                context.scope[0].defaults.push(this.value);
+                return this.content.flatMap((node) => node.expand(context));
             }
         }
 
@@ -4534,7 +4576,9 @@
             }
             expand(context) {
                 context.views.push(this.value);
+                super.startScope(context);
                 const content = this.content.flatMap((node) => node.expand(context));
+                super.endScope(context);
                 context.views.pop();
                 return content;
             }
@@ -4585,9 +4629,7 @@
             }
             expand(context) {
                 // Process the elements of the value based on the context
-                if (context.defaultValue.length > 0) {
-                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
-                }
+                this.value = `${this.value};${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
                 context.modifiers.forEach((modifier) => {
                     this.list = modifier.apply(this.list);
                     this.value = modifier.apply(this.value);
@@ -4605,6 +4647,9 @@
             }
         }
 
+        /**
+         * Create a duplicate tree based on the defintion of the referenced node.
+         */
         class ReferenceNode extends MetaNode {
             static pattern = /^<(?<parameter>[^=]+)=(?<value>[^>]+)>$/;
             static match(content) {
@@ -4628,12 +4673,15 @@
                 if (refNode) {
                     return refNode.source.expand(context);
                 }
-                context.warnings.push(`Unresolved refernce ${this.parameter} = ${this.value} on line: $(this.lineNumber}`);
+                context.warnings.push(`Unresolved reference ${this.parameter} = ${this.value} on line: $(this.lineNumber}`);
 
                 return super.makeNode(context);
             }
         }
 
+        /**
+         * Add the contents if the condition is true
+         */
         class ConditionalNode extends MetaNode {
             static match(content) {
                 const pattern = /^\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/;
@@ -4671,6 +4719,9 @@
             }
         }
 
+        /**
+         * Replace matching content prior to processing
+         */
         class PatternNode extends MetaNode {
             static pattern = /^!\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*->\s*(?<replacement>.+)$/;
             static match(content) {
@@ -4689,13 +4740,18 @@
                 }
             }
             preprocess(node) {
+                console.log(node.value);
                 node.value = node.value.replace(this.expression, this.replacement);
+                console.log(node.value);
             }
             expand(context) {
                 return this.content.flatMap((node) => node.expand(context));
             }
         }
         
+        /**
+         * Replace node with content of file.
+         */
         class ImportNode extends MetaNode {
             static cache = {};
             static pattern = /^<(?<url>[^>]+)>\s*/;
@@ -4727,6 +4783,9 @@
             }
         }
 
+        /**
+         * Replace pattern in following nodes with given string.
+         */
         class ParsedPatternNode extends MetaNode {
             static pattern = /^\/(?<pattern>[^\/]+)\/(?<flags>[ig])?\s*->\s*(?<replacement>.+)$/;
             static match(content) {
@@ -4756,6 +4815,9 @@
             }
         }
 
+        /**
+         * Use format to define following nodes
+         */
         class FormatNode extends MetaNode {
             static match(content) {
                 const pattern = /^\$(?<format>(<[^>]+>[^<]+)*(<[^>]+>))\s*;?\s*$/;
@@ -4843,21 +4905,23 @@
                 super(value, level, lineNumber);
             }
             expand(context) {
-                if (context.defaultValue.length > 0) {
-                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
-                }
+
+                this.value = `${this.value};${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
-                });
+                });                
+                const path = this.value.split(/[\t;\|]/, 1)[0].split(/[\./]/g).slice(1);
+                this.value = this.value.replace(/^[^\t;\|]+[\t;\|]/, '');
+                
                 const node = super.makeNode(context);
-                const path = (node[symbols.values][0] + '').replace(/[\./]+$/, '').split(/([\./])/g);
+                node[symbols.values].unshift(path.join());
 
-                if (path.length > 2) {
-                    const containerID = numberOrString(path.slice(0, -2).join(''));
-                    const container = context.scope.find((scope) =>
-                        scope.node && scope.node[symbols.values][0] === containerID)?.node ||
-                        context.nodeList.find((node) =>
-                            node[symbols.values][0] === containerID);
+                if (path.length) {
+                    const containerID = path.slice(0, -1).join();
+                    const scope = context.ancestors.find((node) => node[symbols.values][0] === containerID)
+                        const container = scope ? scope :
+                            context.nodeList.find((node) =>
+                                node[symbols.values][0] === containerID);
                     if (container) {
                         container[symbols.content].push(node);
                         return [];
@@ -4876,9 +4940,8 @@
                 super(value, level, lineNumber);
             }
             expand(context) {
-                if (context.defaultValue.length > 0) {
-                    this.value = `${this.value};${context.defaultValue.join(' ')}`;
-                }
+                this.value = `${this.value};${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
+
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
@@ -5232,13 +5295,13 @@
                     TableNode,
                     PathNode,
                     PlainNode],
-                scope: [{ node: {[symbols.values]: [],[symbols.content]: []}, values: {}, modifiers: [], propagated: {}, }],
+                scope: [{ node: {[symbols.values]: [],[symbols.content]: []}, values: {}, modifiers: [], propagated: {}, defaults: []}],
+                ancestors: [],
                 names: {},
                 rootNodes: [],
                 nodeList: [],
                 modifiers: [],
                 parsers: [],
-                defaultValue: [],
                 views: [],
                 warnings: [],
                 resolve(value) {
@@ -5688,7 +5751,7 @@
                 let positionalName = null;
                 let position = node.position;
 
-                const shapeName = positionalName || (node?.shape ? node.shape.toLowerCase() : 'none');
+                const shapeName = positionalName || (node.shape ? node.shape.toLowerCase() : 'none');
                 const typeName = shapeName.slice(0, 1).toUpperCase() + shapeName.slice(1).toLowerCase();
                 report(typeName);
 
@@ -9866,6 +9929,7 @@ void main() {
             parse() {
                 const name = this?.currentNode?.name;
                 this.sourceStructure = getStructure(this.source);
+                console.log(this.sourceStructure);
                 this.structure = expand(this.sourceStructure, valueParser);
                 this.process();
                 this.views.forEach((view) => view.structure = this.structure);
