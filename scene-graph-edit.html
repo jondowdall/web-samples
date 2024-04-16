@@ -3101,10 +3101,10 @@ ${svg.parentElement.innerHTML}`;
                         x: node.x + node.width / 2,
                         y: node.y,
                         'font-size': `${node.fontSize}pt`,
-                        'font-family': 'sans-serif',
+                        'font-family': getValue(source, 'font', 'sans-serif'),
                         'text-anchor': 'middle',
                         'dominant-baseline': 'middle',
-                        fill: 'black',
+                        fill: getValue(source, 'text', 'black'),
                     };
                     
                     const getLength = (text) => {
@@ -3180,7 +3180,6 @@ ${svg.parentElement.innerHTML}`;
                             const y3 = node.y + 5 + node.height / 2;
                             attrs.d = `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`;
                             textAttrs.x = node.x + 10;
-                            textAttrs['text-anchor'] = 'start';                        
                         } else {
                             const x1 = node.x - 5 + node.width / 2;
                             const y1 = node.y - 5 + node.height / 2;
@@ -3190,8 +3189,8 @@ ${svg.parentElement.innerHTML}`;
                             const y3 = node.y + 5 + node.height / 2;
                             attrs.d = `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z M${x2} ${node.y} v${node.height}`;
                             textAttrs.x = node.x + 10 + node.width / 2;
-                            textAttrs['text-anchor'] = 'start';                        
                         }
+                        textAttrs['text-anchor'] = 'start';                        
                         shape = this.add('path', attrs, null, [], container);
                     } else if (node.shape === 'top diamond') {
                         const x1 = node.x - 5 + node.width / 2;
@@ -3210,6 +3209,45 @@ ${svg.parentElement.innerHTML}`;
                         shape = this.add('path', attrs, null, [], container);
                         textAttrs.y = node.y + node.height / 2 + 15;
                         node.cx = node.x - 5 + node.width / 2;
+                    } else if (node.shape === 'link') {
+                        const startNode = getValue(source, 'start', 'undefined');
+                        const endNode = getValue(source, 'end', 'undefined');
+                        const startAncestors = getAncestors(startNode);
+                        const endAncestors = getAncestors(endNode);
+                        let index = 0;
+                        while (startAncestors[index] === endAncestors[index]) {
+                            ++index;
+                        }
+                        const start = {x: 0, y: 0};
+                        const end = {x: 0, y: 0};
+                        const attrs = { d: '', fill: 'none', stroke, };
+                        if (index > 0) {
+                            let startIndex = index;
+                            while (startIndex < startAncestors.length) {
+                                start.x += getData(startAncestors[startIndex])?.box?.x ?? 0;
+                                start.y += getData(startAncestors[startIndex])?.box?.y ?? 0;
+                                ++startIndex;
+                            }
+                            let endIndex = index;
+                            while (endIndex < endAncestors.length) {
+                                end.x += getData(endAncestors[endIndex])?.box?.x ?? 0;
+                                end.y += getData(endAncestors[endIndex])?.box?.y ?? 0;
+                                ++endIndex;
+                            }
+                            attrs.d = `M${start.x} ${start.y} L${end.x} ${end.y}`;
+                            shape = this.add('path', attrs, null, [], getData(startAncestors[index - 1])?.svgNodes[0] ?? this.svg);
+                        } else {
+                            startAncestors.forEach((ancestor) => {
+                                start.x += getData(ancestor)?.box?.x ?? 0;
+                                start.y += getData(ancestor)?.box?.y ?? 0;
+                            });
+                            endAncestors.forEach((ancestor) => {
+                                end.x += getData(ancestor)?.box?.x ?? 0;
+                                end.y += getData(ancestor)?.box?.y ?? 0;
+                            });
+                            attrs.d = `M${start.x} ${start.y} L${end.x} ${end.y}`;
+                            shape = this.add('path', attrs, null, [], this.svg);
+                        }
                     } else if (node.shape === 'svg') {
                         source[symbols.content].forEach((child) =>
                             this.add(child.name, child, child[symbols.content], [], container));
@@ -5288,40 +5326,9 @@ ${svg.parentElement.innerHTML}`;
                         unnamed.push(item);
                     }
                 });
-                
-                /* todo add view parsing
-                data.forEach((item) => {
-                    item = item.trim();
-                    if (item.includes('=')) {
-                        const [name, ...valueArr] = item.split(/=/);
-                        
-                        const value = valueArr.join('=');
-                        if (value.trim() === '') {
-                            node[name] = null;
-                        } else if (/^"[^"]+"$/.test(value)) {
-                            node[name] = value.replace(/^"([^"]+)"$/, '$1');
-                        } else if (value.startsWith('^')) {
-                            const referenced = value.length > 1 ? value.slice(1) : name;
-                            let container = context.container.find((container) => container[referenced] !== undefined);
-                            if (container) {
-                                node[name] = container[referenced];
-                            } else {
-                                node[name] = value;
-                            }
-                        } else if (value.includes(',')) {
-                            node[name] = [];
-                            value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
-                        } else {
-                            setProperty(node, name, value);
-                        }
-                    }
-                }
-                */
-                
-                
+
                 context.parsers.forEach((parser) => parser.apply(context, node, namedValues, unnamed, references));
 
-                
                 if (value.includes('LOG')) {
                     console.log(references);
                 }
@@ -5380,6 +5387,9 @@ ${svg.parentElement.innerHTML}`;
                             } else {
                                 node[name] = value;
                             }
+                        } else if (value.startsWith('@')) {
+                            const targetName = value.slice(1).trim();
+                            node[name] = context.nodeList.filter((node) => node.name === targetName)[0] ?? value;
                         } else if (value.includes(',')) {
                             node[name] = [];
                             value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
@@ -7644,6 +7654,7 @@ void main() {
          * Connection between two nodes
          */
         class Link {
+            static links;
             static make(view, node, index, namedNodes) {
                 const from = node.from;
                 const to = node.to;
@@ -7665,7 +7676,7 @@ void main() {
                 }
             }
             static hash(node) {
-                return `link ${++links}`;
+                return `link ${++this.links}`;
             }
             constructor(view, from, to, points = []) {
                 const gl = view.context;
