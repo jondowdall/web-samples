@@ -4683,7 +4683,7 @@ ${svg.parentElement.innerHTML}`;
          * Symbols used to provide attributes of the nodes that are independent of user attributes.
          */
         const symbols = {
-            name: Symbol('name'),
+            names: Symbol('names'),
             title: Symbol('title'),
             source: Symbol('source'),
             content: Symbol('content'),
@@ -4720,7 +4720,7 @@ ${svg.parentElement.innerHTML}`;
                 }
             }
             return getAncestors(node).map((node) =>
-                node.name ?? viewName(node) ?? '').join(sep);
+                node[symbols.names][0] ?? viewName(node) ?? '').join(sep);
         }
         
         /**
@@ -4767,7 +4767,8 @@ ${svg.parentElement.innerHTML}`;
                     [symbols.values]: [],
                     [symbols.views]: {},
                     [symbols.viewData]: new Map(),
-                    [symbols.name]: '',
+                    [symbols.names]: [],
+                    [symbols.name]() { return this[symbols.names][0] },
                 };
                 this.startScope(context, node);
                 this.parseValue(context, node);
@@ -4915,29 +4916,14 @@ ${svg.parentElement.innerHTML}`;
                     let referencedNode;
                     let level = 0;
                     const indexed = name.match(/^(?<name>[^\[]+)\[(?<index>[^\]]+)\]$/);
-    
+                    
                     if (indexed) {
                         const name = indexed.groups.name;
                         const index = parseInt(indexed.groups.index);
-    
-                        while(!referencedNode && level < context.ancestors.length) {
-                            const nodes = context.ancestors[level]?.[symbols.content].filter((child) => child.name === name);
-                            referencedNode = nodes[index];
-                            ++level;
-                        }
-                        
-                        if (!referencedNode) {
-                            referencedNode = context.nodeList.filter((existing) => existing.name === name)[index];
-                        }                    
+
+                        referencedNode = getReference(context, name)[index];
                     } else {
-                        while(!referencedNode && level < context.ancestors.length) {
-                            referencedNode = context.ancestors[level]?.[symbols.content].find((child) => child.name === name);
-                            ++level;
-                        }
-                        
-                        if (!referencedNode) {
-                            referencedNode = context.nodeList.find((existing) => existing.name === name);
-                        }
+                        referencedNode = getReference(context, name)[0];
                     }
     
                     // If the name is found add the data otherwise return a new node
@@ -5710,6 +5696,44 @@ ${svg.parentElement.innerHTML}`;
             },  
             concat: (list) => list.join(),
         };
+
+        function getReference(context, name) {
+            const nodes = context.nodeList.filter((node) => node[symbols.names].includes(name));
+            if (nodes.length > 0) {
+                return nodes;
+            } else {
+                const path = name.split(/[-\/\.]/);
+                path.shift();
+                if (path.length > 1) {
+                    const first = path.shift();
+                    let matches = context.nodeList.filter((node) => node[symbols.names].includes(first));
+                    let last = [];
+                    let index = 0;
+                    while ((index < path.length) && matches.length) {
+                        last = matches;
+                        matches = matches.flatMap((node) =>
+                            node[symbols.content].filter((node) => node[symbols.names].includes(path[index])));
+                        ++index;
+                    }
+                    if (matches.length > 0) {
+                        return matches;
+                    }
+                    matches = last;
+
+                    --index;
+                    while ((index < path.length) && matches.length) {
+                        matches = last.flatMap((node) => node[path[index]] ?? []);
+                        ++index;
+                    }
+                    --index;
+                    return matches;
+                }
+            }
+            return [];
+        }
+
+        
+        
         
         /**
          * Generate a node parameters from the value string and context
@@ -5785,6 +5809,8 @@ ${svg.parentElement.innerHTML}`;
                         } else {
                             unnamed.push(name);
                         }
+                    } else if (item.startsWith('~')) {
+                        node[symbols.names].push(item.slice(1).trim());
                     } else {
                         unnamed.push(item);
                     }
@@ -5802,6 +5828,7 @@ ${svg.parentElement.innerHTML}`;
                 nodes.forEach((targetNode) => {
                     if (newNode) {
                         node.name = data[0].trim();
+                        node[symbols.names].push(data[0].trim());
                     }
 
                     references.reverse();
