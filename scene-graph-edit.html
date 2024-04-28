@@ -2752,7 +2752,7 @@ ${svg.parentElement.innerHTML}`;
                 }
                 return element;
             }
-            add(type, attributes, content, classes, parent) {
+            add(type, parent, attributes={}, content, classes) {
                 parent = parent || this.svg;
                 const element = this.make(type, attributes, content, classes);
                 parent.appendChild(element);
@@ -2806,7 +2806,7 @@ ${svg.parentElement.innerHTML}`;
                     if (this._structure.includes(node)) {
                         return;
                     }
-                    this.add(node.name, node, node[symbols.content], [], this.svg);
+                    this.add(node.name, this.svg, node, node[symbols.content], []);
                     if (view) {
                         node = new Proxy(node, handler);
                     }
@@ -2831,16 +2831,20 @@ ${svg.parentElement.innerHTML}`;
          * Get the SVG shape for a node.
          */
         function getSVGShape(node, view) {
-            const shapes = [SVGRect, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGTopDiamond, SVGLeftDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
-            const shapeName = ((node[symbols.views][view.title]?.shape ?? node.shape) + '').toLowerCase();
-            const shapeType = shapes.find((shape) => shape.name === shapeName) ?? SVGRect;
-            return shapeType.make(view, node);
+            if (node) {
+                const shapes = [SVGRect, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGTopDiamond, SVGLeftDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
+                const shapeName = ((node[symbols.views][view.title]?.shape ?? node.shape) + '').toLowerCase();
+                const shapeType = shapes.find((shape) => shape.name === shapeName) ?? SVGRect;
+                return shapeType.make(view, node);
+            }
+            return new SVGNone(view);
         }
 
         /**
          * SVG Tree Diagram node types
          */
         class SVGNode {
+            static clipCount = 0;
             static make(view, node) {
                 return new this(view, node);
             }
@@ -2849,44 +2853,120 @@ ${svg.parentElement.innerHTML}`;
                 this.node = node;
                 this.fill = this.getData('fill') ?? 'white';
                 this.stroke = this.getData('line') ?? 'black';
+                this.leftEdge = [];
+                this.rightEdge = [];
+                this.x = 0;
+                this.y = 0;
+                this.box = {x: 0, y: 0};
             }
             getData(property) {
-                return this.node[symbols.views]?.[this.view.title]?.[property] ?? this.node[property];
+                return this.node[symbols.views]?.[this.view.title]?.[property] ?? this.node?.[property];
             }
             viewData(property) {
                 return this.node[symbols.viewData].get(this.view)?.[property];
             }
-            getContent() {
-                const contentProperty = this.getData('content property');
-                const nodes = (contentProperty ? this.node[contentProperty] : this.node[symbols.content])
-                    .filter((node) => node[symbols.source]);
-                
-                const shapes = [SVGRect, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGTopDiamond, SVGLeftDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
-                const getValue = (node, property, value) =>
-                    node[symbols.views]?.[this.view.title]?.[property] ?? node[property] ?? value;
+            get width() {
+                return this.getData('width') ?? 100;
+            }
+            get height() {
+                return this.getData('height') ?? 60;
+            }
+            get fontSize() {
+                return this.getData('font size') ?? 10;
+            }
+            get lineHeight() {
+                return this.fontSize * (this.getData('line spacing') ?? 1.4);
+            }
+            addContainer(parent) {
+                const href = this.getData('href');
+                parent = href ? this.view.add('a', parent, {href}) : parent;
+                this.container = this.view.add('g', parent);
+                this.viewData('svgNodes').push(this.container);
+                if (this.getData('layout') === 'grid') {
+                    this.containerRect = this.view.add('rect', this.container);
+                    this.containerRect.addEventListener('click', (event) => clickNode(this.node, event));
+                    this.containerRect.addEventListener('dblclick', (event) => dblClickNode(this.node, event));
+                    this.viewData('svgNodes').push(this.containerRect);
+                }
+                return this.container;
+            }
+            drawContainer() {
+                const attrs = {
+                    x: 0,
+                    y: 0,
+                    width: this.box.width,
+                    height: this.box.height,
+                    stroke: this.stroke,
+                    fill: this.fill,
+                };
+                const svgElement = this.view.updateElement(this.containerRect, attrs);
+            }
+            addText(x, y) {
+                const textAttrs = {
+                    x, y,
+                    'font-size': `${this.fontSize}pt`,
+                    'font-family': this.getData('font') ?? 'sans-serif',
+                    'text-anchor': 'middle',
+                    'dominant-baseline': 'middle',
+                    fill: this.getData('text') ?? 'black',
+                };
 
-                nodes.forEach((node) => {
-                    const shapeName = ((node[symbols.views]?.[this.title]?.shape ?? node.shape) + '').toLowerCase();
-                    const shapeType = shapes.find((shape) => shape.name === shapeName) ?? SVGRect;
-                    
-                    node[symbols.viewData].set(this, {
-                        width: this.getData(node, 'width') ?? 100,
-                        height: this.getData(node, 'height') ?? 60,
-                        shape: this.getData(node, 'shape'),
-                        shapeObj: shapeType.make(this, node),
-                        fontSize: this.getData(node, 'font size') ?? 10,
-                        lineSpacing: this.getData(node, 'line spacing') ?? 1.4,
-                        x: 0, y: 0,
-                        box: {},
-                        svgNodes: [],
-                        leftEdge: [],
-                        rightEdge: [],
-                        nextX: this.view.configuration.columnGap,
-                        nextY: this.view.configuration.rowGap,
-                        rowHeight: 0,
-                    });
+                const getLength = (text) => {
+                    const node = this.view.add('text', this.container, textAttrs, text);
+                    const length = node.getComputedTextLength();
+                    node.remove();
+                    return length;
+                };
+                const lines = fitText(this.view.configuration.nodeText(this.node) ?? '', this.width, getLength);
+                textAttrs.y = y + (this.height - (lines.length - 1) * this.lineHeight) / 2;
+                
+                if (this.width && this.height) {
+                    const clipRect = this.view.make('rect', { x: this.x, y: this.y, width: this.width, height: this.height });
+                    this.view.add('clipPath', this.container, { id: `clip${SVGNode.clipCount}` }, clipRect);
+                    textAttrs['clip-path'] = `url(#clip${SVGNode.clipCount})`;
+                }
+                ++SVGNode.clipCount;
+
+                lines.forEach((line) => {
+                    this.view.add('text', this.container, textAttrs, line);
+                    textAttrs.y += this.lineHeight;
                 });
-                return nodes;
+            }
+            drawTreeLines(shapes, leftToRight) {
+                const attrs = {
+                    fill: 'none', stroke: this.getData('line') ?? 'black',
+                }
+                if (this.getData('layout') === 'grid') {
+                    this.x = (this.box.width - this.width) / 2;
+                    this.y = this.view.configuration.rowGap;
+                } else if (leftToRight) {
+                    
+                } else if (this.getData('layout') === 'vertical') {
+                    this.x = 0;
+                    this.y = 0;
+                    const l = Math.max(...shapes.map((shape) => shape.box.y + shape.y + shape.height / 2));
+                    attrs.d = `M ${this.view.configuration.columnGap} ${this.height} V${l}`;
+                    shapes.forEach((shape) => {
+                        const y = shape.box.y + shape.y + shape.height / 2;
+                        const x = shape.box.x + shape.x;
+                        attrs.d += ` M ${this.view.configuration.columnGap} ${y} H${x}`;
+                    });
+                } else {
+                    this.x = (this.box.width - this.width) / 2;
+                    this.y = 0;
+                    const x1 = Math.min(...shapes.map((shape) => shape.box.x + shape.x + shape.width / 2));
+                    const x2 = Math.max(...shapes.map((shape) => shape.box.x + shape.x + shape.width / 2));
+                    attrs.d = `M ${this.x + this.width / 2} ${this.height} v${this.view.configuration.rowGap}`;
+                    attrs.d += ` M ${x1} ${this.height + this.view.configuration.rowGap} h${x2 - x1}`;
+                    shapes.forEach((shape) => {
+                        const x = shape.box.x + shape.x + shape.width / 2;
+                        const y = shape.box.y + shape.y;
+                        attrs.d += ` M ${x} ${this.height + this.view.configuration.rowGap} V${y}`;
+                    });
+                }
+                if (shapes.length > 0) {
+                    this.view.add('path', this.container, attrs);
+                }
             }
             linePoint(points, position) {
                 const segments = points.length - 1;
@@ -2914,37 +2994,27 @@ ${svg.parentElement.innerHTML}`;
             constructor(view, node) {
                 super(view, node);                
             }
-
-            draw(container, textAttrs) {
-                const nodes = this.getContent();
-                nodes.forEach((node) => {
-                    
-                });
+            draw() {
                 const attrs = {
-                    x: this.viewData('x'), y: this.viewData('y'),
-                    width: this.viewData('width'), height: this.viewData('height'),
+                    x: this.x,
+                    y: this.y,
+                    width: this.width, height: this.height,
                     fill: this.fill, stroke: this.stroke,
                 };
-                if (this.getData('layout') === 'Spacial') {
-                    attrs.x = 0;
-                    attrs.y = 0;
-                    attrs.width = this.viewData('box').width;
-                    attrs.height = this.viewData('box').height;
-                    textAttrs.x = attrs.width / 2;
-                    textAttrs.y = this.viewData('fontSize') * this.viewData('lineSpacing');
-
-                }
-                return this.view.add('rect', attrs, null, [], container);
+                const svgElement = this.view.add('rect', this.container, attrs);
+                this.addText(this.x + this.width / 2, 0);
+                svgElement.addEventListener('click', (event) => clickNode(this.node, event));
+                svgElement.addEventListener('dblclick', (event) => dblClickNode(this.node, event));
+                this.viewData('svgNodes').push(svgElement);
             }
-            
             connectionPoint(position) {
-                let x = this.viewData('x'), y = this.viewData('y');
-                let w = this.viewData('width'), h = this.viewData('height');
+                let x = this.x, y = this.y;
+                let w = this.width, h = this.height;
                 
-                if (this.getData('layout') === 'Spacial') {
+                if (this.getData('layout') === 'grid') {
                     x = y = 0;
-                    w = this.viewData('box').width;
-                    h = this.viewData('box').height;
+                    w = this.box.width;
+                    h = this.box.height;
                 }
 
                 const points = [{x: x, y: y}, {x: x + w, y: y}, {x: x + w, y: y + h}, {x: x, y: y + h}, {x: x, y: y} ];
@@ -2967,7 +3037,7 @@ ${svg.parentElement.innerHTML}`;
                     r: this.radius,
                     fill: this.fill, stroke: this.stroke,
                 };
-                return this.view.add('circle', attrs, null, [], container);
+                return this.view.add('circle', container, attrs);
             }
             get cx() {
                 return this.viewData('x') + this.viewData('width') / 2;
@@ -3000,7 +3070,7 @@ ${svg.parentElement.innerHTML}`;
                     rx: this.xRadius, ry: this.yRadius,
                     fill: this.fill, stroke: this.stroke,
                 };
-                return this.view.add('ellipse', attrs, null, [], container);
+                return this.view.add('ellipse', container, attrs);
             }
             get cx() {
                 return this.viewData('x') + this.viewData('width') / 2;
@@ -3042,7 +3112,7 @@ ${svg.parentElement.innerHTML}`;
                     d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
                     fill: this.fill, stroke: this.stroke,
                 };
-                return this.view.add('path', attrs, null, [], container);
+                return this.view.add('path', container, attrs);
             }
             connectionPoint(position) {
                 const x1 = this.viewData('x');
@@ -3075,7 +3145,7 @@ ${svg.parentElement.innerHTML}`;
                     d: `M${x1} ${y1} L${x2} ${y1} L${x4} ${y2} L${x3} ${y2} Z`,
                     fill: this.fill, stroke: this.stroke,
                 };
-                return this.view.add('path', attrs, null, [], container);
+                return this.view.add('path', container, attrs);
             }
             connectionPoint(position) {
                 const x1 = this.viewData('x') + (this.viewData('offset') ?? 10);
@@ -3107,7 +3177,7 @@ ${svg.parentElement.innerHTML}`;
                     d: `M${x2} ${y1} L${x3} ${y1} L${x4} ${y2} L${x1} ${y2} Z`,
                     fill: this.fill, stroke: this.stroke,
                 };
-                return this.view.add('path', attrs, null, [], container);
+                return this.view.add('path', container, attrs);
             }
             connectionPoint(position) {
                 const x1 = this.viewData('x');
@@ -3150,7 +3220,7 @@ ${svg.parentElement.innerHTML}`;
                     textAttrs.x = this.viewData('x') + 10 + this.viewData('width') / 2;
                 }
                 textAttrs['text-anchor'] = 'start';                        
-                return this.view.add('path', attrs, null, [], container);
+                return this.view.add('path', container, attrs);
             }
         }
     
@@ -3176,7 +3246,7 @@ ${svg.parentElement.innerHTML}`;
                     attrs.d += `M${viewData('x')} ${viewData('y') + this.viewData('height') / 2} h${viewData('width')}`;
                 }
                 textAttrs.y = this.viewData('y') + this.viewData('height') / 2 + 15;
-                return this.view.add('path', attrs, null, [], container);
+                return this.view.add('path', container, attrs);
             }
         }
 
@@ -3188,7 +3258,7 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw(container, textAttrs) {
-                const group = this.view.add('g', {}, null, [], container);
+                const group = this.view.add('g', container);
 
                 const property = this.getData('data') ?? 'value';
 
@@ -3214,7 +3284,7 @@ ${svg.parentElement.innerHTML}`;
                         attrs.d = `M ${x1} ${y1} A${r} ${r} 0 ${span > Math.PI ? 1 : 0} 0 ${x2} ${y2} L${r} ${r} Z`;
                         angle += span;
 
-                        this.view.add('path', attrs, null, [], group);
+                        this.view.add('path', group, attrs);
                     });
                 }
                 return group;
@@ -3229,7 +3299,7 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw(container, textAttrs) {
-                const group = this.view.add('g', {}, null, [], container);
+                const group = this.view.add('g', container);
 
                 const xProperty = this.getData('x data') ?? 'x';
                 const yProperty = this.getData('y data') ?? 'y';
@@ -3259,7 +3329,7 @@ ${svg.parentElement.innerHTML}`;
                         const y = height * (1 - ((node[yProperty] - yMin)  / (yMax - yMin)));
                         lineAttrs.d += (i ? 'L' : 'M') + `${x} ${y}`;
                     });
-                    this.view.add('path', lineAttrs, null, [], group);
+                    this.view.add('path', group, lineAttrs);
                 }
                 return group;
             }
@@ -3273,7 +3343,7 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw(container, textAttrs) {
-                const group = this.view.add('g', {}, null, [], container);
+                const group = this.view.add('g', container);
 
                 const property = this.getData('data') ?? 'value';
                 const nodes = this.node[symbols.content].filter((node) => node[property] !== undefined);
@@ -3293,7 +3363,7 @@ ${svg.parentElement.innerHTML}`;
                 const points = nodes.map((node, i) =>
                     lineAttrs.d += (i ? 'L' : 'M') + `${(i + 0.5) * blockWidth} ${height * (1 - node[property] / max)}`);
 
-                this.view.add('path', lineAttrs, null, [], group);
+                this.view.add('path', group, lineAttrs);
                 return group;
             }
         }
@@ -3308,7 +3378,7 @@ ${svg.parentElement.innerHTML}`;
 
             draw(container, textAttrs) {
                 const property = this.getData('data') ?? 'value';
-                const group = this.view.add('g', {}, null, [], container);
+                const group = this.view.add('g', container);
                 const width = this.getData('width') ?? 100;
                 const height = this.getData('height') ?? 60;
                 const nodes = this.node[symbols.content].filter((node) => node[property] !== undefined);
@@ -3331,7 +3401,7 @@ ${svg.parentElement.innerHTML}`;
                         width: blockWidth, height: height * node[property] / max,
                     };
 
-                    this.view.add('rect', attrs, null, [], group); 
+                    this.view.add('rect', group, attrs); 
                 });
                 return group;
             }
@@ -3455,7 +3525,7 @@ ${svg.parentElement.innerHTML}`;
                 const y2 = point.y + radius * Math.cos(angle + Math.PI);
                 attrs.d += ` M${x1} ${y1} A${radius} ${radius} 0 1 1 ${x2} ${y2}`;
             }
-            draw(container, textAttrs) {
+            draw() {
                 const startNode = this.getData('start');
                 const endNode = this.getData('end');
                 if (startNode && endNode && (startNode !== endNode) && startNode[symbols.source] && endNode[symbols.source]) {
@@ -3466,35 +3536,35 @@ ${svg.parentElement.innerHTML}`;
                     while (startAncestors[index] === endAncestors[index]) {
                         ++index;
                     }
-                    const start = getData(startNode).shapeObj.connectionPoint(this.getData('start position') ?? 2.5);
-                    const end = getData(endNode).shapeObj.connectionPoint(this.getData('end position') ?? 0.5);
+                    const start = getData(startNode).shape.connectionPoint(this.getData('start position') ?? 2.5);
+                    const end = getData(endNode).shape.connectionPoint(this.getData('end position') ?? 0.5);
                     const attrs = { d: '', fill: 'none', stroke: this.stroke };
                     let commonAncestor = this.svg;
                     if (index > 0) {
                         let startIndex = index;
                         while (startIndex < startAncestors.length) {
-                            start.x += getData(startAncestors[startIndex])?.box?.x ?? 0;
-                            start.y += getData(startAncestors[startIndex])?.box?.y ?? 0;
+                            start.x += getData(startAncestors[startIndex])?.shape.box?.x ?? 0;
+                            start.y += getData(startAncestors[startIndex])?.shape.box?.y ?? 0;
                             ++startIndex;
                         }
                         let endIndex = index;
                         while (endIndex < endAncestors.length) {
-                            end.x += getData(endAncestors[endIndex])?.box?.x ?? 0;
-                            end.y += getData(endAncestors[endIndex])?.box?.y ?? 0;
+                            end.x += getData(endAncestors[endIndex])?.shape.box?.x ?? 0;
+                            end.y += getData(endAncestors[endIndex])?.shape.box?.y ?? 0;
                             ++endIndex;
                         }
                         commonAncestor = getData(startAncestors[index - 1])?.svgNodes[0] ?? this.svg;
                     } else {
                         startAncestors.forEach((ancestor) => {
-                            start.x += getData(ancestor)?.box?.x ?? 0;
-                            start.y += getData(ancestor)?.box?.y ?? 0;
+                            start.x += getData(ancestor)?.shape.box?.x ?? 0;
+                            start.y += getData(ancestor)?.shape.box?.y ?? 0;
                         });
                         endAncestors.forEach((ancestor) => {
-                            end.x += getData(ancestor)?.box?.x ?? 0;
-                            end.y += getData(ancestor)?.box?.y ?? 0;
+                            end.x += getData(ancestor)?.shape.box?.x ?? 0;
+                            end.y += getData(ancestor)?.shape.box?.y ?? 0;
                         });
                     }
-                    const group = this.view.add('g', {}, [], null, commonAncestor);
+                    const group = this.view.add('g', commonAncestor);
                     const startDirection = Math.floor(Math.abs(this.getData('start position') ?? 2.5)) % 4;
                     const endDirection = Math.floor(Math.abs(this.getData('end position') ?? 0.5)) % 4;
                     const sd = {
@@ -3581,14 +3651,14 @@ ${svg.parentElement.innerHTML}`;
                         const endAttrs = Object.assign({}, attrs, {d : ''});
                         endAttrs.fill = this.getData('start colour') ?? this.getData('line') ?? 'black';
                         startStyle(endAttrs, start, startDirection, this.getData('start size') ?? 10);
-                        this.view.add('path', endAttrs, null, [], commonAncestor);
+                        this.view.add('path', commonAncestor, endAttrs);
                     }
                     const endStyle = endStyles[this.getData('end style')];
                     if (endStyle) {
                         const endAttrs = Object.assign({}, attrs, {d : ''});
                         endAttrs.fill = this.getData('end colour') ?? this.getData('line') ?? 'black';
                         endStyle(endAttrs, end, endDirection, this.getData('end size') ?? 10);
-                        this.view.add('path', endAttrs, null, [], commonAncestor);
+                        this.view.add('path', commonAncestor, endAttrs);
                     }
                     
                     /*
@@ -3609,8 +3679,7 @@ ${svg.parentElement.innerHTML}`;
                     //attrs.d = `M${start.x} ${start.y} L${end.x} ${end.y}`;
                     attrs.d = `M${start.x} ${start.y} C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${end.x} ${end.y}`;
                     */
-                    this.view.add('path', attrs, null, [], group);
-                    return group;
+                    this.view.add('path', group, attrs);
                 }
             }
         }
@@ -3619,20 +3688,23 @@ ${svg.parentElement.innerHTML}`;
 
             constructor(view, node) {
                 super(view, node);
-                console.log(`name: ${node.name}`); 
             }
 
-            draw(container, textAttrs) {
+            draw() {
                 const source = this.getData('source');
-                console.log(`source ${source}`);
+                const nodes = this.viewData('svgNodes');
+
+                const container = this.view.add('g', this.container, {transform: `translate(${shape.x}, ${shape.y})`});
+                nodes.push(container);
                 if (source && source[symbols.content]) {
-                    console.log(source);
                     source[symbols.content].forEach((child) =>
-                        this.view.add(child.name, child, child[symbols.content], [], container));                    
+                        nodes.push(this.view.add(child.name, container, child, child[symbols.content])));                    
                 } else {
                     this.node[symbols.content].forEach((child) =>
-                        this.view.add(child.name, child, child[symbols.content], [], container));
+                        nodes.push(this.view.add(child.name, container, child, child[symbols.content])));
                 }
+                container.addEventListener('click', (event) => clickNode(this.node, event));
+                container.addEventListener('dblclick', (event) => dblClickNode(this.node, event));
             }
         }
         class SVGNone extends SVGNode {
@@ -3641,9 +3713,15 @@ ${svg.parentElement.innerHTML}`;
             constructor(view, node) {
                 super(view, node);                
             }
-
-            draw() {
+            get width() {
+                return 0;
             }
+            get height() {
+                return 0;
+            }
+
+            draw() {}
+            drawTreeLines() {}
         }
         
         
@@ -3658,7 +3736,7 @@ ${svg.parentElement.innerHTML}`;
                 rightMargin: 10,
                 bottomMargin: 10,
                 columnGap: 10,
-                rowGap: 22,
+                rowGap: 10,
                 nodeContent(node) {
                     return [...node[symbols.content]];
                 },
@@ -3707,11 +3785,12 @@ ${svg.parentElement.innerHTML}`;
                 node[symbols.viewData].get(this).svgNodes.forEach((node) => node.classList.add('selected'));
             }
             render() {
+                /*
                 // Construct a new tree that maps to the structure but includes the layout data
                 const layout = [];
                 
                 const stack = [...this._structure];
-                const getValue = (node, property, value) => node[symbols.views]?.[this.title]?.[property] ?? node[property] ?? value;
+                const getValue = (node, property) => node[symbols.views]?.[this.title]?.[property] ?? node[property];
                  while (stack.length > 0) {
                     const node = stack.shift();
                     const nodes = this.configuration.nodeContent(node) || [];
@@ -3734,7 +3813,9 @@ ${svg.parentElement.innerHTML}`;
                         rowHeight: 0,
                     });
                 }
+                */
                 
+                const getValue = (node, property) => node[symbols.views]?.[this.title]?.[property] ?? node[property];
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
                     (point.y - line[0].y) / (line[1].y - line[0].y);
 
@@ -3777,176 +3858,27 @@ ${svg.parentElement.innerHTML}`;
 
                 const root = {
                     [symbols.viewData]: new Map(),
-                    [symbols.views]: {[this.title]: {layout: 'Horizontal'}},
+                    [symbols.views]: {[this.title]: {layout: 'Horizontal', shape: 'none'}},
+                    [symbols.content]: this._structure,
                 }
                 root[symbols.viewData].set(this, {nextY: this.configuration.rowGap, rowHeight: 0, height: 0, rightEdge: []});
                 
                 const getData = (node) => node[symbols.viewData].get(this);
 
-                const addNode = (node, index, parent) => {
-                    // Position descendents first
-                    const treeNode = node[symbols.viewData].get(this);
-                    const nodes = this.configuration.nodeContent(node) || [];
-                    if (!getValue(node, 'closed')) {
-                        nodes.forEach((child, index) => addNode(child, index, node));
-                    }
+                
+                let index = 0;                
+                const draw = (shape) => {
+                    const svgShape = shape.draw();
+                    svgShape.addEventListener('click', (event) => clickNode(node, event));
+                    svgShape.addEventListener('dblclick', (event) => dblClickNode(node, event));
+                    node[symbols.viewData].get(this).svgNodes.push(svgShape);
+                    return;
                     
-                    // Determine the width and height of the 'box' and the position of the label
-                    // calculate the edges
-                    treeNode.y = 0;
-
-                    if (nodes.length) {
-                        const first = getData(nodes[0]);
-                        const last = getData(nodes[nodes.length - 1]);
-                        if (getValue(node, 'closed')) {
-                            treeNode.box.width = treeNode.width;
-                            treeNode.box.height = treeNode.height;
-                        } else {
-                            treeNode.box.width = Math.max(treeNode.width,
-                                ...nodes.map((node) => getData(node).box.x + getData(node).box.width));
-                            treeNode.box.height = Math.max(treeNode.height,
-                                ...nodes.map((node) => getData(node).box.y + getData(node).box.height));
-                        }
-
-                        if (this.settings.leftToRight.checked) {
-                            treeNode.x = Math.max(...nodes.map((node) =>
-                                getData(node).box.x + getData(node).box.width)) + 3 * this.configuration.columnGap;
-                            treeNode.y = (treeNode.box.height - treeNode.height) / 2;
-                            treeNode.box.width = treeNode.x + treeNode.width;
-                        } else if (node[symbols.views][this.title]?.layout === 'Spacial') {
-                            treeNode.box.width += this.configuration.columnGap;
-                            treeNode.box.height += this.configuration.rowGap;
-                            treeNode.leftEdge = [
-                                {x: 0, y: 0},
-                                {x: 0, y: treeNode.box.height},
-                            ];
-                            treeNode.rightEdge = [
-                                {x: treeNode.box.width, y: treeNode.box.y},
-                                {x: treeNode.box.width, y: treeNode.box.y + treeNode.box.height},
-                            ];
-                        } else if (node[symbols.views][this.title]?.layout === 'Vertical') {
-                            treeNode.x = 0;
-
-                            treeNode.leftEdge = [
-                                { y: 0, x: 0 },
-                                { y: treeNode.height, x: 0 },
-                                { y: treeNode.height, x: this.configuration.columnGap },
-                                { y: last.box.y + last.height / 2, x: this.configuration.columnGap },
-                                ...last.leftEdge.slice(1).filter((pt) => pt.y > (last.box.y + last.height / 2))
-                                    .map((point) => ({ y: point.y + last.box.y, x: point.x + last.box.x,})),
-                            ];
-                            treeNode.rightEdge = nodes.flatMap((childNode) =>
-                                getData(childNode).rightEdge.map((point) => ({
-                                    x: getData(childNode).box.x + point.x,
-                                    y: getData(childNode).box.y + point.y, })));
-
-                        } else {
-                            treeNode.x = (first.box.x + first.x + first.width / 2 + 
-                                last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
-                            
-                            treeNode.leftEdge = [
-                                { y: 0, x: treeNode.x },
-                                { y: treeNode.height, x: treeNode.x },
-                                { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
-                                ...first.leftEdge.map((point) => ({
-                                    y: point.y + first.box.y, x: point.x + first.box.x,
-                                })),
-                            ];
-                            let y = Math.max(...first.leftEdge.map((point) => point.y));
-                            nodes.forEach((childNode) => {
-                                const points = getData(childNode).leftEdge.map((point) => ({
-                                    y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x,
-                                })).filter((point) => point.y >= y);
-                                treeNode.leftEdge.push(...points);
-                                y = Math.max(...points.map((point) => point.y));
-                            });
-                            
-                            treeNode.rightEdge = [
-                                { y: 0, x: treeNode.x + treeNode.width },
-                                { y: treeNode.height, x: treeNode.x + treeNode.width},
-                                { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
-                                ...last.rightEdge.map((point) => ({
-                                    y: point.y + last.box.y, x: point.x + last.box.x,
-                                })),
-                            ];
-                            y = Math.max(...last.rightEdge.map((point) => point.y));
-                            nodes.toReversed().forEach((childNode) => {
-                                const points = getData(childNode).rightEdge.map((point) =>
-                                    ({ y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x, }))
-                                    .filter((point) => point.y >= y);
-                                treeNode.rightEdge.push(...points);
-                                y = Math.max(...points.map((point) => point.y));
-                            });
-                        }
-                    } else {
-                        treeNode.x = 0;
-                        treeNode.box.width = treeNode.width;
-                        treeNode.box.height = treeNode.height;
-                        treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
-                        treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
-                    }
-                    // Calculate the position of the box based on its parent layout data
-                    if (parent[symbols.views][this.title]?.layout === 'Spacial') {
-                        const columns = Math.ceil(Math.sqrt(parent[symbols.content].length));
-                        
-                        treeNode.box.x = node[symbols.views]?.[this.title]?.x ?? getData(parent).nextX ?? this.configuration.columnGap;
-                        treeNode.box.y = node[symbols.views]?.[this.title]?.y ?? getData(parent).nextY ?? this.configuration.rowGap;
-
-                        getData(parent).nextX += treeNode.box.width + this.configuration.rowGap;
-                        getData(parent).rowHeight = Math.max(getData(parent).rowHeight, treeNode.box.height);
-
-                        if ((index % columns) === (columns - 1)) {
-                            getData(parent).nextX = this.configuration.columnGap;
-                            getData(parent).nextY += getData(parent).rowHeight + this.configuration.rowGap;
-                            getData(parent).rowHeight = 0;
-                        }
-                    } else if (this.settings.leftToRight.checked) {
-                        treeNode.box.x = getData(parent).width ? 0 : this.configuration.columnGap;
-                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
-                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
-                    } else if (parent[symbols.views][this.title]?.layout === 'Vertical') {
-                        treeNode.box.x = 2 * this.configuration.columnGap;
-                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
-                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
-                    } else {
-                        const rightEdge = getData(parent).rightEdge;
-                        
-                        const offset = getOffset(rightEdge, treeNode.leftEdge);
-                        if (node[symbols.views][this.title]?.layout === 'Vertical') {
-                            console.log(node.name);
-                            console.log(rightEdge);
-                            console.log(treeNode.leftEdge);
-                            console.log(offset);
-                        }
-
-                        treeNode.box.x = offset;
-                        treeNode.box.y = getData(parent).height + this.configuration.rowGap;
-
-                        const max = Math.max(...rightEdge.map((point) => point.y));
-                        const filtered = rightEdge.filter((point) => point.y >= max);
-                        getData(parent).rightEdge = treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,}));
-                        getData(parent).rightEdge.push(...filtered);
-                    }
-                }
-                this._structure.forEach((node, index) => addNode(node, index, root));
-
-                let index = 0;
-                const drawNode = (source, parent) => {
+/*
                     const node = getData(source);
-                    if (node.shape === 'hidden') {
-                        return;
-                    }
                     const groupAttrs = {
                         transform: `translate(${node.box.x}, ${node.box.y})`,
                     };
-                    const group = this.add('g', groupAttrs, null, [], parent);
-                    node.svgNodes.push(group);
-                    const href = node.href ?? source.href;
-                    const container = href ? this.add('a', {href}, '', [], group) : group;
 
                     const textAttrs = {
                         x: node.x + node.width / 2,
@@ -3990,7 +3922,7 @@ ${svg.parentElement.innerHTML}`;
                         });
                     }
                     const nodes = this.configuration.nodeContent(source);
-                    if (nodes.length && source[symbols.views][this.title]?.layout !== 'Spacial') {
+                    if (nodes.length && source[symbols.views][this.title]?.layout !== 'grid') {
                         const dataNodes = nodes.map((node) => getData(node));
                         const pathAttrs = { fill: 'none', stroke: 'black', d: '' };
                         if (this.settings.leftToRight.checked) {
@@ -4052,19 +3984,364 @@ ${svg.parentElement.innerHTML}`;
                         this.add('path', pathAttrs, null, [], group);
                     }
                     ++index;
+                    return group;
+                    */
+                }                
+                
+                SVGNode.clipCount = 0;
+                const addNode = (node, parent) => {
+                    const shape = getSVGShape(node, this);
+                    
+                    node[symbols.viewData].set(this, {shape, svgNodes: []});
+                    const nodes = this.configuration.nodeContent(node).filter((node) => getValue(node, 'shape') !== 'hidden');
+
+                    const container = shape.addContainer(parent);
+
+                    if (getValue(node, 'closed') || (nodes.length === 0)) {
+                        shape.box.width = shape.width;
+                        shape.box.height = shape.height;
+                    } else {
+                        let nextX = 0;
+                        let nextY = shape.height + this.configuration.rowGap;
+                        let rowHeight = 0;
+                        const childShapes = nodes.map((child, index) => {
+                            const shape = addNode(child, container);
+
+                            if (getValue(node, 'layout') === 'grid') {
+                                const columns = Math.ceil(Math.sqrt(nodes.length));
+                    
+                                shape.box.x = getValue(child, 'x') ?? (nextX + this.configuration.columnGap);
+                                shape.box.y = getValue(child, 'y') ?? (nextY + this.configuration.rowGap);
+        
+                                nextX += shape.box.width + this.configuration.columnGap;
+                                rowHeight = Math.max(rowHeight, shape.box.height);
+
+                                if ((index % columns) === (columns - 1)) {
+                                    nextX = 0;
+                                    nextY += rowHeight + this.configuration.rowGap;
+                                    rowHeight = 0;
+                                }
+                            } else if (this.settings.leftToRight.checked) {
+                                shape.box.x = 0;
+                                shape.box.y = nextY;
+                                nextY += shape.box.height + this.configuration.rowGap;
+                            } else if (getValue(node, 'layout') === 'vertical') {
+                                shape.box.x = 2 * this.configuration.columnGap;
+                                shape.box.y = nextY;
+                                nextY += shape.box.height + this.configuration.rowGap;
+                            } else {
+                                shape.box.x = nextX;
+                                shape.box.y = nextY + this.configuration.rowGap;
+                                nextX += shape.box.width + this.configuration.columnGap;
+                                /*
+                                const rightEdge = getData(parent).rightEdge;
+                                
+                                const offset = getOffset(rightEdge, treeNode.leftEdge);
+                                if (node[symbols.views][this.title]?.layout === 'Vertical') {
+                                    console.log(node.name);
+                                    console.log(rightEdge);
+                                    console.log(treeNode.leftEdge);
+                                    console.log(offset);
+                                }
+        
+                                treeNode.box.x = offset;
+                                treeNode.box.y = getData(parent).height + this.configuration.rowGap;
+        
+                                const max = Math.max(...rightEdge.map((point) => point.y));
+                                const filtered = rightEdge.filter((point) => point.y >= max);
+                                getData(parent).rightEdge = treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,}));
+                                getData(parent).rightEdge.push(...filtered);
+                                */
+                            }
+                            const groupAttrs = {
+                                transform: `translate(${shape.box.x}, ${shape.box.y})`,
+                            };
+                            this.updateElement(shape.container, groupAttrs);
+                            
+                            // Determine the width and height of the 'box' and the position of the label
+                            // calculate the edges
+    /*
+                            const first = getData(nodes[0]);
+                            const last = getData(nodes[nodes.length - 1]);
+    
+                            if (this.settings.leftToRight.checked) {
+                                treeNode.x = Math.max(...nodes.map((node) =>
+                                    getData(node).box.x + getData(node).box.width)) + 3 * this.configuration.columnGap;
+                                treeNode.y = (treeNode.box.height - treeNode.height) / 2;
+                                box.width = treeNode.x + treeNode.width;
+                            } else if (getValue(node, 'layout') === 'grid') {
+                                box.width += this.configuration.columnGap;
+                                box.height += this.configuration.rowGap;
+                                treeNode.leftEdge = [
+                                    {x: 0, y: 0},
+                                    {x: 0, y: treeNode.box.height},
+                                ];
+                                treeNode.rightEdge = [
+                                    {x: treeNode.box.width, y: treeNode.box.y},
+                                    {x: treeNode.box.width, y: treeNode.box.y + treeNode.box.height},
+                                ];
+                            } else if (node[symbols.views][this.title]?.layout === 'Vertical') {
+                                treeNode.x = 0;
+    
+                                treeNode.leftEdge = [
+                                    { y: 0, x: 0 },
+                                    { y: treeNode.height, x: 0 },
+                                    { y: treeNode.height, x: this.configuration.columnGap },
+                                    { y: last.box.y + last.height / 2, x: this.configuration.columnGap },
+                                    ...last.leftEdge.slice(1).filter((pt) => pt.y > (last.box.y + last.height / 2))
+                                        .map((point) => ({ y: point.y + last.box.y, x: point.x + last.box.x,})),
+                                ];
+                                treeNode.rightEdge = nodes.flatMap((childNode) =>
+                                    getData(childNode).rightEdge.map((point) => ({
+                                        x: getData(childNode).box.x + point.x,
+                                        y: getData(childNode).box.y + point.y, })));
+    
+                            } else {
+                                treeNode.x = (first.box.x + first.x + first.width / 2 + 
+                                    last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
+                                
+                                treeNode.leftEdge = [
+                                    { y: 0, x: treeNode.x },
+                                    { y: treeNode.height, x: treeNode.x },
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
+                                    ...first.leftEdge.map((point) => ({
+                                        y: point.y + first.box.y, x: point.x + first.box.x,
+                                    })),
+                                ];
+                                let y = Math.max(...first.leftEdge.map((point) => point.y));
+                                nodes.forEach((childNode) => {
+                                    const points = getData(childNode).leftEdge.map((point) => ({
+                                        y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x,
+                                    })).filter((point) => point.y >= y);
+                                    treeNode.leftEdge.push(...points);
+                                    y = Math.max(...points.map((point) => point.y));
+                                });
+                                
+                                treeNode.rightEdge = [
+                                    { y: 0, x: treeNode.x + treeNode.width },
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width},
+                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
+                                    { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
+                                    ...last.rightEdge.map((point) => ({
+                                        y: point.y + last.box.y, x: point.x + last.box.x,
+                                    })),
+                                ];
+                                y = Math.max(...last.rightEdge.map((point) => point.y));
+                                nodes.toReversed().forEach((childNode) => {
+                                    const points = getData(childNode).rightEdge.map((point) =>
+                                        ({ y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x, }))
+                                        .filter((point) => point.y >= y);
+                                    treeNode.rightEdge.push(...points);
+                                    y = Math.max(...points.map((point) => point.y));
+                                });
+                            }
+                            */
+                            return shape;
+                        });
+                        
+                        shape.box.width = Math.max(shape.width, ...childShapes.map((shape) => shape.box.x + shape.box.width));
+                        shape.box.height = Math.max(shape.height, ...childShapes.map((shape) => shape.box.y + shape.box.height));
+                        
+                        if (getValue(node, 'layout') === 'grid') {
+                            shape.box.width += this.configuration.columnGap;
+                            shape.box.height += this.configuration.rowGap;
+                        }
+                        
+                        shape.drawTreeLines(childShapes, this.settings.leftToRight.checked);
+                    }
+                    if (getValue(node, 'layout') === 'grid') {
+                        shape.drawContainer();
+                    }
+
+                    shape.draw();
+                    return shape;
+                        //treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
+                        //treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
+
+                    // Calculate the position of the box based on its parent layout data
+                    if (parent[symbols.views][this.title]?.layout === 'grid') {
+                        const columns = Math.ceil(Math.sqrt(parent[symbols.content].length));
+                        
+                        treeNode.box.x = node[symbols.views]?.[this.title]?.x ?? getData(parent).nextX ?? this.configuration.columnGap;
+                        treeNode.box.y = node[symbols.views]?.[this.title]?.y ?? getData(parent).nextY ?? this.configuration.rowGap;
+
+                        getData(parent).nextX += treeNode.box.width + this.configuration.rowGap;
+                        getData(parent).rowHeight = Math.max(getData(parent).rowHeight, treeNode.box.height);
+
+                        if ((index % columns) === (columns - 1)) {
+                            getData(parent).nextX = this.configuration.columnGap;
+                            getData(parent).nextY += getData(parent).rowHeight + this.configuration.rowGap;
+                            getData(parent).rowHeight = 0;
+                        }
+                    } else if (this.settings.leftToRight.checked) {
+                        treeNode.box.x = getData(parent).width ? 0 : this.configuration.columnGap;
+                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
+                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
+                    } else if (parent[symbols.views][this.title]?.layout === 'Vertical') {
+                        treeNode.box.x = 2 * this.configuration.columnGap;
+                        treeNode.box.y = getData(parent).nextY || (this.settings.leftToRight.checked ? 0 : (getData(parent).height + this.configuration.rowGap));
+                        getData(parent).nextY = treeNode.box.y + treeNode.box.height + this.configuration.rowGap;
+                    } else {
+                        const rightEdge = getData(parent).rightEdge;
+                        
+                        const offset = getOffset(rightEdge, treeNode.leftEdge);
+                        if (node[symbols.views][this.title]?.layout === 'Vertical') {
+                            console.log(node.name);
+                            console.log(rightEdge);
+                            console.log(treeNode.leftEdge);
+                            console.log(offset);
+                        }
+
+                        treeNode.box.x = offset;
+                        treeNode.box.y = getData(parent).height + this.configuration.rowGap;
+
+                        const max = Math.max(...rightEdge.map((point) => point.y));
+                        const filtered = rightEdge.filter((point) => point.y >= max);
+                        getData(parent).rightEdge = treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,}));
+                        getData(parent).rightEdge.push(...filtered);
+                    }
+                    return { box, leftEdge, rightEdge };
+                }
+
+
+                const drawNode_ = (source, parent) => {
+                    const node = getData(source);
+                    if (node.shape === 'hidden') {
+                        return;
+                    }
+                    const groupAttrs = {
+                        transform: `translate(${node.box.x}, ${node.box.y})`,
+                    };
+                    const group = this.add('g', parent, groupAttrs);
+                    node.svgNodes.push(group);
+                    const href = node.href ?? source.href;
+                    const container = href ? this.add('a', group, {href}) : group;
+
+                    const textAttrs = {
+                        x: node.x + node.width / 2,
+                        y: node.y,
+                        'font-size': `${node.fontSize}pt`,
+                        'font-family': getValue(source, 'font', 'sans-serif'),
+                        'text-anchor': 'middle',
+                        'dominant-baseline': 'middle',
+                        fill: getValue(source, 'text', 'black'),
+                    };
+                    
+                    const getLength = (text) => {
+                        const node = this.add('text', container, textAttrs, text);
+                        const length = node.getComputedTextLength();
+                        node.remove();
+                        return length;
+                    };
+                    const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, getLength);
+                    textAttrs.y = node.y + (node.height - (lines.length - 1) * node.fontSize * node.lineSpacing) / 2;
+
+                    const shape = source[symbols.viewData].get(this).shapeObj.draw(container, textAttrs);
+                    
+                    if (shape) {
+                        shape.addEventListener('click', (event) => clickNode(source, event));
+                        shape.addEventListener('dblclick', (event) => {
+                        });
+                        node.svgNodes.push(shape);
+                    }
+                    if (getValue(source, 'image')) {
+                        const attrs = {href: getValue(source, 'image'), width: node.width, height: node.height};
+                        this.add('image', container, attrs);
+                    }
+
+                    if (!(['svg', 'none'].includes(node.shape))) {
+                        const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
+                        this.add('clipPath', group, { id: `clip${index}` }, clipRect);
+                        textAttrs['clip-path'] = `url(#clip${index})`;
+                        lines.forEach((line) => {
+                            this.add('text', group, textAttrs, line);                    
+                            textAttrs.y += node.fontSize * node.lineSpacing;
+                        });
+                    }
+                    const nodes = this.configuration.nodeContent(source);
+                    if (nodes.length && source[symbols.views][this.title]?.layout !== 'grid') {
+                        const dataNodes = nodes.map((node) => getData(node));
+                        const pathAttrs = { fill: 'none', stroke: 'black', d: '' };
+                        if (this.settings.leftToRight.checked) {
+                            const endX = node.x;
+                            const endY = node.y + node.height / 2;
+                            dataNodes.forEach((node) => {
+                                const startX = node.box.x + node.x + node.width;
+                                const startY = node.box.y + node.y + node.height / 2;
+                                if (this.settings.connectorStyle.value === 'Straight') {
+                                    pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
+                                } else if (this.settings.connectorStyle.value === 'Rectilinear') {
+                                    pathAttrs.d += `M${startX} ${startY} L${endX - this.configuration.columnGap} ${startY} `;
+                                    pathAttrs.d += `L${endX - this.configuration.columnGap} ${endY} L${endX} ${endY} `;
+                                } else if (this.settings.connectorStyle.value === 'Curve 1') {
+                                    pathAttrs.d += `M${startX} ${startY} C${(startX + endX) / 2} ${startY} ${endX - this.configuration.columnGap} ${endY} ${endX} ${endY} `;
+                                } else {
+                                    const dy = startY > endY ? -Math.min(this.configuration.rowGap, (startY - endY) / 2) : Math.min(this.configuration.rowGap, (endY - startY) / 2);
+                                    const col = this.configuration.columnGap;
+                                    pathAttrs.d += `M${startX} ${startY} `;
+                                    pathAttrs.d += `L${endX - 2 * col} ${startY} `;
+                                    pathAttrs.d += `Q${endX - col} ${startY} ${endX - col} ${startY + dy}`;
+                                    pathAttrs.d += `L${endX - col} ${endY - dy} `;
+                                    pathAttrs.d += `Q${endX - col} ${endY} ${endX} ${endY}`;
+                                }
+                            });
+                        } else if (source[symbols.views][this.title]?.layout === 'Vertical') {
+                            const startX = node.x + this.configuration.columnGap;
+                            const startY = node.y + node.height;
+                            pathAttrs.d = dataNodes.map((node) =>
+                                `M${startX} ${startY} V${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
+                        } else {
+                            const startX = node.x + node.width / 2;
+                            const startY = node.y + node.height;
+                            
+                            dataNodes.forEach((node) => {
+                                const endX = node.box.x + node.x + node.width / 2;
+                                const endY = node.box.y + node.y;
+                            
+                                if (this.settings.connectorStyle.value === 'Straight') {
+                                    pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
+                                } else if (this.settings.connectorStyle.value === 'Rectilinear') {
+                                    pathAttrs.d += `M${startX} ${startY} v${this.configuration.rowGap / 2} `;
+                                    pathAttrs.d += `H${node.box.x + node.x + node.width / 2} `;
+                                    pathAttrs.d += `v${this.configuration.rowGap / 2} `; 
+                                } else if (this.settings.connectorStyle.value === 'Curve 1') {
+                                    pathAttrs.d += `M${startX} ${startY} C${startX} ${endY} `;
+                                    pathAttrs.d += `${endX} ${startY} ${endX} ${endY} `;
+                                } else {
+                                    const dx = startX > endX ? -Math.min(this.configuration.columnGap, (startX - endX) / 2) : Math.min(this.configuration.columnGap, (endX - startX) / 2);
+                                    const row = this.configuration.rowGap / 2;
+                                    pathAttrs.d += `M${startX} ${startY} `;
+                                    pathAttrs.d += `Q${startX} ${startY + row} ${startX + dx} ${startY + row}`;
+                                    pathAttrs.d += `H${endX - dx}`;
+                                    pathAttrs.d += `Q${endX} ${startY + row} ${endX} ${endY}`;
+                                    pathAttrs.d += `V${endY}`;
+                                 }
+                            });
+                        }
+                        this.add('path', group, pathAttrs);
+                    }
+                    ++index;
                     if (!(node.shape === 'ssvg' || getValue(source, 'closed'))) {
                         nodes.forEach((node) => drawNode(node, group));
                     }
                 }
+                
+                const shape = addNode(root, this.svg);
 
-                const width = Math.max(0, ...this._structure.map((node) => getData(node).box.x + getData(node).box.width));
-                const height = Math.max(0, ...this._structure.map((node) => getData(node).box.y + getData(node).box.height));
+                const groupAttrs = {
+                    transform: `translate(${this.configuration.leftMargin}, ${this.configuration.topMargin})`,
+                };
+                this.updateElement(shape.container, groupAttrs);
 
+                
                 const extents = {
                     top: 0,
                     left: 0,
-                    right: this.configuration.leftMargin + width + this.configuration.rightMargin,
-                    bottom: this.configuration.topMargin + height + this.configuration.bottomMargin,
+                    right: this.configuration.leftMargin + shape.box.width + this.configuration.rightMargin,
+                    bottom: this.configuration.topMargin + shape.box.height + this.configuration.bottomMargin,
                 };
 
                 this.svg.setAttribute('viewBox', `${extents.left} ${extents.top} ${extents.right} ${extents.bottom}`);
@@ -4074,7 +4351,7 @@ ${svg.parentElement.innerHTML}`;
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
                 
-                this._structure.forEach((node) => drawNode(node));
+                //console.log(this.svg.innerHTML);
             }
         }
 
@@ -4199,6 +4476,15 @@ ${svg.parentElement.innerHTML}`;
                 Core.selectionToggle(node);
             } else {
                 Core.currentNode = node;
+            }
+        }
+
+        /**
+         * Process a click on a node
+         */
+        function dblClickNode(node, event) {
+            if (event.shiftKey) {
+            } else {
             }
         }
 
@@ -6066,6 +6352,7 @@ ${svg.parentElement.innerHTML}`;
                     if (start && end) {
                         namedValues.start = namedValues.start ?? start[0];
                         namedValues.end = namedValues.end ?? end[0];
+                        namedValues.shape = namedValues.link ?? 'link';
                     }
                     
                 }
