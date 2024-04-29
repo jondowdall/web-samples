@@ -857,6 +857,8 @@
                     </svg>
                 </button>
                 <label for="depth-test">Depth Test</label><input class="depth-test" type="checkbox" checked>
+                <label for="far">Far limit</label><input class="far" type="number" value=10000>
+                <label for="step-size">Step Size</label><input class="step-size" type="number" value=1>
             </div>
             <canvas class="texture"></canvas>
         </div>
@@ -961,7 +963,7 @@
                     </svg>
                 </button>
 
-                <div id="playback-controls">
+                <div id="playback-controls" style="display:none">
                     <button id="start" class="media-button">&#x23ee;</button>
                     <button id="rewind" class="media-button">&#x23ea;</button>
                     <button id="play" class="media-button">&#x23ef;</button>
@@ -1424,9 +1426,7 @@ ${svg.parentElement.innerHTML}`;
                 }
             }
         }
-        
-        
-        
+
         /**
          * Create nodes from a template
          */
@@ -2302,6 +2302,8 @@ ${svg.parentElement.innerHTML}`;
                 reset: '.reset',
                 upright: '.upright',
                 depthTest: '.depth-test',
+                far: '.far',
+                stepSize: '.step-size',
             };
             constructor(title='3D Scene', camera, shaders=defaultShaders) {
                 super('gl-view-template', GLView.settingsMap);
@@ -2653,7 +2655,7 @@ ${svg.parentElement.innerHTML}`;
                 const fieldOfView = 45;   // in degrees
                 const aspect = this.canvas.clientWidth / this.canvas.clientHeight;
                 const zNear = 0.1;
-                const zFar = 1000.0;
+                const zFar = parseFloat(this.settings.far.value);
                 const projectionMatrix = perspective(fieldOfView, aspect, zNear, zFar);
                 this.projectionMatrix = projectionMatrix;
 
@@ -2832,9 +2834,10 @@ ${svg.parentElement.innerHTML}`;
          */
         function getSVGShape(node, view) {
             if (node) {
-                const shapes = [SVGRect, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
+                const shapes = [SVGRect, SVGText, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
                 const shapeName = ((node[symbols.views][view.title]?.shape ?? node.shape) + '').toLowerCase();
-                const shapeType = shapes.find((shape) => shape.name === shapeName) ?? SVGRect;
+                const layout = ((node[symbols.views][view.title]?.layout ?? node.layout) + '').toLowerCase();
+                const shapeType = shapes.find((shape) => shape.name === shapeName) ?? (layout === 'grid' ? SVGText : SVGRect);
                 return shapeType.make(view, node);
             }
             return new SVGNone(view);
@@ -2878,8 +2881,6 @@ ${svg.parentElement.innerHTML}`;
                 return this.fontSize * (this.getData('line spacing') ?? 1.4);
             }
             addContainer(parent) {
-                const href = this.getData('href');
-                parent = href ? this.view.add('a', parent, {href}) : parent;
                 this.container = this.view.add('g', parent);
                 this.viewData('svgNodes').push(this.container);
                 if (this.getData('layout') === 'grid') {
@@ -2946,6 +2947,14 @@ ${svg.parentElement.innerHTML}`;
                     fill: this.getData('text') ?? 'black',
                 };
 
+                const href = this.getData('href');
+                const container = href ? this.view.add('a', this.container, {href}) : this.container;
+                if (href) {
+                    textAttrs.fill = this.getData('text') ?? 'blue';
+                    textAttrs['text-decoration'] = 'underline';
+                }
+
+                
                 const getLength = (text) => {
                     const node = this.view.add('text', this.container, textAttrs, text);
                     const length = node.getComputedTextLength();
@@ -2957,13 +2966,13 @@ ${svg.parentElement.innerHTML}`;
                 
                 if (this.width && this.height) {
                     const clipRect = this.view.make('rect', { x: this.x, y: this.y, width: this.width, height: this.height });
-                    this.view.add('clipPath', this.container, { id: `clip${SVGNode.clipCount}` }, clipRect);
+                    this.view.add('clipPath', container, { id: `clip${SVGNode.clipCount}` }, clipRect);
                     textAttrs['clip-path'] = `url(#clip${SVGNode.clipCount})`;
                 }
                 ++SVGNode.clipCount;
 
                 lines.forEach((line) => {
-                    this.view.add('text', this.container, textAttrs, line);
+                    this.view.add('text', container, textAttrs, line);
                     textAttrs.y += this.lineHeight;
                 });
             }
@@ -3041,6 +3050,37 @@ ${svg.parentElement.innerHTML}`;
                 svgElement.addEventListener('click', (event) => clickNode(this.node, event));
                 svgElement.addEventListener('dblclick', (event) => dblClickNode(this.node, event));
                 this.viewData('svgNodes').push(svgElement);
+            }
+            connectionPoint(position) {
+                let x = this.x, y = this.y;
+                let w = this.width, h = this.height;
+                
+                if (this.getData('layout') === 'grid') {
+                    x = y = 0;
+                    w = this.box.width;
+                    h = this.box.height;
+                }
+
+                const points = [{x: x, y: y}, {x: x + w, y: y}, {x: x + w, y: y + h}, {x: x, y: y + h}, {x: x, y: y} ];
+                
+                return this.linePoint(points, position);
+            }
+        }
+        
+        class SVGText extends SVGNode {
+            static name = 'rect';
+
+            constructor(view, node) {
+                super(view, node);                
+            }
+            get width() {
+                return this.box.width ?? this.getData('width') ?? 100;
+            }
+            get height() {
+                return this.getData('height') ?? this.lineHeight * 1.5;
+            }
+            draw() {
+                this.addText(this.x + this.width / 2, 0);
             }
             connectionPoint(position) {
                 let x = this.x, y = this.y;
@@ -3235,7 +3275,6 @@ ${svg.parentElement.innerHTML}`;
                 svgElement.addEventListener('click', (event) => clickNode(this.node, event));
                 svgElement.addEventListener('dblclick', (event) => dblClickNode(this.node, event));
                 this.viewData('svgNodes').push(svgElement);
-
             }
             connectionPoint(position) {
                 const x1 = this.viewData('x');
@@ -3835,6 +3874,47 @@ ${svg.parentElement.innerHTML}`;
                 const getValue = (node, property) => node[symbols.views]?.[this.title]?.[property] ?? node[property];
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
                     (point.y - line[0].y) / (line[1].y - line[0].y);
+                    
+                const combineEdges(edge1, edge2, right) {
+                    edge1.sort((a, b) => a.y - b.y);
+                    edge2.sort((a, b) => a.y - b.y);
+                    
+                    const cmp = right ? ((a, b) => a > b) : ((a, b) => a < b);
+                    
+                    const result = [];
+                    let index1 = index2 = 0;
+                    while ((index1 < edge1.length) && (index2 < edge2.length)) {
+                        while(edge1[index1].y === edge2[index2].y) {
+                            result.push({x : Math.min(edge1[index1].x, edge2[index2].x), y: edge1[index1].y})
+                            ++index1;
+                            ++index2;
+                        }
+                        while(edge1[index1].y < edge2[index2].y) {
+                            if (index2 > 0) {
+                                const x = lerp([edge2[index2 - 1], edge2[index2]], edge1[index1]);
+                                if (cmp(edge1[index1].x, x)) {
+                                    result.push({x, y: edge1[index1].y}, edge1[index1]);
+                                }
+                            } else {
+                                result.push(edge1[index1]);
+                            }
+                            ++index1;
+                        }
+                        while(edge2[index2].y < edge1[index1].y) {
+                            if (index1 > 0) {
+                                const x = lerp([edge1[index1 - 1], edge1[index1]], edge2[index2]);
+                                if (cmp(edge2[index2].x, x)) {
+                                    result.push({x, y: edge2[index2].y}, edge2[index2]);
+                                }
+                            } else {
+                                result.push(edge2[index2]);
+                            }
+                            ++index2;
+                        }
+                    }
+                    result.push(...edge1.slice(index1));                    
+                    result.push(...edge2.slice(index1));
+                }
 
                 const getOffset = (rightEdge, leftEdge) => {
                     let offset = 0;
@@ -9987,6 +10067,7 @@ void main() {
                     normalise(xAxis);
                     normalise(zAxis);
                 }
+                const stepSize = parseFloat(view.settings.stepSize.value);
                 const scale = event.ctrlKey ? 0.1 : 1;
                 if (event.key === 'u') {
                     view.camera.up = [0, 1, 0];
@@ -10000,11 +10081,11 @@ void main() {
                         }
                     } else {
                         if (event.altKey) {
-                            addInPlace(view.camera.lookAt, yAxis, scale);
-                            addInPlace(view.camera.position, yAxis, scale);
-                        } else {
-                            addInPlace(view.camera.lookAt, zAxis, scale);
-                            addInPlace(view.camera.position, zAxis, scale);
+                            addInPlace(view.camera.lookAt, yAxis, scale * stepSize);
+                            addInPlace(view.camera.position, yAxis, scale * stepSize);
+                        // } else {
+                            addInPlace(view.camera.lookAt, zAxis, scale * stepSize);
+                            addInPlace(view.camera.position, zAxis, scale * stepSize);
                         }
                     }
                 }
@@ -10017,18 +10098,18 @@ void main() {
                         }
                     } else {
                         if (event.altKey) {
-                            addInPlace(view.camera.lookAt, yAxis, -scale);
-                            addInPlace(view.camera.position, yAxis, -scale);
+                            addInPlace(view.camera.lookAt, yAxis, -scale * stepSize);
+                            addInPlace(view.camera.position, yAxis, -scale * stepSize);
                         } else {
-                            addInPlace(view.camera.lookAt, zAxis, -scale);
-                            addInPlace(view.camera.position, zAxis, -scale);
+                            addInPlace(view.camera.lookAt, zAxis, -scale * stepSize);
+                            addInPlace(view.camera.position, zAxis, -scale * stepSize);
                         }
                     }
                 }
                 if (event.key === 'ArrowLeft') {
                     if (event.shiftKey) {
-                        addInPlace(view.camera.lookAt, xAxis, -scale);
-                        addInPlace(view.camera.position, xAxis, -scale);
+                        addInPlace(view.camera.lookAt, xAxis, -scale * stepSize);
+                        addInPlace(view.camera.position, xAxis, -scale * stepSize);
                     } else {
                         if (event.altKey) {
                             view.camera.rotateY(-10 * scale);
@@ -10039,8 +10120,8 @@ void main() {
                 }
                 if (event.key === 'ArrowRight') {
                     if (event.shiftKey) {
-                        addInPlace(view.camera.lookAt, xAxis, scale);
-                        addInPlace(view.camera.position, xAxis, scale);
+                        addInPlace(view.camera.lookAt, xAxis, scale * stepSize);
+                        addInPlace(view.camera.position, xAxis, scale * stepSize);
                     } else {
                         if (event.altKey) {
                             view.camera.rotateY(10 * scale);
