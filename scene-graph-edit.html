@@ -880,6 +880,7 @@
                     <option value="Curve 1">Curve 1</option>
                     <option value="Curve 2">Curve 2</option>
                 </select>
+                <label class="tree">Max Horizontal Nodes: </label><input class="max-horizontal-nodes tree" type="number" value="5" />
             </div>
         </div>
     </template>
@@ -2725,6 +2726,7 @@ ${svg.parentElement.innerHTML}`;
                 context: '.context-selection',
                 leftToRight: '.left-to-right',
                 connectorStyle: '.connector-style',
+                maxHorizontalNodes: '.max-horizontal-nodes',
             }
             constructor(structure, title) {
                 super('svg-view-template', SVGView.settingsMap);
@@ -2976,20 +2978,116 @@ ${svg.parentElement.innerHTML}`;
                     textAttrs.y += this.lineHeight;
                 });
             }
-            drawTreeLines(shapes, leftToRight) {
+            merge(edge1, edge2, cmp) {
+                const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
+                    (point.y - line[0].y) / (line[1].y - line[0].y);
+                    
+                const result = [];
+                let index1 = 0;
+                let index2 = 0;
+                let last = 0;
+                while ((index1 < edge1.length) && (index2 < edge2.length)) {
+                    while(edge1[index1] && edge2[index2] && edge1[index1].y === edge2[index2].y) {
+                        if (cmp(edge2[index2].x, edge1[index1].x)) {
+                            if (last) {
+                                result.push(edge1[index1]);
+                            }
+                            result.push(edge2[index2]);
+                            last = 0;
+                        } else {
+                            if (!last) {
+                                result.push(edge2[index2]);
+                            }
+                            result.push(edge1[index1]);
+                            last = 1;
+                        }
+                        ++index1;
+                        ++index2;
+                    }
+                    while(edge1[index1] && edge2[index2] && edge1[index1].y < edge2[index2].y) {
+                        if (index2 > 0) {
+                            const x = lerp([edge2[index2 - 1], edge2[index2]], edge1[index1]);
+                            if (cmp(edge1[index1].x, x)) {
+                                if (!last) {
+                                    result.push({x, y: edge1[index1].y});
+                                }
+                                result.push(edge1[index1]);
+                                last = 1;
+                                if (index1 === edge1.length - 1) {
+                                    result.push({x, y: edge1[index1].y});
+                                    last = 0;
+                                }
+                            }
+                        } else {
+                            result.push(edge1[index1]);
+                            last = 1;
+                        }
+                        ++index1;
+                    }
+                    while(edge1[index1] && edge2[index2] && edge2[index2].y < edge1[index1].y) {
+                        if (index1 > 0) {
+                            const x = lerp([edge1[index1 - 1], edge1[index1]], edge2[index2]);
+                            if (cmp(edge2[index2].x, x)) {
+                                if (last) {
+                                    result.push({x, y: edge2[index2].y});
+                                }
+                                result.push(edge2[index2]);
+                                last = 0;
+                                if (index2 === edge2.length - 1) {
+                                    result.push({x, y: edge2[index2].y});
+                                    last = 1;
+                                }
+                            }
+                        } else {
+                            result.push(edge2[index2]);
+                            last = 0;
+                        }
+                        ++index2;
+                    }
+                }
+                result.push(...edge1.slice(index1));                    
+                result.push(...edge2.slice(index2));
+                return result;
+            }
+            mergeEdges(shape) {
+                const leftEdge = shape.leftEdge.map((point) =>
+                    ({x: point.x + shape.box.x, y: point.y + shape.box.y}));
+                const rightEdge = shape.rightEdge.map((point) =>
+                    ({x: point.x + shape.box.x, y: point.y + shape.box.y}));
+
+                this.leftEdge = this.merge(this.leftEdge, leftEdge, (a, b) => a < b);
+                this.rightEdge = this.merge(this.rightEdge, rightEdge, (a, b) => a > b);
+            }
+            drawTreeLines(shapes) {
                 const attrs = {
                     fill: 'none', stroke: this.getData('line') ?? 'black',
                 }
-                if (this.getData('layout') === 'grid') {
+                if (this.layout === 'grid') {
                     this.x = (this.box.width - this.width) / 2;
                     this.y = this.view.configuration.rowGap;
-                } else if (leftToRight) {
+                    this.leftEdge = this.merge(this.leftEdge, [{x: 0, y: 0}, {x: 0, y: this.box.height}], (a, b) => a < b);
+                    this.rightEdge = this.merge(this.leftEdge, [
+                        {x: this.box.width, y: 0}, {x: this.box.width, y: this.box.height}], (a, b) => a > b);
+                } else if (this.layout === 'leftToRight') {
                     
-                } else if (this.getData('layout') === 'vertical') {
+                } else if (this.layout === 'vertical') {
                     this.x = 0;
                     this.y = 0;
                     const l = Math.max(...shapes.map((shape) => shape.box.y + shape.y + shape.height / 2));
                     attrs.d = `M ${this.view.configuration.columnGap} ${this.height} V${l}`;
+                    const end = Math.max(...shapes.map((shape) => shape.box.y + shape.y + shape.height / 2));
+                    
+                    this.leftEdge = this.merge(this.leftEdge, [
+                        {x: this.x, y: this.y},
+                        {x: this.x, y: this.y + this.height},
+                        {x: this.x + this.view.configuration.columnGap, y: this.y + this.height},
+                        {x: this.x + this.view.configuration.columnGap, y: end}], (a, b) => a < b);
+                    this.rightEdge = this.merge(this.rightEdge, [
+                        {x: this.x + this.width, y: this.y},
+                        {x: this.x + this.width, y: this.y + this.height},
+                        {x: this.x + this.view.configuration.columnGap, y: this.y + this.height},
+                        {x: this.x + this.view.configuration.columnGap, y: end}], (a, b) => a > b);
+
                     shapes.forEach((shape) => {
                         const y = shape.box.y + shape.y + shape.height / 2;
                         const x = shape.box.x + shape.x;
@@ -3002,6 +3100,27 @@ ${svg.parentElement.innerHTML}`;
                     const x2 = Math.max(...shapes.map((shape) => shape.box.x + shape.x + shape.width / 2));
                     attrs.d = `M ${this.x + this.width / 2} ${this.height} v${this.view.configuration.rowGap}`;
                     attrs.d += ` M ${x1} ${this.height + this.view.configuration.rowGap} h${x2 - x1}`;
+                    
+                    const first = shapes.reduce((first, shape) =>
+                        (first.box.x < shape.box.x) ? first : shape, shapes[0]);
+                    const last = shapes.reduce((last, shape) => 
+                        ((last.box.x + last.box.width) > (shape.box.x + shape.box.width)) ? last : shape, shapes[0]);
+                    
+                    this.leftEdge = this.merge(this.leftEdge, [
+                        {x: this.x, y: this.y},
+                        {x: this.x, y: this.height},
+                        {x: this.x + this.width / 2, y: this.y + this.height},
+                        {x: this.x + this.width / 2, y: this.y + this.height + this.view.configuration.rowGap},
+                        {x: first.box.x + first.x + first.width / 2, y: this.y + this.height + this.view.configuration.rowGap},
+                        {x: first.box.x + first.x + first.width / 2, y: first.box.y + first.y}], (a, b) => a < b);
+                    this.rightEdge = this.merge(this.rightEdge, [
+                        {x: this.x + this.width, y: this.y},
+                        {x: this.x + this.width, y: this.height},
+                        {x: this.x + this.width / 2, y: this.y + this.height},
+                        {x: this.x + this.width / 2, y: this.y + this.height + this.view.configuration.rowGap},
+                        {x: last.box.x + last.x + last.width / 2, y: this.y + this.height + this.view.configuration.rowGap},
+                        {x: last.box.x + last.x + last.width / 2, y: last.box.y + last.y}], (a, b) => a > b);
+
                     shapes.forEach((shape) => {
                         const x = shape.box.x + shape.x + shape.width / 2;
                         const y = shape.box.y + shape.y;
@@ -3477,7 +3596,7 @@ ${svg.parentElement.innerHTML}`;
                 const x2 = size * Math.sin(angle + Math.PI / 2);
                 const y2 = size * Math.cos(angle + Math.PI / 2);
                 
-                attrs.d += `M${point.x - x1 + x2 / 3} ${point.y - y1 + y2 / 3} l${x1 - x2 / 3} ${y1 - y2 / 3} l${-x1 - x2 / 3} ${-y1 - y2 / 3} l${2 * x2 / 3} l${2 * y2 / 3}`;
+                attrs.d += `M${point.x - x1 + x2 / 3} ${point.y - y1 + y2 / 3} l${x1 - x2 / 3} ${y1 - y2 / 3} l${-x1 - x2 / 3} ${-y1 - y2 / 3} l${2 * x2 / 3} ${2 * y2 / 3}`;
             }
             addArrow2(attrs, point, direction, size) {
                 const radius = size / 2;
@@ -3487,7 +3606,7 @@ ${svg.parentElement.innerHTML}`;
                 const x2 = size * Math.sin(angle + Math.PI / 2);
                 const y2 = size * Math.cos(angle + Math.PI / 2);
                 
-                attrs.d += `M${point.x + x2 / 3} ${point.y + y2 / 3} l${x1 - x2 / 3} ${y1 - y2 / 3} l${-x1 - x2 / 3} ${-y1 - y2 / 3} l${2 * x2 / 3} l${2 * y2 / 3}`;
+                attrs.d += `M${point.x + x2 / 3} ${point.y + y2 / 3} l${x1 - x2 / 3} ${y1 - y2 / 3} l${-x1 - x2 / 3} ${-y1 - y2 / 3} l${2 * x2 / 3} ${2 * y2 / 3}`;
             }
             addBox(attrs, point, direction, size) {
                 const points = 4;
@@ -3874,8 +3993,9 @@ ${svg.parentElement.innerHTML}`;
                 const getValue = (node, property) => node[symbols.views]?.[this.title]?.[property] ?? node[property];
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
                     (point.y - line[0].y) / (line[1].y - line[0].y);
-                    
-                const combineEdges = (edge1, edge2, right) => {
+
+/*                    
+                const mergeEdges = (edge1, edge2, right) => {
                     edge1.sort((a, b) => a.y - b.y);
                     edge2.sort((a, b) => a.y - b.y);
                     
@@ -3890,7 +4010,7 @@ ${svg.parentElement.innerHTML}`;
                             ++index1;
                             ++index2;
                         }
-                        while(edge1[index1].y < edge2[index2].y) {
+                        while(edge2[index2] && edge1[index1] && edge1[index1].y < edge2[index2].y) {
                             if (index2 > 0) {
                                 const x = lerp([edge2[index2 - 1], edge2[index2]], edge1[index1]);
                                 if (cmp(edge1[index1].x, x)) {
@@ -3901,7 +4021,7 @@ ${svg.parentElement.innerHTML}`;
                             }
                             ++index1;
                         }
-                        while(edge2[index2].y < edge1[index1].y) {
+                        while(edge2[index2] && edge1[index1] && edge2[index2].y < edge1[index1].y) {
                             if (index1 > 0) {
                                 const x = lerp([edge1[index1 - 1], edge1[index1]], edge2[index2]);
                                 if (cmp(edge2[index2].x, x)) {
@@ -3917,38 +4037,36 @@ ${svg.parentElement.innerHTML}`;
                     result.push(...edge2.slice(index1));
                     return result;
                 }
-
-                const getOffset = (rightEdge, leftEdge) => {
+*/
+                const getOffset = (right, left) => {
                     let offset = 0;
-                    const left = [...leftEdge];
-                    const right = [...rightEdge];
 
-                    left.sort((a, b) => a.y - b.y);
-                    right.sort((a, b) => a.y - b.y);
-
-                    while ((left.length > 1) && (right.length > 1)) {
-                        if (left[0].y > right[0].y) {
-                            if (left[0].y < right[1].y) {
-                                offset = Math.max(offset, lerp(right, left[0]) - left[0].x);
+                    if (right.length === 0) {
+                        return 0;
+                    }
+                    
+                    let index1 = 0;
+                    let index2 = 0;
+                    
+                    while ((index1 < left.length) && (index2 < right.length)) {
+                        
+                        if (left[index1].y < right[index2].y) {
+                            if (index2) {
+                                offset = Math.max(offset, lerp([right[index2 - 1], right[index2]], left[index1]) - left[index1].x);
                             }
-                            right.shift();
-                        } else if (right[0].y > left[0].y) {
-                            if (right[0].y < left[1].y) {
-                                offset = Math.max(offset, right[0].x - lerp(left, right[0]));
+                            ++index1;
+                        } else if (right[index2].y < left[index1].y) {
+                            if (index1) {
+                                offset = Math.max(offset, right[index2].x - lerp([left[index1 - 1], left[index1]], right[index2]));
                             }
-                            left.shift();
+                            ++index2;
                         } else {
-                            offset = Math.max(offset, right[0].x - left[0].x);
-                            if (left[1].y < right[1].y) {
-                                left.shift();
-                            } else if (left[1].y > right[1].y) {
-                                right.shift();
-                            } else {
-                                right.shift();
-                                left.shift();
-                            }
+                            offset = Math.max(offset, right[index2].x - left[index1].x);
+                            ++index2;
+                            ++index1;
                         }
                     }
+
                     if (offset === -Infinity) {
                         return 0;
                     }
@@ -3965,14 +4083,6 @@ ${svg.parentElement.innerHTML}`;
                 const getData = (node) => node[symbols.viewData].get(this);
 
                 
-                let index = 0;                
-                const draw = (shape) => {
-                    const svgShape = shape.draw();
-                    svgShape.addEventListener('click', (event) => clickNode(node, event));
-                    svgShape.addEventListener('dblclick', (event) => dblClickNode(node, event));
-                    node[symbols.viewData].get(this).svgNodes.push(svgShape);
-                    return;
-                    
 /*
                     const node = getData(source);
                     const groupAttrs = {
@@ -4085,7 +4195,7 @@ ${svg.parentElement.innerHTML}`;
                     ++index;
                     return group;
                     */
-                }                
+
                 
                 SVGNode.clipCount = 0;
                 const addNode = (node, parent) => {
@@ -4099,14 +4209,17 @@ ${svg.parentElement.innerHTML}`;
                     if (getValue(node, 'closed') || (nodes.length === 0)) {
                         shape.box.width = shape.width;
                         shape.box.height = shape.height;
+                        shape.leftEdge = [{x: 0, y: 0}, {x: 0, y: shape.height}];
+                        shape.rightEdge = [{x: shape.width, y: 0}, {x: shape.width, y: shape.height}];
                     } else {
                         let nextX = 0;
                         let nextY = shape.height + this.configuration.rowGap;
                         let rowHeight = 0;
+                        shape.layout = this.settings.leftToRight.checked ? 'leftToRight' : (getValue(node, 'layout') ?? (nodes.length > parseInt(this.settings.maxHorizontalNodes.value) ? 'vertical' : 'horizontal'));
                         const childShapes = nodes.map((child, index) => {
                             const childShape = addNode(child, container);
 
-                            if (getValue(node, 'layout') === 'grid') {
+                            if (shape.layout === 'grid') {
                                 const columns = Math.ceil(Math.sqrt(nodes.length));
                     
                                 childShape.box.x = getValue(child, 'x') ?? (nextX + this.configuration.columnGap);
@@ -4120,129 +4233,29 @@ ${svg.parentElement.innerHTML}`;
                                     nextY += rowHeight + this.configuration.rowGap;
                                     rowHeight = 0;
                                 }
-                            } else if (this.settings.leftToRight.checked) {
+                            } else if (shape.layout === 'leftToRight') {
                                 childShape.box.x = 0;
                                 childShape.box.y = nextY;
                                 nextY += childShape.box.height + this.configuration.rowGap;
-                            } else if (getValue(node, 'layout') === 'vertical') {
+                            } else if (shape.layout === 'vertical') {
                                 childShape.box.x = 2 * this.configuration.columnGap;
                                 childShape.box.y = nextY;
                                 nextY += childShape.box.height + this.configuration.rowGap;
                             } else {
-                                const offset = getOffset(shape.rightEdge, childShape.leftEdge);
-                                shape.leftEdge = combineEdges(shape.leftEdge,
-                                    childShape.leftEdge.map((point) => ({x: point.x + offset, y: point.y})));
-                                shape.rightEdge = combineEdges(shape.rightEdge,
-                                    childShape.rightEdge.map((point) => ({x: point.x + offset, y: point.y})), true);
-                                childShape.box.x = nextX;
                                 childShape.box.y = nextY + this.configuration.rowGap;
-                                nextX += childShape.box.width + this.configuration.columnGap;
-                                /*
-                                const rightEdge = getData(parent).rightEdge;
-                                
-                                const offset = getOffset(rightEdge, treeNode.leftEdge);
-                                if (node[symbols.views][this.title]?.layout === 'Vertical') {
-                                    console.log(node.name);
-                                    console.log(rightEdge);
-                                    console.log(treeNode.leftEdge);
-                                    console.log(offset);
-                                }
-        
-                                treeNode.box.x = offset;
-                                treeNode.box.y = getData(parent).height + this.configuration.rowGap;
-        
-                                const max = Math.max(...rightEdge.map((point) => point.y));
-                                const filtered = rightEdge.filter((point) => point.y >= max);
-                                getData(parent).rightEdge = treeNode.rightEdge.map((point) => ({x: point.x + offset, y: point.y,}));
-                                getData(parent).rightEdge.push(...filtered);
-                                */
+                                const offset = getOffset(shape.rightEdge, childShape.leftEdge.map((point) =>
+                                    ({x: point.x + childShape.box.x, y: point.y + childShape.box.y})));
+
+                                childShape.box.x = offset;//nextX;
+
                             }
+                            shape.mergeEdges(childShape);
+
                             const groupAttrs = {
                                 transform: `translate(${childShape.box.x}, ${childShape.box.y})`,
                             };
                             this.updateElement(childShape.container, groupAttrs);
                             
-                            // Determine the width and height of the 'box' and the position of the label
-                            // calculate the edges
-    /*
-                            const first = getData(nodes[0]);
-                            const last = getData(nodes[nodes.length - 1]);
-    
-                            if (this.settings.leftToRight.checked) {
-                                treeNode.x = Math.max(...nodes.map((node) =>
-                                    getData(node).box.x + getData(node).box.width)) + 3 * this.configuration.columnGap;
-                                treeNode.y = (treeNode.box.height - treeNode.height) / 2;
-                                box.width = treeNode.x + treeNode.width;
-                            } else if (getValue(node, 'layout') === 'grid') {
-                                box.width += this.configuration.columnGap;
-                                box.height += this.configuration.rowGap;
-                                treeNode.leftEdge = [
-                                    {x: 0, y: 0},
-                                    {x: 0, y: treeNode.box.height},
-                                ];
-                                treeNode.rightEdge = [
-                                    {x: treeNode.box.width, y: treeNode.box.y},
-                                    {x: treeNode.box.width, y: treeNode.box.y + treeNode.box.height},
-                                ];
-                            } else if (node[symbols.views][this.title]?.layout === 'Vertical') {
-                                treeNode.x = 0;
-    
-                                treeNode.leftEdge = [
-                                    { y: 0, x: 0 },
-                                    { y: treeNode.height, x: 0 },
-                                    { y: treeNode.height, x: this.configuration.columnGap },
-                                    { y: last.box.y + last.height / 2, x: this.configuration.columnGap },
-                                    ...last.leftEdge.slice(1).filter((pt) => pt.y > (last.box.y + last.height / 2))
-                                        .map((point) => ({ y: point.y + last.box.y, x: point.x + last.box.x,})),
-                                ];
-                                treeNode.rightEdge = nodes.flatMap((childNode) =>
-                                    getData(childNode).rightEdge.map((point) => ({
-                                        x: getData(childNode).box.x + point.x,
-                                        y: getData(childNode).box.y + point.y, })));
-    
-                            } else {
-                                treeNode.x = (first.box.x + first.x + first.width / 2 + 
-                                    last.box.x + last.x + last.width / 2 - treeNode.width) / 2;
-                                
-                                treeNode.leftEdge = [
-                                    { y: 0, x: treeNode.x },
-                                    { y: treeNode.height, x: treeNode.x },
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: first.box.x + first.x + first.width / 2 },
-                                    ...first.leftEdge.map((point) => ({
-                                        y: point.y + first.box.y, x: point.x + first.box.x,
-                                    })),
-                                ];
-                                let y = Math.max(...first.leftEdge.map((point) => point.y));
-                                nodes.forEach((childNode) => {
-                                    const points = getData(childNode).leftEdge.map((point) => ({
-                                        y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x,
-                                    })).filter((point) => point.y >= y);
-                                    treeNode.leftEdge.push(...points);
-                                    y = Math.max(...points.map((point) => point.y));
-                                });
-                                
-                                treeNode.rightEdge = [
-                                    { y: 0, x: treeNode.x + treeNode.width },
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width},
-                                    { y: treeNode.height, x: treeNode.x + treeNode.width / 2},
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: treeNode.x + treeNode.width / 2 },
-                                    { y: treeNode.height + this.configuration.rowGap / 2, x: last.box.x + last.x + last.width / 2 },
-                                    ...last.rightEdge.map((point) => ({
-                                        y: point.y + last.box.y, x: point.x + last.box.x,
-                                    })),
-                                ];
-                                y = Math.max(...last.rightEdge.map((point) => point.y));
-                                nodes.toReversed().forEach((childNode) => {
-                                    const points = getData(childNode).rightEdge.map((point) =>
-                                        ({ y: point.y + getData(childNode).box.y, x: point.x + getData(childNode).box.x, }))
-                                        .filter((point) => point.y >= y);
-                                    treeNode.rightEdge.push(...points);
-                                    y = Math.max(...points.map((point) => point.y));
-                                });
-                            }
-                            */
                             return childShape;
                         });
                         
@@ -4253,14 +4266,29 @@ ${svg.parentElement.innerHTML}`;
                             shape.box.width += this.configuration.columnGap;
                             shape.box.height += this.configuration.rowGap;
                         }
-                        
-                        shape.drawTreeLines(childShapes, this.settings.leftToRight.checked);
+                        shape.drawTreeLines(childShapes);
                     }
                     if (getValue(node, 'layout') === 'grid') {
                         shape.drawContainer();
                     }
 
                     shape.draw();
+                    /*
+                    {
+                        const attrs = {
+                            fill: 'none', stroke: 'red',
+                        }
+                        attrs.d = shape.leftEdge.map((point, i) => `${i ? 'L' :' M'} ${point.x} ${point.y}`);
+                        this.add('path', shape.container, attrs);
+                    }
+                    {
+                        const attrs = {
+                            fill: 'none', stroke: `hsl(${360 * Math.random()}deg 100% 50%`,
+                        }
+                        attrs.d = shape.rightEdge.map((point, i) => `${i ? 'L' :' M'} ${point.x} ${point.y}`);
+                        this.add('path', shape.container, attrs);
+                    }*/
+
                     return shape;
                         //treeNode.leftEdge = [{ y: 0, x: 0 }, { y: treeNode.height, x: 0 }];
                         //treeNode.rightEdge = [{ y: 0, x: treeNode.width }, { y: treeNode.height, x: treeNode.width }];
