@@ -892,7 +892,13 @@
                 <label>Nodes: </label><input class="root-nodes" type="text" value="svg" />
                 <label>Filter: </label><input class="filter" type="text" />
                 <label>Context: </label><select class="context-selection"></select>
-                <label class="tree">Left to Right: </label><input class="left-to-right tree" type="checkbox" />
+                <label class="tree">Layout: </label><select class="layout tree">
+                    <option value="grid">Grid</option>
+                    <option value="timeline">Timeline</option>
+                    <option value="horizontal">Horizontal Tree</option>
+                    <option value="vertical">Vertical Tree</option>
+                    <option value="leftToRight">Left to Right</option>
+                </select>
                 <label class="tree">Connector Style: </label><select class="connector-style tree">
                     <option value="rectilinear">Rectilinear</option>
                     <option value="straight">Straight</option>
@@ -1730,7 +1736,7 @@ ${svg.parentElement.innerHTML}`;
             }
             set currentNode(node) {
                 // Show the source node.
-                if (!(document.activeElement === this.main) && node) {
+                if (!(document.activeElement === this.main) && node && node[symbols.source]) {
                     const lines = this.value.split(/\r?\n/);
                     const position = this.main.scrollHeight * (node[symbols.source][0].lineNumber - 1) / lines.length;
                     this.main.focus();
@@ -2751,19 +2757,19 @@ ${svg.parentElement.innerHTML}`;
                 rootNodes: '.root-nodes',
                 filter: '.filter',
                 context: '.context-selection',
-                leftToRight: '.left-to-right',
+                layout: '.layout',
                 connectorStyle: '.connector-style',
                 maxHorizontalNodes: '.max-horizontal-nodes',
                 scrollToCurrent: '.scroll-to-current',
             }
             constructor(structure, title) {
                 super('svg-view-template', SVGView.settingsMap);
-                // Add to the DOM so that safari can get context
                 this.svg = this.node.querySelector('svg');
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
                 this.title = title || 'SVG Diagram';
                 this.structure = structure || Core.structure;
+                this.addControls();
             }
             make(type, attributes, content, classes) {
                 const element = document.createElementNS(SVGView.ns, type);
@@ -2856,6 +2862,132 @@ ${svg.parentElement.innerHTML}`;
 
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
+            }
+            addControls() {
+                const last = {};
+                let action;
+                const drag = (event, x, y) => {
+                    const dx = x - last.x;
+                    const dy = y - last.y;
+
+                    const attrs = {
+                        transform: `matrix(1 0 0 1 ${dx} ${dy})`,
+                    };
+                    this.updateElement(this.context, attrs);
+
+                    last.x = x;
+                    last.y = y;
+                };
+                let initialMatrix;
+                const transform = (event, x, y) => {
+                    const c = this.context.getCTM();
+                    const t = c.inverse();
+                    const inverse = c.inverse();
+
+                    const box = this.svg.getBoundingClientRect();
+
+                    if (event.touches.length === 2) {
+                        const p1 = { x: last.x - box.x, y: last.y - box.y };
+                        const p2 = { x: last.second.x - box.x, y: last.second.y - box.y };
+                        const q1 = { x: event.touches[0].clientX - box.x, y: event.touches[0].clientY - box.y };
+                        const q2 = { x: event.touches[1].clientX - box.x, y: event.touches[1].clientY - box.y };
+
+                        const v1 = { x: p2.x - p1.x, y: p2.y - p1.y };
+                        const v2 = { x: q2.x - q1.x, y: q2.y - q1.y };
+
+                        const l2 = v1.x * v1.x + v1.y * v1.y;
+                        const scaledCosAngle = (v2.x * v1.x + v1.y * v2.y) / l2;
+                        const scaledSinAngle = (v1.x * v2.y - v1.y * v2.x) / l2;
+                        const tx = (v1.x * (q1.x * p2.x - p1.x * q2.x) + v1.y * (q1.x * p2.y - q2.x * p1.y) + v2.y * (p2.x * p1.y - p1.x * p2.y)) / l2;
+                        const ty = (v2.x * (p1.x * p2.y - p2.x * p1.y) + v1.y * (q1.y * p2.y - q2.y * p1.y) + v1.x * (q1.y * p2.x - q2.y * p1.x)) / l2;
+
+                        const m = new DOMMatrix([scaledCosAngle, scaledSinAngle, -scaledSinAngle, scaledCosAngle, tx, ty]);
+                        const t = m.multiply(initialMatrix);
+                        const attrs = {
+                            transform: `matrix(${t.a}, ${t.b}, ${t.c}, ${t.d}, ${t.e}, ${t.f})`,
+                        };
+                        this.updateElement(this.context, attrs);
+                    }
+                };
+                this.svg.addEventListener('touchstart', (event) => {
+                    initialMatrix = this.context.getCTM();
+                    last.x = event.touches[0].clientX;
+                    last.y = event.touches[0].clientY;
+                    const before = this.svg.getCTM();
+                    last.transform = [
+                        before.a, before.b, before.e,
+                        before.c, before.d, before.f,
+                        0, 0, 1];
+
+                    if (event.touches.length === 1) {
+                        action = drag;
+                    } else if (event.touches.length === 2) {
+                        event.preventDefault();
+                        last.second = {
+                            x: event.touches[1].clientX,
+                            y: event.touches[1].clientY,
+                        };
+                        action = transform;
+                    }
+                });
+
+                this.svg.addEventListener('touchmove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.touches[0].clientX, event.touches[0].clientY);
+                    }
+                });
+
+                this.svg.addEventListener('touchend', (event) => {
+                    action = null;
+                });
+
+                this.svg.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    last.x = event.clientX;
+                    last.y = event.clientY;
+                    action = drag;
+                });
+
+                this.svg.addEventListener('mousemove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.clientX, event.clientY);
+                    }
+                });
+
+                this.svg.addEventListener('mouseup', (event) => {
+                    event.preventDefault();
+                    action = null;
+                });
+
+                this.svg.addEventListener('wheel', (event) => {
+                    const delta = Math.pow(2, event.deltaY / 1000);
+                    const transform = this.context.getTransform();
+                    transform.a *= delta;
+                    transform.b *= delta;
+                    transform.c *= delta;
+                    transform.d *= delta;
+                    this.context.setTransform( 
+                            transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+                });
+
+                this.svg.addEventListener('keydown', (event) => {
+                    report(event.key);
+                    event.preventDefault();
+                    const scale = event.ctrlKey ? 0.1 : 1;
+                    if (event.key === 'u') {
+                        view.camera.up = [0, 1, 0];
+                    }
+                    if (event.key === 'ArrowUp') {
+                    }
+                    if (event.key === 'ArrowDown') {
+                    }
+                    if (event.key === 'ArrowLeft') {
+                    }
+                    if (event.key === 'ArrowRight') {
+                    }
+                });
             }
         }
 
@@ -3093,11 +3225,11 @@ ${svg.parentElement.innerHTML}`;
                 this.rightEdge = this.merge(this.rightEdge, rightEdge, (a, b) => a > b);
             }
             drawTreeLines(shapes, style) {
-                style = this.viewData('connector style') ?? style;
+                style = this.getData('connector style') ?? style;
                 const attrs = {
                     fill: 'none', stroke: this.getData('line') ?? 'black', d:'',
                 }
-                if (this.layout === 'grid') {
+                if (this.layout === 'grid' || this.layout === 'timeline') {
                     this.x = (this.box.width - this.width) / 2;
                     this.y = this.view.configuration.rowGap;
                     this.leftEdge = this.merge(this.leftEdge, [{x: 0, y: 0}, {x: 0, y: this.box.height}], (a, b) => a < b);
@@ -3274,7 +3406,7 @@ ${svg.parentElement.innerHTML}`;
                 let x = this.x, y = this.y;
                 let w = this.width, h = this.height;
                 
-                if (this.getData('layout') === 'grid') {
+                if (this.getData('layout') === 'grid' || this.getData('layout') === 'timeline') {
                     x = y = 0;
                     w = this.box.width;
                     h = this.box.height;
@@ -3305,7 +3437,7 @@ ${svg.parentElement.innerHTML}`;
                 let x = this.x, y = this.y;
                 let w = this.width, h = this.height;
                 
-                if (this.getData('layout') === 'grid') {
+                if (this.getData('layout') === 'grid' || this.getData('layout') === 'timeline') {
                     x = y = 0;
                     w = this.box.width;
                     h = this.box.height;
@@ -4028,7 +4160,7 @@ ${svg.parentElement.innerHTML}`;
                 document.body.append(this.node); // Temporarily add node to DOM so text measurement works
                 this.configuration = Object.assign({}, SVGTreeDiagram.defaults, configuration);
                 this.structure = structure || Core.structure;
-                this.settings.leftToRight.addEventListener('change', (event) => this.redraw());
+                this.settings.layout.addEventListener('change', (event) => this.redraw());
                 this.settings.connectorStyle.addEventListener('change', (event) => this.redraw());
                 this.settings.maxHorizontalNodes.addEventListener('change', (event) => this.redraw());
             }
@@ -4086,7 +4218,9 @@ ${svg.parentElement.innerHTML}`;
                 }
                 this.redraw();
             }
-            render() {                
+            render() {
+                this.context = this.add('g', this.svg);
+
                 const getValue = (node, property) => node[symbols.views]?.[this.title]?.[property] ?? node[property];
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) * 
                     (point.y - line[0].y) / (line[1].y - line[0].y);
@@ -4127,126 +4261,12 @@ ${svg.parentElement.innerHTML}`;
 
                 const root = {
                     [symbols.viewData]: new Map(),
-                    [symbols.views]: {[this.title]: {layout: 'Horizontal', shape: 'none'}},
+                    [symbols.views]: {[this.title]: {layout: this.settings.layout.value, shape: 'none'}},
                     [symbols.content]: this._structure,
                 }
                 root[symbols.viewData].set(this, {nextY: this.configuration.rowGap, rowHeight: 0, height: 0, rightEdge: []});
                 
                 const getData = (node) => node[symbols.viewData].get(this);
-
-                
-/*
-                    const node = getData(source);
-                    const groupAttrs = {
-                        transform: `translate(${node.box.x}, ${node.box.y})`,
-                    };
-
-                    const textAttrs = {
-                        x: node.x + node.width / 2,
-                        y: node.y,
-                        'font-size': `${node.fontSize}pt`,
-                        'font-family': getValue(source, 'font', 'sans-serif'),
-                        'text-anchor': 'middle',
-                        'dominant-baseline': 'middle',
-                        fill: getValue(source, 'text', 'black'),
-                    };
-                    
-                    const getLength = (text) => {
-                        const node = this.add('text', textAttrs, text, [], container);
-                        const length = node.getComputedTextLength();
-                        node.remove();
-                        return length;
-                    };
-                    const lines = fitText(this.configuration.nodeText(source) ?? '', node.width, getLength);
-                    textAttrs.y = node.y + (node.height - (lines.length - 1) * node.fontSize * node.lineSpacing) / 2;
-
-                    const shape = source[symbols.viewData].get(this).shapeObj.draw();
-                    
-                    if (shape) {
-                        shape.addEventListener('click', (event) => clickNode(source, event));
-                        shape.addEventListener('dblclick', (event) => {
-                        });
-                        node.svgNodes.push(shape);
-                    }
-                    if (getValue(source, 'image')) {
-                        const attrs = {href: getValue(source, 'image'), width: node.width, height: node.height};
-                        this.add('image', attrs, null, [], container);
-                    }
-
-                    if (!(['svg', 'none'].includes(node.shape))) {
-                        const clipRect = this.make('rect', { x: node.x, y: node.y, width: node.width, height: node.height });
-                        this.add('clipPath', { id: `clip${index}` }, clipRect, [], group);
-                        textAttrs['clip-path'] = `url(#clip${index})`;
-                        lines.forEach((line) => {
-                            this.add('text', textAttrs, line, [], group);                    
-                            textAttrs.y += node.fontSize * node.lineSpacing;
-                        });
-                    }
-                    const nodes = this.configuration.nodeContent(source);
-                    if (nodes.length && source[symbols.views][this.title]?.layout !== 'grid') {
-                        const dataNodes = nodes.map((node) => getData(node));
-                        const pathAttrs = { fill: 'none', stroke: 'black', d: '' };
-                        if (this.settings.leftToRight.checked) {
-                            const endX = node.x;
-                            const endY = node.y + node.height / 2;
-                            dataNodes.forEach((node) => {
-                                const startX = node.box.x + node.x + node.width;
-                                const startY = node.box.y + node.y + node.height / 2;
-                                if (this.settings.connectorStyle.value === 'Straight') {
-                                    pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
-                                } else if (this.settings.connectorStyle.value === 'Rectilinear') {
-                                    pathAttrs.d += `M${startX} ${startY} L${endX - this.configuration.columnGap} ${startY} `;
-                                    pathAttrs.d += `L${endX - this.configuration.columnGap} ${endY} L${endX} ${endY} `;
-                                } else if (this.settings.connectorStyle.value === 'Curve 1') {
-                                    pathAttrs.d += `M${startX} ${startY} C${(startX + endX) / 2} ${startY} ${endX - this.configuration.columnGap} ${endY} ${endX} ${endY} `;
-                                } else {
-                                    const dy = startY > endY ? -Math.min(this.configuration.rowGap, (startY - endY) / 2) : Math.min(this.configuration.rowGap, (endY - startY) / 2);
-                                    const col = this.configuration.columnGap;
-                                    pathAttrs.d += `M${startX} ${startY} `;
-                                    pathAttrs.d += `L${endX - 2 * col} ${startY} `;
-                                    pathAttrs.d += `Q${endX - col} ${startY} ${endX - col} ${startY + dy}`;
-                                    pathAttrs.d += `L${endX - col} ${endY - dy} `;
-                                    pathAttrs.d += `Q${endX - col} ${endY} ${endX} ${endY}`;
-                                }
-                            });
-                        } else if (source[symbols.views][this.title]?.layout === 'Vertical') {
-                            const startX = node.x + this.configuration.columnGap;
-                            const startY = node.y + node.height;
-                            pathAttrs.d = dataNodes.map((node) =>
-                                `M${startX} ${startY} V${node.box.y + node.y + node.height / 2} H${node.box.x + node.x}`).join(' ');
-                        } else {
-                            const startX = node.x + node.width / 2;
-                            const startY = node.y + node.height;
-                            
-                            dataNodes.forEach((node) => {
-                                const endX = node.box.x + node.x + node.width / 2;
-                                const endY = node.box.y + node.y;
-                            
-                                if (this.settings.connectorStyle.value === 'Straight') {
-                                    pathAttrs.d += `M${startX} ${startY} L ${endX} ${endY} `;                                        
-                                } else if (this.settings.connectorStyle.value === 'Rectilinear') {
-                                    pathAttrs.d += `M${startX} ${startY} v${this.configuration.rowGap / 2} `;
-                                    pathAttrs.d += `H${node.box.x + node.x + node.width / 2} `;
-                                    pathAttrs.d += `v${this.configuration.rowGap / 2} `; 
-                                } else if (this.settings.connectorStyle.value === 'Curve 1') {
-                                    pathAttrs.d += `M${startX} ${startY} C${startX} ${endY} `;
-                                    pathAttrs.d += `${endX} ${startY} ${endX} ${endY} `;
-                                } else {
-                                    const dx = startX > endX ? -Math.min(this.configuration.columnGap, (startX - endX) / 2) : Math.min(this.configuration.columnGap, (endX - startX) / 2);
-                                    const row = this.configuration.rowGap / 2;
-                                    pathAttrs.d += `M${startX} ${startY} `;
-                                    pathAttrs.d += `Q${startX} ${startY + row} ${startX + dx} ${startY + row}`;
-                                    pathAttrs.d += `H${endX - dx}`;
-                                    pathAttrs.d += `Q${endX} ${startY + row} ${endX} ${endY}`;
-                                    pathAttrs.d += `V${endY}`;
-                                 }
-                            });
-                        }
-                        this.add('path', pathAttrs, null, [], group);
-                    }
-                    ++index;
-                    return group;
-                    */
 
                 SVGNode.clipCount = 0;
                 const addNode = (node, parent) => {
@@ -4263,21 +4283,82 @@ ${svg.parentElement.innerHTML}`;
                     const nodes = this.configuration.nodeContent(node).filter((node) => getValue(node, 'shape') !== 'hidden');
 
                     const container = shape.addContainer(parent);
+                    
+                    if (shape.layout === 'timeline') {
+                        
+                    }
 
                     if (getValue(node, 'closed') || (nodes.length === 0) || (getData(node).expanded === false)) {
                         shape.box.width = shape.width;
                         shape.box.height = shape.height;
                         shape.leftEdge = [{x: 0, y: 0}, {x: 0, y: shape.height}];
                         shape.rightEdge = [{x: shape.width, y: 0}, {x: shape.width, y: shape.height}];
+                    } else if (shape.layout === 'timeline') {
+                        const nodes = [];
+                        const stack = [node];
+                        while (stack.length) {
+                            const node = stack.unshift();
+                            if (getStart(node)) {
+                                nodes.push(node);
+                            }
+                            stack.push(...this.configuration.nodeContent(node));
+                        }
+                        const scale = getData(node).scale;
+                        const now = new Date();
+                        const start = Math.min(...nodes.map((node) => getStart(node)));
+                        const positioned = [];
+                        nodes.sort((a, b) => getDuration(b) - getDuration(a));
+                        nodes.sort((a, b) => getSart(a) - getStart(b));
+                        nodes.forEach((child) => {
+                            const shape = getSVGShape(child, this);
+                            const duration = getDuration(child);
+                            if (duration) {
+                                child[symbols.views][this.title] = child[symbols.views][this.title] || {};
+                                child[symbols.views][this.title].width = duration * scale;
+                            }
+                            shape.x = (getStart(child) - start) * scale;
+
+                            const data = node[symbols.viewData].get(this);
+                            if (data) {
+                                data.shape = shape;
+                                data.svgNodes = [];
+                            } else {
+                                node[symbols.viewData].set(this, {shape, svgNodes: []});
+                            }
+                            const overlapped = positioned.filter((existing) =>
+                                (existing.x > (shape.x + shape.width)) || ((existing.x + exisiting.width) < shape.start));
+                            overlapped.sort((a, b) => a.y - b.y);
+                            shape.y = 0;
+                            while (overlapped.length && (shape.y < (overlapped[0].y + overlapped[0].height))
+                                && ((shape.y + shape.height) > overlapped[0].y)) {
+                                shape.y = overlapped[0] + overlapped[0].height + this.configuration.rowGap;
+                                overlapped.shift();        
+                            }
+                        });
+                        
                     } else {
                         let nextX = 0;
                         let nextY = shape.height + this.configuration.rowGap;
                         let rowHeight = 0;
-                        shape.layout = this.settings.leftToRight.checked ? 'leftToRight' : (getValue(node, 'layout') ?? (nodes.length > parseInt(this.settings.maxHorizontalNodes.value) ? 'vertical' : 'horizontal'));
+                        shape.layout = getValue(node, 'layout') ?? (nodes.length > parseInt(this.settings.maxHorizontalNodes.value) ? 'vertical' : 'horizontal');
                         const childShapes = nodes.map((child, index) => {
                             const childShape = addNode(child, container);
 
                             if (shape.layout === 'grid') {
+                                const columns = Math.ceil(Math.sqrt(nodes.length));
+                    
+                                childShape.box.x = getValue(child, 'x') ?? (nextX + this.configuration.columnGap);
+                                childShape.box.y = getValue(child, 'y') ?? (nextY + this.configuration.rowGap);
+        
+                                nextX += childShape.box.width + this.configuration.columnGap;
+                                rowHeight = Math.max(rowHeight, childShape.box.height);
+
+                                if ((index % columns) === (columns - 1)) {
+                                    nextX = 0;
+                                    nextY += rowHeight + this.configuration.rowGap;
+                                    rowHeight = 0;
+                                }
+                            } else if (shape.layout === 'timeline') {
                                 const columns = Math.ceil(Math.sqrt(nodes.length));
                     
                                 childShape.box.x = getValue(child, 'x') ?? (nextX + this.configuration.columnGap);
@@ -4303,9 +4384,7 @@ ${svg.parentElement.innerHTML}`;
                                 childShape.box.y = nextY + this.configuration.rowGap;
                                 const offset = getOffset(shape.rightEdge, childShape.leftEdge.map((point) =>
                                     ({x: point.x + childShape.box.x, y: point.y + childShape.box.y})));
-
-                                childShape.box.x = offset;//nextX;
-
+                                childShape.box.x = offset;
                             }
                             shape.mergeEdges(childShape);
 
@@ -4320,7 +4399,7 @@ ${svg.parentElement.innerHTML}`;
                         shape.box.width = Math.max(shape.width, ...childShapes.map((shape) => shape.box.x + shape.box.width));
                         shape.box.height = Math.max(shape.height, ...childShapes.map((shape) => shape.box.y + shape.box.height));
                         
-                        if (getValue(node, 'layout') === 'grid') {
+                        if (getValue(node, 'layout') === 'grid' || getData(node, 'layout') === 'timeline') {
                             shape.box.width += this.configuration.columnGap;
                             shape.box.height += this.configuration.rowGap;
                         }
@@ -4350,7 +4429,7 @@ ${svg.parentElement.innerHTML}`;
                     return shape;
                 }
                 
-                const shape = addNode(root, this.svg);
+                const shape = addNode(root, this.context);
 
                 const groupAttrs = {
                     transform: `translate(${this.configuration.leftMargin}, ${this.configuration.topMargin})`,
@@ -4493,10 +4572,13 @@ ${svg.parentElement.innerHTML}`;
          * Process a click on a node
          */
         function clickNode(node, event) {
-            if (event.shiftKey) {
-                Core.selectionToggle(node);
-            } else {
-                Core.currentNode = node;
+            // Ignore non-source nodes, i.e. view generated nodes
+            if (node[symbols.source]) {
+                if (event.shiftKey) {
+                    Core.selectionToggle(node);
+                } else {
+                    Core.currentNode = node;
+                }
             }
         }
 
