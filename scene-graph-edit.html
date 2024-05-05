@@ -35,8 +35,7 @@
         td,
         th {
             border: 1px solid darkgray;
-            padding: 0.2rem;
-            width: 100%;
+            padding: 0.2rem 0.5rem;
         }
 
         th {
@@ -3121,7 +3120,6 @@ ${svg.parentElement.innerHTML}`;
                     textAttrs.fill = this.getData('text') ?? 'blue';
                     textAttrs['text-decoration'] = 'underline';
                 }
-
                 
                 const getLength = (text) => {
                     const node = this.view.add('text', this.container, textAttrs, text);
@@ -3129,7 +3127,8 @@ ${svg.parentElement.innerHTML}`;
                     node.remove();
                     return length;
                 };
-                const lines = fitText(this.view.configuration.nodeText(this.node) ?? '', this.width, getLength);
+                const textWidth = 60;//this.width > (this.fontSize * 3) ? this.width : 60;
+                const lines = fitText(this.view.configuration.nodeText(this.node) ?? '', textWidth, getLength);
                 textAttrs.y = origin.y - (lines.length - 1) * this.lineHeight / 2;
                 
                 if (this.width && this.height) {
@@ -3537,12 +3536,12 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw() {
-                const x1 = this.viewData('x');
-                const y1 = this.viewData('y');
-                const x2 = this.viewData('x') + this.viewData('width') / 2;
-                const y2 = this.viewData('y') + this.viewData('height') / 2;
-                const x3 = this.viewData('x') + this.viewData('width');
-                const y3 = this.viewData('y') + this.viewData('height');
+                const x1 = this.x;
+                const y1 = this.y;
+                const x2 = this.x + this.width / 2;
+                const y2 = this.y + this.height / 2;
+                const x3 = this.x + this.width;
+                const y3 = this.y + this.height;
                 const attrs = {
                     d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
                     fill: this.fill, stroke: this.stroke,
@@ -4257,7 +4256,10 @@ ${svg.parentElement.innerHTML}`;
                 for (const svgNode of this.node.querySelectorAll('.selected')) {
                     svgNode.classList.remove('selected');
                 }
-                node[symbols.viewData].get(this).svgNodes.forEach((node) => node.classList.add('selected'));
+                const data = node[symbols.viewData].get(this);
+                if (data) {
+                    data.svgNodes.forEach((node) => node.classList.add('selected'));
+                }
                 
                 if (this.settings.scrollToCurrent.checked) {
                     const element = node[symbols.viewData].get(this).svgNodes[0];
@@ -4360,17 +4362,18 @@ ${svg.parentElement.innerHTML}`;
                         const stack = [node];
                         while (stack.length) {
                             const node = stack.shift();
-                            if (getStart(node, this)) {
+                            if (getStart(node, this) && (getDuration(node, this) !== undefined)) {
                                 nodes.push(node);
                             }
-                            stack.push(...this.configuration.nodeContent(node));
+                            const children = [...this.configuration.nodeContent(node)];
+                            children.sort((a, b) => getDuration(b, this) - getDuration(a, this));
+                            children.sort((a, b) => getStart(a, this) - getStart(b, this));
+                            stack.push(...children);
                         }
                         const scale = getData(node, this).scale ?? 10 / (24 * 60 * 60 * 1000);
                         const now = new Date();
                         const start = Math.min(...nodes.map((node) => getStart(node, this)));
                         const positioned = [];
-                        nodes.sort((a, b) => getDuration(b, this) - getDuration(a, this));
-                        nodes.sort((a, b) => getStart(a, this) - getStart(b, this));
                         nodes.forEach((child) => {
                             const childShape = getSVGShape(child, this);
                             const data = child[symbols.viewData].get(this);
@@ -4384,14 +4387,16 @@ ${svg.parentElement.innerHTML}`;
                             childShape.addContainer(this.context);
                             const duration = getDuration(child, this);
 
+                            const box = childShape.box;
                             if (duration) {
                                 child[symbols.views][this.title] = child[symbols.views][this.title] || {};
                                 child[symbols.views][this.title].width = duration * scale;
+                                box.width = duration * scale;
+                            } else {
+                                box.width = childShape.width;
                             }
 
-                            const box = childShape.box;
                             box.x = (getStart(child, this) - start) * scale;
-                            box.width = duration * scale;
 
                             const overlapped = positioned.filter((existing) =>
                                 ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
@@ -4464,17 +4469,27 @@ ${svg.parentElement.innerHTML}`;
                                 childShape.box.x = offset;
                             }
                             shape.mergeEdges(childShape);
-
-                            const groupAttrs = {
-                                transform: `translate(${childShape.box.x}, ${childShape.box.y})`,
-                            };
-                            this.updateElement(childShape.container, groupAttrs);
-                            
                             return childShape;
                         });
                         
-                        shape.box.width = Math.max(shape.width, ...childShapes.map((shape) => shape.box.x + shape.box.width));
-                        shape.box.height = Math.max(shape.height, ...childShapes.map((shape) => shape.box.y + shape.box.height));
+                        const width = Math.max(...childShapes.map((shape) => shape.box.x + shape.box.width));
+                        const height = Math.max(...childShapes.map((shape) => shape.box.y + shape.box.height));
+                        const offset = {x: 0, y: 0};
+                        
+                        if (shape.layout === undefined && (width < shape.width)) {
+                            offset.x = (shape.width - width) / 2;
+                        }
+
+                        childShapes.forEach((childShape) => {
+                            childShape.box.x += offset.x;
+                            childShape.box.y += offset.y;
+                            const attrs = { transform: `translate(${childShape.box.x}, ${childShape.box.y})`,};
+                            this.updateElement(childShape.container, attrs);
+                            shape.mergeEdges(childShape);
+                        });
+                        
+                        shape.box.width = Math.max(shape.width, width);
+                        shape.box.height = Math.max(shape.height, height);
                         
                         if (getValue(node, 'layout') === 'grid' || getData(node, 'layout') === 'timeline') {
                             shape.box.width += this.configuration.columnGap;
@@ -5913,10 +5928,10 @@ ${svg.parentElement.innerHTML}`;
                 const testNode = this.makeNode(context);
 
                 let nodes = [...context.nodeList];
-                if (testNode.name && testNode.name.startsWith('/')) {
+                if (testNode.name && testNode.name.startsWith('/') && testNode.name.endsWith('/')) {
                     try {
-                        const re = new RegExp(testNode.name.slice(1, -1));
-                        nodes = nodes.filter((node) => re.test(node.name));
+                        const pattern = new RegExp(testNode.name.slice(1, -1));
+                        nodes = nodes.filter((node) => pattern.test(node.name));
                     } catch (err) {
                         warn(`Invalid regular expression ${testNode.name.slice(1, -1)} on line ${this.line}`);
                     }
