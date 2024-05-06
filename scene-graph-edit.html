@@ -875,6 +875,8 @@
                     </svg>
                 </button>
                 <label for="depth-test">Depth Test</label><input class="depth-test" type="checkbox" checked>
+                <label for="min-level">Min Level</label><input class="min-level" type="number" value="0">
+                <label for="levels">Levels</label><input class="levels" type="number" value="0">
                 <label for="far">Far limit</label><input class="far" type="number" value=10000>
                 <label for="step-size">Step Size</label><input class="step-size" type="number" value=1>
             </div>
@@ -2365,6 +2367,8 @@ ${svg.parentElement.innerHTML}`;
                 reset: '.reset',
                 upright: '.upright',
                 depthTest: '.depth-test',
+                minLevel: '.min-level',
+                levels: '.levels',
                 far: '.far',
                 stepSize: '.step-size',
             };
@@ -2763,8 +2767,6 @@ ${svg.parentElement.innerHTML}`;
                 }
                 glErrors(gl, `${this.title} update 6`);
 
-                //topView.render();
-
                 if (this.overlays) {
                     this.overlays.forEach((overlay) => overlay.updateOverlay(projectionMatrix));
                 }
@@ -2908,9 +2910,6 @@ ${svg.parentElement.innerHTML}`;
                 };
                 let initialMatrix;
                 const transform = (event, x, y) => {
-                    const c = this.context.getCTM();
-                    const t = c.inverse();
-                    const inverse = c.inverse();
 
                     const box = this.svg.getBoundingClientRect();
 
@@ -9165,7 +9164,7 @@ void main() {
         /**
          *
          */
-        function drawNode(view, gl, origin, node, time) {
+        function drawNode(view, gl, origin, node, time, level=0) {
             const sceneNode = node[symbols.viewData]?.get(view);
             if (sceneNode) {
                 sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
@@ -9177,14 +9176,17 @@ void main() {
                 const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
                 gl.uniformMatrix3fv(sceneNode.shader.normalMatrix, false, normalMatrix);
                 sceneNode.shader.setNodeData(gl, sceneNode);
-                if (sceneNode.shape) {
+                if (sceneNode.shape && level >= view.minLevel) {
                     sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
                 origin = sceneNode.world;
                 sceneNode.movement = identityMatrix();
+                level += 1;
             }
             node[symbols.content].sort((a, b) => a.z - b.z);
-            node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, time));
+            if ((view.maxLevel === 0) || (level < view.maxLevel)) {
+                node[symbols.content].forEach((child) => drawNode(view, gl, origin, child, time));
+            }
         }
 
         /**
@@ -9224,6 +9226,9 @@ void main() {
          */
         function drawScene(view, context, graph, time) {
             glErrors(context, 'drawScene start');
+            view.minLevel = parseInt(view.settings.minLevel.value);
+            const levels = parseInt(view.settings.levels.value);
+            view.maxLevel = levels ? (view.minLevel + levels) : 0;
             graph.forEach((node) =>
                 drawNode(view, context, identityMatrix(), node, time));
             glErrors(context, 'drawScene end');
@@ -10321,7 +10326,8 @@ void main() {
             });
 
             node.addEventListener('wheel', (event) => {
-                const dist = event.deltaY / 1000;
+                const stepSize = parseFloat(view.settings.stepSize.value);
+                const dist = stepSize * (-event.deltaY / 1000);
                 view.camera.zoom(dist);
                 report(dist);
             });
@@ -10417,7 +10423,7 @@ void main() {
 
 
         /**
-         * Add touch controls to the verical and horizontal separators
+         * Add touch controls to the vertical and horizontal separators
          */
         function addUIControls() {
             let action = null;
