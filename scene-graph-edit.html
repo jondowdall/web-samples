@@ -1569,11 +1569,10 @@ ${svg.parentElement.innerHTML}`;
                 let settings = '';
                 if (this.settings) {
                     settings = Object.entries(this.settings).map(([name, node]) => {
-                        if (node.value) {
-                            return `${name} = ${node.value}`;
-                        } else if (node.type === 'checkbox') {
-                            return `${name} = ${node.checked}`;
+                        if (node.type === 'checkbox') {
+                            return `${name}=${Boolean(node.checked)}`;
                         }
+                        return `${name}=${node.value}`;
                     }).join(';');
                 }
                 return `${this.constructor.name};title=${this.title};${settings}`;
@@ -1582,7 +1581,7 @@ ${svg.parentElement.innerHTML}`;
                 if (this.settings) {
                     Object.entries(settings).forEach(([control, value]) => {
                         if (this.settings[control].type === 'checkbox') {
-                            this.settings[control].checked = value === true;
+                            this.settings[control].checked = value === 'true';
                         } else {
                             this.settings[control].value = value;
                         }
@@ -3419,7 +3418,7 @@ ${svg.parentElement.innerHTML}`;
             }
 
             connectionPoint(position) {
-                return { x: this.viewData('x'), y: this.viewData('y') };
+                return { x: this.x, y: this.y };
             }
         }
         
@@ -3446,7 +3445,7 @@ ${svg.parentElement.innerHTML}`;
             connectionPoint(position) {
                 let x = this.x, y = this.y;
                 let w = this.width, h = this.height;
-                
+
                 if (this.getData('layout') === 'grid' || this.getData('layout') === 'timeline') {
                     x = y = 0;
                     w = this.box.width;
@@ -3891,7 +3890,8 @@ ${svg.parentElement.innerHTML}`;
             static name = 'link';
 
             constructor(view, node) {
-                super(view, node);                
+                super(view, node);
+                this.label = this.getData(this.getData('label property'));
             }
             addArrow(attrs, point, direction, size) {
                 const radius = size / 2;
@@ -4019,7 +4019,7 @@ ${svg.parentElement.innerHTML}`;
                     const start = getData(startNode).shape.connectionPoint(validateNumber(this.getData('start position'), 2.5));
                     const end = getData(endNode).shape.connectionPoint(validateNumber(this.getData('end position'), 0.5));
                     const attrs = { d: '', fill: 'none', stroke: this.stroke };
-                    let commonAncestor = this.svg;
+                    let commonAncestor = this.view.context;
                     if (index > 0) {
                         let startIndex = index;
                         while (startIndex < startAncestors.length) {
@@ -4033,8 +4033,13 @@ ${svg.parentElement.innerHTML}`;
                             end.y += getData(endAncestors[endIndex])?.shape.box?.y ?? 0;
                             ++endIndex;
                         }
-                        commonAncestor = getData(startAncestors[index - 1])?.svgNodes[0] ?? this.svg;
+                        commonAncestor = getData(startAncestors[index - 1])?.svgNodes[0] ?? this.view.context;
                     } else {
+                        start.x += this.view.configuration.columnGap;
+                        start.y += this.view.configuration.rowGap;
+                        end.x += this.view.configuration.columnGap;
+                        end.y += this.view.configuration.rowGap;
+                        
                         startAncestors.forEach((ancestor) => {
                             start.x += getData(ancestor)?.shape.box?.x ?? 0;
                             start.y += getData(ancestor)?.shape.box?.y ?? 0;
@@ -4057,9 +4062,9 @@ ${svg.parentElement.innerHTML}`;
                     };
 
                     attrs.d = `M${start.x} ${start.y}`;
-                    const points = this.getData('points');
-                    if (points) {
-                        const points2 = [points].flatMap((p) => p).reduce((list, point, index) => {
+                    const path = this.getData('path');
+                    if (path) {
+                        const points = path.reduce((list, point, index) => {
                             if (index % 2) {
                                 list[(index - 1) / 2][1] = point;
                             } else {
@@ -4068,8 +4073,8 @@ ${svg.parentElement.innerHTML}`;
                             return list;
                         }, []);
                         let direction = Math.abs(sd.x);
-                        attrs.d += points2.map((point) =>
-                            direction ? `H${point[0]} V${point[1]}` : `V${point[1]} H${point[0]}`).join(' ');
+                        attrs.d += points.map((point) =>
+                            sd.x ? `H${point[0]} V${point[1]}` : `V${point[1]} H${point[0]}`).join(' ');
                         attrs.d += ed.x ? ` V${end.y} ` : ` H${end.x} `;
                     } else {
                         if (startDirection === endDirection) {
@@ -4114,32 +4119,93 @@ ${svg.parentElement.innerHTML}`;
                             }
                         }
                     }
-                    attrs.d += `L${end.x} ${end.y}`;
-                    const endStyles = {
-                        arrow: this.addArrow,
-                        arrow2: this.addArrow2,
-                        box: this.addBox,
-                        box2: this.addBox2,
-                        diamond: this.addDiamond,
-                        diamond2: this.addDiamond2,
-                        circle: this.addCircle,
-                        circle2: this.addCircle2,
-                        'semi-circle': this.addSemiCircle,
-                    };
-                    const startStyle = endStyles[this.getData('start style')];
-                    if (startStyle) {
-                        const endAttrs = Object.assign({}, attrs, {d : ''});
-                        endAttrs.fill = this.getData('start colour') ?? this.getData('line') ?? 'black';
-                        startStyle(endAttrs, start, startDirection, validateNumber(this.getData('start size'), 10));
-                        this.view.add('path', commonAncestor, endAttrs);
-                    }
-                    const endStyle = endStyles[this.getData('end style')];
-                    if (endStyle) {
-                        const endAttrs = Object.assign({}, attrs, {d : ''});
-                        endAttrs.fill = this.getData('end colour') ?? this.getData('line') ?? 'black';
-                        endStyle(endAttrs, end, endDirection, validateNumber(this.getData('end size'), 10));
-                        this.view.add('path', commonAncestor, endAttrs);
-                    }
+                        attrs.d += `L${end.x} ${end.y}`;
+                        const endStyles = {
+                            arrow: this.addArrow,
+                            arrow2: this.addArrow2,
+                            box: this.addBox,
+                            box2: this.addBox2,
+                            diamond: this.addDiamond,
+                            diamond2: this.addDiamond2,
+                            circle: this.addCircle,
+                            circle2: this.addCircle2,
+                            'semi-circle': this.addSemiCircle,
+                        };
+                        const startStyle = endStyles[this.getData('start style')];
+                        if (startStyle) {
+                            const endAttrs = Object.assign({}, attrs, {d : ''});
+                            endAttrs.fill = this.getData('start colour') ?? this.getData('line') ?? 'black';
+                            startStyle(endAttrs, start, startDirection, validateNumber(this.getData('start size'), 10));
+                            this.view.add('path', commonAncestor, endAttrs);
+                        }
+                        const endStyle = endStyles[this.getData('end style')];
+                        if (endStyle) {
+                            const endAttrs = Object.assign({}, attrs, {d : ''});
+                            endAttrs.fill = this.getData('end colour') ?? this.getData('line') ?? 'black';
+                            endStyle(endAttrs, end, endDirection, validateNumber(this.getData('end size'), 10));
+                            this.view.add('path', commonAncestor, endAttrs);
+                        }
+                        if (this.label) {
+                            const attrs = {
+                                x: 0, y: 0, width: 10, height: this.lineHeight * 1.4, rx: this.lineHeight / 2, ry: this.lineHeight / 2,
+                                fill: 'white', stroke: this.stroke };
+                            if (this.getData('title property')) {
+                                attrs.title = this.getData(this.getData('title property')) ?? '';
+                            }
+                            const background = this.view.add('rect', commonAncestor, attrs);
+                            let x, y;
+                            
+                            const pts = (this.getData('path') ?? []).reduce((points, point, index) => {
+                                if (index % 2) {
+                                    points[points.length - 1].y = point;
+                                } else {
+                                    points.push({x: point});
+                                }
+                                return points;
+                            }, []);
+                            const points = [];
+                            
+                            points.unshift(start);
+                            pts.forEach((point, i) =>
+                                sd.x ? points.push({x: point.x, y: points[points.length - 1].y}, point) :
+                                points.push({x: points[points.length - 1].x, y: point.y}, point));
+                            ed.x ? points.push({x: points[points.length - 1].x, y: end.y}) :
+                                points.push({x: end.x, y: points[points.length - 1].y});
+                            points.push(end);
+
+                            const lengths = [];
+                            points.forEach((p, i) =>
+                                i ? lengths.push(Math.hypot(p.x - points[i - 1].x, p.y - points[i - 1].y)) : '');
+                            const total = lengths.reduce((sum, length) => sum + length, 0);
+                            let i = 0;
+                            let dist = 0;
+                            while (dist < total / 2) {
+                                if (dist + lengths[i] > total / 2) {
+                                    const p = (total / 2 - dist) / lengths[i];
+                                    x = points[i].x + p * (points[i + 1].x - points[i].x);
+                                    y = points[i].y + p * (points[i + 1].y - points[i].y);
+                                }
+                                dist += lengths[i];
+                                ++i;
+                            }
+                            
+                            if (this.getData('tx')) {
+                                x = this.getData('ty');
+                            }
+                            if (this.getData('ty')) {
+                                y = this.getData('ty');
+                            }
+                            const textAttrs = {
+                                x, y, fill: this.stroke, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+                            }
+                            const text = this.view.add('text', commonAncestor, textAttrs, this.label);
+                            const length = text.getComputedTextLength();
+                            attrs.width = length + this.lineHeight / 2;
+                            attrs.x = x - attrs.width / 2;
+                            attrs.y = y - this.lineHeight * 0.7;
+                            this.view.updateElement(background, attrs);
+                        }
+                    
                     
                     /*
                     const control = (start, position) => {
@@ -4272,14 +4338,23 @@ ${svg.parentElement.innerHTML}`;
                 this.settings.maxHorizontalNodes.addEventListener('change', (event) => this.redraw());
             }
             redraw() {
+                const matrix = this.context?.getCTM();
+
                 this.svg.innerHTML = '';
+                this.defs = this.add('defs', this.svg);
+
                 this.render();
+                if (matrix) {
+                    const attrs = {
+                        transform: `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`,
+                    };
+                    this.updateElement(this.context, attrs);
+                }
             }
             set structure(structure) {
                 if (this.configuration) {
-                    this.svg.innerHTML = '';
                     this._structure = structure;
-                    this.render();
+                    this.redraw();
                 }
             }
             set selectedNodes(selection) {
@@ -4600,8 +4675,6 @@ ${svg.parentElement.innerHTML}`;
 
                 this.svg.style.width = `${extents.right - extents.left}px`;
                 this.svg.style.height = `${extents.bottom - extents.top}px`;
-                
-                //console.log(this.svg.innerHTML);
             }
         }
 
@@ -5555,7 +5628,7 @@ ${svg.parentElement.innerHTML}`;
         /**
          * Return the given value if it is a date, or the 'other' value if not.
          */
-        function validateDateStr(str, other) {
+        function validateDateStr(str, other='') {
             const date = new Date(str);
             if (isNaN(date)) {
                 const today = new Date();
@@ -12166,7 +12239,7 @@ void main() {
 
                 var a0 = x0 * x5 - x1 * x4;
                 var a1 = x0 * x6 - x2 * x4;
-                var a2 = x0 * x7 - x3 * x4;
+                var a2 = x0  * x7 - x3 * x4;
                 var a3 = x1 * x6 - x2 * x5;
                 var a4 = x1 * x7 - x3 * x5;
                 var a5 = x2 * x7 - x3 * x6;
