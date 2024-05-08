@@ -975,13 +975,13 @@
             <div class="main-controls">
                 <datalist id="files"></datalist>
                 <input id="filename" list="files" placeholder="Name" value="New Scene" />
+                <button id="load">&#x1F4C2;</button>
                 <button id="save">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
                         <path d="M1 19 L1 23 L23 23 L23 19 M12 3 L12 19" stroke="black" fill="none" />
                         <path d="M12 19 L8 13 L16 13 Z" stroke="black" fill="black" />
                     </svg>
                 </button>
-                <button id="load">&#x1F4C2;</button>
                 <button id="export-frame">
                     <svg id="search-icon" class="svg-icon" viewBox="0 0 24 24">
                         <path d="M1 19 L1 23 L23 23 L23 19 M12 6 L12 19 M5 3 h14 v10 h-14 Z" stroke="black" fill="none" />
@@ -2393,6 +2393,10 @@ ${svg.parentElement.innerHTML}`;
                     indices: [],
                 };
                 this.gl = this.context;
+                if (this.gl.getSupportedExtensions().indexOf('EXT_frag_depth')) {
+                    this.gl.getExtension('EXT_frag_depth');
+                };
+
                 this.textureContext = this.textureCanvas.getContext('2d');
                 this.textureCanvas.width = 500;
                 this.textureCanvas.height = 1500;
@@ -4358,7 +4362,7 @@ ${svg.parentElement.innerHTML}`;
                 }
             }
             set selectedNodes(selection) {
-                // Set the roots as the selected nodes that are not descendents of other selected nodes
+                // Set the roots as the selected nodes that are not descendants of other selected nodes
                 const roots = [];
                 selection.forEach((node) => {
                     const ancestors = getAncestors(node).slice(0, -1);
@@ -6069,15 +6073,31 @@ ${svg.parentElement.innerHTML}`;
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
                 });
+                const nodeListLength = context.nodeList.length;
                 const testNode = this.makeNode(context);
+                context.nodeList.length = nodeListLength;
 
-                let nodes = [...context.nodeList];
+                let nodes = [];
                 if (testNode.name && testNode.name.startsWith('/') && testNode.name.endsWith('/')) {
+                    nodes = context.nodeList.filter((node) => node !== testNode);
                     try {
                         const pattern = new RegExp(testNode.name.slice(1, -1));
                         nodes = nodes.filter((node) => pattern.test(node.name));
                     } catch (err) {
                         warn(`Invalid regular expression ${testNode.name.slice(1, -1)} on line ${this.line}`);
+                    }
+                }
+                if (testNode.name.startsWith('...')) {
+                    const node = context.nodeList.find((node) => node.name === testNode.name.slice(3));
+                    if (node) {
+                        nodes.push(...getAncestors(node));
+                    }
+                }
+                if (testNode.name.endsWith('...')) {
+                    const node = context.nodeList.find((node) => node.name === testNode.name.slice(0, -3));
+                    const descendants = (nodes) => nodes.flatMap((node) => [node, ...descendants(node[symbols.content])]);
+                    if (node) {
+                        nodes.push(...descendants([node]));
                     }
                 }
                 const testKeys = Object.keys(testNode).filter((key) => key.startsWith('*'))
@@ -6104,13 +6124,13 @@ ${svg.parentElement.innerHTML}`;
                     } else {
                         const valueKeys = Object.keys(testNode).filter((key) => !key.startsWith('*') && key !== 'name');
                         nodes.forEach((node) => {
-                            this.startScope(context, node);   
                             valueKeys.forEach((key) => node[key] = testNode[key]);
-                            this.endScope(context);
                         });
                     }
                     nodes.forEach((node) => {
+                        this.startScope(context, node);
                         node[symbols.content].push(...this.content.flatMap((node) => node.expand(context)));
+                        this.endScope(context);
                     })
                     return [];
                 }
@@ -6829,7 +6849,7 @@ ${svg.parentElement.innerHTML}`;
                         } else {
                             value = value + '';
                             if (value.includes('...')) {
-                                const descendents = (nodes) => nodes.flatMap((node) => [node, ...descendents(node[symbols.content])]);
+                                const descendants = (nodes) => nodes.flatMap((node) => [node, ...descendants(node[symbols.content])]);
                                 context.scope[0].finalisation.push((context) => {
                                     const values = node[symbols.content].map((node) => node[name]);
                                     node[name] = numberOrString(value.replace(/([^\(]+)\s*\(\s*(\.\.\.\.?)\s*\)/, (match, func, elements) => {
@@ -6839,7 +6859,7 @@ ${svg.parentElement.innerHTML}`;
                                             if (elements === '...') {
                                                 return action(node[symbols.content].map((node) => node[name]).filter(defined));
                                             } else {
-                                                return action(descendents(node[symbols.content]).map((node) => node[name]).filter(defined));
+                                                return action(descendants(node[symbols.content]).map((node) => node[name]).filter(defined));
                                             }
                                         }
                                         return match;
@@ -6847,7 +6867,7 @@ ${svg.parentElement.innerHTML}`;
                                     if (value.trim() === '...') {
                                         node[name] = node[symbols.content].map((node) => node[name]);
                                     } else if (value.trim() === '....') {
-                                        node[name] = descendents(node[symbols.content]).map((node) => node[name]);
+                                        node[name] = descendants(node[symbols.content]).map((node) => node[name]);
                                     }
                                 });
                             } else if (value.trim() === '') {
@@ -6930,39 +6950,58 @@ ${svg.parentElement.innerHTML}`;
                         // Convert any variables in the string to the values in the context.
                         const variables = context.scope.toReversed().reduce((values, scope) =>
                             Object.assign(values, scope.node, scope.values), {});
-                        value = value.replace(/<([^>]*)>/g, (match, name) =>
-                            variables[name] !== undefined ? variables[name] : `<${name}>`);
-                        //value = value.replace(/\{([^:\}]+)(:0+)?\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, format, loop, loopVar) => {
-                        value = value.replace(/\{([^\+][^\}]*)\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, loop, loopVar) => {
-                            let result = match;
-                            const names = Object.keys(variables).map((name) => name ? name : '_');
-                            const values = Object.values(variables);
-                            if (loop) {
-                                const list = getGroupData(loop.replace(/\[([^\]]+)\][^\s;\t\|]+/, '$1'));
-                                names.push(loopVar);
-                                try {
-                                    const func = new Function(...names, `return ${expr}`);
-                                    result = list.reduce((ans, value) => ans + func(...values, value), '');
-                                } catch (err) {
-                                    console.log(`Info: expression ${expr} unresolved`);
-                                }
-                            } else {
-                                try {
-                                    result = new Function(...names, `return ${expr}`)(...values);
-                                } catch (err) {
-                                    error(variables);
-                                    error(err.name);
-                                    error(err.message);
-                                    error(`Info: expression ${expr} unresolved`);
+                        const nodes = context.scope.map((scope) => scope.node).filter((node) => node);
+                        let resolved = true;
+                        value = value.replace(/<([^>]*)>/g, (match, name) => {
+                            name = name.trim();
+                            if (variables[name] !== undefined) {
+                                return variables[name];
+                            }
+                            if (name.startsWith('::')) {
+                                const view = name.slice(2).split('.', 1)[0].trim();
+                                const variable = name.slice(view.length + 3).trim();
+                                const node = nodes.find((node) => node[symbols.views]?.[view]?.[variable]);
+                                if (node) {
+                                    return node[symbols.views][view][variable];
                                 }
                             }
-                            /*
-                            if (format) {
-                                result = (result + '').pad(format.length - 1, format[1]);
-                            }
-                            */
-                            return result;
+                            resolved = false;
+                            return `<${name}>`;
                         });
+                        //value = value.replace(/\{([^:\}]+)(:0+)?\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g, (match, expr, format, loop, loopVar) => {
+                        if (resolved) {
+                            value = value.replace(/\{([^\+][^\}]*)\}(?<loop>\[[^\]]+\]([^\s;\t\|]+))?/g,
+                              (match, expr, loop, loopVar) => {
+                                let result = match;
+                                const names = Object.keys(variables).map((name) => name ? name : '_');
+                                const values = Object.values(variables);
+                                if (loop) {
+                                    const list = getGroupData(loop.replace(/\[([^\]]+)\][^\s;\t\|]+/, '$1'));
+                                    names.push(loopVar);
+                                    try {
+                                        const func = new Function(...names, `return ${expr}`);
+                                        result = list.reduce((ans, value) => ans + func(...values, value), '');
+                                    } catch (err) {
+                                        console.log(`Info: expression ${expr} unresolved`);
+                                    }
+                                } else {
+                                    try {
+                                        result = new Function(...names, `return ${expr}`)(...values);
+                                    } catch (err) {
+                                        error(variables);
+                                        error(err.name);
+                                        error(err.message);
+                                        error(`Info: expression ${expr} unresolved`);
+                                    }
+                                }
+                                /*
+                                if (format) {
+                                    result = (result + '').pad(format.length - 1, format[1]);
+                                }
+                                */
+                                return result;
+                            });
+                        }
                         return value;
                     }
                 },
@@ -7096,20 +7135,6 @@ ${svg.parentElement.innerHTML}`;
                     const content = document.createElement('div');
                     content.classList.add('content');
 
-                    /*
-                    if (controlNode) {
-                        content.classList.add('control-node');
-                        if (viewNode.unrolled) {
-                            content.classList.add('range-expanded');
-                        }
-                        content.addEventListener('click', (event) => {
-                            viewNode.unrolled = !viewNode.unrolled;
-                            this.main.innerHTML = '';
-                            row = 0;
-                            structure.forEach((part) => addNode(part));
-                        });
-                    }
-                    */
                     viewNode.nodes.push(content);
                     content.style.gridColumn = `${viewNode.level + 1}/${depth + 2}`;
                     this.main.appendChild(content);
@@ -7729,7 +7754,7 @@ uniform sampler2D uSampler;
 void main() {
     gl_FragColor = vec4(1.0, 1.0, 0.5, 1.0);
     vec4 colour = vec4(vPosition * 0.15 + 0.5, 1);
-    gl_FragColor = uDiffuseColour   ;
+    gl_FragColor = uDiffuseColour;
     gl_FragColor = texture2D(uSampler, vTextureCoord);
 }
                 `,
@@ -7992,6 +8017,8 @@ void main() {
          *
          */
         const fsSource6 = `
+            #extension GL_EXT_frag_depth : enable
+        
             precision mediump float;
             varying vec3 vPosition;
             varying highp vec2 vTextureCoord;
@@ -8002,8 +8029,9 @@ void main() {
             void main() {
                 gl_FragColor = vec4(1.0, 1.0, 0.5, 1.0);
                 vec4 colour = vec4(vPosition * 0.15 + 0.5, 1);
-                gl_FragColor = uDiffuseColour   ;
+                gl_FragColor = uDiffuseColour;
                 gl_FragColor = texture2D(uSampler, vTextureCoord);
+                gl_FragDepthEXT = -1.0;
             }`;
 
 
@@ -8440,7 +8468,7 @@ void main() {
                 const gl = view.context;
                 const data = view.data;
                 this.uv = view.addText(text, colour, font);
-                this.width = height * this.uv[2];//width;
+                this.width = height * this.uv[2];
                 this.height = height;
                 this.text = text;
                 const w = height * this.uv[2] / 20;
@@ -10267,7 +10295,7 @@ void main() {
 
             node.addEventListener('touchmove', (event) => {
                 event.preventDefault();
-                if (action === 'pinch') {
+                if ((action === 'pinch') && (event.touches.length === 2)) {
                     // Use movement of centre to control rotation
                     const cx = (start.x + start.second.x);
                     const cy = (start.y + start.second.y);
