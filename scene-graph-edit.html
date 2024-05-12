@@ -3438,6 +3438,7 @@ ${svg.parentElement.innerHTML}`;
                     y: this.y,
                     width: this.width, height: this.height,
                     fill: this.fill, stroke: this.stroke,
+                    rx: 5,
                 };
                 Object.assign(attrs, this.getData('style') || {});
                 const svgElement = this.view.add('rect', this.container, attrs);
@@ -6057,9 +6058,8 @@ ${svg.parentElement.innerHTML}`;
         /**
          * Calculate schedule data for a set of nodes
          */
-        function schedule(nodes, context, start, finish) {
-            console.log('schedule');
-
+        function schedule(nodes, context, data) {
+            const start = data.start ?? new Date();
             const view = context.views[context.views.length - 1] || 'schedule';
             const get = (node, property) =>  node[symbols.views][view]?.[property] ?? node[property];
 
@@ -6067,6 +6067,7 @@ ${svg.parentElement.innerHTML}`;
             const allOutputs = [];
             
             nodes.forEach((node) => {
+                node[symbols.views][view] = node[symbols.views][view] || {};
                 const outputs = [get(node, 'outputs') ?? []].flatMap((i) => i).map((o) => o.split(':'));
                 allOutputs.push(
                     {node, name: `${node.name} started`, from: 's', lag: 0},
@@ -6077,64 +6078,102 @@ ${svg.parentElement.innerHTML}`;
             });
             nodes.forEach((node) => {
                 const inputs = [get(node, 'inputs') ?? []].flatMap((i) => i).map((o) => o.split(':'));
-                const relationships = inputs.flatMap((input) =>
+                const dependencies = inputs.flatMap((input) =>
                     allOutputs.filter((output) => output.node !== node && output.name === input[0])
                     .map((output) => ({
                         name: input[0],
                         source: output.node,
                         from: output.from,
                         to: input[1] ?? 's',
-                        lag: (input[2] ?? 0) + output.lag,
+                        inputLag: (input[2] ?? 0),
+                        outputLag: output.lag,
                     })));
-                console.log(node.name);
-                console.log(relationships);
+                    node[symbols.views][view].dependencies = dependencies;
+                    /*
+                    dependencies.forEach((dependency) => {
+                        dependency.source[symbols.views][view].dependents =
+                            dependency.source[symbols.views][view].dependents || [];
+                        dependency.source[symbols.views][view].dependents.push({
+                            node, name: input[0],
+                            from: output.from,
+                            to: input[1] ?? 's',
+                            inputLag: (input[2] ?? 0),
+                            outputLag: output.lag,
+                        });
+                    });
+                    */
             });
-            return;
             
-            start = start || new Date();
-            
-            const provides = (node, name) => {
-                return [get(node, 'outputs') ?? []].flatMap((i) => i)
-                    .map((output) => output.split(':'))
-                    .find((output) => output[0].trim() === name);
+            const getTime = (input) => {
+                let outputLag = 0;
+                if (input.outputLag.endsWith && input.outputLag.endsWith('%')) {
+                    outputLag = getDuration(input.source) * parseFloat(input.outputLag) / 100;
+                } else {
+                    outputLag = input.outputLag * 24 * 60 * 60 * 1000;
+                }
+                if (input.from === 's') {
+                    return new Date(getEarlyStart(input.source).getTime() + outputLag);
+                } else {
+                    return new Date(getEarlyFinish(input.source).getTime() + outputLag);                    
+                }
             }
             
             const getEarlyStart = (node) => {
-                const start = get(node, 'start');
-                if (start?.getTime) {
-                    return start;
+                if (!get(node, 'earlyStart')) {
+                    const nodeStart = get(node, 'start') ?? node.start;
+                    const dependencies = get(node, 'dependencies');
+                    if (nodeStart?.getTime) {
+                        node[symbols.views][view].earlyStart = nodeStart;
+                    } else if (dependencies.length) {
+                        node[symbols.views][view].earlyStart =
+                            new Date(Math.max(...dependencies.map((input) => getTime(input))));
+                    } else {
+                        node[symbols.views][view].earlyStart = start;
+                    }
                 }
-                const inputs = inputMap.get(node);
-                if (inputs.length) {
-                    const relationships = inputs.map((input) => {
-                        const source = nodes.find((source) =>
-                          source !== node && outputMap(source).find(source.name === input.name))
-                    });
-                    console.log('relationships');
-                    console.log(relationships);
+                return get(node, 'earlyStart');
+            } 
+            
+            const getDuration = (node) => 
+                (node[symbols.views.duration] ?? node.duration ?? 0) * 24 * 60 * 60 * 1000;
+
+            const getEarlyFinish = (node) =>
+                new Date(getEarlyStart(node).getTime() + getDuration(node));
+
+            nodes.forEach((node) => node[symbols.views][view].start = getEarlyStart(node));
+            const finish = new Date(Math.max(...nodes.map(getEarlyFinish)));
+            console.log(finish.toLocaleDateString());
+            
+            const getDependencyStart = (node, dependency) => {
+                // Determine the end time of the link based on the end time of the dependent
+                const linkEnd = dependency.to === 's' ? getEarlyStart(dependency.node) : getLateFinish(dependency.node);
+
+                // Determine the start tome of the link from the lag of the input and output
+                let inputLag = dependency.getInputLag * 24 * 60 * 60 * 1000;
+                if (dependency.outputLag.endsWith && dependency.outputLag.endsWith('%')) {
+                    outputLag = getDuration(node) * parseFloat(dependency.outputLag) / 100;
+                } else {
+                    outputLag = input.outputLag * 24 * 60 * 60 * 1000;
                 }
-                //node[symbols.views][view].start = start;
-                return start;
+                const linkStart = linkEnd.getTime() - inputLag - outputLag;
+                
+                if (dependency.from === 's') {
+                    return new Date(linkStart);
+                }
+                
+                return new Date(linkStart - getDuration(node));
             }
             
             const getLateFinish = (node) => {
-                
+                if (get(node, 'lateFinish')) {
+                    return get(node, 'lateFinish');
+                }
+                if (get(node, 'dependents')) {
+                    return new Date(Math.min(...get(node, 'dependents')
+                        .map((dependency) => getDependencyStart(node, dependency))));
+                }
+                return finish;
             }
-            
-            const getDuration = (node) => {
-                const duration = get(node, 'duration');
-                if (duration) {
-                    return duration;
-                }   
-            }
-            
-            nodes.forEach((node) => {
-                node[symbols.views][view] = node[symbols.views][view] || {};
-                const start = getEarlyStart(node);
-                const finish = getLateFinish(node);
-                const float = finish - start - getDuration(node);
-            });
-                
         }
         
         /**
