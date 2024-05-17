@@ -1061,7 +1061,7 @@
     </div>
 
     <script>
-        const ED = new Date("2018-04-01");
+        const EpochDate = new Date("2018-04-04");
 
         const Holidays = [
             { date: "2018-01-01", event: "New Year's Day" },
@@ -1309,7 +1309,7 @@
          */
         function dayNumber(date) {
             date = new Date(`${date.getFullYear()}-${((date.getMonth() + 1) + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')}`);
-            return (date.getTime() - ED.getTime()) / (24 * 60 * 60 * 1000)
+            return (date.getTime() - EpochDate.getTime()) / (24 * 60 * 60 * 1000)
         }
 
 
@@ -1337,6 +1337,15 @@
             return date;
         }
 
+        /**
+         * Clear the hours, minutes, seconds and milliseconds.
+         */
+        function quantiseDate(date, hours = 0) {
+            date.setHours(hours);
+            date.setMinutes(0);
+            date.setSeconds(0);
+            date.setMilliseconds(0);
+        }
 
 
         /**
@@ -3114,6 +3123,12 @@ ${svg.parentElement.innerHTML}`;
                 parent.appendChild(element);
                 return element;
             }
+            addUnder(type, parent, attributes = {}, content, classes) {
+                parent = parent || this.svg;
+                const element = this.make(type, attributes, content, classes);
+                parent.insertBefore(element, parent.firstElementChild);
+                return element;
+            }
             updateElement(element, attributes) {
                 Object.entries(attributes).forEach(([name, value]) =>
                     name !== 'name' ? element.setAttribute(name, value) : null);
@@ -3322,7 +3337,7 @@ ${svg.parentElement.innerHTML}`;
          */
         function getSVGShape(node, view) {
             if (node) {
-                const shapes = [SVGRect, SVGTask, SVGMilestone, SVGText, SVGTimeline, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
+                const shapes = [SVGRect, SVGActivity, SVGMilestone, SVGText, SVGTimeline, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
                 const shapeName = ((node[symbols.views][view.title]?.shape ?? node.shape) + '').toLowerCase();
                 const layout = ((node[symbols.views][view.title]?.layout ?? node.layout) + '').toLowerCase();
                 const shapeType = shapes.find((shape) => shape.name === shapeName) ?? (layout === 'grid' ? SVGText : SVGRect);
@@ -3334,7 +3349,7 @@ ${svg.parentElement.innerHTML}`;
         /**
          * SVG Tree Diagram node types
          */
-        class SVGNode {
+        class SVGShape {
             static clipCount = 0;
             static make(view, node) {
                 return new this(view, node);
@@ -3447,6 +3462,10 @@ ${svg.parentElement.innerHTML}`;
                     fill: this.getData('text') ?? 'black',
                 };
 
+                if (0 && maxWidth) {
+                    textAttrs.textLength = maxWidth;
+                    textAttrs.lengthAdjust = 'spacingAndGlyphs';
+                }
 
                 const href = this.getData('href');
                 const container = href ? this.view.add('a', this.container, { href }) : this.container;
@@ -3464,21 +3483,23 @@ ${svg.parentElement.innerHTML}`;
 
                 const textWidth = this.getData('textWidth') ?? (maxWidth > (this.fontSize * 3) ? maxWidth : 60);
                 const lines = fitText(this.view.configuration.nodeText(this.node) ?? '', textWidth, getLength);
+
                 textAttrs.y = origin.y - (lines.length - 1) * this.lineHeight / 2;
 
                 if (!origin.outside && maxWidth && this.height) {
                     const clipRect = this.view.make('rect', { x: this.x, y: this.y, width: this.width, height: this.height });
-                    this.view.add('clipPath', container, { id: `clip${SVGNode.clipCount}` }, clipRect);
-                    textAttrs['clip-path'] = `url(#clip${SVGNode.clipCount})`;
+                    this.view.add('clipPath', container, { id: `clip${SVGShape.clipCount}` }, clipRect);
+                    textAttrs['clip-path'] = `url(#clip${SVGShape.clipCount})`;
                 }
-                ++SVGNode.clipCount;
+                ++SVGShape.clipCount;
 
-                const elements = [];
+                const text = this.view.add('text', container, textAttrs)
+
                 lines.forEach((line) => {
-                    elements.push(this.view.add('text', container, textAttrs, line));
+                    this.view.add('tspan', text, { x: origin.x, y: textAttrs.y }, line);
                     textAttrs.y += this.lineHeight;
                 });
-                return elements;
+                return text;
             }
             merge(edge1, edge2, cmp) {
                 const lerp = (line, point) => line[0].x + (line[1].x - line[0].x) *
@@ -3719,7 +3740,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGRect extends SVGNode {
+        class SVGRect extends SVGShape {
             static name = 'rect';
 
             constructor(view, node) {
@@ -3757,7 +3778,7 @@ ${svg.parentElement.innerHTML}`;
         }
 
 
-        class SVGTask extends SVGNode {
+        class SVGActivity extends SVGShape {
             static name = 'task';
 
             constructor(view, node) {
@@ -3803,22 +3824,25 @@ ${svg.parentElement.innerHTML}`;
                     const finish = getCalendarDays(this.getData('earlyStart'), this.getData('duration'));
                     this.view.add('text', this.container, end, finish.toLocaleDateString());
                 } else {
-                    const label = {
-                        x: 0, y: 0,
-                        'font-size': `${this.fontSize * 0.8}pt`,
-                        'font-family': this.getData('font') ?? 'sans-serif',
-                        'text-anchor': 'start',
-                        'dominant-baseline': 'middle',
-                        fill: this.getData('text') ?? 'black',
-                        transform: `rotate(-90) translate(${this.box.y - 600} ${this.x + this.lineHeight / 2})`,
-                    }
-                    const text = this.view.add('text', this.container, label, this.view.configuration.nodeText(this.node) ?? '');
-
-                    const path = {
-                        fill: 'none', stroke: this.stroke,
-                        d: `M${this.x} ${this.y + this.height} V${600 - this.box.y}`,
-                    }
-                    this.view.add('path', this.container, path);
+                    this.addText(this.width);
+                    /*
+                                        const label = {
+                                            x: 0, y: 0,
+                                            'font-size': `${this.fontSize}pt`,
+                                            'font-family': this.getData('font') ?? 'sans-serif',
+                                            'text-anchor': 'end',
+                                            'dominant-baseline': 'middle',
+                                            fill: this.getData('text') ?? 'black',
+                                            transform: `rotate(-90) translate(${-this.y - this.height} ${this.x + this.lineHeight / 2})`,
+                                        }
+                                        const text = this.view.add('text', this.container, label, this.view.configuration.nodeText(this.node) ?? '');
+                    
+                                        const path = {
+                                            fill: 'none', stroke: this.stroke,
+                                            d: `M${this.x} ${this.y + this.height / 2} V${this.height + text.getComputedTextLength()}`,
+                                        }
+                                        this.view.add('path', this.container, path);
+                                        */
                 }
 
                 svgElement.addEventListener('click', (event) => clickNode(this.node, event));
@@ -3841,7 +3865,94 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGText extends SVGNode {
+        class SVGPackage extends SVGShape {
+            static name = 'package';
+
+            constructor(view, node) {
+                super(view, node);
+            }
+            draw() {
+                const attrs = {
+                    x: this.x,
+                    y: this.y,
+                    width: this.width, height: this.height,
+                    fill: this.fill, stroke: this.stroke,
+                    rx: 5,
+                };
+                Object.assign(attrs, this.getData('style') || {});
+                const svgElement = this.view.add('rect', this.container, attrs);
+
+                if (this.width > (5 * this.lineHeight)) {
+                    this.addText(this.width - this.lineHeight * 2);
+                    const path = {
+                        fill: 'none', stroke: this.stroke,
+                        d: `M${this.x + this.lineHeight} ${this.y} v${this.height} M${this.x + this.width - this.lineHeight} ${this.y} v${this.height}`,
+                    }
+                    this.view.add('path', this.container, path);
+                    const start = {
+                        x: 0, y: 0,
+                        'font-size': `${this.fontSize * 0.8}pt`,
+                        'font-family': this.getData('font') ?? 'sans-serif',
+                        'text-anchor': 'middle',
+                        'dominant-baseline': 'middle',
+                        fill: this.getData('text') ?? 'black',
+                        transform: `rotate(-90) translate(${-this.y - this.height / 2} ${this.x + this.lineHeight / 2})`,
+                    }
+                    this.view.add('text', this.container, start, this.getData('earlyStart').toLocaleDateString());
+                    const end = {
+                        x: 0, y: 0,
+                        'font-size': `${this.fontSize * 0.8}pt`,
+                        'font-family': this.getData('font') ?? 'sans-serif',
+                        'text-anchor': 'middle',
+                        'dominant-baseline': 'middle',
+                        fill: this.getData('text') ?? 'black',
+                        transform: `rotate(-90) translate(${-this.y - this.height / 2} ${this.x + this.width - this.lineHeight / 2})`,
+                    }
+                    const finish = getCalendarDays(this.getData('earlyStart'), this.getData('duration'));
+                    this.view.add('text', this.container, end, finish.toLocaleDateString());
+                } else {
+                    this.addText(this.width);
+                    /*
+                                        const label = {
+                                            x: 0, y: 0,
+                                            'font-size': `${this.fontSize}pt`,
+                                            'font-family': this.getData('font') ?? 'sans-serif',
+                                            'text-anchor': 'end',
+                                            'dominant-baseline': 'middle',
+                                            fill: this.getData('text') ?? 'black',
+                                            transform: `rotate(-90) translate(${-this.y - this.height} ${this.x + this.lineHeight / 2})`,
+                                        }
+                                        const text = this.view.add('text', this.container, label, this.view.configuration.nodeText(this.node) ?? '');
+                    
+                                        const path = {
+                                            fill: 'none', stroke: this.stroke,
+                                            d: `M${this.x} ${this.y + this.height / 2} V${this.height + text.getComputedTextLength()}`,
+                                        }
+                                        this.view.add('path', this.container, path);
+                                        */
+                }
+
+                svgElement.addEventListener('click', (event) => clickNode(this.node, event));
+                svgElement.addEventListener('dblclick', (event) => this.view.dblClickNode(this.node, event));
+                this.viewData('svgNodes').push(svgElement);
+            }
+            connectionPoint(position) {
+                let x = this.x, y = this.y;
+                let w = this.width, h = this.height;
+
+                if (this.getData('layout') === 'grid' || this.getData('layout') === 'timeline') {
+                    x = y = 0;
+                    w = this.box.width;
+                    h = this.box.height;
+                }
+
+                const points = [{ x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h }, { x: x, y: y + h }, { x: x, y: y }];
+
+                return this.linePoint(points, position);
+            }
+        }
+
+        class SVGText extends SVGShape {
             static name = 'rect';
 
             constructor(view, node) {
@@ -3872,7 +3983,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGTimeline extends SVGNode {
+        class SVGTimeline extends SVGShape {
             static name = 'timeline';
 
             constructor(view, node) {
@@ -3882,50 +3993,64 @@ ${svg.parentElement.innerHTML}`;
                 return this.box.width ?? validateNumber(this.getData('width'), 100);
             }
             get height() {
-                return this.box.height ?? validateNumber(this.getData('height'), 60);
-                return Math.max(...this.node[symbols.content].map((node) => {
-                    const box = node[symbols.viewData][this.view]?.get().shape.box;
+                const allNodes = [];
+                const addNode = (node) => {
+                    allNodes.push(node);
+                    node[symbols.content].forEach(addNode);
+                }
+                addNode(this.node);
+                return Math.max(...allNodes.map((node) => {
+                    const box = node[symbols.viewData].get(this.view).shape.box;
                     if (box) {
                         return box.y + box.height;
                     }
                     return 0;
-                }));
+                })) + this.view.configuration.rowGap * 2;
             }
             draw() {
+                const proxy = makeProxy(this.node, this.view.title);
                 const start = this.getData('start');
+                quantiseDate(start);
                 const finish = this.getData('finish');
-                const scale = this.width / (finish - start);
+                const scale = validateNumber(proxy.scale, 10) / (24 * 60 * 60 * 1000);
+                const x = (date) => (date.getTime() - start.getTime()) * scale;
 
                 const update = (date) => date.setDate(date.getDate() + 1);
                 const width = (2 * 24 * 60 * 60 * 1000) * scale;
-                const height = 600;
-
                 const date = new Date(start.getTime());
+                quantiseDate(date);
 
-                const attrs = { fill: 'none', stroke: 'gray', d: '', };
+                const attrs = { fill: 'none', stroke: 'gray', d: '' };
                 while (date < finish) {
-                    const x = (date.getTime() - start.getTime()) * scale;
-                    attrs.d += `M${x} ${0} V${height}`;
+                    attrs.d += `M${x(date)} ${0} V${this.height}`;
                     if (date.getDay() === 6) {
-                        const x = (date.getTime() - start.getTime()) * scale;
-                        const attrs = { fill: 'rgb(200 200 200)', stroke: 'none', x, y: 0, width, height };
-                        this.view.add('rect', this.container, attrs);
+                        const attrs = { fill: 'rgb(200 200 200)', 'fill-opacity': 0.5, stroke: 'none', x: x(date), y: 0, width, height: this.height };
+                        this.view.addUnder('rect', this.container, attrs);
                     }
                     update(date);
                 }
-                this.view.add('path', this.container, attrs);
+                this.view.addUnder('path', this.container, attrs);
+                const now = {
+                    d: `M${x(new Date())} 0 V${this.height}`, fill: 'none', stroke: 'red', 'stroke-width': 2
+                };
+                this.view.addUnder('path', this.container, now);
 
                 date.setTime(start.getTime());
                 date.setDate(1);
+                quantiseDate(date);
+
                 while (date < finish) {
-                    const x = (date > start) ? (date.getTime() - start.getTime()) * scale : 0;
+                    const startDate = (date > start) ? date : start;
+                    const x1 = x(startDate);
                     const end = new Date(date.getTime());
                     end.setMonth(end.getMonth() + 1);
-                    const x2 = (end < finish) ? (end.getTime() - start.getTime()) * scale : (finish.getTime() - start.getTime()) * scale;
-                    const attrs = { fill: 'white', stroke: 'black', x, y: 0, width: x2 - x, height: this.lineHeight, }
-                    this.view.add('rect', this.container, attrs);
+                    const endDate = (end < finish) ? end : finish;
+                    const x2 = x(endDate);
+                    const attrs = { fill: 'white', stroke: 'black', x: x1, y: 0, width: x2 - x1, height: this.lineHeight, }
+                    const rect = this.view.add('rect', this.container, attrs);
+                    this.view.add('title', rect, {}, `${date.toLocaleDateString()} ${end.toLocaleDateString()}`);
                     const textAttrs = {
-                        fill: 'black', stroke: 'none', x: (x + x2) / 2, y: this.lineHeight / 2,
+                        fill: 'black', stroke: 'none', x: (x1 + x2) / 2, y: this.lineHeight / 2,
                         'font-size': `${this.fontSize * 0.8}pt`,
                         'font-family': this.getData('font') ?? 'sans-serif',
                         'text-anchor': 'middle',
@@ -3936,6 +4061,43 @@ ${svg.parentElement.innerHTML}`;
                 }
 
                 this.addText();
+                if (proxy['show burndown']) {
+                    const burndowns = [proxy['show burndown']].flatMap((i) => i);
+                    const nodes = this.view.configuration.nodeContent(this.node).filter((node) => getDuration(node));
+                    burndowns.forEach((burndown) => {
+                        let total = 0;
+                        const points = nodes.flatMap((node) => {
+                            const data = node[symbols.views][this.view.title];
+                            let rate = 0;
+                            if (Array.isArray(node[burndown])) {
+                                const sum = node[burndown].reduce((sum, node) => sum + (node.value || 0), 0);
+                                total += sum;
+                                rate = sum / ((data.finish.getTime() - data.start.getTime()) * scale);
+                            } else {
+                                total += node[burndown]?.value ?? 0;
+                                rate = (node[burndown]?.value ?? 0) / ((data.finish.getTime() - data.start.getTime()) * scale);
+                            }
+                            return [
+                                { x: x(data.start), rate: -rate, },
+                                { x: x(data.finish), rate: rate, }
+                            ];
+                        });
+                        const y = (value) => this.height - (value / total) * (this.height - 2 * this.view.configuration.rowGap);
+                        const attrs = { fill: 'none', stroke: 'red', d: `M${points[0].x} ${y(total)}` };
+                        let currentX = 0;
+                        let rate = 0;
+                        let value = total;
+                        points.sort((a, b) => a.x - b.x);
+                        points.forEach((point) => {
+                            const deltaX = point.x - currentX;
+                            currentX = point.x;
+                            value += rate * deltaX;
+                            rate += point.rate;
+                            attrs.d += ` L${point.x} ${y(value)}`;
+                        });
+                        this.view.add('path', this.container, attrs);
+                    });
+                }
             }
             connectionPoint(position) {
                 let x = this.x, y = this.y;
@@ -3953,7 +4115,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGCircle extends SVGNode {
+        class SVGCircle extends SVGShape {
             static name = 'circle';
 
             constructor(view, node) {
@@ -3991,7 +4153,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGEllipse extends SVGNode {
+        class SVGEllipse extends SVGShape {
             static name = 'ellipse';
 
             constructor(view, node) {
@@ -4032,7 +4194,7 @@ ${svg.parentElement.innerHTML}`;
 
         }
 
-        class SVGDiamond extends SVGNode {
+        class SVGDiamond extends SVGShape {
             static name = 'diamond';
 
             constructor(view, node) {
@@ -4069,7 +4231,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGMilestone extends SVGNode {
+        class SVGMilestone extends SVGShape {
             static name = 'milestone';
 
             constructor(view, node) {
@@ -4077,11 +4239,11 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw() {
-                const x1 = this.x - this.width / 2;
+                const x1 = this.x - this.height / 2;
                 const y1 = this.y;
                 const x2 = this.x;
                 const y2 = this.y + this.height / 2;
-                const x3 = this.x + this.width / 2;
+                const x3 = this.x + this.height / 2;
                 const y3 = this.y + this.height;
                 const attrs = {
                     d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
@@ -4093,13 +4255,13 @@ ${svg.parentElement.innerHTML}`;
                 };
                 const background = this.view.add('rect', this.container, backgroundAttrs);
                 const text = this.addText();
-                backgroundAttrs.width = text[0].getComputedTextLength() + this.width + 2;
+                backgroundAttrs.width = text.getComputedTextLength() + this.width + 2;
                 this.view.updateElement(background, backgroundAttrs);
                 const svgElement = this.view.add('path', this.container, attrs);
                 svgElement.addEventListener('click', (event) => clickNode(this.node, event));
                 svgElement.addEventListener('dblclick', (event) => this.view.dblClickNode(this.node, event));
                 this.viewData('svgNodes').push(svgElement);
-                this.box.width = text[0].getComputedTextLength() + this.width * 2;
+                this.box.width = text.getComputedTextLength() + this.width * 2;
             }
             connectionPoint(position) {
                 const x1 = this.viewData('x');
@@ -4113,7 +4275,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGParallelogram extends SVGNode {
+        class SVGParallelogram extends SVGShape {
             static name = 'parallelogram';
 
             constructor(view, node) {
@@ -4150,7 +4312,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGTrapezoid extends SVGNode {
+        class SVGTrapezoid extends SVGShape {
             static name = 'trapezoid';
 
             constructor(view, node) {
@@ -4186,7 +4348,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGPie extends SVGNode {
+        class SVGPie extends SVGShape {
             static name = 'pie chart';
 
             constructor(view, node) {
@@ -4267,7 +4429,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGPlot extends SVGNode {
+        class SVGPlot extends SVGShape {
             static name = 'xy plot';
 
             constructor(view, node) {
@@ -4314,7 +4476,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGChart extends SVGNode {
+        class SVGChart extends SVGShape {
             static name = 'line chart';
 
             constructor(view, node) {
@@ -4350,7 +4512,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGHistogram extends SVGNode {
+        class SVGHistogram extends SVGShape {
             static name = 'histogram';
 
             constructor(view, node) {
@@ -4393,7 +4555,7 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
-        class SVGLink extends SVGNode {
+        class SVGLink extends SVGShape {
             static name = 'link';
 
             constructor(view, node) {
@@ -4657,9 +4819,6 @@ ${svg.parentElement.innerHTML}`;
                             x: 0, y: 0, width: 10, height: this.lineHeight * 1.4, rx: this.lineHeight / 2, ry: this.lineHeight / 2,
                             fill: 'white', stroke: this.stroke
                         };
-                        if (this.getData('title property')) {
-                            attrs.title = this.getData(this.getData('title property')) ?? '';
-                        }
                         const background = this.view.add('rect', commonAncestor, attrs);
                         let x, y;
 
@@ -4712,6 +4871,9 @@ ${svg.parentElement.innerHTML}`;
                         attrs.x = x - attrs.width / 2;
                         attrs.y = y - this.lineHeight * 0.7;
                         this.view.updateElement(background, attrs);
+                        if (this.getData('title property')) {
+                            this.view.add('title', background, {}, this.getData(this.getData('title property')) ?? '');
+                        }
                     }
 
 
@@ -4737,7 +4899,7 @@ ${svg.parentElement.innerHTML}`;
                 }
             }
         }
-        class SVG extends SVGNode {
+        class SVG extends SVGShape {
             static name = 'svg';
 
             constructor(view, node) {
@@ -4761,7 +4923,7 @@ ${svg.parentElement.innerHTML}`;
                 container.addEventListener('dblclick', (event) => this.view.dblClickNode(this.node, event));
             }
         }
-        class SVGNone extends SVGNode {
+        class SVGNone extends SVGShape {
             static name = 'none';
 
             constructor(view, node) {
@@ -4796,11 +4958,35 @@ ${svg.parentElement.innerHTML}`;
         }
 
         /**
+         * Get the finish time / date of a node in milliseconds from epoch
+         */
+         function getFinish(node, view) {
+            const proxy = makeProxy(node, view.title);
+            const finish = proxy.finish;
+            if (finish) {
+                return finish.getTime();
+            }
+            /*
+
+            const getProperty = (property) =>
+                node[property] ?? node[symbols.views]?.[view.title]?.[property] ?? node[symbols.viewData].get(view)?.[property];
+            const setStart = getProperty('start') ?? getProperty('earlyStart');
+            if (setStart?.getTime) {
+                return setStart.getTime();
+            }
+            const finish = getProperty('finish');
+            const duration = getProperty('duration');
+            if ((finish?.getTime) && (duration !== undefined)) {
+                return finish.getTime() - duration * 24 * 60 * 60 * 1000;
+            }*/
+        }
+
+        /**
          * Get the duration of a node in milliseconds
          */
         function getDuration(node, view) {
             const getProperty = (property) =>
-                node[property] ?? node[symbols.views]?.[view.title]?.[property] ?? node[symbols.viewData].get(view)?.[property];
+                node[property] ?? node[symbols.views]?.[view?.title]?.[property] ?? node[symbols.viewData].get(view)?.[property];
             const setDuration = getProperty('duration');
             if (!isNaN(setDuration)) {
                 return setDuration * 24 * 60 * 60 * 1000;
@@ -4961,7 +5147,7 @@ ${svg.parentElement.innerHTML}`;
 
                 const getData = (node) => node[symbols.viewData].get(this);
 
-                SVGNode.clipCount = 0;
+                SVGShape.clipCount = 0;
                 const addNode = (node, parent) => {
                     const shape = getSVGShape(node, this);
                     const data = node[symbols.viewData].get(this);
@@ -4973,6 +5159,7 @@ ${svg.parentElement.innerHTML}`;
                     }
 
                     const nodes = this.configuration.nodeContent(node).filter((node) => getValue(node, 'shape') !== 'hidden');
+                    const proxy = makeProxy(node, this.title);
 
                     const container = shape.addContainer(parent);
 
@@ -4983,7 +5170,7 @@ ${svg.parentElement.innerHTML}`;
                         shape.rightEdge = [{ x: shape.width, y: 0 }, { x: shape.width, y: shape.height }];
                     } else if (shape.layout === 'timeline') {
                         const nodes = [];
-                        const stack = [node];
+                        const stack = [...this.configuration.nodeContent(node)];
                         while (stack.length) {
                             const node = stack.shift();
                             if (getStart(node, this) && (getDuration(node, this) !== undefined)) {
@@ -4994,16 +5181,19 @@ ${svg.parentElement.innerHTML}`;
                             children.sort((a, b) => getStart(a, this) - getStart(b, this));
                             stack.push(...children);
                         }
-                        const scale = validateNumber(getData(node, this).scale, 10) / (24 * 60 * 60 * 1000);
+                        const scale = validateNumber(proxy.scale, 10) / (24 * 60 * 60 * 1000);
                         const now = new Date();
-                        const start = Math.min(...nodes.map((node) => getStart(node, this)));
-                        const positioned = [];
+                        const start = proxy.start;
+                        quantiseDate(start);
+                        const x = (time) => (time - start.getTime()) * scale;
+                        const positioned = nodes.filter((node) => proxy.y);
+                        positioned.forEach((node) => {
+                            box.y = proxy.y + this.configuration.rowGap;
+                        });
 
                         const placeNode = (node) => {
-                            if (positioned.includes(node)) {
-                                return;
-                            }
-                            const duration = (dayNumber(node[symbols.views][this.title].finish) - dayNumber(node[symbols.views][this.title].start)) * 24 * 60 * 60 * 1000;
+                            const proxy = makeProxy(node, this.title);
+                            const duration = (node[symbols.views][this.title].finish.getTime() - node[symbols.views][this.title].start.getTime());
                             let box;
                             {
                                 const shape = getSVGShape(node, this);
@@ -5016,30 +5206,46 @@ ${svg.parentElement.innerHTML}`;
                                     node[symbols.viewData].set(this, { shape, svgNodes: [] });
                                 }
 
-                                shape.addContainer(this.context);
+                                shape.addContainer(container);
 
                                 box = shape.box;
                                 if (duration) {
                                     node[symbols.views][this.title] = node[symbols.views][this.title] || {};
                                     node[symbols.views][this.title].width = duration * scale;
                                     box.width = duration * scale;
+                                    box.x = x(getStart(node, this));
                                 } else {
-                                    box.width = shape.width;
+                                    if (node[symbols.content].length) {
+                                        const nodes = node[symbols.content];
+                                        const start = Math.min(...nodes.map((node) => getStart(node, this)));
+                                        const finish = Math.max(...nodes.map((node) => getFinish(node, this)));
+                                        box.x = x(start);
+                                        box.width = x(finish) - x(start);
+                                    } else {
+                                        box.width = shape.width + 100;
+                                        const time = getStart(node, this);
+                                        box.x = x(proxy.start.getTime());
+                                    }
                                 }
 
-                                box.x = (getStart(node, this) - start) * scale;
+                                if (positioned.includes(node)) {
+                                    return;
+                                }
 
                                 const overlapped = positioned.filter((existing) =>
                                     ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
                                 overlapped.sort((a, b) => a.y - b.y);
                                 box.y = this.configuration.rowGap;
                                 box.height = shape.height;
-                                while (overlapped.length && (box.y < (overlapped[0].y + overlapped[0].height))
-                                    && ((box.y + box.height) > overlapped[0].y)) {
+                                while (overlapped.length && (box.y <= (overlapped[0].y + overlapped[0].height))
+                                    && ((box.y + box.height) >= overlapped[0].y)) {
                                     box.y = overlapped[0].y + overlapped[0].height + this.configuration.rowGap;
-                                    overlapped.shift(box);
+                                    while (overlapped.length && (overlapped[0].y + overlapped[0].height) < box.y) {
+                                        overlapped.shift();
+                                    }
                                 }
-                                shape.x = shape.y = 0;
+                                shape.x = 0;
+                                shape.y = this.configuration.rowGap;
                                 positioned.push(box);
                                 const groupAttrs = {
                                     transform: `translate(${box.x}, ${box.y})`,
@@ -5048,13 +5254,13 @@ ${svg.parentElement.innerHTML}`;
 
                                 shape.draw();
                             }
-                            shape.box.x = this.configuration.columnGap;
-                            shape.box.y = this.configuration.columnGap;
+                            node[symbols.views][this.title]?.outLinks.filter((node) => nodes.includes(node)).forEach(placeNode);
                             shape.box.width = Math.max(shape.box.width || 0, box.x + box.width) + this.configuration.columnGap * 2;
                             shape.box.height = Math.max(shape.box.height || 0, box.y + box.height) + this.configuration.rowGap * 2;;
-                            node[symbols.views][this.title]?.outLinks.filter((node) => nodes.includes(node)).forEach(placeNode);
                         };
                         nodes.forEach(placeNode);
+                        shape.box.x = this.configuration.columnGap;
+                        shape.box.y = this.configuration.rowGap;
                     } else {
                         let nextX = 0;
                         let nextY = shape.height + this.configuration.rowGap;
@@ -5788,6 +5994,11 @@ ${svg.parentElement.innerHTML}`;
                             const link = document.createElement('a');
                             link.href = link.innerText = content;
                             cell.append(link);
+                        } else if (content.toLocaleDateString) {
+                            cell.append(content.toLocaleDateString());
+                        } else if (Array.isArray(content)) {
+                            cell.append('[list]');
+                            cell.title = content.join('\n');
                         } else {
                             cell.append(content);
                         }
@@ -6032,9 +6243,7 @@ ${svg.parentElement.innerHTML}`;
                     if (!(date instanceof Date)) {
                         return;
                     }
-                    date.setHours(0);
-                    date.setMinutes(0);
-                    date.setSeconds(0);
+                    quantiseDate(date);
                     return date;
                 }
                 const end = (node) => {
@@ -6042,9 +6251,8 @@ ${svg.parentElement.innerHTML}`;
                     if (!(date instanceof Date)) {
                         return s;
                     }
-                    date.setHours(23);
-                    date.setMinutes(59);
-                    date.setSeconds(59);
+                    quantiseDate(date);
+                    date.setTime(date.getTime() - 1);
                     return date;
                 }
 
@@ -6578,10 +6786,7 @@ ${svg.parentElement.innerHTML}`;
             const view = context.views[context.views.length - 1] || 'schedule';
             const get = (node, property) => node[symbols.views][view]?.[property] ?? node[property];
 
-            start.setHours(8);
-            start.setMinutes(0);
-            start.setSeconds(0);
-            start.setMilliseconds(0);
+            quantiseDate(start);
             const inputs = [];
             const allOutputs = [];
 
@@ -6590,10 +6795,12 @@ ${svg.parentElement.innerHTML}`;
 
             // Generate list of all outputs
             nodes.forEach((node) => {
+                const proxy = makeProxy(node, view);
+
                 node[symbols.views][view] = node[symbols.views][view] || {
                     inLinks: [], outLinks: [],
                 };
-                const outputList = [get(node, 'outputs') ?? []].flatMap((i) => i)
+                const outputList = [proxy.outputs ?? []].flatMap((i) => i)
                 const outputs = outputList.map((output) => {
                     const parts = output.split(':');
                     const date = new Date(parts[1]);
@@ -6610,11 +6817,17 @@ ${svg.parentElement.innerHTML}`;
                     { node, name: `${node.name} done`, event: 'f', lag: 0 },
                     ...outputs);
                 if (getDuration(node) === 0) {
-                    node[symbols.views][view].shape = 'milestone';
-                    node[symbols.views][view].width = 15;
-                    node[symbols.views][view].height = 15;
-                    node[symbols.views][view].textWidth = 0;
-                    node[symbols.views][view]['text align'] = 'outside right';
+                    if (0 &&node[symbols.content].length) {
+                        node[symbols.views][view].shape = 'package';
+                        node[symbols.views][view]['text align'] = 'middle';
+                        node[symbols.views][view]['text vertical align'] = 'above';
+                    } else {
+                        node[symbols.views][view].shape = 'milestone';
+                        node[symbols.views][view].width = 15;
+                        node[symbols.views][view].height = 15;
+                        node[symbols.views][view].textWidth = 0;
+                        node[symbols.views][view]['text align'] = 'outside right';
+                    }
                 } else {
                     node[symbols.views][view].shape = 'task';
                 }
@@ -6622,7 +6835,9 @@ ${svg.parentElement.innerHTML}`;
 
             // Generate links by associating outputs with inputs
             nodes.forEach((node) => {
-                const inputList = [get(node, 'inputs') ?? []].flatMap((i) => i).filter((input) => input !== 0);
+                const proxy = makeProxy(node, view);
+
+                const inputList = [proxy.inputs ?? []].flatMap((i) => i).filter((input) => input !== 0);
                 const inputs = inputList.map((o) => o.split(':'));
                 inputs.forEach((input) => {
                     const sources = allOutputs.filter((output) => output.node !== node && output.name === input[0])
@@ -6663,32 +6878,41 @@ ${svg.parentElement.innerHTML}`;
             }
 
             const getEarlyStart = (node) => {
-                if (!get(node, 'earlyStart')) {
-                    const nodeStart = get(node, 'start') ?? node.start;
-                    const inputs = get(node, 'inLinks');
+                const proxy = makeProxy(node, view);
+
+                if (!proxy.earlyStart) {
+                    const nodeStart = proxy.start ?? node.start;
+                    const inputs = proxy.inLinks;
                     if (nodeStart?.getTime) {
-                        node[symbols.views][view].earlyStart = nodeStart;
+                        proxy.earlyStart = new Date(nodeStart.getTime());
                     } else if (inputs.length) {
-                        node[symbols.views][view].earlyStart =
-                            new Date(Math.max(...inputs.map((input) => getTime(input))));
+                        proxy.earlyStart = new Date(Math.max(...inputs.map((input) => {
+                                const date = getTime(input);
+                                return date;
+                            })));
                     } else {
-                        node[symbols.views][view].earlyStart = start;
+                        proxy.earlyStart = start;
                     }
+                    quantiseDate(proxy.earlyStart, 8);
                 }
-                return get(node, 'earlyStart');
+                return proxy.earlyStart;
             }
 
             const getEarlyFinish = (node) => {
-                const finish = getCalendarDays(getEarlyStart(node), node[symbols.views.duration] ?? node.duration ?? 0);
-                finish.setHours(17);
+                const finish = getCalendarDays(getEarlyStart(node), node[symbols.views]?.[view]?.duration ?? node.duration ?? 0);
+                quantiseDate(finish, 17);
                 return finish;
             };
 
             nodes.forEach((node) => {
-                node[symbols.views][view].start = getEarlyStart(node);
-                node[symbols.views][view].finish = getEarlyFinish(node);
                 if (getDuration(node) === 0) {
-                    node.name += ` (${getEarlyStart(node).toLocaleDateString()})`;
+                    const date = getEarlyStart(node);
+                    quantiseDate(date, 12);
+                    node[symbols.views][view].start = date;
+                    node[symbols.views][view].finish = date;
+                } else {
+                    node[symbols.views][view].start = getEarlyStart(node);
+                    node[symbols.views][view].finish = getEarlyFinish(node);
                 }
             });
             const finish = new Date(Math.max(...nodes.map(getEarlyFinish)));
@@ -6715,11 +6939,13 @@ ${svg.parentElement.innerHTML}`;
             }
 
             const getLateFinish = (node) => {
-                if (get(node, 'lateFinish')) {
-                    return get(node, 'lateFinish');
+                const proxy = makeProxy(node, view);
+
+                if (proxy.lateFinish) {
+                    return proxy.lateFinish;
                 }
-                if (get(node, 'dependents')) {
-                    return new Date(Math.min(...get(node, 'dependents')
+                if (proxy.dependents) {
+                    return new Date(Math.min(...proxy.dependents
                         .map((dependency) => getDependencyStart(node, dependency))));
                 }
                 return finish;
@@ -6731,12 +6957,16 @@ ${svg.parentElement.innerHTML}`;
             nodes[0][symbols.views][view].duration = dayNumber(finish) - dayNumber(nodes[0][symbols.views][view].earlyStart);
             nodes[0][symbols.views][view].shape = 'timeline';
 
-            nodes.forEach((node) =>
-                console.log(`${node.name}: ${get(node, 'earlyStart')}`));
+            /*
+            nodes.forEach((node) => {
+                const proxy = makeProxy(node, view);
+                console.log(`${node.name}: ${proxy.start}  ${proxy.finish} ${getDuration(node)}`);
+            });
+            */
         }
 
         /**
-         * Calculate schedule data for a set of nodes
+         * Restructure child data based on rules in patent
          */
         function restructure(nodes, context) {
 
@@ -7488,13 +7718,16 @@ ${svg.parentElement.innerHTML}`;
                             context.scope[0].propagate[name] = value;
                         }
                         namedValues[name] = value;
-                    } else if (item.startsWith('@')) {
-                        const nodes = getReference(item.replace(/^@\s*/, ''));
+                    } else if (item.startsWith('&')) {
+                        const nodes = getReference(item.replace(/^&\s*/, ''));
                         if (nodes) {
                             references.push(...nodes);
                         } else {
                             unnamed.push(item);
                         }
+                    } else if (item.startsWith('@')) {
+                        const nodes = getReference(item.replace(/^@\s*/, ''));
+                        unnamed.push(nodes === undefined ? item : (nodes.length === 1 ? nodes[0] : nodes));
                     } else if (item.startsWith('^')) {
                         const name = item.slice(1).trim();
                         const value = context.scope.find((scope) => scope.node[name]);
@@ -7585,13 +7818,20 @@ ${svg.parentElement.innerHTML}`;
                                 } else {
                                     node[name] = value;
                                 }
-                            } else if (value.startsWith('@')) {
-                                const nodes = getReference(value.slice(1).trim());
-
-                                node[name] = nodes === undefined ? value : (nodes.length === 1 ? nodes[0] : nodes);
                             } else if (value.includes(',')) {
                                 node[name] = [];
-                                value.split(/,/g).forEach((val, index) => setProperty(node[name], index, val));
+                                value.split(/,/g).forEach((val, index) => {
+                                    val = val.trim();
+                                    const nodes = getReference(val.slice(1).trim());
+                                    if (nodes === undefined) {
+                                        setProperty(node[name], index, val);
+                                    } else {
+                                        node[name][index] = (nodes.length === 1 ? nodes[0] : nodes);
+                                    }
+                                });
+                            } else if (value.startsWith('@')) {
+                                const nodes = getReference(value.slice(1).trim());
+                                node[name] = nodes === undefined ? value : (nodes.length === 1 ? nodes[0] : nodes);
                             } else {
                                 setProperty(node, name, value);
                             }
@@ -7599,7 +7839,9 @@ ${svg.parentElement.innerHTML}`;
                     });
 
                     unnamed.forEach((item) => {
-                        if (/^"[^"]+"$/.test(item)) {
+                        if (item[symbols.source]) {
+                            node[symbols.values].push(item);
+                        } else if (/^"[^"]+"$/.test(item)) {
                             node[symbols.values].push(item);
                         } else if (item.includes(',')) {
                             node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
@@ -8033,6 +8275,23 @@ ${svg.parentElement.innerHTML}`;
         const nodeTransitions = {
             Translate, Rotate, Scale, ColourChange, Fade,
         };
+
+        /**
+         * Make a proxy that accesses view specific parameters then node parameters
+         */
+        function makeProxy(node, view) {
+            const handler = {
+                get(target, prop, receiver) {
+                    return target[symbols.views]?.[view]?.[prop] ?? node[prop];
+                },
+                set(target, prop, value) {
+                    target[symbols.views][view] = target[symbols.views][view] || {};
+                    target[symbols.views][view][prop] = value;
+                    return true;
+                }
+            }
+            return new Proxy(node, handler);
+        }
 
         /**
          * Generate scene graph for the given structure
@@ -13204,5 +13463,4 @@ void main() {
         }
     </script>
 </body>
-
 </html>
