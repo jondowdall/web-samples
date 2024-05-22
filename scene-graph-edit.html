@@ -1386,7 +1386,7 @@
         /**
          * return a quantised date.
          */
-         function quantisedDate(date, hours = 0) {
+        function quantisedDate(date, hours = 0) {
             date = new Date(date.getTime())
             date.setHours(hours);
             date.setMinutes(0);
@@ -3384,7 +3384,7 @@ ${svg.parentElement.innerHTML}`;
          */
         function getSVGShape(node, view) {
             if (node) {
-                const shapes = [SVGRect, SVGActivity, SVGMilestone, SVGText, SVGTimeline, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
+                const shapes = [SVGRect, SVGActivity, SVGMilestone, SVGText, SVGTimeline, SVGNetwork, SVGCircle, SVGEllipse, SVGParallelogram, SVGTrapezoid, SVGDiamond, SVGLink, SVG, SVGPie, SVGPlot, SVGChart, SVGHistogram, SVGNone];
                 const shapeName = ((node[symbols.views][view.title]?.shape ?? node.shape) + '').toLowerCase();
                 const layout = ((node[symbols.views][view.title]?.layout ?? node.layout) + '').toLowerCase();
                 const shapeType = shapes.find((shape) => shape.name === shapeName) ?? (layout === 'grid' ? SVGText : SVGRect);
@@ -3432,7 +3432,8 @@ ${svg.parentElement.innerHTML}`;
                 return this.fontSize * (validateNumber(this.getData('line spacing'), 1.4));
             }
             addContainer(parent) {
-                this.container = this.view.add('g', parent);
+                const groupStyle = this.getData('group style');
+                this.container = this.view.add('g', parent, typeof groupStyle === 'object' ? groupStyle : {});
                 this.viewData('svgNodes').push(this.container);
                 if (this.getData('layout') === 'grid') {
                     this.containerRect = this.view.add('rect', this.container);
@@ -3826,13 +3827,13 @@ ${svg.parentElement.innerHTML}`;
 
 
         class SVGActivity extends SVGShape {
-            static name = 'task';
+            static name = 'activity';
 
             constructor(view, node) {
                 super(view, node);
             }
             draw() {
-                {
+                if (this.getData('show latest')) {
                     const viewData = this.node[symbols.viewData].get(this.view);
                     const attrs = {
                         x: (this.getData('lateStart').getTime() - this.getData('start').getTime()) * viewData.scale,
@@ -3851,9 +3852,7 @@ ${svg.parentElement.innerHTML}`;
                     fill: this.fill, stroke: this.stroke,
                     rx: 5,
                 };
-                if (this.node.float < 1) {
-                    attrs.fill = 'pink';
-                }
+
                 Object.assign(attrs, this.getData('style') || {});
                 const svgElement = this.view.add('rect', this.container, attrs);
 
@@ -4079,6 +4078,9 @@ ${svg.parentElement.innerHTML}`;
             draw() {
                 const proxy = makeProxy(this.node, this.view.title);
                 const start = this.getData('start');
+                if (!start) {
+                    return;
+                }
                 quantiseDate(start);
                 const finish = this.getData('finish');
                 const scale = validateNumber(proxy.scale, 10) / (24 * 60 * 60 * 1000);
@@ -4133,10 +4135,33 @@ ${svg.parentElement.innerHTML}`;
                     date.setMonth(date.getMonth() + 1);
                 }
 
-                this.addText();
+                //this.addText();
                 if (proxy['show burndown']) {
                     const burndowns = [proxy['show burndown']].flatMap((i) => i);
                     const nodes = this.view.configuration.nodeContent(this.node).filter((node) => getDuration(node));
+
+                    const start = new Date(Math.min(...nodes.map((node) => node[symbols.views][this.view.title].start.getTime())));
+                    const finish = new Date(Math.max(...nodes.map((node) => node[symbols.views][this.view.title].finish.getTime())));
+
+                    const attrs = {
+                        fill: 'none', stroke: 'black', 'stroke-width': 1,
+                        d: `M${x(start)} ${2 * this.view.configuration.rowGap} v${this.height - footer - 2 * this.view.configuration.rowGap} H${x(finish)}`,
+                    };
+                    this.view.add('path', this.container, attrs);
+                    let v = 0;
+                    const text = {
+                        fill: 'black', stroke: 'none', x: x(start), 'text-anchor': 'end', 'dominant-baseline': 'middle',
+                        'font-size': `${this.fontSize * 0.8}pt`, 'font-family': this.getData('font') ?? 'sans-serif',
+                    };
+                    attrs.stroke = 'gray';
+                    attrs.d = '';
+                    while (v <= 100) {
+                        text.y = this.height - footer - (v / 100) * (this.height - footer - 2 * this.view.configuration.rowGap);
+                        this.view.add('text', this.container, text, `${v.toFixed(1)}%`);
+                        attrs.d += `M${x(start)} ${text.y} H${x(finish)}`;
+                        v += 10;
+                    }
+                    this.view.add('path', this.container, attrs);
 
                     burndowns.forEach((burndown) => {
                         let total = 0;
@@ -4156,12 +4181,12 @@ ${svg.parentElement.innerHTML}`;
                                 { x: x(data.finish), rate: rate, }
                             ];
                         });
+                        points.sort((a, b) => a.x - b.x);
                         const y = (value) => this.height - footer - (value / total) * (this.height - footer - 2 * this.view.configuration.rowGap);
                         const attrs = { fill: 'none', stroke: 'red', 'stroke-width': 1.5, d: `M${points[0].x} ${y(total)}` };
                         let currentX = 0;
                         let rate = 0;
                         let value = total;
-                        points.sort((a, b) => a.x - b.x);
                         points.forEach((point) => {
                             const deltaX = point.x - currentX;
                             currentX = point.x;
@@ -4185,12 +4210,13 @@ ${svg.parentElement.innerHTML}`;
                     const unresolved = node.inLinks.filter((link) => link.from === undefined);
                     const unused = node.outLinks.filter((link) => link.to === undefined);
                     const links = node.inLinks.filter((link) => link.from);
+                    const opacity = this.getData('link opacity');
 
                     links.forEach((link, i) => {
-                        const attrs = { fill: 'none', stroke: 'green', d: '', 'stroke-opacity': 0.8, };
+                        const attrs = { fill: 'none', stroke: 'green', d: '', 'stroke-opacity': opacity ?? 0.8, 'fill-opacity': opacity ?? 0.8, };
                         if (link.float < 1) {
                             attrs.stroke = 'red';
-                            attrs['stroke-opacity'] = 1;
+                            attrs['stroke-opacity'] = opacity ?? 1;
                         } else if (link.float < 5) {
                             attrs.stroke = 'orange';
                         }
@@ -4241,7 +4267,7 @@ ${svg.parentElement.innerHTML}`;
 
                     let y = this.height - this.lineHeight;
                     unresolved.forEach((link, i) => {
-                        const attrs = { fill: 'none', stroke: 'red', d: '', 'stroke-opacity': 0.5, };
+                        const attrs = { fill: 'none', stroke: 'red', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
                         const to = link.to.node[symbols.views][this.view.title];
                         const toDate = (link.to.event === 'start') ? to.start : to.finish;
                         if (link.to.lag) {
@@ -4260,14 +4286,14 @@ ${svg.parentElement.innerHTML}`;
                         this.view.add('path', this.container, attrs);
 
                         this.view.add('text', this.container, {
-                            x: start.x, y, 'text-anchor': 'end', 'dominant-baseline': 'middle', fill: 'red',
+                            x: start.x, y, 'text-anchor': 'end', 'dominant-baseline': 'middle', fill: 'red', 'fill-opacity': opacity ?? 1, 'font-family': this.getData('font') ?? 'sans-serif',
                         }, link.name);
                         y -= this.lineHeight;
                     });
 
                     y = this.height - this.lineHeight / 2;
                     unused.forEach((link) => {
-                        const attrs = { fill: 'none', stroke: 'orange', d: '', 'stroke-opacity': 0.5, };
+                        const attrs = { fill: 'none', stroke: 'orange', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
                         const from = link.from.node[symbols.views][this.view.title];
                         const shape = link.from.node[symbols.viewData].get(this.view).shape;
                         const start = { y: shape.y + shape.box.y + shape.height * (link.from.node[symbols.views][this.view.title].outLinks.indexOf(link) + 1) / (link.from.node[symbols.views][this.view.title].outLinks.length + 1), };
@@ -4302,7 +4328,129 @@ ${svg.parentElement.innerHTML}`;
                         }
                         this.view.add('path', this.container, attrs);
                         this.view.add('text', this.container, {
-                            x: end.x, y, 'text-anchor': 'start', 'dominant-baseline': 'middle', fill: 'orange',
+                            x: end.x, y, 'text-anchor': 'start', 'dominant-baseline': 'middle', fill: 'orange', 'fill-opacity': opacity ?? 1, 'font-family': this.getData('font') ?? 'sans-serif',
+                        }, link.name);
+
+                        y -= this.lineHeight;
+                    });
+                });
+            }
+            connectionPoint(position) {
+                const x = 0
+                const y = 0;
+                const w = this.box.width;
+                const h = this.box.height;
+
+                const points = [{ x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h }, { x: x, y: y + h }, { x: x, y: y }];
+
+                return this.linePoint(points, position);
+            }
+        }
+
+        class SVGNetwork extends SVGShape {
+            static name = 'network';
+
+            constructor(view, node) {
+                super(view, node);
+                this.nodes = [];
+                const addNode = (node) => {
+                    const proxy = makeProxy(node, this.view.title);
+                    if (proxy.inLinks) {
+                        this.nodes.push(proxy);
+                    }
+                    node[symbols.content].forEach(addNode);
+                }
+                this.node[symbols.content].forEach(addNode);
+            }
+            get width() {
+                return this.box.width ?? validateNumber(this.getData('width'), 100);
+            }
+            get height() {
+                const lines = Math.max(0, ...this.nodes.map((node) =>
+                    Math.max((node.inLinks || []).filter((link) => link.from === undefined).length,
+                        (node.outLinks || []).filter((link) => link.to === undefined).length)));
+
+                return Math.max(100, ...this.nodes.map((node, i) => {
+                    const box = node[symbols.viewData]?.get(this.view)?.shape?.box;
+                    if (box) {
+                        return box.y + box.height;
+                    }
+                    return 0;
+                })) + lines * this.lineHeight + this.view.configuration.rowGap * 2;
+            }
+            draw() {
+                const proxy = makeProxy(this.node, this.view.title);
+
+                const footer = Math.max(0, ...this.nodes.map((node) =>
+                    Math.max((node.inLinks || []).filter((link) => link.from === undefined).length,
+                        (node.outLinks || []).filter((link) => link.to === undefined).length))) * this.lineHeight;
+            }
+            drawTreeLines(shapes, style) {
+                const proxy = makeProxy(this.node, this.view.title);
+
+                this.nodes.forEach((node) => {
+                    const totalInputs = node.inLinks.length + 1;
+                    const unresolved = node.inLinks.filter((link) => link.from === undefined);
+                    const unused = node.outLinks.filter((link) => link.to === undefined);
+                    const links = node.inLinks.filter((link) => link.from);
+                    const opacity = this.getData('link opacity');
+
+                    links.forEach((link, i) => {
+                        const attrs = { fill: 'none', stroke: 'green', d: '', 'stroke-opacity': opacity ?? 0.8, 'fill-opacity': opacity ?? 0.8, };
+                        if (link.float < 1) {
+                            attrs.stroke = 'red';
+                            attrs['stroke-opacity'] = opacity ?? 1;
+                        } else if (link.float < 5) {
+                            attrs.stroke = 'orange';
+                        }
+                        const shape = link.from.node[symbols.viewData].get(this.view).shape;
+                        const start = { x: shape.box.x + shape.x + shape.width,  y: shape.y + shape.box.y + shape.height * (link.from.node[symbols.views][this.view.title].outLinks.indexOf(link) + 1) / (link.from.node[symbols.views][this.view.title].outLinks.length + 1), };
+
+                        const toShape = link.to.node[symbols.viewData].get(this.view).shape;
+                        const end = { x: toShape.box.x + toShape.x, y: toShape.y + toShape.box.y + toShape.height * (i + 1) / totalInputs, };
+                        const mid = (start.x + end.x) / 2;
+
+                        attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x - 5} ${end.y}`;
+
+                        this.view.add('path', this.container, attrs);
+                        attrs.fill = attrs.stroke;
+                        attrs.d = `M${end.x} ${end.y} l-5 -2 v4 Z`;
+                        this.view.add('path', this.container, attrs);
+                    });
+
+                    let y = this.height - this.lineHeight;
+                    unresolved.forEach((link, i) => {
+                        const attrs = { fill: 'none', stroke: 'red', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
+                        const toShape = link.to.node[symbols.viewData].get(this.view).shape;
+                        const end = { x: toShape.box.x + toShape.x, y: toShape.y + toShape.box.y + toShape.height * (i + 1 + links.length) / totalInputs, };
+                        const start = { x: end.x - 100, y };
+                        const mid = (start.x + end.x) / 2;
+
+                        attrs.d = `M${start.x} ${start.y} C${mid} ${start.y} ${mid} ${end.y} ${end.x - 5} ${end.y}`;
+                        this.view.add('path', this.container, attrs);
+                        attrs.fill = attrs.stroke;
+                        attrs.d = `M${end.x} ${end.y} l-5 -2 v4 Z`;
+                        this.view.add('path', this.container, attrs);
+
+                        this.view.add('text', this.container, {
+                            x: start.x, y, 'text-anchor': 'end', 'dominant-baseline': 'middle', fill: 'red', 'fill-opacity': opacity ?? 1, 'font-family': this.getData('font') ?? 'sans-serif',
+                        }, link.name);
+                        y -= this.lineHeight;
+                    });
+
+                    y = this.height - this.lineHeight / 2;
+                    unused.forEach((link) => {
+                        const attrs = { fill: 'none', stroke: 'orange', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
+                        const shape = link.from.node[symbols.viewData].get(this.view).shape;
+                        const start = { x: shape.box.x + shape.x + shape.width, y: shape.y + shape.box.y + shape.height * (link.from.node[symbols.views][this.view.title].outLinks.indexOf(link) + 1) / (link.from.node[symbols.views][this.view.title].outLinks.length + 1), };
+
+                        const end = { x: start.x + 100, y, };
+                        const mid = (start.x + end.x) / 2;
+
+                        attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x} ${end.y}`;
+                        this.view.add('path', this.container, attrs);
+                        this.view.add('text', this.container, {
+                            x: end.x, y, 'text-anchor': 'start', 'dominant-baseline': 'middle', fill: 'orange', 'fill-opacity': opacity ?? 1, 'font-family': this.getData('font') ?? 'sans-serif',
                         }, link.name);
 
                         y -= this.lineHeight;
@@ -5375,8 +5523,8 @@ ${svg.parentElement.innerHTML}`;
                         shape.leftEdge = [{ x: 0, y: 0 }, { x: 0, y: shape.height }];
                         shape.rightEdge = [{ x: shape.width, y: 0 }, { x: shape.width, y: shape.height }];
                     } else if (shape.constructor.name === 'timeline') {
-
                         const nodes = [];
+                        const spread = proxy.spread;
                         const stack = [...this.configuration.nodeContent(node)];
                         while (stack.length) {
                             const node = stack.shift();
@@ -5384,21 +5532,18 @@ ${svg.parentElement.innerHTML}`;
                                 nodes.push(node);
                             }
                             const children = [...this.configuration.nodeContent(node)];
-                            //children.sort((a, b) => getDuration(b, this) - getDuration(a, this));
-                            //children.sort((a, b) => getStart(a, this) - getStart(b, this));
                             stack.push(...children);
                         }
-                        nodes.sort((a, b) => getDuration(b, this) - getDuration(a, this));
+                        if (proxy['critical first']) {
+                            nodes.sort((a, b) => a[symbols.views][this.title].float - b[symbols.views][this.title].float);
+                        }
                         nodes.sort((a, b) => getStart(a, this) - getStart(b, this));
                         const scale = validateNumber(proxy.scale, 10) / (24 * 60 * 60 * 1000);
                         const now = new Date();
                         const start = proxy.start;
                         quantiseDate(start);
                         const x = (time) => (time - start.getTime()) * scale;
-                        const positioned = nodes.filter((node) => proxy.y);
-                        positioned.forEach((node) => {
-                            box.y = proxy.y + this.configuration.rowGap;
-                        });
+                        const positioned = [];
 
                         nodes.forEach((node) => {
                             const proxy = makeProxy(node, this.title);
@@ -5417,8 +5562,13 @@ ${svg.parentElement.innerHTML}`;
 
                             const box = shape.box;
 
+                            if (proxy.y) {
+                                box.y = proxy.y + this.configuration.rowGap;
+                                positioned.push(box);
+                            }
+
                             shape.x = 0;
-                            shape.y = this.configuration.rowGap;
+                            shape.y = 0;
 
                             if (duration) {
                                 node[symbols.views][this.title] = node[symbols.views][this.title] || {};
@@ -5446,34 +5596,167 @@ ${svg.parentElement.innerHTML}`;
                             const data = node[symbols.viewData].get(this);
                             data.scale = scale;
                             const box = data.shape.box;
-                            if (positioned.includes(box)) {
-                                return;
-                            }
-
-                            box.y = y || this.configuration.rowGap;
                             box.height = data.shape.height;
-                            const overlapped = positioned.filter((existing) =>
-                                ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
-                            overlapped.sort((a, b) => a.y - b.y);
-                            while (overlapped.length && ((overlapped[0].y + overlapped[0].height) < box.y)) {
-                                overlapped.shift();
-                            }
-                            while (overlapped.length && (box.y <= (overlapped[0].y + overlapped[0].height))
-                                && ((box.y + box.height) >= overlapped[0].y)) {
-                                box.y = overlapped[0].y + overlapped[0].height + this.configuration.rowGap;
-                                while (overlapped.length && (overlapped[0].y + overlapped[0].height) < box.y) {
+                            if (!positioned.includes(box)) {
+
+                                box.y = y || 2 * this.configuration.rowGap;
+                                const overlapped = positioned.filter((existing) =>
+                                    ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
+                                overlapped.sort((a, b) => a.y - b.y);
+                                if (spread) {
+                                    box.y = Math.max(box.y, ...overlapped.map((box) => box.y + box.height));
+                                }
+                                while (overlapped.length && ((overlapped[0].y + overlapped[0].height) < box.y)) {
                                     overlapped.shift();
                                 }
+                                while (overlapped.length && (box.y <= (overlapped[0].y + overlapped[0].height))
+                                    && ((box.y + box.height) >= overlapped[0].y)) {
+                                    box.y = overlapped[0].y + overlapped[0].height + this.configuration.rowGap;
+                                    while (overlapped.length && (overlapped[0].y + overlapped[0].height) < box.y) {
+                                        overlapped.shift();
+                                    }
+                                }
+                                positioned.push(box);
+
+                                data.shape.draw();
+                                this.updateElement(data.shape.container, { transform: `translate(${box.x}, ${box.y})`, });
+                                const links = node[symbols.views][this.title]?.outLinks.filter((link) => link.from.event === 'finish' && link.to && link.to !== node);
+                                links.forEach((link) => placeNode(link.to.node, box.y));
+                            } else {
+                                data.shape.draw();
+                                this.updateElement(data.shape.container, { transform: `translate(${box.x}, ${box.y})`, });
                             }
-                            positioned.push(box);
-                            this.updateElement(data.shape.container, { transform: `translate(${box.x}, ${box.y})`, });
 
-                            data.shape.draw();
+                            shape.box.width = Math.max((shape.box.width || 0), box.x + box.width + this.configuration.columnGap * 2);
+                            shape.box.height = Math.max((shape.box.height || 0), box.y + box.height + this.configuration.rowGap * 2);
+                        };
+                        nodes.forEach(placeNode);
+                        shape.x = this.configuration.columnGap;
+                        shape.y = this.configuration.rowGap;
+                        shape.box.x = this.configuration.columnGap;
+                        shape.box.y = this.configuration.rowGap;
+                        shape.drawTreeLines(this.settings.connectorStyle.value);
+                    } else if (shape.constructor.name === 'network') {
+                        const nodes = [];
+                        const spread = proxy.spread;
+                        const stack = [...this.configuration.nodeContent(node)];
+                        while (stack.length) {
+                            const node = stack.shift();
+                            if (getStart(node, this) && (getDuration(node, this) !== undefined)) {
+                                nodes.push(node);
+                            }
+                            const children = [...this.configuration.nodeContent(node)];
+                            stack.push(...children);
+                        }
+                        if (proxy['critical first']) {
+                            nodes.sort((a, b) => a[symbols.views][this.title].float - b[symbols.views][this.title].float);
+                        }
+                        nodes.sort((a, b) => getStart(a, this) - getStart(b, this));
+                        const scale = validateNumber(proxy.scale, 10) / (24 * 60 * 60 * 1000);
+                        const now = new Date();
+                        const start = proxy.start;
+                        quantiseDate(start);
+                        const x = (time) => (time - start.getTime()) * scale;
+                        const positioned = [];
 
-                            const links = node[symbols.views][this.title]?.outLinks.filter((link) => link.from.event === 'finish' && link.to && link.to !== node);
-                            links.forEach((link) => placeNode(link.to.node, box.y));
-                            shape.box.width = Math.max(shape.box.width || 0, box.x + box.width) + this.configuration.columnGap * 2;
-                            shape.box.height = Math.max(shape.box.height || 0, box.y + box.height) + this.configuration.rowGap * 2;
+                        nodes.forEach((node) => {
+                            const proxy = makeProxy(node, this.title);
+                            const duration = (node[symbols.views][this.title].finish.getTime() - node[symbols.views][this.title].start.getTime());
+                            const shape = getSVGShape(node, this);
+
+                            const data = node[symbols.viewData].get(this);
+                            if (data) {
+                                data.shape = shape;
+                                data.svgNodes = [];
+                            } else {
+                                node[symbols.viewData].set(this, { shape, svgNodes: [] });
+                            }
+
+                            shape.addContainer(container);
+
+                            const box = shape.box;
+
+                            if (proxy.y) {
+                                box.y = proxy.y + this.configuration.rowGap;
+                                positioned.push(box);
+                            }
+
+                            shape.x = 0;
+                            shape.y = 0;
+
+                            if (duration) {
+                                node[symbols.views][this.title] = node[symbols.views][this.title] || {};
+                                //box.x = x(getStart(node, this));
+                            } else {
+                                if (node[symbols.content].length) {
+                                    const nodes = node[symbols.content];
+                                    const start = Math.min(...nodes.map((node) => getStart(node, this)));
+                                    const finish = Math.max(...nodes.map((node) => getFinish(node, this)));
+                                    //box.x = x(start);
+                                } else {
+                                    const time = getStart(node, this);
+                                    //box.x = x(proxy.start.getTime());
+                                }
+                            }
+                            node[symbols.views][this.title].width = proxy.width ?? 100;
+                            box.width = proxy.width ?? 100;
+                        });
+
+                        const spacing = proxy.spacing ?? 50;
+
+                        const getX = (node) => {
+                            const shape = node[symbols.viewData].get(this).shape;
+                            if (!shape.box.x) {
+                                const inputs = node[symbols.views][this.title].inLinks.filter((link) => link.from);
+                                if (inputs.length) {
+                                    shape.box.x = Math.max(...inputs.map((link) => getX(link.from.node) + link.from.node[symbols.viewData].get(this).shape.width)) + spacing;
+                                } else {
+                                    shape.box.x = 0;
+                                }
+                            }
+                            return shape.box.x;
+                        }
+                        nodes.forEach(getX);
+
+                        const placeNode = (node, y) => {
+                            const proxy = makeProxy(node, this.title);
+
+                            const data = node[symbols.viewData].get(this);
+                            data.scale = scale;
+                            const box = data.shape.box;
+                            box.height = data.shape.height;
+                            if (!positioned.includes(box)) {
+
+                                box.y = y || 2 * this.configuration.rowGap;
+                                const overlapped = positioned.filter((existing) =>
+                                    ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
+                                overlapped.sort((a, b) => a.y - b.y);
+                                if (spread) {
+                                    box.y = Math.max(box.y, ...overlapped.map((box) => box.y + box.height));
+                                }
+                                while (overlapped.length && ((overlapped[0].y + overlapped[0].height) < box.y)) {
+                                    overlapped.shift();
+                                }
+                                while (overlapped.length && (box.y <= (overlapped[0].y + overlapped[0].height))
+                                    && ((box.y + box.height) >= overlapped[0].y)) {
+                                    box.y = overlapped[0].y + overlapped[0].height + this.configuration.rowGap;
+                                    while (overlapped.length && (overlapped[0].y + overlapped[0].height) < box.y) {
+                                        overlapped.shift();
+                                    }
+                                }
+                                positioned.push(box);
+
+                                data.shape.draw();
+                                this.updateElement(data.shape.container, { transform: `translate(${box.x}, ${box.y})`, });
+                                const links = node[symbols.views][this.title]?.outLinks.filter((link) => link.from.event === 'finish' && link.to && link.to !== node);
+                                links.forEach((link) => placeNode(link.to.node, box.y));
+                            } else {
+                                data.shape.draw();
+                                this.updateElement(data.shape.container, { transform: `translate(${box.x}, ${box.y})`, });
+                            }
+
+                            shape.box.width = Math.max((shape.box.width || 0), box.x + box.width + this.configuration.columnGap * 2);
+                            shape.box.height = Math.max((shape.box.height || 0), box.y + box.height + this.configuration.rowGap * 2);
                         };
                         nodes.forEach(placeNode);
                         shape.x = this.configuration.columnGap;
@@ -6179,7 +6462,7 @@ ${svg.parentElement.innerHTML}`;
                             if (item.toLocaleDateString) {
                                 return `::${view}.${item.toLocaleDateString()}`;
                             }
-                            return `::${view}.item}`;
+                            return `::${view}.${item}`;
                         }
                     }
                     headings.forEach((heading, index) => {
@@ -6895,8 +7178,6 @@ ${svg.parentElement.innerHTML}`;
                     mapping.values.forEach(([to, from]) => newNode[to] = from(node));
                 } else {
                     Object.assign(newNode, node);
-                    console.log(newNode);
-                    console.log(node);
                 }
                 return newNode;
             }
@@ -7077,7 +7358,7 @@ ${svg.parentElement.innerHTML}`;
                         node[symbols.views][view]['text align'] = 'outside right';
                     }
                 } else {
-                    node[symbols.views][view].shape = 'task';
+                    node[symbols.views][view].shape = 'activity';
                 }
             });
 
@@ -7195,6 +7476,25 @@ ${svg.parentElement.innerHTML}`;
                 return getCalendarDays(finish, -(node[symbols.views]?.[view]?.duration ?? node.duration ?? 0));
             };
 
+            const getLinkFloat = (link) => {
+                if (link.float === undefined) {
+                    link.float = workingDays(quantisedDate(getEarliestStart(link)), quantisedDate(link.to.node[symbols.views][view].start));
+                }
+                return link.float;
+            };
+
+            const getFloat = (node) => {
+                if (node[symbols.views][view].float === undefined) {
+                    const dependents = node[symbols.views][view].outLinks.filter((link) => link.to);
+                    if (dependents.length) {
+                        node[symbols.views][view].float = Math.min(...dependents.map((link) => getLinkFloat(link) + getFloat(link.to.node)));
+                    } else {
+                        node[symbols.views][view].float = 0;//workingDays(node[symbols.views][view].finish, quantisedDate(finish));
+                    }
+                }
+                return node[symbols.views][view].float;
+            };
+
             reversed.forEach((node) => {
                 if (getDuration(node) === 0) {
                     const date = getLateFinish(node);
@@ -7205,25 +7505,15 @@ ${svg.parentElement.innerHTML}`;
                     node[symbols.views][view].lateFinish = getLateFinish(node);
                     node[symbols.views][view].lateStart = getLateStart(node);
                 }
-                node.float = workingDays(node[symbols.views][view].start, node[symbols.views][view].lateStart);
-
-                node[symbols.views][view].outLinks.filter((link) => link.to)
-                    .forEach((link) =>
-                        link.float = workingDays(quantisedDate(getEarliestStart(link)), quantisedDate(link.to.node[symbols.views][view].start)));
+                getFloat(node);
             });
 
-            nodes[0][symbols.views][view].start = new Date(Math.min(...nodes.map((getEarlyStart))) - 2 * 24 * 60 * 60 * 1000);
+            const offset =
+                nodes[0][symbols.views][view].start = new Date(Math.min(...nodes.map((getEarlyStart))) - 7 * 24 * 60 * 60 * 1000);
             nodes[0][symbols.views][view].finish = finish;
             nodes[0][symbols.views][view].finish.setDate(finish.getDate() + 2);
             nodes[0][symbols.views][view].duration = dayNumber(finish) - dayNumber(nodes[0][symbols.views][view].earlyStart);
-            nodes[0][symbols.views][view].shape = 'timeline';
-
-            /*
-            nodes.forEach((node) => {
-                const proxy = makeProxy(node, view);
-                console.log(`${node.name}: ${proxy.start.toLocaleDateString()} ${proxy.lateStart.toLocaleDateString()} ${node.float} ${getDuration(node)}`);
-            });
-            */
+            //nodes[0][symbols.views][view].shape = 'timeline';
         }
 
         /**
@@ -7291,11 +7581,23 @@ ${svg.parentElement.innerHTML}`;
                         }
                     }
                 }
-                const testKeys = Object.keys(testNode).filter((key) => key.startsWith('*'))
-                    .map((key) => key.replace(/^\*/, ''));
+                const tests = [];
+                Object.entries(testNode).forEach(([key, value]) => {
+                    if (key.startsWith('*')) {
+                        tests.push((node) => node[key.replace(/^\*/, '')] === value);
+                    }
+                });
 
-                const test = (node) => testKeys.every((key) => node[key] === testNode[`*${key}`]);
-                nodes = nodes.filter((node) => test(node));
+                context.views.forEach((view) => {
+                    const viewData = testNode[symbols.views][view] ?? {};
+                    Object.entries(viewData).forEach(([key, value]) => {
+                        if (key.startsWith('*')) {
+                            tests.push((node) => node[symbols.views][view]?.[key.replace(/^\*/, '')] === value);
+                        }
+                    });
+                });
+
+                nodes = nodes.filter((node) => tests.every((test) => test(node)));
 
                 if (nodes.length) {
                     if (func) {
@@ -7328,7 +7630,7 @@ ${svg.parentElement.innerHTML}`;
                     })
                     return [];
                 }
-                return testNode;
+                return [];// testNode;
             }
         }
 
@@ -8110,7 +8412,7 @@ ${svg.parentElement.innerHTML}`;
                             value = item.split(/,/g).map((val) => numberOrString(val));
                         } else if (Array.isArray(item)) {
                             value = item.map((each) => node[symbols.values].push(each));
-                        } else{
+                        } else {
                             value = node[symbols.values].push(numberOrString(item));
                         }
                         node[symbols.values].push(value);
@@ -13729,4 +14031,5 @@ void main() {
         }
     </script>
 </body>
+
 </html>
