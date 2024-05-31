@@ -2746,7 +2746,7 @@ ${svg.parentElement.innerHTML}`;
                 this.title = title;
                 //this.camera = camera || new Camera([14.638, -0.074, 27.731], [6.762, 1.357, 7.673], [0, 1, 0]);
                 this.camera = camera || new Camera([0, 55000, 40000], [0, 0, 10000], [0, 1, 0]);
-                this.background = [0.9, 0.9, 1, 1];
+                this.background = [1, 1, 1, 1];
                 this.setShaders(shaders);
 
                 const lightX = this.node.querySelector('.light-x');
@@ -3066,7 +3066,12 @@ ${svg.parentElement.innerHTML}`;
                 const aspect = this.canvas.clientWidth / this.canvas.clientHeight;
                 const zNear = 0.1;
                 const zFar = parseFloat(this.settings.far.value);
-                const projectionMatrix = perspective(fieldOfView, aspect, zNear, zFar);
+                const projectionMatrix = [
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, -(zFar+zNear)/(zFar-zNear),
+                0, 0, 0, 1,
+            ];//perspective(fieldOfView, aspect, zNear, zFar);
                 this.projectionMatrix = projectionMatrix;
 
                 this.graph.forEach((node) => node.update(this, identityMatrix(), node, time));
@@ -3622,9 +3627,9 @@ ${svg.parentElement.innerHTML}`;
             }
             mergeEdges(shape) {
                 const leftEdge = shape.leftEdge.map((point) =>
-                    ({ x: point.x + shape.box.x, y: point.y + shape.box.y }));
+                    ({ x: parseFloat(point.x + shape.box.x), y: parseFloat(point.y + shape.box.y) }));
                 const rightEdge = shape.rightEdge.map((point) =>
-                    ({ x: point.x + shape.box.x, y: point.y + shape.box.y }));
+                    ({ x: parseFloat(point.x + shape.box.x), y: parseFloat(point.y + shape.box.y) }));
 
                 this.leftEdge = this.merge(this.leftEdge, leftEdge, (a, b) => a < b);
                 this.rightEdge = this.merge(this.rightEdge, rightEdge, (a, b) => a > b);
@@ -4283,10 +4288,12 @@ ${svg.parentElement.innerHTML}`;
                         const end = { x: x(toDate), y: toShape.y + toShape.box.y + toShape.height * (node.inputs.indexOf(link.to) + 1) / totalInputs, };
                         const mid = (start.x + end.x) / 2;
 
+                        const offset = Math.abs((start.y < end.y + toShape.height) && (start.y + shape.height > end.y)) ? 0 : 50;
+
                         if (link.from.date) {
                             attrs.d = `M${start.x} ${start.y} C${start.x} ${start.y + 50} ${mid} ${end.y} ${end.x - 5} ${end.y}`;
                         } else {
-                            attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x - 5} ${end.y}`;
+                            attrs.d = `M${start.x} ${start.y} C${start.x + offset} ${start.y} ${end.x - offset} ${end.y} ${end.x - 5} ${end.y}`;
                         }
                         this.view.add('path', this.container, attrs);
                         attrs.fill = attrs.stroke;
@@ -4302,7 +4309,8 @@ ${svg.parentElement.innerHTML}`;
                     });
 
                     let y = this.height - this.view.configuration.rowGap - this.lineHeight;
-                    unresolved.forEach((input) => {
+                    unresolved.forEach((input, i) => {
+                        const y = this.height - this.view.configuration.rowGap + (i - unresolved.length) * this.lineHeight;
                         const attrs = { fill: 'none', stroke: 'red', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
                         const to = node[symbols.views][this.view.title];
                         const toDate = (input.event === 'start') ? to.start : to.finish;
@@ -4325,7 +4333,6 @@ ${svg.parentElement.innerHTML}`;
                         this.view.add('path', this.container, attrs);
 
                         labels.push({x: start.x, y, anchor: 'end', text: input.name, colour: 'red', });
-                        y -= this.lineHeight;
                     });
 
                     y = this.height - this.view.configuration.rowGap - this.lineHeight;
@@ -4424,22 +4431,23 @@ ${svg.parentElement.innerHTML}`;
                 const proxy = makeProxy(this.node, this.view.title);
                 const labels = [];
                 const opacity = this.getData('link opacity');
+                const get = (node, parameter) => node?.[symbols.views][this.view]?.[parameter] ?? node?.[parameter];
 
                 const drawLabel = (label) => {
                     const back = this.view.add('rect', this.container, {
                         x: label.x, y: label.y - this.lineHeight / 2, height: this.lineHeight,
                         rx: this.lineHeight / 2,
-                        stroke: label.colour, 'stroke-opacity': opacity ?? 1,
-                        fill: 'white', 'fill-opacity': opacity ?? 1,
+                        stroke: label.colour, 'stroke-opacity': label.opacity,
+                        fill: 'white', 'fill-opacity': label.opacity,
                     });
                     const tx = label.anchor === 'start' ? label.x + this.lineHeight * 0.4 : label.anchor === 'end' ? label.x - this.lineHeight * 0.4 : label.x;
                     const text = this.view.add('text', this.container, {
                         x: tx, y: label.y,
                         'text-anchor': label.anchor ?? 'middle', 'dominant-baseline': 'middle',
-                        fill: label.colour, 'fill-opacity': opacity ?? 1,
+                        fill: label.colour, 'fill-opacity': label.opacity,
                         'font-family': this.getData('font') ?? 'sans-serif', 'font-size': `${this.fontSize * 0.8}pt`
                     }, label.text);
-                    const width = text.getComputedTextLength() + 0.8 * this.lineHeight;
+                    const width = text.getComputedTextLength() + 1.2 * this.lineHeight;
                     const x = label.anchor === 'start' ? label.x : label.anchor === 'end' ? label.x - width : label.x - width / 2;
                     this.view.updateElement(back, { x, width, });
                 };
@@ -4452,15 +4460,31 @@ ${svg.parentElement.innerHTML}`;
                     const links = node.inputs.flatMap((input) => input.links);
                     
                     links.forEach((link, i) => {
-                        const attrs = { fill: 'none', stroke: 'black', d: '', 'stroke-opacity': opacity ?? 0.8, 'fill-opacity': opacity ?? 0.8, };
+                        const totalOutputs = link.from.node[symbols.views][this.view.title].outputs.filter((output) => output.links.length || !output.autoGenerated).length + 1;
+                        const linkNode = Core.find((node) => node.name === `${link.from.node.name}->${link.to.node.name}(${link.name})`) ?? Core.find((node) => node.name === link.name);
+                        const linkOpacity = get(linkNode, 'opacity') ?? opacity ?? 0.8;
+                        const attrs = { fill: 'none', stroke: get(linkNode, 'colour') ?? 'black', d: '', 'stroke-opacity': linkOpacity, 'fill-opacity': linkOpacity, };
                         const shape = link.from.node[symbols.viewData].get(this.view).shape;
-                        const start = { x: shape.box.x + shape.x + shape.width, y: shape.y + shape.box.y + shape.height * (link.from.node[symbols.views][this.view.title].outputs.indexOf(link.from) + 1) / (link.from.node[symbols.views][this.view.title].outputs.length + 1), };
+                        const start = { x: shape.box.x + shape.x + shape.width, y: shape.y + shape.box.y + shape.height * (link.from.node[symbols.views][this.view.title].outputs.indexOf(link.from) + 1) / totalOutputs, };
 
                         const toShape = link.to.node[symbols.viewData].get(this.view).shape;
                         const end = { x: toShape.box.x + toShape.x, y: toShape.y + toShape.box.y + toShape.height * (i + 1) / totalInputs, };
-                        const mid = (start.x + end.x) / 2;
+                        const mid = {
+                            x: get(linkNode, 'x') ?? (start.x + end.x) / 2,
+                            y: get(linkNode, 'y') ?? (start.y + end.y) / 2,
+                        };
 
-                        attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x - 5} ${end.y}`;
+                        if (get(linkNode, 'points')) {
+                            attrs.d = `M${start.x} ${start.y} `;
+                            attrs.d += get(linkNode, 'points').map((point) => `L${point.x} ${point.y}`).join(' ');
+                            attrs.d += ` L${end.x} ${end.y}`;
+                        } else if (get(linkNode, 'curve')) {
+                            const d = {x: (start.x - end.x + 100) / 4,  y: (start.y - end.y) / 4};
+                            attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${mid.x + d.x} ${mid.y + d.y} ${mid.x} ${mid.y} C${mid.x - d.x} ${mid.y - d.y} ${end.x - 50} ${end.y} ${end.x - 5} ${end.y}`;
+                        } else {
+                            attrs.d = `M${start.x} ${start.y} H${(start.x + end.x) / 2} V${end.y} L${end.x} ${end.y}`;
+                        }
+
 
                         this.view.add('path', this.container, attrs);
                         attrs.fill = attrs.stroke;
@@ -4469,43 +4493,60 @@ ${svg.parentElement.innerHTML}`;
 
                         if (this.getData('show labels')) {
                             labels.push({
-                                text: link.from.name, x: (start.x + end.x) / 2, y: (start.y + end.y) / 2, colour: attrs.stroke,
+                                text: link.from.name, x: mid.x, y: mid.y, colour: attrs.stroke, opacity: linkOpacity,
                             });
                         }
                     });
 
-                    let y = this.height - this.lineHeight;
-                    unresolved.forEach((input) => {
-                        const attrs = { fill: 'none', stroke: 'red', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
+                    unresolved.forEach((input, i) => {
+                        const y = this.height + (i - unresolved.length) * this.lineHeight;
+                        const linkNode = Core.find((node) => node.name === `->${input.node.name}(${input.name})`);
+                        const linkOpacity = get(linkNode, 'opacity') ?? opacity ?? 0.8;
+                        const attrs = { fill: 'none', stroke: get(linkNode, 'colour') ?? 'red', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
                         const toShape = input.node[symbols.viewData].get(this.view).shape;
                         const end = {
                             x: toShape.box.x + toShape.x, y: toShape.y + toShape.box.y + toShape.height *
                                 (node[symbols.views][this.view.title].inputs.indexOf(input) + 1) /
                                 (node[symbols.views][this.view.title].inputs.length + 1),
                         };
-                        const start = { x: end.x - 100, y };
-                        const mid = (start.x + end.x) / 2;
+                        const cy = (end.y > this.height / 2) ? y : this.height - y;
+                        const start = {
+                            x: get(linkNode, 'x') ?? end.x - 60,
+                            y: get(linkNode, 'y') ?? cy
+                        };
 
-                        attrs.d = `M${start.x} ${start.y} C${mid} ${start.y} ${mid} ${end.y} ${end.x - 5} ${end.y}`;
+                        if (get(linkNode, 'points')) {
+                            attrs.d = `M${start.x} ${start.y} `;
+                            attrs.d += get(linkNode, 'points').map((point) => `L${point.x} ${point.y}`).join(' ');
+                            attrs.d += ` L${end.x} ${end.y}`;
+                        } else if (get(linkNode, 'curve')) {
+                            attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x} ${end.y}`;
+                        } else {
+                            attrs.d = `M${start.x} ${start.y} H${(start.x + end.x) / 2} V${end.y} L${end.x} ${end.y}`;
+                        }
                         this.view.add('path', this.container, attrs);
                         attrs.fill = attrs.stroke;
                         attrs.d = `M${end.x} ${end.y} l-5 -2 v4 Z`;
                         this.view.add('path', this.container, attrs);
 
-                        labels.push({ text: input.name, x: start.x, y, colour: 'red', anchor: 'end', });
-                        y -= this.lineHeight;
+                        labels.push({ text: input.name, x: start.x, y: cy, colour: 'red', anchor: 'end', opacity: linkOpacity, });
                     });
 
-                    y = this.height - this.lineHeight / 2;
-                    unused.forEach((output) => {
-                        const attrs = { fill: 'none', stroke: 'orange', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
+                    unused.forEach((output, i) => {
+                        const y = this.height + (i - unresolved.length) * this.lineHeight;
+                        const linkNode = Core.find((node) => node.name === `${output.node.name}->(${output.name})`);
+                        const linkOpacity = get(linkNode, 'opacity') ?? opacity ?? 0.8;
+                        const attrs = { fill: 'none', stroke: get(linkNode, 'colour') ?? 'orange', d: '', 'stroke-opacity': opacity ?? 0.5, 'fill-opacity': opacity ?? 0.5, };
                         const shape = node[symbols.viewData].get(this.view).shape;
                         const start = {
-                            x: shape.box.x + shape.x + shape.width, y: shape.y + shape.box.y + shape.height * (node[symbols.views][this.view.title].outputs.indexOf(output) + 1) /
-                                (node[symbols.views][this.view.title].outputs.length + 1),
+                            x: shape.box.x + shape.x + shape.width,
+                            y: shape.y + shape.box.y + shape.height * (node[symbols.views][this.view.title].outputs.indexOf(output) + 1) / totalOutputs,
                         };
 
-                        const end = { x: start.x + 100, y, };
+                        const end = {
+                            x: get(linkNode, 'x') ?? start.x + 60, 
+                            y: get(linkNode, 'y') ?? y,
+                        };
                         const mid = (start.x + end.x) / 2;
 
                         attrs.d = `M${start.x} ${start.y} C${start.x + 50} ${start.y} ${end.x - 50} ${end.y} ${end.x} ${end.y}`;
@@ -4514,8 +4555,7 @@ ${svg.parentElement.innerHTML}`;
                         attrs.d = `M${end.x} ${end.y} l-5 -2 v4 Z`;
                         this.view.add('path', this.container, attrs);
 
-                        labels.push({ text: output.name, x: end.x, y, colour: 'orange', anchor: 'start', });
-                        y -= this.lineHeight;
+                        labels.push({ text: output.name, x: end.x, y, colour: 'orange', anchor: 'start', opacity: linkOpacity, });
                     });
                 });
                 labels.forEach(drawLabel);
@@ -4619,11 +4659,11 @@ ${svg.parentElement.innerHTML}`;
             }
 
             draw() {
-                const x1 = this.x - this.width / 2;
+                const x1 = this.x;
                 const y1 = this.y;
-                const x2 = this.x;
+                const x2 = this.x + this.width / 2;
                 const y2 = this.y + this.height / 2;
-                const x3 = this.x + this.width / 2;
+                const x3 = this.x + this.width;
                 const y3 = this.y + this.height;
                 const attrs = {
                     d: `M${x1} ${y2} L${x2} ${y1} L${x3} ${y2} L${x2} ${y3} Z`,
@@ -4654,8 +4694,7 @@ ${svg.parentElement.innerHTML}`;
             constructor(view, node) {
                 super(view, node);
             }
-
-            draw() {
+            draw1() {
                 const x1 = this.x - this.height / 2;
                 const y1 = this.y;
                 const x2 = this.x;
@@ -4671,10 +4710,48 @@ ${svg.parentElement.innerHTML}`;
                     fill: this.fill, stroke: 'none',
                 };
                 const background = this.view.add('rect', this.container, backgroundAttrs);
+                const svgElement = this.view.add('path', this.container, attrs);
                 const text = this.addText();
                 backgroundAttrs.width = text.getComputedTextLength() + this.width + 2;
                 this.view.updateElement(background, backgroundAttrs);
+                svgElement.addEventListener('click', (event) => clickNode(this.node, event));
+                svgElement.addEventListener('dblclick', (event) => this.view.dblClickNode(this.node, event));
+                this.viewData('svgNodes').push(svgElement);
+                this.box.width = text.getComputedTextLength() + this.width * 2;
+            }
+            draw() {
+                const x1 = this.x - this.height / 2;
+                const y1 = this.y;
+                const x2 = this.x;
+                const y2 = this.y + this.height / 2;
+                const x3 = this.x + this.height / 2;
+                const y3 = this.y + this.height;
+                const attrs = {
+                    d: '',
+                    fill: this.fill, stroke: this.stroke,
+                };
+                const points = 5;
+                for (let i = 0; i < (points * 2); ++i) {
+                    const radius = i % 2 ? (this.height / 2) : (this.height / 5);
+                    const angle = Math.PI * i / points;
+                    const x = this.x + this.height / 2 + radius * Math.sin(angle);
+                    const y = this.y + this.height / 2 + radius * Math.cos(angle);
+                    if (i === 0) {
+                        attrs.d += `M${x} ${y}`;
+                    } else {
+                        attrs.d += `L${x} ${y}`;
+                    }
+                }
+                attrs.d += 'Z';
+                const backgroundAttrs = {
+                    x: x2, y: y1 - 2, height: Math.max(this.height, this.lineHeight) + 2, width: 10, rx: this.height / 2,
+                    fill: this.fill, stroke: 'none',
+                };
+                //const background = this.view.add('rect', this.container, backgroundAttrs);
                 const svgElement = this.view.add('path', this.container, attrs);
+                const text = this.addText();
+                //backgroundAttrs.width = text.getComputedTextLength() + this.width + 2;
+                //this.view.updateElement(background, backgroundAttrs);
                 svgElement.addEventListener('click', (event) => clickNode(this.node, event));
                 svgElement.addEventListener('dblclick', (event) => this.view.dblClickNode(this.node, event));
                 this.viewData('svgNodes').push(svgElement);
@@ -5654,7 +5731,7 @@ ${svg.parentElement.innerHTML}`;
                             }
                         });
 
-                        const placeNode = (node, y) => {
+                        const placeNode = (node, y=0) => {
                             const proxy = makeProxy(node, this.title);
 
                             const data = node[symbols.viewData].get(this);
@@ -5663,17 +5740,14 @@ ${svg.parentElement.innerHTML}`;
                             //box.height = data.shape.height;
                             if (!positioned.includes(box)) {
                                 box.y = y || 2 * this.configuration.rowGap;
+                                //box.y = 2 * this.configuration.rowGap;
+
                                 const overlapped = positioned.filter((existing) =>
                                     ((box.x + box.width) > existing.x) && (box.x < (existing.x + existing.width)));
                                 overlapped.sort((a, b) => a.y - b.y);
                                 if (spread) {
                                     box.y = Math.max(box.y, ...overlapped.map((box) => box.y + box.height));
                                 } else {
-                                    /*
-                                    while (overlapped.length && ((overlapped[0].y + overlapped[0].height) < box.y)) {
-                                        overlapped.shift();
-                                    }
-                                    */
                                     while (overlapped.filter((existing) => (box.y <= (existing.y + existing.height))
                                         && ((box.y + box.height) >= existing.y)).length) {
                                         box.y = Math.max(...overlapped.filter((existing) => (box.y <= (existing.y + existing.height))
@@ -5695,7 +5769,7 @@ ${svg.parentElement.innerHTML}`;
                             shape.box.width = Math.max((shape.box.width || 0), box.x + box.width + this.configuration.columnGap * 2);
                             shape.box.height = Math.max((shape.box.height || 0), box.y + box.height + this.configuration.rowGap * 2);
                         };
-                        nodes.forEach(placeNode);
+                        nodes.forEach(placeNode, 0);
                         shape.x = this.configuration.columnGap;
                         shape.y = this.configuration.rowGap;
                         shape.box.x = this.configuration.columnGap;
@@ -7390,9 +7464,10 @@ ${svg.parentElement.innerHTML}`;
          * Calculate schedule data for a set of nodes
          */
         function schedule(nodes, context, data) {
-            const start = data.start ?? new Date();
             const view = context.views[context.views.length - 1] || 'schedule';
             const get = (node, property) => node[symbols.views][view]?.[property] ?? node[property];
+            const first = new Date(Math.min(...nodes.map((node) => get(node, 'start')).filter((start) => start)));
+            const start = !isNaN(first) ? first : (data.start ?? new Date());
 
             quantiseDate(start);
             const inputs = [];
@@ -7463,11 +7538,11 @@ ${svg.parentElement.innerHTML}`;
                         node[symbols.views][view]['text align'] = 'middle';
                         node[symbols.views][view]['text vertical align'] = 'above';
                     } else {
-                        node[symbols.views][view].shape = 'milestone';
-                        node[symbols.views][view].width = 15;
-                        node[symbols.views][view].height = 15;
+                        node[symbols.views][view].shape = node[symbols.views][view].shape || node.shape || 'milestone';
+                        node[symbols.views][view].width = node[symbols.views][view].width || node.width || 60;
+                        node[symbols.views][view].height = node[symbols.views][view].height || node.height || 60;
                         node[symbols.views][view].textWidth = 0;
-                        node[symbols.views][view]['text align'] = 'outside right';
+                        //node[symbols.views][view]['text align'] = 'outside right';
                     }
                 } else {
                     node[symbols.views][view].shape = 'activity';
@@ -7507,7 +7582,7 @@ ${svg.parentElement.innerHTML}`;
                 const proxy = makeProxy(node, view);
 
                 if (!proxy.earlyStart) {
-                    const nodeStart = proxy.start ?? node.start;
+                    const nodeStart = proxy.start;
                     const inputs = proxy.inputs.flatMap((input) => input.links);
                     if (nodeStart?.getTime) {
                         proxy.earlyStart = new Date(nodeStart);
@@ -8236,7 +8311,7 @@ ${svg.parentElement.innerHTML}`;
                 let levelCount = '';
                 let offset = 0;
                 let i = 0;
-                const lineStructure = /^(?<indent>\s*[\^-]?\s*([0-9]+\s+)?)(?<value>.*)$/
+                const lineStructure = /^(?<indent>\s*[\^_]?\s*([0-9]+\s+)?)(?<value>.*)$/
                 const match = line.match(lineStructure);
                 const indent = match.groups.indent || ''; //line.replace(/(\s*([0-9]+\s+)?)(.*)/, '$1');
                 for (let i = 0; i < indent.length; ++i) {
@@ -8245,7 +8320,7 @@ ${svg.parentElement.innerHTML}`;
                         levelCount += c;
                     } else if (c === '^' && stack.length) {
                         offset = stack[0].level;
-                    } else if (c === '-') {
+                    } else if (c === '_') {
                         offset = 0;
                     } else if (c === '\t') {
                         level += 4 - (level % 4);
@@ -12383,9 +12458,10 @@ void main() {
 
                 if (frame.nextSibling) {
                     frame.nextSibling.remove();
-                } else {
+                } else if (frame.previousSibling) {
                     frame.previousSibling.remove();
                 }
+                
                 frame.remove();
                 if (container.childNodes.length === 1) {
                     container.replaceWith(container.firstChild);
@@ -12402,7 +12478,6 @@ void main() {
                     container.style[gridTemplate] = newSize.join(' min-content ');
                 }
             }
-
 
             const newFrame = (view) => {
                 const frame = document.createElement('div');
@@ -14198,5 +14273,4 @@ void main() {
         }
     </script>
 </body>
-
 </html>
