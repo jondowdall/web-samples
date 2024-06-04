@@ -533,7 +533,7 @@
             display: flex;
         }
 
-        .search {
+        .search, .search-pattern, .replacement {
             border-radius: 50px;
             flex-grow: 1;
             outline: none;
@@ -781,6 +781,13 @@
                 <button class="record-break" title="Insert record break">\u1e</button>
                 <button class="group-break" title="Insert group break">\u1d</button>
                 <input class="spell-check" type="checkbox" />
+            </div>
+            <div>
+                <input class="search-pattern" type="text" autocapitalize="off" />
+                <input class="replacement" type="text" />
+                <button class="search" title="Search Text">Search</button>
+                <button class="replace" title="Replace Text">Replace</button>
+                <button class="replace-all" title="Replace All Instance">Replace All</button>
             </div>
             <div class="editor">
                 <textarea class="line-numbers"></textarea>
@@ -1975,6 +1982,18 @@ ${svg.parentElement.innerHTML}`;
                         this.unindent();
                         this.main.focus();
                     });
+                this.node.querySelector('.search-pattern').addEventListener('input',
+                    (event) => {
+                        this.search();
+                        this.node.querySelector('.search-pattern').focus();
+                    });
+                this.node.querySelector('.search').addEventListener('click',
+                    (event) => this.search());
+                this.node.querySelector('.replace').addEventListener('click',
+                    (event) => this.replace());
+                this.node.querySelector('.replace-all').addEventListener('click',
+                    (event) => this.replaceAll());
+                    
                 this.main.addEventListener('keydown', (event) => {
                     if (event.key === 'Tab') {
                         event.preventDefault();
@@ -2038,7 +2057,6 @@ ${svg.parentElement.innerHTML}`;
                 this.value = lines.join('\r\n');
                 this.main.selectionStart = start + 2;
                 this.main.selectionEnd = end + (lastLine - firstLine) * 2;
-
             }
             /**
              * Add a comment marker to the start of each line of the selected text
@@ -2066,6 +2084,57 @@ ${svg.parentElement.innerHTML}`;
             unindent() {
                 this.modifySelection((line) =>
                     line.charAt(0) === '\t' ? line.slice(1) : line.replace(/^ {1,4}/, ''));
+            }
+            setSelectionRange(selectionStart, selectionEnd) {
+                // First scroll selection region to view
+                const fullText = this.main.value;
+                this.main.value = fullText.substring(0, selectionEnd);
+                // For some unknown reason, you must store the scollHeight to a variable
+                // before setting the textarea value. Otherwise it won't work for long strings
+                const scrollHeight = this.main.scrollHeight
+                this.main.value = fullText;
+                let scrollTop = scrollHeight;
+                const textareaHeight = this.main.clientHeight;
+                if (scrollTop > textareaHeight){
+                    // scroll selection to center of textarea
+                    scrollTop -= textareaHeight / 2;
+                } else{
+                    scrollTop = 0;
+                }
+                this.main.scrollTop = scrollTop;
+            
+                // Continue to set selection range
+                this.main.setSelectionRange(selectionStart, selectionEnd);
+            }
+            /**
+             * search for the text
+             */
+            search() {
+                const pattern = new RegExp(this.node.querySelector('.search-pattern').value);
+                const match = this.value.match(pattern);
+                if (match) {
+                    this.setSelectionRange(match.index, match.index + match[0].length);
+                }
+            }
+            /**
+             * Remove indent from the selected text
+             */
+            replace() {
+                const pattern = new RegExp(this.node.querySelector('.search-pattern').value);
+                const replacement = this.node.querySelector('.replacement').value;
+                this.value = this.value.replace(pattern, replacement);
+                const match = this.value.match(pattern);
+                if (match) {
+                    this.setSelectionRange(match.index, match.index + match[0].length);
+                }
+            }
+            /**
+             * Remove indent from the selected text
+             */
+            replaceAll() {
+                const pattern = new RegExp(this.node.querySelector('.search-pattern', 'g').value);
+                const replacement = this.node.querySelector('.replacement').value;
+                this.value = this.value.replace(pattern, replacement);
             }
         }
 
@@ -8509,6 +8578,178 @@ ${svg.parentElement.innerHTML}`;
         }
 
 
+        /**
+         * Generate a node parameters from the value string and context
+         */
+        function valueParserWIP(value, context) {
+            
+
+            const getReference = (name) => {
+                const nodes = context.nodeList.filter((node) => node[symbols.names].includes(name));
+                if (nodes.length > 0) {
+                    return nodes;
+                } else {
+                    const path = name.split(/[-\/\.]/);
+                    path.shift();
+                    if (path.length > 1) {
+                        const first = path.shift();
+                        let matches = context.nodeList.filter((node) => node[symbols.names].includes(first));
+                        let last = [];
+                        let index = 0;
+                        while ((index < path.length) && matches.length) {
+                            last = matches;
+                            matches = matches.flatMap((node) =>
+                                node[symbols.content].filter((node) => node[symbols.names].includes(path[index])));
+                            ++index;
+                        }
+                        if (matches.length > 0) {
+                            return matches;
+                        }
+                        matches = last;
+
+                        --index;
+                        while ((index < path.length) && matches.length) {
+                            matches = last.flatMap((node) => node[path[index]] ?? []);
+                            ++index;
+                        }
+                        --index;
+                        namedValues[path[index]] = matches[0];
+                    }
+                }
+            }
+
+            value = value.trim();
+            if (value.includes('=')) {
+                const [nameDef, ...valueArr] = value.split(/=/);
+                const name = nameDef.replace(/^\\/, '').replace(/\\$/, '').trim();
+                const value = valueArr.join('=').trim();
+                if (nameDef.endsWith('\\')) {
+                    context.scope[0].propagate[name] = value;
+                }
+                namedValues[name] = value;
+            } else if (value.startsWith('&')) {  // mix in values from reference
+                const nodes = getReference(value.replace(/^&\s*/, ''));
+                if (nodes) {
+                    references.push(...nodes);
+                } else {
+                    unnamed.push(value);
+                }
+            } else if (value.startsWith('@')) {  // add reference to named node(s)
+                const nodes = getReference(value.replace(/^@\s*/, ''));
+                unnamed.push(nodes === undefined ? value : (nodes.length === 1 ? nodes[0] : nodes));
+            } else if (value.startsWith('^')) {  // gel value from ancestor
+                const name = value.slice(1).trim();
+                const value = context.scope.find((scope) => scope.node[name] !== undefined);
+                if (value) {
+                    namedValues[name] = value.node[name];
+                } else {
+                    unnamed.push(name);
+                }
+            } else if (value.startsWith('~')) {  // Alternative name
+                node[symbols.names].push(value.slice(1).trim());
+            } else {
+                unnamed.push(value);
+            }
+            
+            context.parsers.forEach((parser) => parser.apply(context, node, namedValues, unnamed, references));
+
+            const linkMatch = data[0].match(/(?<start>.+)->(?<end>.+)/);
+            if (linkMatch) {
+                const start = getReference(linkMatch.groups.start.trim());
+                const end = getReference(linkMatch.groups.end.trim());
+                if (start && end) {
+                    namedValues.start = namedValues.start ?? start[0];
+                    namedValues.end = namedValues.end ?? end[0];
+                    namedValues.shape = namedValues.link ?? 'link';
+                }
+            }
+
+            nodes.forEach((targetNode) => {
+                references.reverse();
+                const values = Object.assign({}, context.scope[0].propagate, ...references, namedValues);
+
+                Object.entries(values).forEach(([name, value]) => {
+                    const [view, partName] = getView(name);
+                    let node = targetNode;
+                    if (view && targetNode[symbols.views]) {
+                        targetNode[symbols.views][view] = targetNode[symbols.views][view] ?? { [symbols.values]: [] };
+                        node = targetNode[symbols.views][view];
+                        name = partName;
+                    }
+                    if (value?.[symbols.source]) {
+                        node[name] = value;
+                    } else {
+                        value = value + '';
+                        if (value.includes('...')) {
+                            const descendants = (nodes) => nodes.flatMap((node) => [node, ...descendants(node[symbols.content])]);
+                            context.scope[0].finalisation.push((context) => {
+                                const values = node[symbols.content].map((node) => node[name]);
+                                node[name] = numberOrString(value.replace(/([^\(]+)\s*\(\s*(\.\.\.\.?)\s*\)/, (match, func, elements) => {
+                                    const action = funcs[func.trim()];
+                                    if (action) {
+                                        const defined = (value) => value !== undefined;
+                                        if (elements === '...') {
+                                            return action(node[symbols.content].map((node) => node[name]).filter(defined));
+                                        } else {
+                                            return action(descendants(node[symbols.content]).map((node) => node[name]).filter(defined));
+                                        }
+                                    }
+                                    return match;
+                                }));
+                                if (value.trim() === '...') {
+                                    node[name] = node[symbols.content].map((node) => node[name]);
+                                } else if (value.trim() === '....') {
+                                    node[name] = descendants(node[symbols.content]).map((node) => node[name]);
+                                }
+                            });
+                        } else if (value.trim() === '') {
+                            node[name] = null;
+                        } else if (/^"[^"]+"$/.test(value)) {
+                            node[name] = value.replace(/^"([^"]+)"$/, '$1');
+                        } else if (value.startsWith('^')) {
+                            const referenced = value.length > 1 ? value.slice(1) : name;
+                            let container = context.container.find((container) => container[referenced] !== undefined);
+                            if (container) {
+                                node[name] = container[referenced];
+                            } else {
+                                node[name] = value;
+                            }
+                        } else if (value.includes(',')) {
+                            node[name] = [];
+                            value.split(/,/g).forEach((val, index) => {
+                                val = val.trim();
+                                const nodes = getReference(val.slice(1).trim());
+                                if (nodes === undefined) {
+                                    setProperty(node[name], index, val);
+                                } else {
+                                    node[name][index] = (nodes.length === 1 ? nodes[0] : nodes);
+                                }
+                            });
+                        } else if (value.startsWith('@')) {
+                            const nodes = getReference(value.slice(1).trim());
+                            node[name] = nodes === undefined ? value : (nodes.length === 1 ? nodes[0] : nodes);
+                        } else {
+                            setProperty(node, name, value);
+                        }
+                    }
+                });
+
+                unnamed.forEach((item) => {
+                    if (item[symbols.source]) {
+                        return {value: item};
+                    } else if (/^"[^"]+"$/.test(item)) {
+                        node[symbols.values].push(item);
+                    } else if (item.includes(',')) {
+                        node[symbols.values].push(item.split(/,/g).map((val) => numberOrString(val)));
+                    } else if (Array.isArray(item)) {
+                        node[symbols.values].push(item.map((each) => node[symbols.values].push(each)));
+                    } else {
+                        node[symbols.values].push(numberOrString(item));
+                    }
+                });
+            });
+            return parsed;
+        }
 
 
         /**
