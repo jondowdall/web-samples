@@ -68,6 +68,12 @@ class vec2 {
     dot(v) {
         return this.x * v.x + this.y * v.y;
     }
+    dot2() {
+        return this.x * this.x - this.y * this.y;
+    }
+    ndot(v) {
+        return this.x * v.x - this.y * v.y;
+    }
     add(v) {
         this.x += v.x;
         this.y += v.y;
@@ -93,6 +99,14 @@ class vec2 {
     }
     minus(v) {
         return new vec2(this.x - v.x, this.y - v.y);
+    }
+    mult(v) {
+        this.x *= v.x;
+        this.y *= v.y;
+        return this;
+    }
+    multiplied(v) {
+        return new vec2(this.x * v.x, this.y * v.y);
     }
     max(s) {
         this.x = Math.max(this.x, s);
@@ -166,9 +180,6 @@ class vec3 {
     }
     dot2() {
         return this.dot(this);
-    }
-    ndot() {
-        return this.x * v.x - this.y * v.y;
     }
     iabs() {
         const result = this.clone();
@@ -1217,7 +1228,7 @@ class ArbitaryRoundCone extends SDFShape {
 }
 
 /*
-Ellipsoid - bound (not exact!)   (https://www.shadertoy.com/view/tdS3DG)
+ * Ellipsoid - bound (not exact!)   (https://www.shadertoy.com/view/tdS3DG)
  */
 class Ellipsoid extends SDFShape {
     static random() {
@@ -1226,28 +1237,21 @@ class Ellipsoid extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
         const radius = 0.4 * canvas.clientWidth * Math.random();
         
-        return new CutSphere(position, angle, radius);
+        return new CutSphere(position, radius);
     }
-    constructor(position, angle, radius) {
+    constructor(position, radius) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
         this.radius = radius;
     }
     dist(point) {
         const p = this.local(point);
-/*
 
-float sdEllipsoid( vec3 p, vec3 r )
-{
-  float k0 = length(p/r);
-  float k1 = length(p/(r*r));
-  return k0*(k0-1.0)/k1;
-  */
-}
+        const k0 = p.scaled(1 / this.radius).length;
+        const k1 = p.scales(1 / (this.radius * this.radius)).length;
+        return k0 * (k0 - 1) / k1;
+    }
 }
 
 /*
@@ -1260,36 +1264,41 @@ class RevolvedVesica extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
+        const start = new vec3(
+            Math.random() * canvas.clientWidth,
+            Math.random() * canvas.clientHeight,
+            (Math.random() - 0.5) * canvas.clientWidth / 2);
+        const end = new vec3(
+            Math.random() * canvas.clientWidth,
+            Math.random() * canvas.clientHeight,
+            (Math.random() - 0.5) * canvas.clientWidth / 2);
+
+        const width = 0.4 * canvas.clientWidth * Math.random();
         
-        return new RevolvedVesica(position, angle, radius);
+        return new RevolvedVesica(position, start, end, width);
     }
-    constructor(position, angle, radius) {
+    constructor(position, start, end, width) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.start = start;
+        this.end = end;
+        this.width = width;
     }
     dist(point) {
         const p = this.local(point);
-/*
 
-float sdVesicaSegment( in vec3 p, in vec3 a, in vec3 b, in float w )
-{
-    vec3  c = (a+b)*0.5;
-    float l = length(b-a);
-    vec3  v = (b-a)/l;
-    float y = dot(p-c,v);
-    vec2  q = vec2(length(p-c-y*v),abs(y));
-    
-    float r = 0.5*l;
-    float d = 0.5*(r*r-w*w)/w;
-    vec3  h = (r*q.x<d*(q.y-r)) ? vec3(0.0,r,0.0) : vec3(-d,0.0,d+w);
- 
-    return length(q-h.xy) - h.z;
-    */
-}
+        const c = this.start.plus(this.end).scale(0.5);
+        const a = this.end.minus(this.start);
+        const l = a.length;;
+        const v = a.scaled(1 / l);
+        const y = p.minus(c).dot(v);
+        const q = new vec2(p.minus(c).minus(v.scale(y)).length, Math.abs(y));
+        
+        const r = 0.5 * l;
+        const d = 0.5 * (r * r - this.width * this.width) / this.width;
+        const h = (r * q.x < d * (q.y - r)) ? new vec3(0, r, 0) : new vec3(-d, 0, d + this.width);
+        
+        return q.subtract(h.xy).length - h.z;
+    }
 }
 
 /*
@@ -1302,29 +1311,28 @@ class Rhombus extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
+        const length1 = 0.4 * canvas.clientWidth * Math.random();
+        const length2 = 0.4 * canvas.clientWidth * Math.random();
+        const height = 0.4 * canvas.clientWidth * Math.random();
         const radius = 0.4 * canvas.clientWidth * Math.random();
         
-        return new Rhombus(position, angle, radius);
+        return new Rhombus(position, length1, length2, height, radius);
     }
-    constructor(position, angle, radius) {
+    constructor(position, length1, length2, height, radius) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
+        this.length1 = length1;
+        this.length2 = length2;
+        this.height = height;
         this.radius = radius;
     }
     dist(point) {
-        const p = this.local(point);
-/*
-float sdRhombus( vec3 p, float la, float lb, float h, float ra )
-{
-  p = abs(p);
-  vec2 b = vec2(la,lb);
-  float f = clamp( (ndot(b,b-2.0*p.xz))/dot(b,b), -1.0, 1.0 );
-  vec2 q = vec2(length(p.xz-0.5*b*vec2(1.0-f,1.0+f))*sign(p.x*b.y+p.z*b.x-b.x*b.y)-ra, p.y-h);
-  return min(max(q.x,q.y),0.0) + length(max(q,0.0));
-  */
-}
+        const p = this.local(point).abs();
+        //float sdRhombus( vec3 p, float la, float lb, float h, float ra )
+        const b = new vec2(this.length1, this.length2);
+        const f = clamp((b.ndot(b.minus(p.xz.scale(2)))) / b.dot2(), -1, 1);
+        const q = new vec2(p.xz.subtract(b.scale(0.5).mult(new vec2(1 - f, 1 + f))).length * Math.sign(p.x * b.y + p.z * b.x - b.x * b.y) - this.radius, p.y - this.height);
+        return Math.min(Math.max(q.x, q.y), 0) + q.max(0).length;
+    }
 }
 
 /*
@@ -1978,7 +1986,7 @@ function render() {
     const box = app.canvas.getBoundingClientRect();
     limit = 16;
     //const shapes = [Ball, BoxFrame, Mix];
-    const shapes = [ArbitaryRoundCone];//[Mix];
+    const shapes = [Rhombus];//[Mix];
     app.shapes.length = 0;
     for (let i = 0; i < 10; ++i) {
         app.shapes.push(randomChoice(shapes).random());
