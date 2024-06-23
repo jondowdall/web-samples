@@ -1120,9 +1120,9 @@ class RoundCone extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const height = 0.4 * canvas.clientWidth * Math.random();
         const radius1 = 0.4 * canvas.clientWidth * Math.random();
-        const radius2 = 0.4 * canvas.clientWidth * Math.random();
+        const radius2 = radius1 * Math.random();
+        const height = radius1 - radius2 + 0.2 * canvas.clientWidth * Math.random();
         
         return new RoundCone(position, height, radius1, radius2);
     }
@@ -1134,7 +1134,6 @@ class RoundCone extends SDFShape {
     }
     dist(point) {
         const p = this.local(point);
-        //float sdRoundCone( vec3 p, float r1, float r2, float h )
 
         // sampling independent computations (only depend on shape)
         const b = (this.radius1 - this.radius2) / this.height;
@@ -1143,6 +1142,7 @@ class RoundCone extends SDFShape {
         // sampling dependant computations
         const q = new vec2(p.xz.length, p.y);
         const k = q.dot(new vec2(-b, a));
+        
         if (k < 0 ) {
             return q.length - this.radius1;
         }
@@ -1163,45 +1163,57 @@ class ArbitaryRoundCone extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
+        const start = new vec3(
+            Math.random() * canvas.clientWidth,
+            Math.random() * canvas.clientHeight,
+            (Math.random() - 0.5) * canvas.clientWidth / 2);
+        const end = new vec3(
+            Math.random() * canvas.clientWidth,
+            Math.random() * canvas.clientHeight,
+            (Math.random() - 0.5) * canvas.clientWidth / 2);
+            
+        const radius1 = 0.4 * canvas.clientWidth * Math.random();
+        const radius2 = 0.4 * canvas.clientWidth * Math.random();
         
-        return new ArbitaryRoundCone(position, angle, radius);
+        return new ArbitaryRoundCone(position, start, end, radius1, radius2);
     }
-    constructor(position, angle, radius) {
+    constructor(position, start, end, radius1, radius2) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.start = start;
+        this.end = end;
+        this.radius1 = radius1;
+        this.radius2 = radius2;
     }
     dist(point) {
         const p = this.local(point);
-/*
 
-float sdRoundCone( vec3 p, vec3 a, vec3 b, float r1, float r2 )
-{
-  // sampling independent computations (only depend on shape)
-  vec3  ba = b - a;
-  float l2 = dot(ba,ba);
-  float rr = r1 - r2;
-  float a2 = l2 - rr*rr;
-  float il2 = 1.0/l2;
-    
-  // sampling dependant computations
-  vec3 pa = p - a;
-  float y = dot(pa,ba);
-  float z = y - l2;
-  float x2 = dot2( pa*l2 - ba*y );
-  float y2 = y*y*l2;
-  float z2 = z*z*l2;
+        //float sdRoundCone( vec3 p, vec3 a, vec3 b, float r1, float r2 )
+        // sampling independent computations (only depend on shape)
+        const ba = this.end.minus(this.start);
+        const l2 = ba.dot2();
+        const rr = this.radius1 - this.radius2;
+        const a2 = l2 - rr * rr;
+        const il2 = 1 / l2;
+        
+        // sampling dependant computations
+        const pa = p.minus(this.start);
+        const y = pa.dot(ba);
+        const z = y - l2;
+        const x2 = pa.scaled(l2).minus(ba.scaled(y)).dot2();
+        const y2 = y * y * l2;
+        const z2 = z * z * l2;
+        
+        // single square root!
+        const k = Math.sign(rr) * rr * rr * x2;
+        if (Math.sign(z) * a2 * z2 > k) {
+            return Math.sqrt(x2 + z2) * il2 - this.radius2;
+        }
+        if (Math.sign(y) * a2 * y2 < k) {
+            return Math.sqrt(x2 + y2) * il2 - this.radius1;
+        }
+        return (Math.sqrt(x2 * a2 * il2) + y * rr) * il2 - this.radius1;
 
-  // single square root!
-  float k = sign(rr)*rr*rr*x2;
-  if( sign(z)*a2*z2>k ) return  sqrt(x2 + z2)        *il2 - r2;
-  if( sign(y)*a2*y2<k ) return  sqrt(x2 + y2)        *il2 - r1;
-                        return (sqrt(x2*a2*il2)+y*rr)*il2 - r1;
-                        */
-}
+    }
 }
 
 /*
@@ -1966,7 +1978,7 @@ function render() {
     const box = app.canvas.getBoundingClientRect();
     limit = 16;
     //const shapes = [Ball, BoxFrame, Mix];
-    const shapes = [RoundCone];//[Mix];
+    const shapes = [ArbitaryRoundCone];//[Mix];
     app.shapes.length = 0;
     for (let i = 0; i < 10; ++i) {
         app.shapes.push(randomChoice(shapes).random());
