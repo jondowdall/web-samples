@@ -52,6 +52,13 @@ class vec3 {
     get length() {
         return Math.hypot(this.x, this.y, this.z);
     }
+    normalise() {
+        const length = this.length;
+        this.x /= length;
+        this.y /= length;
+        this.z /= length;
+        return this;
+    }
     cross(v) {
         return new vec3(this.y * v.z - this.z * v.y, this.z * v.x - this.x * v.z, this.x * v.y - this.y * v.x);
     }
@@ -187,7 +194,23 @@ function randomChoice(options) {
     return options[Math.floor(Math.random() * options.length)];
 }
 
-class Ball {
+class SDFShape {
+    constructor() {
+        this.hue = 360 * Math.random();
+        this.saturation = 100 * Math.random();
+        this.lightness = 100 * Math.random();
+    }
+    getColour(point) {
+        const lightness = this.lightness * normal(point, this).dot(app.light);
+        return `hsl(${this.hue} ${this.saturation}% ${lightness}%)`;
+    }
+    update(time) {
+        
+    }
+
+}
+
+class Ball extends SDFShape {
     static random() {
         const position = new vec3(
             Math.random() * canvas.clientWidth,
@@ -197,18 +220,16 @@ class Ball {
         return new Ball(position, radius);
     }
     constructor(position, radius) {
+        super();
         this.position = position;
         this.radius = radius;
     }
     dist(point) {
         return point.clone().minus(this.position).length - this.radius;
     }
-    update(time) {
-        
-    }
 }
 
-class BobbleBall {
+class BobbleBall extends SDFShape {
     static random() {
         const position = new vec3(
             Math.random() * canvas.clientWidth,
@@ -218,6 +239,7 @@ class BobbleBall {
         return new BobbleBall(position, radius);
     }
     constructor(position, radius) {
+        super();
         this.position = position;
         this.baseRadius = radius;
         this.offset = 1 + Math.random();
@@ -230,7 +252,7 @@ class BobbleBall {
     }
 }
 
-class BoxFrame {
+class BoxFrame extends SDFShape {
     static random() {
         const position = new vec3(
             Math.random() * canvas.clientWidth,
@@ -245,13 +267,13 @@ class BoxFrame {
         return new BoxFrame(position, size, e, radius);
     }
     constructor(position, size, e, radius) {
+        super();
         this.position = position;
         this.size = size;
         this.e = e;
         this.radius = radius;
     }
     dist(point) {
-
         const p = point.minus(this.position).abs().minus(this.size);
         const q = p.clone().inc(this.e).iabs().dec(this.e);
     
@@ -265,7 +287,7 @@ class BoxFrame {
     }
 }
 
-class Mix {
+class Mix extends SDFShape {
     static random() {
         const shapes = [Ball, BoxFrame, Mix];
         const shape1 = randomChoice(shapes).random();
@@ -308,12 +330,21 @@ class Mix {
     }
 
     constructor(shape1, shape2, factor, operation) {
+        super();
         this.shape1 = shape1;
         this.shape2 = shape2;
         this.factor = factor;
         this.baseFactor = factor;
         this.position = new vec3();
         this.operation = operation;
+    }
+    getHue(point) {
+        const dist1 = this.shape1.dist(point.clone());
+        const dist2 = this.shape2.dist(point.clone());
+        const r = Math.exp(-dist1 / this.factor) + Math.exp(-dist2 / this.factor);
+        const mix = -this.factor * Math.log(r);
+
+        
     }
     dist(point) {
         const dist1 = this.shape1.dist(point.clone());
@@ -322,7 +353,7 @@ class Mix {
         return this.operation(dist1, dist2);
     }
     update(time) {
-        this.factor = 1 + this.baseFactor * (1 + Math.sin(time / 1000)) / 2;
+        this.factor = this.baseFactor;
         this.shape1.update(time);
         this.shape2.update(time);
     }
@@ -358,13 +389,13 @@ function smin(values, k) {
 }
 
 
-function normal(point) {
+function normal(point, shape) {
     const epsilon = 0.001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
-    const distFn = (point) => Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
-    const centerDistance = distFn(point.clone());
-    const xDistance = distFn(new vec3(point.x + epsilon, point.y, point.z ));
-    const yDistance = distFn(new vec3(point.x, point.y + epsilon, point.z ));
-    const zDistance = distFn(new vec3(point.x, point.y, point.z + epsilon ));
+    //const distFn = (point) => Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
+    const centerDistance = shape.dist(point.clone());
+    const xDistance = shape.dist(new vec3(point.x + epsilon, point.y, point.z ));
+    const yDistance = shape.dist(new vec3(point.x, point.y + epsilon, point.z ));
+    const zDistance = shape.dist(new vec3(point.x, point.y, point.z + epsilon ));
     return new vec3(
         (xDistance - centerDistance) / epsilon,
         (yDistance - centerDistance) / epsilon,
@@ -380,11 +411,11 @@ function similar(p0, p1, p2, p3) {
 
 
 function ray(point, sx, sy, size, eye, limit=1) {
-    //point = new vec3(box.width / 2, box.height / 2, -box.width);
-    point = point.clone();
 
-    const l = Math.hypot(eye.x - sx, eye.y - sy, eye.z - 0);
-    const direction = new vec3(sx, sy, 0 ).minus(eye).scale(1 / l);
+    //point = point.clone();
+
+    const direction = (new vec3(sx, sy, 0 )).minus(eye).normalise();
+    //const direction = (new vec3(sx + size / 2, sy + size / 2, 0 )).minus(eye).normalise();
 
     let exit = false;
     let cycles = 0;
@@ -406,15 +437,14 @@ function ray(point, sx, sy, size, eye, limit=1) {
                 ray(p3, sx + size2, sy + size2, size2, eye, limit);
                 exit = true
             } else {
-                const norm = normal(point);
-                app.ctx.fillStyle = `rgb(${255 * Math.abs(norm.x)}, ${255 * Math.abs(norm.y)}, ${255 * Math.abs(norm.z)})`;
+                const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
+                app.ctx.fillStyle = shape.getColour(point);
                 app.ctx.fillRect(sx, sy, size, size);
             }
         }
         point.add(direction.clone().scale(step));
         
         if (point.z > 1000) { //box.width) {
-            const norm = normal(point);
             app.ctx.fillStyle = `rgb(10, 10, 80)`;
             app.ctx.fillRect(sx, sy, size, size);
 
@@ -425,9 +455,66 @@ function ray(point, sx, sy, size, eye, limit=1) {
             exit = true;
         }
         ++cycles;
-        if (cycles > 100) {
+        if (cycles > 1000) {
             message('Cycles limit exceeded!');
-            console.log('Cycles limit exceeded!');
+            console.log(`Cycles limit exceeded! ${point.x}, ${point.y}, ${point.z}`);
+        }
+    }
+}
+
+function ray2(point, sx, sy, size, eye, limit=1) {
+
+    //point = point.clone();
+
+    const direction = (new vec3(sx, sy, 0 )).minus(eye).normalise();
+    //const direction = (new vec3(sx + size / 2, sy + size / 2, 0 )).minus(eye).normalise();
+
+    let exit = false;
+    let cycles = 0;
+    while (!exit) {
+        const step = Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
+        
+        if (step < 0) {
+            point.add(direction.clone().scale(step));
+        } else if (Math.abs(step) < size * 2) {
+            if (size > limit) {
+                const size2 = size / 2;
+                ray(point.clone(), sx, sy, size2, eye, limit);
+                ray(eye.clone(), sx + size2, sy, size2, eye, limit);
+                ray(eye.clone(), sx, sy + size2, size2, eye, limit);
+                ray(eye.clone(), sx + size2, sy + size2, size2, eye, limit);
+                /*
+                const back = direction.clone().scale(step * -1);
+                const p1 = similar(eye, new vec3(sx, sy, 0), new vec3(sx + size2, sy, 0), point.clone().add(back));
+                const p2 = similar(eye, new vec3(sx, sy, 0), new vec3(sx, sy + size2, 0), point.clone().add(back));
+                const p3 = similar(eye, new vec3(sx, sy, 0), new vec3(sx + size2, sy + size2, 0), point.clone().add(back));
+                ray(p1, sx + size2, sy, size2, eye, limit);
+                ray(p2, sx, sy + size2, size2, eye, limit);
+                ray(p3, sx + size2, sy + size2, size2, eye, limit);
+                */
+                exit = true
+            } else {
+                const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
+                app.ctx.fillStyle = shape.getColour(point);
+                app.ctx.fillRect(sx, sy, size, size);
+            }
+        }
+        point.add(direction.clone().scale(step));
+        
+        if (point.z > 1000) { //box.width) {
+            app.ctx.fillStyle = `rgb(10, 10, 80)`;
+            app.ctx.fillRect(sx, sy, size, size);
+
+            exit = true;
+        }
+
+        if (Math.abs(step) < size) {
+            exit = true;
+        }
+        ++cycles;
+        if (cycles > 1000) {
+            message('Cycles limit exceeded!');
+            console.log(`Cycles limit exceeded! ${point.x}, ${point.y}, ${point.z}`);
         }
     }
 }
@@ -546,6 +633,7 @@ function render() {
         app.shapes.push(randomChoice(shapes).random());
     }
     
+    app.light = (new vec3(-0.1, -0.3, -1.0)).normalise();
     app.eye = new vec3(box.width / 2, box.height / 2, -box.width);
     app.sx = 0;
     app.sy = 0;
