@@ -671,16 +671,14 @@ class Plane extends SDFShape {
             Math.random() * canvas.clientWidth,
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
-        const normal = new vec3(Math.random(), Math.random(), Math.random());
-        return new Plane(position, normal);
+        return new Plane(position);
     }
-    constructor(position, normal) {
+    constructor(position) {
         super(position);
-        this.normal = normal.clone().normalise();
     }
     dist(point) {
-        const p = this.local(point).normalise();
-        return p.dot(this.normal);
+        const p = this.local(point);
+        return Math.abs(p.z);
     }
 }
 
@@ -1670,7 +1668,7 @@ float opCheapBend( in sdf3d primitive, in vec3 p )
 
 class Mix extends SDFShape {
     static random() {
-        const shapes = [Ball, BoxFrame, Box, Mix];
+        const shapes = allShapes;//[Ball, BoxFrame, Box, Mix];
         const shape1 = randomChoice(shapes).random();
         const shape2 = randomChoice(shapes).random();
         const factor = 20 + 20 * Math.random();
@@ -1738,8 +1736,44 @@ class Mix extends SDFShape {
         this.shape1.update(time);
         this.shape2.update(time);
     }
-
 }
+
+const allShapes = [
+    Ball,
+    Box,
+    BoxFrame,
+    Torus,
+    CappedTorus,
+    Link,
+    Cylinder,
+    Cone,
+    InfiniteCone,
+    Plane,
+    HexPrism,
+    TriangularPrism,
+    Capsule,
+    VerticalCapsule,
+    CappedCylinder,
+    ArbitraryCappedCylinder,
+    RoundedCylinder,
+    CappedCone,
+    ArbitaryCappedCone,
+    SolidAngle,
+    CutSphere ,
+    CutHollowSphere,
+    DeathStar,
+    RoundCone,
+    ArbitaryRoundCone,
+    Ellipsoid,
+    RevolvedVesica,
+    Rhombus,
+    Octahedron,
+    Pyramid,
+    Triangle,
+    Quad,
+    Mix,
+];
+
 
 function initialise() {
     app.canvas = document.getElementById('canvas');
@@ -1861,10 +1895,10 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
         } else if (Math.abs(step) < size * 2) {
             if (size > limit) {
                 const size2 = size / 2;
-                ray(point.clone(), sx, sy, size2, eye, limit);
-                ray(eye.clone(), sx + size2, sy, size2, eye, limit);
-                ray(eye.clone(), sx, sy + size2, size2, eye, limit);
-                ray(eye.clone(), sx + size2, sy + size2, size2, eye, limit);
+                ray2(point.clone(), sx, sy, size2, eye, limit);
+                ray2(eye.clone(), sx + size2, sy, size2, eye, limit);
+                ray2(eye.clone(), sx, sy + size2, size2, eye, limit);
+                ray2(eye.clone(), sx + size2, sy + size2, size2, eye, limit);
                 /*
                 const back = direction.clone().scale(step * -1);
                 const p1 = similar(eye, new vec3(sx, sy, 0), new vec3(sx + size2, sy, 0), point.clone().add(back));
@@ -2007,8 +2041,7 @@ let limit = 32;
 function render() {
     const box = app.canvas.getBoundingClientRect();
     limit = 16;
-    //const shapes = [Ball, BoxFrame, Mix];
-    const shapes = [Quad];//[Mix];
+    const shapes = allShapes;
     app.shapes.length = 0;
     for (let i = 0; i < 10; ++i) {
         app.shapes.push(randomChoice(shapes).random());
@@ -2045,7 +2078,7 @@ function draw(frameTime) {
 
     //const eye = new vec3(box.width / 2, box.height / 2, -box.width);
 
-    ray(app.eye.clone(), app.sx, app.sy, pixels, app.eye, limit);
+    ray2(app.eye.clone(), app.sx, app.sy, pixels, app.eye, limit);
     let done = false;
     app.sx += pixels;
     if (app.sx >= box.width) {
