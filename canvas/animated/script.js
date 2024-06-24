@@ -30,8 +30,8 @@ function mouseMove(event) {
 function touchMove(event) {
     event.preventDefault();
     const box = event.target.getBoundingClientRect();
-    app.shapes[0].shape1.position.x = event.touches[0].clientX - box.x;
-    app.shapes[0].shape1.position.y = event.touches[0].clientY - box.y;
+    app.shapes[0].position.x = event.touches[0].clientX - box.x;
+    app.shapes[0].position.y = event.touches[0].clientY - box.y;
 
     message(`${app.shapes[0].position.x}, ${app.shapes[0].position.x}`);
 }
@@ -154,14 +154,30 @@ class vec3 {
         this.z = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
         return this;
     }
+    get xyz() {
+        return new vec3(this.x, this.y, this.z);
+    }
+    get yzx() {
+        return new vec3(this.y, this.z, this.x);
+    }
+    get zxy() {
+        return new vec3(this.z, this.x, this.y);
+    }
     get xy() {
         return new vec2(this.x, this.y);
     }
     get xz() {
         return new vec2(this.x, this.z);
     }
+    set xz(v) {
+        this.x = v.x;
+        this.z = v.y;
+    }
     get yz() {
         return new vec2(this.y, this.z);
+    }
+    get zx() {
+        return new vec2(this.z, this.x);
     }
     cross(v) {
         return new vec3(this.y * v.z - this.z * v.y, this.z * v.x - this.x * v.z, this.x * v.y - this.y * v.x);
@@ -251,7 +267,7 @@ function invert3x3(input) {
     if (!det) {
         return null;
     }
-    const idet = 1.0 / det;
+    const idet = 1 / det;
     return [
         b01 * idet,
         (-a22 * a01 + a02 * a21) * idet,
@@ -518,7 +534,7 @@ class CappedTorus extends SDFShape {
         const p = this.local(point);
         p.x = Math.abs(p.x);
         const k = (this.cos * p.x > this.sin * p.y) ? p.x * this.sin + p.y * this.cos : p.xy.length;
-        return Math.sqrt( p.dot(p) + this.size * this.size - 2.0 * this.size * k) - this.radius;
+        return Math.sqrt( p.dot(p) + this.size * this.size - 2 * this.size * k) - this.radius;
     }
 }
 
@@ -599,9 +615,9 @@ class Cone extends SDFShape {
         const q = new vec2(this.sin / this.cos, -1).scale(this.height);
         
         const w = new vec2(p.xz.length, p.y);
-        const scale = clamp( w.dot(q) / q.dot(q), 0.0, 1.0);
+        const scale = clamp( w.dot(q) / q.dot(q), 0, 1);
         const a = new vec2(w.x - q.x * scale, w.y - q.y * scale);
-        const b = new vec2(w.x - q.x * clamp( w.x / q.x, 0.0, 1.0 ),  w.y - q.y);
+        const b = new vec2(w.x - q.x * clamp( w.x / q.x, 0, 1 ),  w.y - q.y);
         const k = Math.sign(q.y);
         const d = Math.min(a.dot(a), b.dot(b));
         const s = Math.max( k*(w.x*q.y-w.y*q.x),k*(w.y-q.y)  );
@@ -640,9 +656,9 @@ class InfiniteCone extends SDFShape {
     dist(point) {
         const p = this.local(point);
         const q = new vec2(p.xz.length, -p.y);
-        const scale = Math.max(q.x * this.sin + q.y * this.cos, 0.0);
+        const scale = Math.max(q.x * this.sin + q.y * this.cos, 0);
         const d = new vec2(q.x - c.x * scale, q.y - c.y * scale).length;
-        return d * ((q.x * c.y - q.y * c.x < 0.0) ? -1.0 : 1.0);
+        return d * ((q.x * c.y - q.y * c.x < 0) ? -1 : 1);
     }
 }
 
@@ -760,7 +776,7 @@ class Capsule extends SDFShape {
         const p = this.local(point);
         const pa = p.clone().subtract(this.start);
         const ba = this.end.clone().subtract(this.start);
-        const h = clamp(pa.dot(ba) / ba.dot(ba), 0.0, 1.0 );
+        const h = clamp(pa.dot(ba) / ba.dot(ba), 0, 1 );
         return pa.subtract(ba.scale(h)).length - this.radius;
     }
 }
@@ -787,7 +803,7 @@ class VerticalCapsule extends SDFShape {
     }
     dist(point) {
         const p = this.local(point);
-        p.y -= clamp( p.y, 0.0, this.length );
+        p.y -= clamp( p.y, 0, this.length );
         return p.length - this.radius;
     }
 }
@@ -860,7 +876,7 @@ class ArbitraryCappedCylinder extends SDFShape {
         const y = Math.abs(paba - baba * 0.5) - baba * 0.5;
         const x2 = x * x;
         const y2 = y * y * baba;
-        const d = (Math.max(x, y) < 0.0) ? -Math.min(x2, y2) : (((x > 0) ? x2 : 0) + ((y > 0) ? y2 : 0));
+        const d = (Math.max(x, y) < 0) ? -Math.min(x2, y2) : (((x > 0) ? x2 : 0) + ((y > 0) ? y2 : 0));
         return Math.sign(d) * Math.sqrt(Math.abs(d)) / baba;
     }
 }
@@ -890,7 +906,7 @@ class RoundedCylinder extends SDFShape {
     }
     dist(point) {
         const p = this.local(point);        
-        const d = new vec2(p.xz.length - 2.0 * this.radius1 + this.radius2, Math.abs(p.y) - this.length);
+        const d = new vec2(p.xz.length - 2 * this.radius1 + this.radius2, Math.abs(p.y) - this.length);
         return Math.min(Math.max(d.x, d.y), 0) + d.max(0).length - this.radius2;
     }
 }
@@ -924,8 +940,8 @@ class CappedCone extends SDFShape {
         const k1 = new vec2(this.radius2, this.height);
         const k2 = new vec2(this.radius2 - this.radius1, 2 * this.height);
         const ca = new vec2(q.x - Math.min(q.x, (q.y < 0) ? this.radius1:this.radius2), Math.abs(q.y) - this.height);
-        const cb = q.clone().subtract(k1).add(k2.scale(clamp(k1.clone().subtract(q).dot(k2) / k2.dot(k2), 0.0, 1.0)));
-        const s = (cb.x < 0 && ca.y < 0) ? -1.0 : 1.0;
+        const cb = q.clone().subtract(k1).add(k2.scale(clamp(k1.clone().subtract(q).dot(k2) / k2.dot(k2), 0, 1)));
+        const s = (cb.x < 0 && ca.y < 0) ? -1 : 1;
         return s * Math.sqrt( Math.min(ca.dot(ca),cb.dot(cb)));
     }
 }
@@ -973,10 +989,10 @@ class ArbitaryCappedCone extends SDFShape {
         const cax = Math.max(0, x - ((paba < 0.5) ? this.radius1 : this.radius2));
         const cay = Math.abs(paba - 0.5) - 0.5;
         const k = rba * rba + baba;
-        const f = clamp((rba * (x - this.radius1) + paba * baba) / k, 0.0, 1.0);
+        const f = clamp((rba * (x - this.radius1) + paba * baba) / k, 0, 1);
         const cbx = x - this.radius1 - f * rba;
         const cby = paba - f;
-        const s = (cbx < 0.0 && cay < 0.0) ? -1.0 : 1.0;
+        const s = (cbx < 0 && cay < 0) ? -1 : 1;
         return s * Math.sqrt( Math.min(cax * cax + cay * cay * baba, cbx * cbx + cby * cby * baba) );
     }
 }
@@ -1327,7 +1343,7 @@ class Rhombus extends SDFShape {
     }
     dist(point) {
         const p = this.local(point).abs();
-        //float sdRhombus( vec3 p, float la, float lb, float h, float ra )
+
         const b = new vec2(this.length1, this.length2);
         const f = clamp((b.ndot(b.minus(p.xz.scale(2)))) / b.dot2(), -1, 1);
         const q = new vec2(p.xz.subtract(b.scale(0.5).mult(new vec2(1 - f, 1 + f))).length * Math.sign(p.x * b.y + p.z * b.x - b.x * b.y) - this.radius, p.y - this.height);
@@ -1344,35 +1360,33 @@ class Octahedron extends SDFShape {
             Math.random() * canvas.clientWidth,
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
-            
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
+
+        const size = 0.4 * canvas.clientWidth * Math.random();
         
-        return new Octahedron(position, angle, radius);
+        return new Octahedron(position, size);
     }
-    constructor(position, angle, radius) {
+    constructor(position, size) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.size = size;
     }
     dist(point) {
-        const p = this.local(point);
-/*
-float sdOctahedron( vec3 p, float s )
-{
-  p = abs(p);
-  float m = p.x+p.y+p.z-s;
-  vec3 q;
-       if( 3.0*p.x < m ) q = p.xyz;
-  else if( 3.0*p.y < m ) q = p.yzx;
-  else if( 3.0*p.z < m ) q = p.zxy;
-  else return m*0.57735027;
-    
-  float k = clamp(0.5*(q.z-q.y+s),0.0,s); 
-  return length(vec3(q.x,q.y-s+k,q.z-k)); 
-  */
-}
+        const p = this.local(point).abs();
+        //float sdOctahedron( vec3 p, float s )
+        const m = p.x + p.y + p.z - this.size;
+        let q;
+        if (3 * p.x < m) {
+            q = p.xyz;
+        } else if (3 * p.y < m) {
+            q = p.yzx;
+        } else if (3 * p.z < m) {
+            q = p.zxy;
+        } else {
+            return m * 0.57735027;
+        }
+        
+        const k = clamp(0.5 * (q.z - q.y + this.size), 0, this.size);
+        return new vec3(q.x, q.y - this.size + k, q.z - k).length;
+    }
 }
 
 /*
@@ -1385,27 +1399,18 @@ class BoundOctahedron extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
+        const size = 0.4 * canvas.clientWidth * Math.random();
         
-        return new BoundOctahedron(position, angle, radius);
+        return new BoundOctahedron(position, size);
     }
-    constructor(position, angle, radius) {
+    constructor(position, size) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.size = this.size;
     }
     dist(point) {
-        const p = this.local(point);
-/*
-
-float sdOctahedron( vec3 p, float s)
-{
-  p = abs(p);
-  return (p.x+p.y+p.z-s)*0.57735027;
-  */
-}
+        const p = this.local(point).abs();
+        return (p.x + p.y + p.z - this.size) * 0.57735027;
+    }
 }
 
 /*
@@ -1418,42 +1423,35 @@ class Pyramid extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
+        const height = 0.4 * canvas.clientWidth * Math.random();
         
-        return new Pyramid(position, angle, radius);
+        return new Pyramid(position, height);
     }
-    constructor(position, angle, radius) {
+    constructor(position, height) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.height = height;
     }
     dist(point) {
         const p = this.local(point);
-/*
 
-float sdPyramid( vec3 p, float h )
-{
-  float m2 = h*h + 0.25;
-    
-  p.xz = abs(p.xz);
-  p.xz = (p.z>p.x) ? p.zx : p.xz;
-  p.xz -= 0.5;
-
-  vec3 q = vec3( p.z, h*p.y - 0.5*p.x, h*p.x + 0.5*p.y);
-   
-  float s = max(-q.x,0.0);
-  float t = clamp( (q.y-0.5*p.z)/(m2+0.25), 0.0, 1.0 );
-    
-  float a = m2*(q.x+s)*(q.x+s) + q.y*q.y;
-  float b = m2*(q.x+0.5*t)*(q.x+0.5*t) + (q.y-m2*t)*(q.y-m2*t);
-    
-  float d2 = min(q.y,-q.x*m2-q.y*0.5) > 0.0 ? 0.0 : min(a,b);
-    
-  return sqrt( (d2+q.z*q.z)/m2 ) * sign(max(q.z,-p.y));
-*/
-}
+        const m2 = this.height * this.height + 0.25;
+        
+        p.x = Math.abs(p.x) - 0.5;
+        p.z = Math.abs(p.z) - 0.5;
+        p.xz = (p.z > p.x) ? p.zx : p.xz;
+        
+        const q = new vec3(p.z, this.height * p.y - 0.5 * p.x, this.height * p.x + 0.5 * p.y);
+        
+        const s = Math.max(-q.x, 0);
+        const t = clamp((q.y - 0.5 * p.z) / (m2 + 0.25), 0, 1 );
+        
+        const a = m2 * (q.x + s) * (q.x + s) + q.y * q.y;
+        const b = m2 * (q.x + 0.5 * t) * (q.x + 0.5 * t) + (q.y - m2 * t) * (q.y - m2 * t);
+        
+        const d2 = Math.min(q.y, -q.x * m2 - q.y * 0.5) > 0 ? 0 : Math.min(a, b);
+        
+        return Math.sqrt((d2 + q.z * q.z) / m2) * Math.sign(Math.max(q.z, -p.y));
+    }
 }
 
 /*
@@ -1466,41 +1464,51 @@ class Triangle extends SDFShape {
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
-        
-        return new Triangle(position, angle, radius);
+        const points = [
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2)
+        ];
+            
+        return new Triangle(position, points);
     }
-    constructor(position, angle, radius) {
+    constructor(position, points) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.points = points;
     }
     dist(point) {
         const p = this.local(point);
-/*
-
-float udTriangle( vec3 p, vec3 a, vec3 b, vec3 c )
-{
-  vec3 ba = b - a; vec3 pa = p - a;
-  vec3 cb = c - b; vec3 pb = p - b;
-  vec3 ac = a - c; vec3 pc = p - c;
-  vec3 nor = cross( ba, ac );
-
-  return sqrt(
-    (sign(dot(cross(ba,nor),pa)) +
-     sign(dot(cross(cb,nor),pb)) +
-     sign(dot(cross(ac,nor),pc))<2.0)
-     ?
-     min( min(
-     dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),
-     dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb) ),
-     dot2(ac*clamp(dot(ac,pc)/dot2(ac),0.0,1.0)-pc) )
-     :
-     dot(nor,pa)*dot(nor,pa)/dot2(nor) );
-     */
-}
+        //float udTriangle( vec3 p, vec3 a, vec3 b, vec3 c )
+        const ba = this.points[1].minus(this.points[0]);
+        const pa = p.minus(this.points[0]);
+        const cb = this.points[2].minus(this.points[1]);
+        const pb = p.minus(this.points[1]);
+        const ac = this.points[0].minus(this.points[2]);
+        const pc = p.minus(this.points[2]);
+        
+        const nor = ba.cross(ac);
+        
+        return Math.sqrt(
+        (Math.sign(ba.cross(nor).dot(pa)) +
+         Math.sign(cb.cross(nor).dot(pb)) +
+         Math.sign(ac.cross(nor).dot(pc)) < 2)
+         ?
+         Math.min(
+             ba.scaled(clamp(ba.dot(pa) / ba.dot2(ba), 0, 1)).minus(pa).dot2(),
+             cb.scaled(clamp(cb.dot(pb) / cb.dot2(cb), 0, 1)).minus(pb).dot2(),
+             ac.scaled(clamp(ac.dot(pc) / ac.dot2(ac), 0, 1)).minus(pc).dot2())
+         :
+         nor.dot(pa) * nor.dot(pa) / nor.dot2());
+    }
 }
 
 /*
@@ -1512,45 +1520,59 @@ class Quad extends SDFShape {
             Math.random() * canvas.clientWidth,
             Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
+
+        const points = [
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+            new vec3(
+                Math.random() * canvas.clientWidth,
+                Math.random() * canvas.clientHeight,
+                (Math.random() - 0.5) * canvas.clientWidth / 2),
+        ];
             
-        const angle = 360 * Math.random();
-        const radius = 0.4 * canvas.clientWidth * Math.random();
-        
-        return new Quad(position, angle, radius);
+        return new Triangle(position, points);
     }
-    constructor(position, angle, radius) {
+    constructor(position, points) {
         super(position);
-        this.sin = Math.sin(angle * Math.PI / 180);
-        this.cos = Math.cos(angle * Math.PI / 180);
-        this.radius = radius;
+        this.points = points;
     }
     dist(point) {
         const p = this.local(point);
-/*
-
-float udQuad( vec3 p, vec3 a, vec3 b, vec3 c, vec3 d )
-{
-  vec3 ba = b - a; vec3 pa = p - a;
-  vec3 cb = c - b; vec3 pb = p - b;
-  vec3 dc = d - c; vec3 pc = p - c;
-  vec3 ad = a - d; vec3 pd = p - d;
-  vec3 nor = cross( ba, ad );
-
-  return sqrt(
-    (sign(dot(cross(ba,nor),pa)) +
-     sign(dot(cross(cb,nor),pb)) +
-     sign(dot(cross(dc,nor),pc)) +
-     sign(dot(cross(ad,nor),pd))<3.0)
-     ?
-     min( min( min(
-     dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),
-     dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb) ),
-     dot2(dc*clamp(dot(dc,pc)/dot2(dc),0.0,1.0)-pc) ),
-     dot2(ad*clamp(dot(ad,pd)/dot2(ad),0.0,1.0)-pd) )
-     :
-     dot(nor,pa)*dot(nor,pa)/dot2(nor) );
- */
-}
+        //float udQuad( vec3 p, vec3 a, vec3 b, vec3 c, vec3 d )
+        const ba = this.points[1].minus(this.points[0]);
+        const pa = p.minus(this.points[0]);
+        const cb = this.points[2].minus(this.points[1]);
+        const pb = p.minus(this.points[1]);
+        const dc = d.minus(this.points[2]);
+        const pc = p.minus(this.points[2]);
+        const ad = this.points[0].minus(this.points[3]);
+        const pd = p.minus(this.points[3]);
+        const nor = ba.cross(ad);
+        
+        return Math.sqrt(
+        (Math.sign(ba.cross(nor).dot(pa)) +
+         Math.sign(cb.cross(nor).dot(pb)) +
+         Math.sign(dc.cross(nor).dot(pc)) +
+         Math.sign(ad.cross(nor).dot(pd)) < 3)
+         ?
+         Math.min(
+         ba.scaled(clamp(ba.dot(pa) / ba.dot2(), 0, 1)).minus(pa).dot2(),
+         cb.scaled(clamp(cb.dot(pb) / cb.dot2(), 0, 1)).minus(pb).dot2(),
+         dc.scaled(clamp(dc.dot(pc) / dc.dot2(), 0, 1)).minus(pc).dot2(),
+         ad.scaled(clamp(ad.dot(pd) / ad.dot2(), 0, 1)).minus(pd).dot2())
+         :
+         nor.dot(pa) * nor.dot(pa) / nor.dot2());
+    }
 }
 
 
@@ -1566,7 +1588,7 @@ float opExtrusion( in vec3 p, in sdf2d primitive, in float h )
 {
     float d = primitive(p.xy)
     vec2 w = vec2( d, abs(p.z) - h );
-    return min(max(w.x,w.y),0.0) + length(max(w,0.0));
+    return min(max(w.x,w.y),0) + length(max(w,0));
 }
 
 
@@ -1580,7 +1602,7 @@ float opElongate( in sdf3d primitive, in vec3 p, in vec3 h )
 float opElongate( in sdf3d primitive, in vec3 p, in vec3 h )
 {
     vec3 q = abs(p)-h;
-    return primitive( max(q,0.0) ) + min(max(q.x,max(q.y,q.z)),0.0);
+    return primitive( max(q,0) ) + min(max(q.x,max(q.y,q.z)),0);
 }
 
 
@@ -1618,7 +1640,7 @@ Twist
 
 float opTwist( in sdf3d primitive, in vec3 p )
 {
-    const float k = 10.0; // or some other amount
+    const float k = 10; // or some other amount
     float c = cos(k*p.y);
     float s = sin(k*p.y);
     mat2  m = mat2(c,-s,s,c);
@@ -1631,7 +1653,7 @@ Bend
 
 float opCheapBend( in sdf3d primitive, in vec3 p )
 {
-    const float k = 10.0; // or some other amount
+    const float k = 10; // or some other amount
     float c = cos(k*p.x);
     float s = sin(k*p.x);
     mat2  m = mat2(c,-s,s,c);
@@ -1674,18 +1696,18 @@ class Mix extends SDFShape {
     }
 
     static opSmoothUnion(dist1, dist2) {
-        const h = clamp(0.5 + 0.5 * (dist2 - dist1) / this.factor, 0.0, 1.0);
-        return Mix.mix(dist2, dist1, h) - this.factor * h * (1.0 - h);
+        const h = clamp(0.5 + 0.5 * (dist2 - dist1) / this.factor, 0, 1);
+        return Mix.mix(dist2, dist1, h) - this.factor * h * (1 - h);
     }
 
     static opSmoothSubtraction(dist1, dist2) {
-        const h = clamp(0.5 - 0.5 * (dist2 + dist1) / this.factor, 0.0, 1.0);
-        return Mix.mix(dist2, -dist1, h) + this.factor * h * (1.0 - h);
+        const h = clamp(0.5 - 0.5 * (dist2 + dist1) / this.factor, 0, 1);
+        return Mix.mix(dist2, -dist1, h) + this.factor * h * (1 - h);
     }
 
     static opSmoothIntersection(dist1, dist2) {
-        const h = clamp(0.5 - 0.5 * (dist2 - dist1) / this.factor, 0.0, 1.0);
-        return Mix.mix(dist2, dist1, h) + this.factor * h * (1.0 - h);
+        const h = clamp(0.5 - 0.5 * (dist2 - dist1) / this.factor, 0, 1);
+        return Mix.mix(dist2, dist1, h) + this.factor * h * (1 - h);
     }
 
     constructor(shape1, shape2, factor, operation) {
@@ -1986,13 +2008,13 @@ function render() {
     const box = app.canvas.getBoundingClientRect();
     limit = 16;
     //const shapes = [Ball, BoxFrame, Mix];
-    const shapes = [Rhombus];//[Mix];
+    const shapes = [Quad];//[Mix];
     app.shapes.length = 0;
     for (let i = 0; i < 10; ++i) {
         app.shapes.push(randomChoice(shapes).random());
     }
 
-    app.light = (new vec3(-0.1, -0.3, -1.0)).normalise();
+    app.light = (new vec3(-0.1, -0.3, -1)).normalise();
     app.eye = new vec3(box.width / 2, box.height / 2, -box.width);
     app.sx = 0;
     app.sy = 0;
