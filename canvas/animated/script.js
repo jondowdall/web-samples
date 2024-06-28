@@ -374,9 +374,34 @@ class SDFShape {
         axis = axis ?? new vec3(Math.random(), Math.random(), Math.random());
         angle = angle ?? Math.random() * 2 * Math.PI;
         this.transform = getRotationMatrix(axis, angle);
+        this.spec = 1 + Math.floor(10 * Math.random());
+        this.bounces = Math.floor(6 * Math.random());
     }
-    getColour(point) {
-        const lightness = this.lightness * normal(point, this).dot(app.light);
+    getColour(point, size, from=app.eye, bounces=1) {
+        const n = normal(point, this, size);
+        if (this.bounces > 3 && bounces < 10) {
+
+            const d = point.minus(from).normalise();
+            const direction = d.minus(n.scaled(2 * n.dot(d)));
+            //message(`${direction.x}, ${direction.y}, ${direction.z}`);
+            const hit = ray(point, direction.normalise());
+            if (hit) {
+                if (hit.shape !== this) {
+                    return hit.shape.getColour(hit.point, 1, point, bounces + 1);
+                } else {
+                    return `rgb(${255*direction.x}, ${255*direction.y}, ${255*direction.z})`;
+                    console.log('self reflection');
+                }
+            }
+        }
+        
+        const i = point.minus(app.light).normalise();
+        const l = 2 * n.dot(i);
+        const r = i.minus(n.scaled(l));
+        const d = app.eye.minus(point).normalise();
+        const specular = Math.pow(d.dot(r), 2 * this.spec);
+        
+        const lightness = this.lightness * (0.4 + n.dot(i) + specular);
         return `hsl(${this.hue} ${this.saturation}% ${lightness}%)`;
     }
     local(point) {
@@ -388,15 +413,14 @@ class SDFShape {
 class Ball extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = canvas.clientWidth * (1 + Math.random()) / 10;
         return new Ball(position, radius);
     }
     constructor(position, radius) {
-        super();
-        this.position = position;
+        super(position);
         this.radius = radius;
     }
     dist(point) {
@@ -407,8 +431,8 @@ class Ball extends SDFShape {
 class BobbleBall extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = canvas.clientWidth * (1 + Math.random()) / 10;
         return new BobbleBall(position, radius);
@@ -430,8 +454,8 @@ class BobbleBall extends SDFShape {
 class Box extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const size = new vec3(
             Math.random() * canvas.clientWidth / 5,
@@ -458,8 +482,8 @@ class Box extends SDFShape {
 class BoxFrame extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const size = new vec3(
             Math.random() * canvas.clientWidth / 5,
@@ -490,8 +514,8 @@ class BoxFrame extends SDFShape {
 class Torus extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = Math.random() * 25;
         const size = radius + Math.random() * 100
@@ -515,8 +539,8 @@ class Torus extends SDFShape {
 class CappedTorus extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = Math.random() * 25;
         const size = radius + Math.random() * 100;
@@ -544,8 +568,8 @@ class CappedTorus extends SDFShape {
 class Link extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = Math.random() * 25;
         const size = radius + Math.random() * 100;
@@ -571,8 +595,8 @@ class Link extends SDFShape {
 class Cylinder extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = Math.random() * 25;
         return new Cylinder(position, radius);
@@ -593,8 +617,8 @@ class Cylinder extends SDFShape {
 class Cone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const height = 0.4 * Math.random() * canvas.clientWidth;
         const angle = 5 + Math.random() * 70;
@@ -642,8 +666,8 @@ float sdCone( vec3 p, vec2 c, float h )
 class InfiniteCone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const angle = 5 + Math.random() * 45;
         return new Cone(position, angle);
@@ -668,8 +692,8 @@ class InfiniteCone extends SDFShape {
 class Plane extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         return new Plane(position);
     }
@@ -688,8 +712,8 @@ class Plane extends SDFShape {
 class HexPrism extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = 0.5 * canvas.clientWidth * Math.random();
         const height = 0.5 * canvas.clientWidth * Math.random();
@@ -721,8 +745,8 @@ class HexPrism extends SDFShape {
 class TriangularPrism extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
         const radius = 0.5 * canvas.clientWidth * Math.random();
         const height = 0.5 * canvas.clientWidth * Math.random();
@@ -746,8 +770,8 @@ class TriangularPrism extends SDFShape {
 class Capsule extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
 
         const start = new vec3(
@@ -784,8 +808,8 @@ class Capsule extends SDFShape {
 class VerticalCapsule extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
 
         const length = 0.5 * canvas.clientWidth * Math.random();
@@ -812,8 +836,8 @@ class VerticalCapsule extends SDFShape {
 class CappedCylinder extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const length = 0.2 * canvas.clientWidth * Math.random();
@@ -840,8 +864,8 @@ class CappedCylinder extends SDFShape {
 class ArbitraryCappedCylinder extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const start = new vec3(
@@ -885,8 +909,8 @@ class ArbitraryCappedCylinder extends SDFShape {
 class RoundedCylinder extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const length = 0.4 * canvas.clientWidth * Math.random();
@@ -915,8 +939,8 @@ class RoundedCylinder extends SDFShape {
 class CappedCone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const height = 0.4 * canvas.clientWidth * Math.random();
@@ -950,8 +974,8 @@ class CappedCone extends SDFShape {
 class ArbitaryCappedCone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const start = new vec3(
@@ -1001,8 +1025,8 @@ class ArbitaryCappedCone extends SDFShape {
 class SolidAngle extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const angle = 180 * Math.random();
@@ -1034,8 +1058,8 @@ Cut Sphere - exact   (https://www.shadertoy.com/view/stKSzc)
 class CutSphere extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
 
         const radius = 0.4 * canvas.clientWidth * Math.random();
@@ -1068,8 +1092,8 @@ class CutSphere extends SDFShape {
 class CutHollowSphere extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const radius = 0.4 * canvas.clientWidth * Math.random();
@@ -1103,8 +1127,8 @@ class CutHollowSphere extends SDFShape {
 class DeathStar extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const radius1 = 0.4 * canvas.clientWidth * Math.random();
@@ -1141,8 +1165,8 @@ class DeathStar extends SDFShape {
 class RoundCone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const radius1 = 0.4 * canvas.clientWidth * Math.random();
@@ -1184,8 +1208,8 @@ class RoundCone extends SDFShape {
 class ArbitaryRoundCone extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const start = new vec3(
@@ -1247,8 +1271,8 @@ class ArbitaryRoundCone extends SDFShape {
 class Ellipsoid extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const radius = 0.4 * canvas.clientWidth * Math.random();
@@ -1274,8 +1298,8 @@ Revolved Vesica - exact)   (https://www.shadertoy.com/view/Ds2czG)
 class RevolvedVesica extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const start = new vec3(
@@ -1321,8 +1345,8 @@ class RevolvedVesica extends SDFShape {
 class Rhombus extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const length1 = 0.3 * canvas.clientWidth * Math.random();
@@ -1355,8 +1379,8 @@ class Rhombus extends SDFShape {
 class Octahedron extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
 
         const size = 0.4 * canvas.clientWidth * Math.random();
@@ -1393,8 +1417,8 @@ class Octahedron extends SDFShape {
 class BoundOctahedron extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const size = 0.4 * canvas.clientWidth * Math.random();
@@ -1417,8 +1441,8 @@ class BoundOctahedron extends SDFShape {
 class Pyramid extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const height = 2 * Math.random();
@@ -1459,8 +1483,8 @@ class Pyramid extends SDFShape {
 class Triangle extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
             
         const points = [
@@ -1516,8 +1540,8 @@ class Triangle extends SDFShape {
 class Quad extends SDFShape {
     static random() {
         const position = new vec3(
-            0.5 * Math.random() * canvas.clientWidth,
-            0.5 * Math.random() * canvas.clientHeight,
+            1 * Math.random() * canvas.clientWidth,
+            1 * Math.random() * canvas.clientHeight,
             (Math.random() - 0.5) * canvas.clientWidth / 10);
 
         const points = [
@@ -1810,7 +1834,7 @@ function smin(values, k) {
 }
 
 
-function normal(point, shape) {
+function normal(point, shape, size) {
     const epsilon = 0.00001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
     //const distFn = (point) => Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
     const centerDistance = shape.dist(point.clone());
@@ -1831,7 +1855,35 @@ function similar(p0, p1, p2, p3) {
 }
 
 
-function ray(point, sx, sy, size, eye, limit = 1) {
+
+function ray(start, direction, limit = 0.5) {
+
+    let done = false;
+    let cycles = 0;
+    const point = start.plus(direction.scaled(2));
+    while (!done) {
+        const step = Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
+
+        if (step < limit) {
+            const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
+            return {shape, point};
+        }
+        point.add(direction.scaled(step));
+
+        if (step > 1000) {
+            done = true;
+        }
+        
+        ++cycles;
+        if (cycles > 1000) {
+            done = true;
+        }
+    }
+}
+
+
+
+function ray1(point, sx, sy, size, eye, limit = 1) {
 
     //point = point.clone();
 
@@ -1859,7 +1911,7 @@ function ray(point, sx, sy, size, eye, limit = 1) {
                 exit = true
             } else {
                 const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
-                app.ctx.fillStyle = shape.getColour(point);
+                app.ctx.fillStyle = shape.getColour(point, size);
                 app.ctx.fillRect(sx, sy, size, size);
             }
         }
@@ -1887,8 +1939,8 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
 
     //point = point.clone();
 
-    const direction = (new vec3(sx + size / 2, sy + size / 2, 0)).subtract(eye).normalise();
-    //const direction = (new vec3(sx + size / 2, sy + size / 2, 0 )).subtract(eye).normalise();
+    //const direction = (new vec3(sx + size / 2, sy + size / 2, 0)).subtract(eye).normalise();
+    const direction = (new vec3(sx, sy, 0 )).subtract(eye).normalise();
 
     let exit = false;
     let cycles = 0;
@@ -1898,7 +1950,7 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
         /*if (step < 0) {
             point.add(direction.clone().scale(step));
         } else if (Math.abs(step) < size * 2) { */
-        if (step < size * 3) {
+        if (step < size * 2.5) {
             if (size > limit) {
                 const size2 = size / 2;
                 ray2(point.clone(), sx, sy, size2, eye, limit);
@@ -1907,7 +1959,7 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
                 ray2(eye.clone(), sx + size2, sy + size2, size2, eye, limit);
             } else {
                 const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
-                app.ctx.fillStyle = shape.getColour(point);
+                app.ctx.fillStyle = shape.getColour(point, size);
                 app.ctx.fillRect(sx, sy, size, size);
             }
             exit = true;
@@ -2040,11 +2092,15 @@ function render() {
     limit = 16;
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
-    for (let i = 0; i < 5; ++i) {
+    for (let i = 0; i < 10; ++i) {
         app.shapes.push(randomChoice(shapes).random());
     }
+    const plane = new Plane(new vec3(0, 0, 900));
+    plane.bounces = 8;
+    plane.transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    app.shapes.push(plane);
 
-    app.light = (new vec3(-0.1, -0.3, -1)).normalise();
+    app.light = (new vec3(-0.1, -0.3, 1000));
     app.eye = new vec3(box.width / 2, box.height / 2, -box.width);
     app.sx = 0;
     app.sy = 0;
@@ -2065,20 +2121,23 @@ function draw(frameTime) {
     const pixels = 64;
     const box = app.canvas.getBoundingClientRect();
 
-    ray2(app.eye.clone(), app.sx, app.sy, pixels, app.eye, limit);
+
     let done = false;
-    app.sx += pixels;
-    if (app.sx >= box.width) {
-        app.sx = 0;
-        app.sy += pixels;
-        if (app.sy >= box.height) {
-            app.sy = 0;
-            if (limit > 1) {
-                limit *= 0.5;
-                message(limit);
-            } else {
-                message('Done');
-                done = true;
+    while ((performance.now() - frameTime) < 10 && !done) {
+        ray2(app.eye.clone(), app.sx, app.sy, pixels, app.eye, limit);
+        app.sx += pixels;
+        if (app.sx >= box.width) {
+            app.sx = 0;
+            app.sy += pixels;
+            if (app.sy >= box.height) {
+                app.sy = 0;
+                if (limit >= 1) {
+                    limit *= 0.5;
+                    message(limit);
+                } else {
+                    message('Done');
+                    done = true;
+                }
             }
         }
     }
