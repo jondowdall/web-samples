@@ -127,10 +127,55 @@ class vec2 {
 
 
 class vec3 {
+    static random() {
+        return new vec3(Math.random(), Math.random(), Math.random());
+    }
     constructor(x = 0, y = 0, z = 0) {
         this.x = x;
         this.y = y;
         this.z = z;
+    }
+    get string() {
+        return `${this.x}, ${this.y}, ${this.z}`;
+    }
+    get r() {
+        return this.x;
+    }
+    get g() {
+        return this.y;
+    }
+    get b() {
+        return this.z;
+    }
+    set r(red) {
+        this.x = red;
+    }
+    set g(green) {
+        this.y = green;
+    }
+    set b(blue) {
+        this.z = blue;
+    }
+    get red() {
+        return this.x;
+    }
+    get green() {
+        return this.y;
+    }
+    get blue() {
+        return this.z;
+    }
+    set red(red) {
+        this.x = red;
+    }
+    set green(green) {
+        this.y = green;
+    }
+    set blue(blue) {
+        this.z = blue;
+    }
+    get rgbString() {
+        return `rgb(${255 * this.x} ${255 * this.y} ${255 * this.z})`;
     }
     clone() {
         return new vec3(this.x, this.y, this.z);
@@ -206,6 +251,15 @@ class vec3 {
     }
     abs() {
         return this.clone().iabs();
+    }
+    multiply(v) {
+        this.x *= v.x;
+        this.y *= v.y;
+        this.z *= v.z;
+        return this;
+    }
+    multiplied(v) {
+        return new vec3(this.x * v.x, this.y * v.y, this.z * v.z);
     }
     add(v) {
         this.x += v.x;
@@ -366,46 +420,65 @@ function randomChoice(options) {
 
 class SDFShape {
     constructor(position, axis, angle) {
-        this.hue = 360 * Math.random();
-        this.saturation = 100 * Math.random();
-        this.lightness = 100 * Math.random();
-        
-        this.position = position;// ?? new vec3();
-        axis = axis ?? new vec3(Math.random(), Math.random(), Math.random());
+        this.colour = vec3.random();
+        this.position = position;
+    
+        axis = axis ?? vec3.random();
         angle = angle ?? Math.random() * 2 * Math.PI;
         this.transform = getRotationMatrix(axis, angle);
-        this.spec = 1 + Math.floor(10 * Math.random());
-        this.bounces = Math.floor(6 * Math.random());
+        this.transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        this.specular = {
+            colour: vec3.random(),
+            power: 1 + Math.floor(10 * Math.random()),
+            level: 2 * Math.random(),
+        };
+        this.reflection = Math.random();
     }
-    getColour(point, size, from=app.eye, bounces=1) {
-        const n = normal(point, this, size);
-        if (this.bounces > 3 && bounces < 10) {
+    rotate(axis, angle) {
+        this.transform = getRotationMatrix(axis, angle);
+    }
+    getRGB(point) {
+        return this.colour;
+    }
+    getColour(point, from=app.eye, bounces=1) {
+        const colour = new vec3(0, 0, 0);
+        const reflected = new vec3(0.0, 0.0, 0.0);
 
+        const n = normal(point, this);
+        if (this.reflection > 0 && bounces < 10) {
             const d = point.minus(from).normalise();
             const direction = d.minus(n.scaled(2 * n.dot(d)));
-            //message(`${direction.x}, ${direction.y}, ${direction.z}`);
             const hit = ray(point, direction.normalise());
             if (hit) {
                 if (hit.shape !== this) {
-                    return hit.shape.getColour(hit.point, 1, point, bounces + 1);
-                } else {
-                    return `rgb(${255*direction.x}, ${255*direction.y}, ${255*direction.z})`;
-                    console.log('self reflection');
+                    reflected.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(this.reflection));
                 }
             }
         }
-        
-        const i = point.minus(app.light).normalise();
-        const l = 2 * n.dot(i);
-        const r = i.minus(n.scaled(l));
-        const d = app.eye.minus(point).normalise();
-        const specular = Math.pow(d.dot(r), 2 * this.spec);
-        
-        const lightness = this.lightness * (0.4 + n.dot(i) + specular);
-        return `hsl(${this.hue} ${this.saturation}% ${lightness}%)`;
+
+        const diffuse = new vec3(0, 0, 0);
+        const specular = new vec3(0, 0, 0);
+        if (this.reflection < 1 || bounces === 10) {
+            const rgb = this.getRGB(point);
+            app.lights.forEach((light) => {
+                const i = point.minus(light.position).normalise();
+                const d = Math.max(0.3 + n.dot(i), 0);
+                const l = 2 * n.dot(i);
+                const r = i.minus(n.scaled(l));
+                const direction = app.eye.minus(point).normalise();
+                const s = this.specular.level * Math.pow(Math.max(direction.dot(r), 0), 2 * this.specular.power);
+                diffuse.add(light.colour.scaled(d).multiply(rgb));
+                specular.add(this.specular.colour.scaled(s)
+                             .multiply(light.colour));
+                //colour.add(rgb.multiplied(diffuse.add(specular)));
+            });
+        }
+        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - this.reflection).add(reflected).add(specular));
     }
     local(point) {
-        return point.clone().transform(this.transform).subtract(this.position);
+        //message(this.position.string);
+        return point.clone()
+            .transform(this.transform).minus(this.position);
     }
     update(time) { }
 }
@@ -699,6 +772,11 @@ class Plane extends SDFShape {
     }
     constructor(position) {
         super(position);
+    }
+    getRGB(point) {
+        const p = this.local(point);
+        const c = (Math.floor(p.x / 100) + Math.floor(p.y / 100)) % 2;
+        return c ? new vec3(1, 1, 1) : new vec3(1, 0, 0);
     }
     dist(point) {
         const p = this.local(point);
@@ -1747,17 +1825,53 @@ class Mix extends SDFShape {
         this.position = new vec3();
         this.operation = operation;
     }
-    getHue(point) {
+    getColour(point, from=app.eye, bounces=1) {
         const dist1 = this.shape1.dist(point.clone());
         const dist2 = this.shape2.dist(point.clone());
-        const r = Math.exp(-dist1 / this.factor) + Math.exp(-dist2 / this.factor);
-        const mix = -this.factor * Math.log(r);
+        const sum = Math.exp(-dist1 / this.factor) + Math.exp(-dist2 / this.factor);
+        const mix = -this.factor * Math.log(sum);
+        const blend = Math.exp(-dist1 / this.factor) / sum;
+        
+        const reflected = new vec3(0.0, 0.0, 0.0);
+        const reflection = this.shape1.reflection * blend + this.shape2.reflection * (1 - blend);
 
+        const n = normal(point, this);
+        if (reflection > 0 && bounces < 10) {
+            const d = point.minus(from).normalise();
+            const direction = d.minus(n.scaled(2 * n.dot(d)));
+            const hit = ray(point, direction.normalise());
+            if (hit) {
+                if (hit.shape !== this) {
+                    reflected.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(reflection));
+                }
+            }
+        }
+
+        const diffuse = new vec3(0, 0, 0);
+        const specular = new vec3(0, 0, 0);
+        if (this.reflection < 1 || bounces === 10) {
+            const rgb = this.shape1.getRGB(point).scaled(blend).add(this.shape2.getRGB(point).scaled(1 - blend));
+            //const rgb = new vec3(blend, 1-blend, 0.5);
+            app.lights.forEach((light) => {
+                const i = point.minus(light.position).normalise();
+                const d = Math.max(0.3 + n.dot(i), 0);
+                const l = 2 * n.dot(i);
+                const r = i.minus(n.scaled(l));
+                const direction = app.eye.minus(point).normalise();
+                const s = this.specular.level * Math.pow(Math.max(direction.dot(r), 0), 2 * this.specular.power);
+                diffuse.add(light.colour.scaled(d).multiply(rgb));
+                specular.add(this.specular.colour.scaled(s)
+                             .multiply(light.colour));
+                //colour.add(rgb.multiplied(diffuse.add(specular)));
+            });
+        }
+        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - this.reflection).add(reflected).add(specular));
 
     }
     dist(point) {
-        const dist1 = this.shape1.dist(this.local(point));
-        const dist2 = this.shape2.dist(this.local(point));
+        const p = this.local(point);
+        const dist1 = this.shape1.dist(p.clone());
+        const dist2 = this.shape2.dist(p.clone());
 
         return this.operation(dist1, dist2);
     }
@@ -1834,9 +1948,8 @@ function smin(values, k) {
 }
 
 
-function normal(point, shape, size) {
+function normal(point, shape) {
     const epsilon = 0.00001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
-    //const distFn = (point) => Math.min(...app.shapes.map((shape) => shape.dist(point.clone())));
     const centerDistance = shape.dist(point.clone());
     const xDistance = shape.dist(new vec3(point.x + epsilon, point.y, point.z));
     const yDistance = shape.dist(new vec3(point.x, point.y + epsilon, point.z));
@@ -1870,7 +1983,7 @@ function ray(start, direction, limit = 0.5) {
         }
         point.add(direction.scaled(step));
 
-        if (step > 1000) {
+        if (step > 200000) {
             done = true;
         }
         
@@ -1911,7 +2024,7 @@ function ray1(point, sx, sy, size, eye, limit = 1) {
                 exit = true
             } else {
                 const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
-                app.ctx.fillStyle = shape.getColour(point, size);
+                app.ctx.fillStyle = shape.getColour(point);
                 app.ctx.fillRect(sx, sy, size, size);
             }
         }
@@ -1950,7 +2063,7 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
         /*if (step < 0) {
             point.add(direction.clone().scale(step));
         } else if (Math.abs(step) < size * 2) { */
-        if (step < size * 2.5) {
+        if (step < size * 3) {
             if (size > limit) {
                 const size2 = size / 2;
                 ray2(point.clone(), sx, sy, size2, eye, limit);
@@ -1959,7 +2072,8 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
                 ray2(eye.clone(), sx + size2, sy + size2, size2, eye, limit);
             } else {
                 const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
-                app.ctx.fillStyle = shape.getColour(point, size);
+                const colour = shape.getColour(point);
+                app.ctx.fillStyle = `rgb(${255 * colour.red} ${255 * colour.green} ${255 * colour.blue}`;
                 app.ctx.fillRect(sx, sy, size, size);
             }
             exit = true;
@@ -2092,16 +2206,43 @@ function render() {
     limit = 16;
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
-    for (let i = 0; i < 10; ++i) {
-        app.shapes.push(randomChoice(shapes).random());
+    for (let i = 0; i < 5; ++i) {
+        const shape = randomChoice(shapes).random();
+        shape.rotate(vec3.random(), Math.random() * 2 * Math.PI);
+        app.shapes.push(shape);
     }
-    const plane = new Plane(new vec3(0, 0, 900));
-    plane.bounces = 8;
+    /*
+    app.shapes.push(new Mix(new vec3(1000, 1000, 0),
+        new Ball(new vec3(200, 100, 300), 200),
+        new Box(new vec3(400, 100, 300), new vec3(200, 100, 150), 20),
+        30, Mix.mix));
+        */
+    const plane = new Plane(new vec3(0, 0, box.height * 0.8));
+    plane.reflection = 0;
+    plane.colour = new vec3(0.7, 0.3, 0.9);
     plane.transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    plane.rotate(new vec3(1, 0, 0), -Math.PI / 2);
+    plane.transform[7] = 2000;
     app.shapes.push(plane);
-
-    app.light = (new vec3(-0.1, -0.3, 1000));
+    {
+        const plane = new Plane(new vec3(0, 2000, -1000));
+        plane.reflection = 0;
+        plane.colour = new vec3(0.7, 0.3, 0.9);
+        plane.transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        //app.shapes.push(plane);
+    }
+    app.lights = [
+        {
+            position: new vec3(0, 0, box.height),
+            colour: new vec3(0.8, 0.8, 0.8),
+        },
+        {
+            position: new vec3(box.width, 0.3 * box.height, box.height / 2),
+            colour: new vec3(0.8, 0.8, 0.8),
+        },
+    ];
     app.eye = new vec3(box.width / 2, box.height / 2, -box.width);
+    //app.eye = new vec3(0, -1000, -box.width);
     app.sx = 0;
     app.sy = 0;
 
