@@ -12,8 +12,12 @@ const app = {
 }
 
 function message(text) {
-    const overlay = document.getElementById('overlay');
-    overlay.innerText = text;
+    const status = document.getElementById('status');
+    status.innerText = text;
+}
+
+function commandInput(event) {
+    console.log(event.target.value);
 }
 
 
@@ -43,6 +47,9 @@ function touchEnd(event) {
 
 function click(event) {
     event.preventDefault();
+    if (event.shiftKey) {
+        makeScene();
+    }
     render();
 }
 
@@ -2183,6 +2190,10 @@ function initialise() {
     app.canvas.addEventListener('mousemove', mouseMove);
     app.canvas.addEventListener('touchmove', touchMove);
     app.canvas.addEventListener('touchend', touchEnd);
+    
+    document.getElementById('command').addEventListener('change', commandInput);
+    
+    makeScene();
     render();
     //window.requestAnimationFrame(draw);
 }
@@ -2448,9 +2459,9 @@ function march1() {
 
 let limit = 32;
 
-function render() {
+function makeScene() {
     const box = app.canvas.getBoundingClientRect();
-    limit = 16;
+
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
     for (let i = 0; i < 3; ++i) {
@@ -2460,6 +2471,7 @@ function render() {
         shape.operations.push(twist(Math.random() - 0.5));
         app.shapes.push(shape);
     }
+    /*
     {
         //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
         const shape = new Ball(new vec3(), 100);
@@ -2468,6 +2480,7 @@ function render() {
         //shape.operations.push(limitedRepetition(180, 5));
         app.shapes.push(shape);
     }
+    */
     const plane = new Plane(new vec3(0, 0, box.height * 0.8));
     plane.reflection = 0;
     plane.colour = new vec3(0.7, 0.3, 0.9);
@@ -2492,7 +2505,14 @@ function render() {
             colour: new vec3(0.8, 0.8, 0.8),
         },
     ];
-    app.eye = new vec3(box.width / 2, box.height / 2, -box.width);
+    app.eye = new vec3(box.width / 2, box.height / 2, -box.width);    
+}
+
+
+
+function render() {
+    limit = 16;
+
     //app.eye = new vec3(0, -1000, -box.width);
     app.sx = 0;
     app.sy = 0;
