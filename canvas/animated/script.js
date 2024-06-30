@@ -202,6 +202,11 @@ class vec3 {
     get xyz() {
         return new vec3(this.x, this.y, this.z);
     }
+    set xyz(v) {
+        this.x = v.x;
+        this.y = v.y;
+        this.z = v.z;
+    }
     get yzx() {
         return new vec3(this.y, this.z, this.x);
     }
@@ -422,6 +427,7 @@ class SDFShape {
     constructor(position, axis, angle) {
         this.colour = vec3.random();
         this.position = position;
+        this.operations = [];
     
         axis = axis ?? vec3.random();
         angle = angle ?? Math.random() * 2 * Math.PI;
@@ -440,18 +446,22 @@ class SDFShape {
     getRGB(point) {
         return this.colour;
     }
+    getReflection(point) {
+        return this.reflection;
+    }
     getColour(point, from=app.eye, bounces=1) {
         const colour = new vec3(0, 0, 0);
         const reflected = new vec3(0.0, 0.0, 0.0);
 
         const n = normal(point, this);
-        if (this.reflection > 0 && bounces < 10) {
+        const reflection = this.getReflection(point);
+        if (reflection > 0 && bounces < 10) {
             const d = point.minus(from).normalise();
             const direction = d.minus(n.scaled(2 * n.dot(d)));
             const hit = ray(point, direction.normalise());
             if (hit) {
                 if (hit.shape !== this) {
-                    reflected.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(this.reflection));
+                    reflected.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(reflection));
                 }
             }
         }
@@ -473,12 +483,18 @@ class SDFShape {
                 //colour.add(rgb.multiplied(diffuse.add(specular)));
             });
         }
-        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - this.reflection).add(reflected).add(specular));
+        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - reflection).add(reflected).add(specular));
     }
     local(point) {
         //message(this.position.string);
+        const p = point.clone()
+            .transform(this.transform)
+            .minus(this.position);
+        this.operations.forEach((op) => op(p));
+        return p;
         return point.clone()
             .transform(this.transform).minus(this.position);
+        
     }
     update(time) { }
 }
@@ -777,6 +793,11 @@ class Plane extends SDFShape {
         const p = this.local(point);
         const c = (Math.floor(p.x / 100) + Math.floor(p.y / 100)) % 2;
         return c ? new vec3(1, 1, 1) : new vec3(1, 0, 0);
+    }
+    getReflection(point) {
+        const p = this.local(point);
+        const c = (Math.floor(p.x / 100) + Math.floor(p.y / 100)) % 2;
+        return c ? 0.8 : 0.1;
     }
     dist(point) {
         const p = this.local(point);
@@ -1739,6 +1760,78 @@ float opDisplace( in sdf3d primitive, in vec3 p )
 Twist
 
 
+
+class Twist extends SDFShape {
+    static random() {
+        const position = new vec3(
+            (0.25 + 0.5 * Math.random()) * canvas.clientWidth,
+            (0.25 + 0.5 * Math.random()) * canvas.clientHeight,
+            (Math.random() - 0.5) * canvas.clientWidth / 10);
+
+        const shapes = allShapes;//[Ball, BoxFrame, Box, Mix];
+        const shape = randomChoice(shapes).random();
+        const factor = 20 + 20 * Math.random();
+        const operation = Mix.mix;//randomChoice([Mix.subtraction, Mix.intersection, Mix.xor, Mix.mix]);
+        return new Mix(position, shape1, shape2, factor, operation);
+    }
+    constructor(position, shape, amount) {
+        super(position);
+        this.shape = shape;
+        this.amount = amount;
+    }
+    dist(point) {
+        const p = this.local(point);
+        const c = Math.cos(this.amount * p.y * Math.PI / 1000);
+        const s = Math.sin(this.amount * p.y * Math.PI / 1000);
+        const q = new vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+        return this.shape.dist(q);
+    }
+}
+*/
+
+function move(amount) {
+    return (point) => {
+        return point.subtract(amount);
+    }
+}
+
+function rotate(axis, angle) {
+    const matrix = getRotationMatrix(axis, angle);
+    return (point) => {
+        return point.transform(matrix);
+    }
+}
+
+function bend(amount) {
+    return (point) => {
+        const c = Math.cos(amount * point.y * Math.PI / 1000);
+        const s = Math.sin(amount * point.y * Math.PI / 1000);
+        point.xyz = new vec3(c * point.x - s * point.y, s * point.x + c * point.y, point.z);
+        return point;
+    }
+}
+
+
+function twist(amount) {
+    return (point) => {
+        const c = Math.cos(amount * point.y * Math.PI / 1000);
+        const s = Math.sin(amount * point.y * Math.PI / 1000);
+        point.xyz = new vec3(c * point.x - s * point.z, point.y, s * point.x + c * point.z);
+        return point;
+    }
+}
+
+function bend(amount) {
+    return (point) => {
+        const c = Math.cos(amount * point.y * Math.PI / 1000);
+        const s = Math.sin(amount * point.y * Math.PI / 1000);
+        point.xyz = new vec3(c * point.x - s * point.y, s * point.x + c * point.y, point.z);
+        return point;
+    }
+}
+
+
+/*
 float opTwist( in sdf3d primitive, in vec3 p )
 {
     const float k = 10; // or some other amount
@@ -1748,6 +1841,7 @@ float opTwist( in sdf3d primitive, in vec3 p )
     vec3  q = vec3(m*p.xz,p.y);
     return primitive(q);
 }
+
 
 Bend
 
@@ -1833,7 +1927,7 @@ class Mix extends SDFShape {
         const blend = Math.exp(-dist1 / this.factor) / sum;
         
         const reflected = new vec3(0.0, 0.0, 0.0);
-        const reflection = this.shape1.reflection * blend + this.shape2.reflection * (1 - blend);
+        const reflection = this.shape1.getReflection(point) * blend + this.shape2.getReflection(point) * (1 - blend);
 
         const n = normal(point, this);
         if (reflection > 0 && bounces < 10) {
@@ -2080,7 +2174,7 @@ function ray2(point, sx, sy, size, eye, limit = 1) {
         }
         point.add(direction.clone().scale(step));
 
-        if (point.z > 1000) { //box.width) {
+        if (point.z > 3000) { //box.width) {
             app.ctx.fillStyle = `rgb(10, 10, 80)`;
             app.ctx.fillRect(sx, sy, size, size);
 
@@ -2206,17 +2300,13 @@ function render() {
     limit = 16;
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
-    for (let i = 0; i < 5; ++i) {
+    for (let i = 0; i < 3; ++i) {
         const shape = randomChoice(shapes).random();
-        shape.rotate(vec3.random(), Math.random() * 2 * Math.PI);
+        shape.operations.push(rotate(vec3.random(), 2 * Math.PI * Math.random()));
+        shape.operations.push(bend(Math.random() - 0.5));
+        shape.operations.push(twist(Math.random() - 0.5));
         app.shapes.push(shape);
     }
-    /*
-    app.shapes.push(new Mix(new vec3(1000, 1000, 0),
-        new Ball(new vec3(200, 100, 300), 200),
-        new Box(new vec3(400, 100, 300), new vec3(200, 100, 150), 20),
-        30, Mix.mix));
-        */
     const plane = new Plane(new vec3(0, 0, box.height * 0.8));
     plane.reflection = 0;
     plane.colour = new vec3(0.7, 0.3, 0.9);
