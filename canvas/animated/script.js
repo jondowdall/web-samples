@@ -57,6 +57,13 @@ class vec2 {
     get length() {
         return Math.hypot(this.x, this.y);
     }
+    get xy() {
+        return this.clone();
+    }
+    set xy(v) {
+        this.x = v.x;
+        this.y = v.y;
+    }
     scale(s) {
         this.x *= s;
         this.y *= s;
@@ -308,6 +315,15 @@ class vec3 {
         this.z = Math.max(this.z, s);
         return this;
     }
+    clamp(min, max) {
+        this.x = Math.max(Math.min(this.x, max.x), min.x);
+        this.y = Math.max(Math.min(this.y, max.y), min.y);
+        this.z = Math.max(Math.min(this.z, max.z), min.z);
+        return this;
+    }
+    lerp(v, d) {
+        return this.scaled(1 - d).add(v.scaled(d));
+    }
 }
 
 /**
@@ -439,15 +455,16 @@ class SDFShape {
             level: 2 * Math.random(),
         };
         this.reflection = Math.random();
+        this.pattern = Patterns.plain(vec3.random(), Math.random());
     }
     rotate(axis, angle) {
         this.transform = getRotationMatrix(axis, angle);
     }
     getRGB(point) {
-        return this.colour;
+        return this.pattern.rgb(this.local(point));
     }
     getReflection(point) {
-        return this.reflection;
+        return this.pattern.reflection(this.local(point));
     }
     getColour(point, from=app.eye, bounces=1) {
         const colour = new vec3(0, 0, 0);
@@ -513,7 +530,8 @@ class Ball extends SDFShape {
         this.radius = radius;
     }
     dist(point) {
-        return point.clone().subtract(this.position).length - this.radius;
+        const p = this.local(point);
+        return p.subtract(this.position).length - this.radius;
     }
 }
 
@@ -775,6 +793,71 @@ class InfiniteCone extends SDFShape {
     }
 }
 
+const Patterns = {
+    plain(colour, reflection) {
+        return {
+            rgb(point) {
+                return colour;
+            },
+            reflection(point) {
+                return reflection;
+            },
+        }
+    },
+
+    checker(size, colours, reflection) {
+        const tile = (point) => (Math.floor(point.x / size.x) + Math.floor(point.y / size.y)) % 2;
+        return {
+            rgb(point) {
+                return tile(point) ? colours[0] : colours[1];
+            },
+            reflection(point) {
+                return tile(point) ? reflection[0] : reflection[1];
+            },
+        }
+    },
+    
+    checker3d(origin, size, colours, reflection) {
+        const tile = (point) => {
+            const q = point.minus(origin);
+            q.normalise();
+            const lat = 100 * Math.acos(q.dot(new vec3(0, 1, 0)));
+            const lon = 100 * Math.acos(q.dot(new vec3(1, 0, 0)));
+
+            return (Math.floor(lon / size.x) + Math.floor(lat / size.y)) % 2;
+        }
+        return {
+            rgb(point) {
+                return tile(point) ? colours[0] : colours[1];
+            },
+            reflection(point) {
+                return tile(point) ? reflection[0] : reflection[1];
+            },
+        }
+    },
+    
+    grid(size, colours, reflection) {
+        return {
+            rgb(point) {
+                const x = point.x / size.x;
+                const y = point.y / size.y;
+                
+                const c = (Math.pow(x * x - Math.floor(x * x), 10) + Math.pow(y * y - Math.floor(y * y), 10)) / 2;
+
+                return colours[0].lerp(colours[1], c);
+            },
+            reflection(point) {
+                const x = point.x / size.x;
+                const y = point.y / size.y;
+                
+                const c = (Math.pow(x * x - Math.floor(x * x), 10) + Math.pow(y * y - Math.floor(y * y), 10)) / 2;
+
+                return reflection[0] * (1 - c) + reflection[1] * c;
+            },
+        }
+    },
+}
+
 /*
  * Plane - exact
  */
@@ -788,16 +871,14 @@ class Plane extends SDFShape {
     }
     constructor(position) {
         super(position);
+        //this.pattern = Patterns.grid(new vec2(200, 200), [new vec3(0, 0, 0), new vec3(0.6, 0.6, 1)], [0, 1]);
+        this.pattern = Patterns.checker(new vec2(200, 200), [new vec3(1, 1, 1), new vec3(1, 0, 0)], [0.7, 0.1]);
     }
     getRGB(point) {
-        const p = this.local(point);
-        const c = (Math.floor(p.x / 100) + Math.floor(p.y / 100)) % 2;
-        return c ? new vec3(1, 1, 1) : new vec3(1, 0, 0);
+        return this.pattern.rgb(this.local(point));
     }
     getReflection(point) {
-        const p = this.local(point);
-        const c = (Math.floor(p.x / 100) + Math.floor(p.y / 100)) % 2;
-        return c ? 0.8 : 0.1;
+        return this.pattern.reflection(this.local(point));
     }
     dist(point) {
         const p = this.local(point);
@@ -1698,6 +1779,65 @@ class Quad extends SDFShape {
 }
 
 
+const SDF2d = {
+    Box(size) {
+        return (point) => {
+            const d = point.clone().abs().minus(size);
+            return d.max(0).length + Math.min(Math.max(d.x, d.y), 0);
+        }
+    },
+    EquilateralTriangle(radius) {
+        const k = Math.sqrt(3);
+        return (point) => {
+            const p = point.clone();
+            p.x = Math.abs(p.x) - radius;
+            p.y = p.y + radius / k;
+            if ((p.x + k * p.y) > 0) {
+                p.xy = new vec2(p.x - k * p.y, -k * p.x - p.y).scale(0.5);
+            }
+            p.x -= clamp(p.x, -2 * radius, 0);
+            return -p.length * Math.sign(p.y);
+        }
+    },
+}
+
+
+
+
+class Revolution extends SDFShape {
+    static random() {
+        const position = new vec3();
+    }
+    constructor(shape, offset) {
+        super(new vec3());
+        this.shape = shape;
+        this.offset = offset;
+    }
+    dist(point) {
+        const p = this.local(point);
+        const q = new vec2(p.xz.length - this.offset, p.y);
+        return this.shape(q);
+    }
+}
+
+// Make into a shape.
+class Extrusion extends SDFShape {
+    static random() {
+        const position = new vec3();
+    }
+    constructor(shape, length) {
+        super(new vec3());
+        this.shape = shape;
+        this.length = length;
+    }
+    dist(point) {
+        const p = this.local(point);
+        const d = this.shape(p.xy);
+        const w = new vec2(d, Math.abs(p.z) - this.length);
+        return Math.min(Math.max(w.x, w.y), 0) + w.max(0).length;
+    }
+}
+
 /*
 float opRevolution( in vec3 p, in sdf2d primitive, float o )
 {
@@ -1759,33 +1899,6 @@ float opDisplace( in sdf3d primitive, in vec3 p )
 
 Twist
 
-
-
-class Twist extends SDFShape {
-    static random() {
-        const position = new vec3(
-            (0.25 + 0.5 * Math.random()) * canvas.clientWidth,
-            (0.25 + 0.5 * Math.random()) * canvas.clientHeight,
-            (Math.random() - 0.5) * canvas.clientWidth / 10);
-
-        const shapes = allShapes;//[Ball, BoxFrame, Box, Mix];
-        const shape = randomChoice(shapes).random();
-        const factor = 20 + 20 * Math.random();
-        const operation = Mix.mix;//randomChoice([Mix.subtraction, Mix.intersection, Mix.xor, Mix.mix]);
-        return new Mix(position, shape1, shape2, factor, operation);
-    }
-    constructor(position, shape, amount) {
-        super(position);
-        this.shape = shape;
-        this.amount = amount;
-    }
-    dist(point) {
-        const p = this.local(point);
-        const c = Math.cos(this.amount * p.y * Math.PI / 1000);
-        const s = Math.sin(this.amount * p.y * Math.PI / 1000);
-        const q = new vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
-        return this.shape.dist(q);
-    }
 }
 */
 
@@ -1811,7 +1924,6 @@ function bend(amount) {
     }
 }
 
-
 function twist(amount) {
     return (point) => {
         const c = Math.cos(amount * point.y * Math.PI / 1000);
@@ -1826,6 +1938,47 @@ function bend(amount) {
         const c = Math.cos(amount * point.y * Math.PI / 1000);
         const s = Math.sin(amount * point.y * Math.PI / 1000);
         point.xyz = new vec3(c * point.x - s * point.y, s * point.x + c * point.y, point.z);
+        return point;
+    }
+}
+
+function elongate(size) {
+    return (point) => {
+        return point.clamp(-size.scaled(-1), size);
+    }
+}
+
+/*
+function elongate2( in sdf3d primitive, in vec3 p, in vec3 h )
+{
+    return (point) => {
+        vec3 q = point.abs().subtract(h);
+        return primitive( max(q,0) ) + min(max(q.x,max(q.y,q.z)),0);
+    }
+}
+*/
+
+function onion( thickness ) {
+    return (point) => {
+        return point.abs().dec(thickness);
+    }
+}
+
+
+function repetition(spacing) {
+    return (point) => {
+        point.x -= spacing * Math.round(point.x / spacing);
+        point.y -= spacing * Math.round(point.y / spacing);
+        point.z -= spacing * Math.round(point.z / spacing);
+        return point;
+    }
+}
+
+function limitedRepetition(spacing, range) {
+    return (point) => {
+        point.x -= spacing * clamp(Math.round(point.x / spacing), -range, range);
+        point.y -= spacing * clamp(Math.round(point.y / spacing), -range, range);
+        point.z -= spacing * clamp(Math.round(point.z / spacing), -range, range);
         return point;
     }
 }
@@ -2305,6 +2458,14 @@ function render() {
         shape.operations.push(rotate(vec3.random(), 2 * Math.PI * Math.random()));
         shape.operations.push(bend(Math.random() - 0.5));
         shape.operations.push(twist(Math.random() - 0.5));
+        app.shapes.push(shape);
+    }
+    {
+        //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
+        const shape = new Ball(new vec3(), 100);
+        shape.operations.push(move(new vec3(box.width / 3, box.height / 2, 0)));
+        shape.pattern = Patterns.checker3d(new vec3(), new vec2(100, 100), [vec3.random(), vec3.random()], [0.1, 0.7]);
+        //shape.operations.push(limitedRepetition(180, 5));
         app.shapes.push(shape);
     }
     const plane = new Plane(new vec3(0, 0, box.height * 0.8));
