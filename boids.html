@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width" />
+    <title>Web Samples</title>
+    <style>
+        html {
+            font-family: sans-serif;
+            box-sizing: border-box;
+        }
+
+        *,
+        *:before,
+        *:after {
+            box-sizing: inherit;
+        }
+
+        body {
+            margin: 0;
+            width: 100vw;
+            height: 100dvh;
+            padding: 0.25rem;
+            overflow: hidden;
+            background-color: lightgray;
+        }
+
+        #main {
+            width: calc(100vw - 0.5rem);
+            height: calc(100dvh - 0.5rem);
+        }
+        
+        #green {
+            top: 1rem;
+            left: 1rem;
+            color: lightgreen;
+        }
+        #blue {
+            top: 1rem;
+            right: 1rem;
+            color: blue;
+        }
+        
+        #red {
+            bottom: 1rem;
+            left: 1rem;
+            color: red;
+        }
+
+        #info {
+            bottom: 1rem;
+            right: 1rem;
+            color: orange;
+        }
+        
+        .overlay {
+            position: fixed;
+            background-color: rgb(50, 50, 50, 0.6);
+            padding: 0.5em;
+            border-radius: 0.5em;
+        }
+        
+        #start {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .hide {
+            display: none;
+        }
+      </style>
+</head>
+<body>
+    <canvas id="main" tabindex="1"></canvas>
+    <div id="green" class="overlay"></div>
+    <div id="blue" class="overlay"></div>
+    <div id="red" class="overlay"></div>
+    <div id="info" class="overlay"></div>
+    <button id="start">Start</button>
+    <script>
+        
+        const app = {
+            green: [],
+            blue: [],
+            red: [],
+            protected: 10,
+            avoidFactor: 0.01,
+            visible: 50,
+            matchingFactor: 0.005,
+            centeringFactor: 0.005,
+            turnFactor: 0.2,
+            margin: 30,
+            minSpeed: 1,
+            maxSpeed: 5,
+            control: {
+                green: {
+                    size: 0,
+                },
+                blue: {},
+            },
+            bonus: [],
+        };
+        
+        /*
+         * Display a message
+         */
+        function message(text) {
+            document.getElementById('info').innerHTML = text;
+        }
+        
+        
+        /*
+         * Draw the scene
+         */
+        function draw() {
+            app.context.clearRect(0, 0, app.canvas.width, app.canvas.height);
+            app.context.fillStyle = 'white';
+            app.context.fillRect(0, 0, app.canvas.width, app.canvas.height);
+            app.context.strokeStyle = 'gray';
+            
+            const drawBoid = (boid) => {
+                app.context.beginPath();
+                app.context.arc(boid.x, boid.y, boid.size, 0, Math.PI * 2);
+                app.context.fill();
+                app.context.stroke();
+            };
+            app.context.fillStyle = 'rgb(0, 255, 0, 0.5)';
+            app.context.beginPath();
+            app.context.moveTo(app.control.green.avg.x, app.control.green.avg.y - 10);
+            app.context.lineTo(app.control.green.avg.x + 10, app.control.green.avg.y);
+            app.context.lineTo(app.control.green.avg.x, app.control.green.avg.y + 10);
+            app.context.lineTo(app.control.green.avg.x -10, app.control.green.avg.y);
+            app.context.lineTo(app.control.green.avg.x, app.control.green.avg.y - 10);
+            app.context.fill();
+
+            app.context.fillStyle = 'rgb(0, 0, 255, 0.5)';
+            app.context.beginPath();
+            app.context.moveTo(app.control.blue.avg.x, app.control.blue.avg.y - 10);
+            app.context.lineTo(app.control.blue.avg.x + 10, app.control.blue.avg.y);
+            app.context.lineTo(app.control.blue.avg.x, app.control.blue.avg.y + 10);
+            app.context.lineTo(app.control.blue.avg.x -10, app.control.blue.avg.y);
+            app.context.lineTo(app.control.blue.avg.x, app.control.blue.avg.y - 10);
+            app.context.fill();
+
+            app.context.fillStyle = 'red';
+            app.red.forEach(drawBoid);
+            app.context.fillStyle = 'green';
+            app.green.forEach(drawBoid);
+            app.context.fillStyle = 'blue';
+            app.blue.forEach(drawBoid);
+
+            if (app.control.green.size > 0) {
+                app.context.fillStyle = 'rgb(50, 50, 50, 0.4)';
+                app.context.beginPath();
+                app.context.arc(app.control.green.position.x, app.control.green.position.y, app.control.green.size, 0, Math.PI * 2);
+                app.context.fill();
+                app.context.stroke();
+                app.control.green.size -= 1 * app.delta / 20;
+            }
+            
+            const drawBonus = (bonus) => {
+                app.context.strokeStyle = `rgb(${bonus.red}, ${bonus.green}, ${bonus.blue})`;
+                app.context.fillStyle = `rgb(${bonus.red}, ${bonus.green}, ${bonus.blue}, 0.4)`;
+                app.context.beginPath();
+                app.context.arc(bonus.x, bonus.y, bonus.size, 0, Math.PI * 2);
+                app.context.fill();
+                app.context.stroke();
+                app.context.fillStyle = `black`;
+                app.context.fillText(bonus.text, bonus.x, bonus.y);
+            }
+            app.context.textAlign = 'center';
+            app.context.textBaseline = 'middle';
+            
+            app.bonus.forEach(drawBonus);
+
+            document.getElementById('green').innerHTML = app.green.length;
+            document.getElementById('blue').innerHTML = app.blue.length;
+            document.getElementById('red').innerHTML = app.red.length;
+            
+        }
+        
+        /*
+         * Add a boid
+         */
+        function newBoid() {
+            return {
+                x: Math.random() * app.canvas.width,
+                y: Math.random() * app.canvas.height,
+                vx: -2.5 + Math.random() * 5,
+                vy: -2.5 + Math.random() * 5,
+                size: 3,
+                paid: [],
+            }
+        }
+        
+        /*
+         * Update boids
+         */
+         function updateBoids() {
+             // Calculate distance between boids
+             const getDistances = (group) => {
+                 const distances = [];
+                 group.forEach((boid) => boid.distances = []);
+                 group.forEach((boid, i) => {
+                     distances.push([]);
+                     boid.index = i;
+                     group.forEach((other, j) => {
+                         const dist = Math.hypot(boid.x - other.x, boid.y - other.y);
+                         distances[i].push(dist);
+                         boid.distances.push(dist);
+                         other.distances[i] = dist;
+                     });
+                 });
+                 return distances;
+             };
+             
+             const updateGroup = (group, control) => {
+                 const distances = getDistances(group);
+                 //console.log(group);
+                 //console.log(distances);
+                 control.avg = {x: 0, y: 0};
+                 const updateBoid = (boid) => {
+                     // Avoid
+                     const close = {dx: 0, dy: 0};
+                     group.forEach((other, i) => {
+                         if (other !== boid && boid.distances[i] < app.protected) {
+                             const force = 1 / (boid.distances[i] + 0.1);
+                             close.dx += (boid.x - other.x) * force;
+                             close.dy += (boid.y - other.y) * force;
+                         }
+                     });
+                     boid.vx += close.dx * app.avoidFactor;
+                     boid.vy += close.dy * app.avoidFactor;
+                     
+                     // Match & cohesion
+                     let count = 0;
+                     const avg = {vx: 0, vy: 0};
+                     const pos = {x: 0, y: 0};
+                     group.forEach((other, i) => {
+                         if (other !== boid && boid.distances[i] < app.visible) {
+                             count += 1;
+                             avg.vx += other.vx;
+                             avg.vy += other.vy;
+                             pos.x += other.x;
+                             pos.y += other.y;
+                         }
+                     });
+                     if (count) {
+                         pos.x /= count;
+                         pos.y /= count;
+                         boid.vx += (pos.x - boid.x) * app.centeringFactor; 
+                         boid.vy += (pos.y - boid.y) * app.centeringFactor; 
+
+                         avg.vx /= count;
+                         avg.vy /= count;
+                         boid.vx += (avg.vx - boid.vx) * app.matchingFactor; 
+                         boid.vy += (avg.vy - boid.vy) * app.matchingFactor; 
+                     }
+                     
+                     if (boid.x < app.margin) {
+                         boid.vx += app.turnFactor;
+                     }
+                     if (boid.x > app.canvas.width - app.margin) {
+                         boid.vx -= app.turnFactor;
+                     }
+                     if (boid.y < app.margin) {
+                         boid.vy += app.turnFactor;
+                     }
+                     if (boid.y > app.canvas.height - app.margin) {
+                         boid.vy -= app.turnFactor;
+                     }
+                     const speed = Math.hypot(boid.vx, boid.vy);
+                     if (speed > app.maxSpeed) {
+                         boid.vx = app.maxSpeed * boid.vx / speed;
+                         boid.vy = app.maxSpeed * boid.vy / speed;
+                     } else if (speed < app.minSpeed) {
+                         boid.vx = app.minSpeed * boid.vx / speed;
+                         boid.vy = app.minSpeed * boid.vy / speed;
+                     }
+                     
+                     if (control.position) {
+                         const dist = Math.hypot(boid.x - control.position.x, boid.y - control.position.y);
+                         if (dist < (boid.size + control.size)) {
+                             /*
+                             boid.vx += (control.position.x - boid.x) * app.centeringFactor;
+                             boid.vy += (control.position.y - boid.y) * app.centeringFactor;
+                             */
+                             const force = control.size / (dist + 0.1)
+                             boid.vx += force * (boid.x - control.position.x) * app.avoidFactor;
+                             boid.vy += force * (boid.y - control.position.y) * app.avoidFactor;
+                         }
+                     }
+
+                     app.bonus.filter((bonus) =>
+                         !boid.paid.includes(bonus))
+                         .forEach((bonus) => {
+                         const dist = Math.hypot(boid.x - bonus.x, boid.y - bonus.y);
+                         if (dist < (bonus.size - boid.size)) {
+                             bonus.action(group);
+                             boid.paid.push(bonus);
+                         }
+                     });
+                     
+                     boid.x += boid.vx * app.delta / 50;
+                     boid.y += boid.vy * app.delta / 50;
+                     control.avg.x += boid.x;
+                     control.avg.y += boid.y;
+                 }
+                 group.forEach(updateBoid);
+                 control.avg.x /= group.length;
+                 control.avg.y /= group.length;
+             };
+             
+             updateGroup(app.green, app.control.green);
+             updateGroup(app.blue, app.control.blue);
+             
+             app.green.forEach((green) =>
+                 app.blue.forEach((blue) => {
+                     const dist = Math.hypot(green.x - blue.x, green.y - blue.y);
+                     if (dist < (green.size + blue.size)) {
+                         app.red.push({
+                             x: (green.x + blue.x) / 2,
+                             y: (green.y + blue.y) / 2,
+                             size: 3,
+                         });
+                         green.size = 0;
+                         blue.size = 0;
+                     }
+                 })
+             );
+             app.red.forEach((boid) => boid.size -= 0.005 * app.delta);
+             app.green = app.green.filter((boid) => boid.size > 0);
+             app.blue = app.blue.filter((boid) => boid.size > 0);
+             app.red = app.red.filter((boid) => boid.size > 0);
+         }
+         
+         /*
+          * pick a random item from a list
+          */
+          function pickAny(list) {
+              return list[Math.floor(Math.random() * list.length)];
+          }
+         
+         
+         /*
+          * Update the bonuses
+          */
+         function updateBonus() {
+             app.bonus.forEach((bonus) => {
+                 bonus.y += 1 * app.delta / 20;
+                 bonus.size *= 0.999;
+             });
+             app.bonus = app.bonus.filter((bonus) => bonus.size > 10);
+             
+             const actions = [
+                {
+                     text: '+100',
+                     size: 25,
+                     red: 50,
+                     green: 255,
+                     blue: 50,
+                     count: 100,
+                     action(group) {
+                         if (group.length < 500 && this.count > 0) {
+                             group.push(newBoid());
+                             this.count -= 1;
+                             this.text = `+${this.count}`;
+                         }
+                     },
+                 },
+                 {
+                     text: '-100',
+                     size: 25,
+                     red: 255,
+                     green: 200,
+                     blue: 50,
+                     count: 100,
+                     action(group) {
+                         if (group.length < 500 && this.count > 0) {
+                             const boid = pickAny(group);
+                             app.red.push({x: boid.x, y: boid.y, size: boid.size})
+                             boid.size = 0;
+                             this.count -= 1;
+                             this.text = `-${this.count}`;
+                         }
+                     },
+                 },
+                 {
+                     text: 'x2',
+                     size: 25,
+                     red: 50,
+                     green: 255,
+                     blue: 50,
+                     action(group) {
+                         for(let i = 0; i < 2; ++i) {
+                             if (group.length < 500) {
+                                 group.push(newBoid());
+                             }
+                         }
+                     },
+                 },
+                 {
+                     text: 'x4',
+                     size: 15,
+                     red: 50,
+                     green: 255,
+                     blue: 50,
+                     action(group) {
+                         for(let i = 0; i < 4; ++i) {
+                             if (group.length < 500) {
+                                 group.push(newBoid());
+                             }
+                         }
+                     },
+                 },
+                 {
+                     text: '\u00f72',
+                     size: 25,
+                     red: 255,
+                     green: 200,
+                     blue: 50,
+                     action(group) {
+                         for(let i = 0; i < 2; ++i) {
+                             const boid = pickAny(group);
+                             app.red.push({x: boid.x, y: boid.y, size: boid.size})
+                             boid.size = 0;
+                         }
+                     },
+                 },
+                 {
+                     text: '\u00f74',
+                     size: 15,
+                     red: 255,
+                     green: 200,
+                     blue: 50,
+                     action(group) {
+                         for(let i = 0; i < 4; ++i) {
+                             if (group.length) {
+                                 const boid = pickAny(group);
+                                 app.red.push({x: boid.x, y: boid.y, size: boid.size})
+                                 boid.size = 0;
+                             }
+                         }
+                     },
+                 },
+             ];
+             
+             if (Math.random() > 0.995) {
+                const box = app.canvas.getBoundingClientRect();
+                const action = Object.assign({}, pickAny(actions));
+                action.x = box.width * Math.random();
+                action.y = -action.size;//box.height * Math.random();
+                app.bonus.push(action);
+             }
+         }
+         
+         
+        /*
+         * Rendering loop
+         */
+        function render(time) {
+            app.delta = time - (app.lastTime || time);
+            message(app.delta);
+            app.lastTime = time;
+            updateBoids();
+            if (app.green.length < 1) {
+                message('blue wins');
+            } else if (app.blue.length < 1) {
+                message('green wins');
+            }
+            updateBonus();
+            draw();
+            if ((app.green.length && app.blue.length) || app.red.length) {
+                window.requestAnimationFrame(render);
+            } else {
+                document.getElementById('start').classList.remove('hide');
+            }
+        }
+        
+        /*
+         * Add control
+         */
+        function addControl() {
+            const pos = (ref) => {
+                const box = app.canvas.getBoundingClientRect();
+                return { x: ref.clientX - box.x, y: ref.clientY - box.y - 20};
+            }
+            const start = (position) => {
+                app.control.green.size = 50;
+                app.control.green.position = position;
+            };
+            const move = (position) => {
+                app.control.green.size = 50;
+                app.control.green.position = position;
+            };
+            const end = () => app.control.position = null;
+            
+            app.canvas.addEventListener('touchstart', (event) => {
+                event.preventDefault();
+                start(pos(event.touches[0]));
+            });
+            app.canvas.addEventListener('touchmove', (event) => {
+                event.preventDefault();
+                move(pos(event.touches[0]))
+            });
+            app.canvas.addEventListener('touchend', (event) => {
+                event.preventDefault();
+                end()
+            });
+        }
+        
+        /*
+         * Start 'local' RTC connection
+         */
+        async function startLocalRTC() {
+            const servers = null;
+            const localConnection = new RTCPeerConnection(servers);
+            
+            const handleConnection = (event) => {};
+            const handleConnectionChange = (event) => {};
+            
+            localConnection.addEventListener('icecandidate', handleConnection);
+            localConnection.addEventListener('iceconnectionstatechange', handleConnectionChange);
+
+            const sendChannel = localConnection.createDataChannel('sendChannel');
+
+            console.log(sendChannel)
+            const offer = await localConnection.createOffer();
+            const response = await fetch('offer.txt', {method: 'PUT', body: offer});
+            console.log(response);
+            
+            
+            /*
+            const remoteConnection = new RTCPeerConnection(servers);
+            remoteConnection.addEventListener('icecandidate', handleConnection);
+            remoteConnection.addEventListener('iceconnectionstatechange', handleConnectionChange);
+
+            const sendChannel = localConnection.createDataChannel('sendChannel');
+            localConnection.createOffer();
+            localConnection.setLocalDescription();
+            sendChannel.onopen = handleSendChannelStatusChange;
+            sendChannel.onclose = handleSendChannelStatusChange;
+            */
+        }
+
+        /*
+         * Start 'local' RTC connection
+         */
+        async function startRemoteRTC() {
+            const response = await fetch('/Downloads/offer.txt.download');
+            //console.log(response);
+            const offer = await response.text();
+            //message(offer);
+            /*
+            const remoteConnection = new RTCPeerConnection();
+            remoteConnection.ondatachannel = receiveChannelCallback;
+            */
+        }
+
+        /*
+         * start
+         */
+        function start(event) {
+            document.getElementById('start').classList.add('hide');
+            
+            app.green = [];
+            app.blue = [];
+            app.red = [];
+            app.bonus = [];
+            for(let i=0; i < 20; ++i) {
+                app.green.push(newBoid());
+                app.blue.push(newBoid());
+            }
+            // Start rendring loop
+            window.requestAnimationFrame(render);
+        }
+        
+        
+        /*
+         * main entry point called on load.
+         */
+        function main(event) {
+            startLocalRTC();
+            startRemoteRTC();
+            app.canvas = document.getElementById('main');
+            app.context = app.canvas.getContext('2d');
+            app.canvas.width = app.canvas.clientWidth;
+            app.canvas.height = app.canvas.clientHeight;
+            
+            addControl();
+            document.getElementById('start').addEventListener('click', start);
+        }
+        
+        addEventListener('load', main);
+
+    </script>
+</body>
+</html>

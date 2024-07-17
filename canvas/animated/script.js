@@ -462,7 +462,13 @@ class SDFShape {
             level: 2 * Math.random(),
         };
         this.reflection = Math.random();
-        this.pattern = Patterns.plain(vec3.random(), Math.random());
+        this.refraction = Math.random();
+        this.refractionIndex = Math.random();
+        this.pattern = Patterns.plain(vec3.random(), Math.random(), {value: Math.random(), index: Math.random()});
+    }
+    getString() {
+        const strings = [`${this.constructor.name} ${this.parametersString}`];
+        strings.push(this.operations.map((op) => `    ${operation.constructor.name}`));
     }
     rotate(axis, angle) {
         this.transform = getRotationMatrix(axis, angle);
@@ -473,12 +479,16 @@ class SDFShape {
     getReflection(point) {
         return this.pattern.reflection(this.local(point));
     }
+    getRefraction(point) {
+        return this.pattern.refraction(this.local(point));
+    }
     getColour(point, from=app.eye, bounces=1) {
         const colour = new vec3(0, 0, 0);
         const reflected = new vec3(0.0, 0.0, 0.0);
-
+        const refracted = new vec3(0.0, 0.0, 0.0);
         const n = normal(point, this);
         const reflection = this.getReflection(point);
+        
         if (reflection > 0 && bounces < 10) {
             const d = point.minus(from).normalise();
             const direction = d.minus(n.scaled(2 * n.dot(d)));
@@ -486,6 +496,24 @@ class SDFShape {
             if (hit) {
                 if (hit.shape !== this) {
                     reflected.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(reflection));
+                }
+            }
+        }
+
+        const refraction = this.getRefraction(point);
+        refraction.value = 0.9;
+        if (refraction.value > 0) {
+            const d = point.minus(from).normalise();
+            const axis = d.cross(n);
+            const theta = Math.asin(axis.length);
+            const rotation = getRotationMatrix(axis, theta * refraction.index);
+            
+            d.transform(rotation);
+
+            const hit = iray(point.plus(d), d);
+            if (hit) {
+                if (hit.shape !== this) {
+                    refracted.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(refraction.value));
                 }
             }
         }
@@ -507,7 +535,9 @@ class SDFShape {
                 //colour.add(rgb.multiplied(diffuse.add(specular)));
             });
         }
-        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - reflection).add(reflected).add(specular));
+        //return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - reflection).add(reflected).add(refracted).add(specular));
+
+        return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - reflection).add(reflected).scale(1 - refraction.value).add(refracted).add(specular));
     }
     local(point) {
         //message(this.position.string);
@@ -578,7 +608,7 @@ class Box extends SDFShape {
         const radius = Math.random() * 25;
         return new Box(position, size, radius);
     }
-    constructor(position, size, radius) {
+    constructor(position, size, radius=0) {
         super(position);
         this.size = size;
         this.radius = radius;
@@ -801,7 +831,7 @@ class InfiniteCone extends SDFShape {
 }
 
 const Patterns = {
-    plain(colour, reflection) {
+    plain(colour, reflection, refraction) {
         return {
             rgb(point) {
                 return colour;
@@ -809,10 +839,13 @@ const Patterns = {
             reflection(point) {
                 return reflection;
             },
+            refraction(point) {
+                return refraction;
+            },
         }
     },
 
-    checker(size, colours, reflection) {
+    checker(size, colours, reflection, refraction) {
         const tile = (point) => (Math.floor(point.x / size.x) + Math.floor(point.y / size.y)) % 2;
         return {
             rgb(point) {
@@ -821,10 +854,13 @@ const Patterns = {
             reflection(point) {
                 return tile(point) ? reflection[0] : reflection[1];
             },
+            refraction(point) {
+                return tile(point) ? refraction[0] : refraction[1];
+            },
         }
     },
     
-    checker3d(origin, size, colours, reflection) {
+    checker3d(origin, size, colours, reflection, refraction) {
         const tile = (point) => {
             const q = point.minus(origin);
             q.normalise();
@@ -840,10 +876,13 @@ const Patterns = {
             reflection(point) {
                 return tile(point) ? reflection[0] : reflection[1];
             },
+            refraction(point) {
+                return tile(point) ? refraction[0] : refraction[1];
+            },
         }
     },
     
-    grid(size, colours, reflection) {
+    grid(size, colours, reflection, refraction) {
         return {
             rgb(point) {
                 const x = point.x / size.x;
@@ -861,6 +900,9 @@ const Patterns = {
 
                 return reflection[0] * (1 - c) + reflection[1] * c;
             },
+            refraction(point) {
+                return refraction;
+            }
         }
     },
 }
@@ -879,7 +921,7 @@ class Plane extends SDFShape {
     constructor(position) {
         super(position);
         //this.pattern = Patterns.grid(new vec2(200, 200), [new vec3(0, 0, 0), new vec3(0.6, 0.6, 1)], [0, 1]);
-        this.pattern = Patterns.checker(new vec2(200, 200), [new vec3(1, 1, 1), new vec3(1, 0, 0)], [0.7, 0.1]);
+        this.pattern = Patterns.checker(new vec2(200, 200), [new vec3(1, 1, 1), new vec3(1, 0, 0)], [0.7, 0.1], [{value: 0, index: 0}, {value: 0, index: 0},]);
     }
     getRGB(point) {
         return this.pattern.rgb(this.local(point));
@@ -2252,6 +2294,34 @@ function ray(start, direction, limit = 0.5) {
     }
 }
 
+function iray(start, direction, limit = 0.5) {
+
+    let done = false;
+    let cycles = 0;
+    const point = start.plus(direction.scaled(2));
+    while (!done) {
+        const step = Math.min(...app.shapes.map((shape) => Math.abs(shape.dist(point.clone()))));
+
+        //message(step);
+        
+        if (Math.abs(step) < limit) {
+            return ray(point.add(direction.scaled(-step)), direction);
+            const shape = app.shapes.find((shape) => Math.abs(shape.dist(point.clone())) == step);
+            return {shape, point};
+        }
+        point.add(direction.scaled(step));
+
+        if (step > 200000) {
+            done = true;
+        }
+        
+        ++cycles;
+        if (cycles > 1000) {
+            done = true;
+        }
+    }
+}
+
 
 
 function ray1(point, sx, sy, size, eye, limit = 1) {
@@ -2464,23 +2534,31 @@ function makeScene() {
 
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
-    for (let i = 0; i < 3; ++i) {
+    for (let i = 0; i < 0; ++i) {
         const shape = randomChoice(shapes).random();
         shape.operations.push(rotate(vec3.random(), 2 * Math.PI * Math.random()));
         shape.operations.push(bend(Math.random() - 0.5));
         shape.operations.push(twist(Math.random() - 0.5));
         app.shapes.push(shape);
     }
-    /*
     {
         //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
         const shape = new Ball(new vec3(), 100);
         shape.operations.push(move(new vec3(box.width / 3, box.height / 2, 0)));
-        shape.pattern = Patterns.checker3d(new vec3(), new vec2(100, 100), [vec3.random(), vec3.random()], [0.1, 0.7]);
+        shape.pattern = Patterns.plain(vec3.random(), 0.3, {value:0, index:0});
         //shape.operations.push(limitedRepetition(180, 5));
         app.shapes.push(shape);
     }
-    */
+
+    {
+        //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
+        const shape = new Box(new vec3(), new vec3(80, 50, 75));
+        shape.operations.push(move(new vec3(2 * box.width / 3, box.height / 2, 0)));
+        shape.operations.push(rotate(new vec3(0, 1, 0), 1));
+        shape.pattern = Patterns.plain(vec3.random(), 0.3, {value:0.8, index:0.5});
+        //shape.operations.push(limitedRepetition(180, 5));
+        app.shapes.push(shape);
+    }
     const plane = new Plane(new vec3(0, 0, box.height * 0.8));
     plane.reflection = 0;
     plane.colour = new vec3(0.7, 0.3, 0.9);
