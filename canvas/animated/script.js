@@ -16,6 +16,20 @@ function message(text) {
     status.innerText = text;
 }
 
+/**
+ * Enter fullscreen mode
+ */
+function enterFullscreen() {
+    if (document.body.webkitRequestFullscreen) {
+    document.body.webkitRequestFullscreen(
+        document.body.ALLOW_KEYBOARD_INPUT);
+    }
+    if (document.body.requestFullscreen) {
+        document.body.requestFullscreen();
+    }
+}
+
+
 function commandInput(event) {
     console.log(event.target.value);
 }
@@ -49,8 +63,8 @@ function click(event) {
     event.preventDefault();
     if (event.shiftKey) {
         makeScene();
+        render();
     }
-    render();
 }
 
 class vec2 {
@@ -362,7 +376,6 @@ function invert3x3(input) {
         (a11 * a00 - a01 * a10) * idet];
 }
 
-
 function getRotationMatrix(axis, angle) {
     const v = axis.clone().normalise();
 
@@ -446,6 +459,12 @@ function randomChoice(options) {
     return options[Math.floor(Math.random() * options.length)];
 }
 
+let refractiveIndex = [1];
+
+const shown = {
+    count: 0,
+};
+
 class SDFShape {
     constructor(position, axis, angle) {
         this.colour = vec3.random();
@@ -488,10 +507,11 @@ class SDFShape {
         const refracted = new vec3(0.0, 0.0, 0.0);
         const n = normal(point, this);
         const reflection = this.getReflection(point);
+        const i = point.minus(from).normalise();
         
         if (reflection > 0 && bounces < 10) {
-            const d = point.minus(from).normalise();
-            const direction = d.minus(n.scaled(2 * n.dot(d)));
+            //const d = point.minus(from).normalise();
+            const direction = i.minus(n.scaled(2 * n.dot(i)));
             const hit = ray(point, direction.normalise());
             if (hit) {
                 if (hit.shape !== this) {
@@ -501,21 +521,39 @@ class SDFShape {
         }
 
         const refraction = this.getRefraction(point);
-        refraction.value = 0.9;
         if (refraction.value > 0) {
-            const d = point.minus(from).normalise();
-            const axis = d.cross(n);
-            const theta = Math.asin(axis.length);
-            const rotation = getRotationMatrix(axis, theta * refraction.index);
-            
-            d.transform(rotation);
+            const ni = -(n.dot(i));
+            const mu = ni > 0 ? refractiveIndex[0] / refraction.index : refractiveIndex[0] / (refractiveIndex[1] || 1);
+            const sqrt = (ni < 0 ? 1 : -1) * Math.sqrt(1 - mu * mu * (1 - ni * ni));
+            const t = i.scaled(mu).add(n.scaled(sqrt + mu * ni));
 
-            const hit = iray(point.plus(d), d);
-            if (hit) {
-                if (hit.shape !== this) {
-                    refracted.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(refraction.value));
-                }
+            //message(i.dot(t));
+            if ((shown.count % 100000) === 0) {
+                console.log(`i: ${i.string}`);
+                console.log(`ni: ${ni}`);
+                console.log(`mu: ${mu}`);
+                console.log(`sqrt: ${sqrt}`);
+                console.log(`t: ${t.string}`);
+                console.log(`i . t: ${i.dot(t)}`);
+                shown.mu = true;
             }
+            shown.count += 1;
+            /*
+            if (ni > 0) {
+                refractiveIndex.unshift(refraction.index);
+            } else {
+                refractiveIndex.shift();
+            }*/
+            
+            //refracted.add(t.abs().scale(1));
+
+            const hit = iray(point.plus(t), t);
+            if (hit) {
+                refracted.add(hit.shape.getColour(hit.point, point, bounces + 1).scaled(refraction.value));
+            }
+
+            //return t.abs();
+            //return (new vec3(1,1,1)).scale(i.dot(t));
         }
 
         const diffuse = new vec3(0, 0, 0);
@@ -532,8 +570,7 @@ class SDFShape {
                 diffuse.add(light.colour.scaled(d).multiply(rgb));
                 specular.add(this.specular.colour.scaled(s)
                              .multiply(light.colour));
-                //colour.add(rgb.multiplied(diffuse.add(specular)));
-            });
+                         });
         }
         //return this.getRGB(point).scaled(0.1).add(diffuse.scale(1 - reflection).add(reflected).add(refracted).add(specular));
 
@@ -788,7 +825,7 @@ class Cone extends SDFShape {
         const b = new vec2(w.x - q.x * clamp( w.x / q.x, 0, 1 ),  w.y - q.y);
         const k = Math.sign(q.y);
         const d = Math.min(a.dot(a), b.dot(b));
-        const s = Math.max( k*(w.x*q.y-w.y*q.x),k*(w.y-q.y)  );
+        const s = Math.max( k*(w.x*q.y-w.y*q.x),k*(w.y-q.y));
         return Math.sqrt(d) * Math.sign(s);
     }
 }
@@ -1156,7 +1193,7 @@ class RoundedCylinder extends SDFShape {
         this.radius2 = radius2;
     }
     dist(point) {
-        const p = this.local(point);        
+        const p = this.local(point);
         const d = new vec2(p.xz.length - 2 * this.radius1 + this.radius2, Math.abs(p.y) - this.length);
         return Math.min(Math.max(d.x, d.y), 0) + d.max(0).length - this.radius2;
     }
@@ -1282,7 +1319,7 @@ class SolidAngle extends SDFShape {
 }
 
 /*
-Cut Sphere - exact   (https://www.shadertoy.com/view/stKSzc)
+ * Cut Sphere - exact   (https://www.shadertoy.com/view/stKSzc)
  */
 class CutSphere extends SDFShape {
     static random() {
@@ -1982,18 +2019,9 @@ function twist(amount) {
     }
 }
 
-function bend(amount) {
-    return (point) => {
-        const c = Math.cos(amount * point.y * Math.PI / 1000);
-        const s = Math.sin(amount * point.y * Math.PI / 1000);
-        point.xyz = new vec3(c * point.x - s * point.y, s * point.x + c * point.y, point.z);
-        return point;
-    }
-}
-
 function elongate(size) {
     return (point) => {
-        return point.clamp(-size.scaled(-1), size);
+        return point.clamp(size.scaled(-1), size);
     }
 }
 
@@ -2213,6 +2241,15 @@ const allShapes = [
     Mix,
 ];
 
+function start(event) {
+    document.getElementById('start').classList.add('hide');
+    enterFullscreen();
+    
+    makeScene();
+    render();
+}
+
+
 
 function initialise() {
     app.canvas = document.getElementById('canvas');
@@ -2234,9 +2271,10 @@ function initialise() {
     app.canvas.addEventListener('touchend', touchEnd);
     
     document.getElementById('command').addEventListener('change', commandInput);
-    
-    makeScene();
-    render();
+
+    document.getElementById('start').addEventListener('click', start);
+
+    //drawDiagram();
     //window.requestAnimationFrame(draw);
 }
 
@@ -2249,7 +2287,7 @@ function smin(values, k) {
 
 
 function normal(point, shape) {
-    const epsilon = 0.00001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
+    const epsilon = 0.001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
     const centerDistance = shape.dist(point.clone());
     const xDistance = shape.dist(new vec3(point.x + epsilon, point.y, point.z));
     const yDistance = shape.dist(new vec3(point.x, point.y + epsilon, point.z));
@@ -2295,19 +2333,15 @@ function ray(start, direction, limit = 0.5) {
 }
 
 function iray(start, direction, limit = 0.5) {
-
     let done = false;
     let cycles = 0;
     const point = start.plus(direction.scaled(2));
     while (!done) {
         const step = Math.min(...app.shapes.map((shape) => Math.abs(shape.dist(point.clone()))));
 
-        //message(step);
-        
         if (Math.abs(step) < limit) {
-            return ray(point.add(direction.scaled(-step)), direction);
             const shape = app.shapes.find((shape) => Math.abs(shape.dist(point.clone())) == step);
-            return {shape, point};
+            return { point, shape };
         }
         point.add(direction.scaled(step));
 
@@ -2321,8 +2355,6 @@ function iray(start, direction, limit = 0.5) {
         }
     }
 }
-
-
 
 function ray1(point, sx, sy, size, eye, limit = 1) {
 
@@ -2352,7 +2384,8 @@ function ray1(point, sx, sy, size, eye, limit = 1) {
                 exit = true
             } else {
                 const shape = app.shapes.find((shape) => shape.dist(point.clone()) == step);
-                app.ctx.fillStyle = shape.getColour(point);
+                const colour = shape.getColour(point);
+                app.ctx.fillStyle = `rgb(${255 * colour.red} ${255 * colour.green} ${255 * colour.blue}`;
                 app.ctx.fillRect(sx, sy, size, size);
             }
         }
@@ -2379,6 +2412,10 @@ function ray1(point, sx, sy, size, eye, limit = 1) {
 function ray2(point, sx, sy, size, eye, limit = 1) {
 
     //point = point.clone();
+
+    
+    app.ctx.fillStyle = 'gray';
+    app.ctx.fillRect(sx, sy, size - 1, size - 1);
 
     //const direction = (new vec3(sx + size / 2, sy + size / 2, 0)).subtract(eye).normalise();
     const direction = (new vec3(sx, sy, 0 )).subtract(eye).normalise();
@@ -2534,31 +2571,33 @@ function makeScene() {
 
     const shapes = [Mix];//allShapes;
     app.shapes.length = 0;
-    for (let i = 0; i < 0; ++i) {
+    for (let i = 0; i < 10; ++i) {
         const shape = randomChoice(shapes).random();
         shape.operations.push(rotate(vec3.random(), 2 * Math.PI * Math.random()));
         shape.operations.push(bend(Math.random() - 0.5));
         shape.operations.push(twist(Math.random() - 0.5));
+        shape.pattern = Patterns.plain(vec3.random(), Math.random(), { value: clamp(3 * Math.random() - 1, 0, 1), index: 1 + Math.random() });
         app.shapes.push(shape);
     }
+    /*
     {
         //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
         const shape = new Ball(new vec3(), 100);
-        shape.operations.push(move(new vec3(box.width / 3, box.height / 2, 0)));
-        shape.pattern = Patterns.plain(vec3.random(), 0.3, {value:0, index:0});
+        shape.operations.push(move(new vec3(box.width / 3, box.height / 2.1, 0)));
+        shape.pattern = Patterns.plain(vec3.random(), 0.3, { value: 0.9, index: 1.5 });
         //shape.operations.push(limitedRepetition(180, 5));
         app.shapes.push(shape);
     }
-
     {
         //const shape = new Revolution(SDF2d.EquilateralTriangle(20), 100);
-        const shape = new Box(new vec3(), new vec3(80, 50, 75));
+        const shape = new Box(new vec3(), new vec3(80, 50, 75), 5);
         shape.operations.push(move(new vec3(2 * box.width / 3, box.height / 2, 0)));
-        shape.operations.push(rotate(new vec3(0, 1, 0), 1));
-        shape.pattern = Patterns.plain(vec3.random(), 0.3, {value:0.8, index:0.5});
+        shape.operations.push(rotate(new vec3(0, 1, 1), 1));
+        shape.pattern = Patterns.plain(vec3.random(), 0.3,
+            { value: 0.8, index: 1.5 });
         //shape.operations.push(limitedRepetition(180, 5));
         app.shapes.push(shape);
-    }
+    }*/
     const plane = new Plane(new vec3(0, 0, box.height * 0.8));
     plane.reflection = 0;
     plane.colour = new vec3(0.7, 0.3, 0.9);
@@ -2614,6 +2653,7 @@ function draw(frameTime) {
 
     let done = false;
     while ((performance.now() - frameTime) < 10 && !done) {
+        refractiveIndex = [1];
         ray2(app.eye.clone(), app.sx, app.sy, pixels, app.eye, limit);
         app.sx += pixels;
         if (app.sx >= box.width) {
@@ -2643,4 +2683,22 @@ function draw(frameTime) {
         window.requestAnimationFrame(draw);
     }
     */
+}
+
+function drawDiagram() {
+    const canvas = document.getElementById('diagram');
+    const ctx = canvas.getContext('2d');
+    
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    ctx.width = width;
+    ctx.height = height;
+    
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.setTransform(width, 0, 0, height, 0, 0);
+    
+    ctx.fillStyle = 'rgb(200, 200, 255)';
+    ctx.fillRect(0, 0, 1, 1);
+    
 }
