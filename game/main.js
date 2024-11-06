@@ -1,34 +1,34 @@
-class Layer {
-    constuctor(tiles, pattern, tileWidth=32, tileHeight=32) {
-        self.tiles = tiles;
-        self.pattern = pattern;
-        self.tileWidth = tileWidth || 32;
-        self.tileHeight = tileHeight || self.tileWidth;
+class TiledLayer {
+    constructor(tiles, pattern, tileWidth=32, tileHeight=32) {
+        this.tiles = tiles;
+        this.pattern = pattern;
+        this.tileWidth = tileWidth || 32;
+        this.tileHeight = tileHeight || this.tileWidth;
 
-        self.x = 0;
-        self.y = 0;
+        this.x = 0;
+        this.y = 0;
     }
 
     draw(target) {
         // Calculate position of top left tile
-        let tx = self.x % self.tileWidth - self.tileWidth;
-        let ty = self.y % self.tileHeight - self.tileHeight;
+        let ty = this.y % this.tileHeight - this.tileHeight;
 
-        let tileX = Math.floor(self.x / self.tileWidth);
-        let tileY = Math.floor(self.y / self.tileHeight);
-            console.log(ty);
+        let tileX = Math.floor(Math.abs(this.x) / this.tileWidth);
+        let tileY = Math.floor(Math.abs(this.y) / this.tileHeight);
+
         while (ty < target.height) {
-            const row = self.pattern[tileY % self.pattern.length];
+            let tx = this.x % this.tileWidth - this.tileWidth;
+            const row = this.pattern[tileY % this.pattern.length];
             while (tx < target.width) {
                 const tile = row[tileX % row.length];
-                const tileColumns = Math.floor(self.tile.width / tile.width);
-                const sx = tile.width * (tile % tileColumns);
-                const sy = tile.height * Math.floor(tile / tileColumns);
-                target.canvas.drawImage(self.tiles, sx, sy, self.tileWidth, self.tileHeight, tx, ty);
+                const tileColumns = Math.floor(this.tiles.width / this.tileWidth);
+                const sx = this.tileWidth * (tile % tileColumns);
+                const sy = this.tileHeight * Math.floor(tile / tileColumns);
+                target.drawImage(this.tiles.canvas, sx, sy, this.tileWidth, this.tileHeight, tx, ty, this.tileWidth, this.tileHeight);
                 tx += this.tileWidth;
                 tileX += 1;
             }
-            tileX = Math.floor(self.x / self.tileWidth);
+            tileX = Math.floor(this.x / this.tileWidth);
             tileY += 1;
             ty += this.tileHeight;
         }
@@ -39,6 +39,7 @@ document.body.style.background = 'blue';
 
 let context;
 let layer;
+let last = 0;
 
 function render(time) {
     context.fillStyle = 'white';
@@ -46,7 +47,14 @@ function render(time) {
     context.fillRect(0, 0, context.width, context.height);
     layer.draw(context);
 
-    window.requestAnimationFrame(render);
+    if (last) {
+        const delta = (time - last) / 1000;
+        layer.x += 20 * Math.sin(time / 100000);
+        layer.y += 20 * Math.cos(time / 100000);
+    }
+    last = time;
+
+    //window.requestAnimationFrame(render);
 }
 
 
@@ -67,9 +75,11 @@ function main(event) {
         const imageCanvas = document.createElement('canvas');
         document.body.append(imageCanvas);
         const imageContext = imageCanvas.getContext('2d');
+        imageContext.width = image.width;
+        imageContext.height = image.height;
         // draw background image
         imageContext.drawImage(image, 0, 0);
-        layer = new Layer(imageContext, [[0]]);
+        layer = new TiledLayer(imageContext, [[0, 1], [2, 3]]);
 
         window.requestAnimationFrame(render);
     };
