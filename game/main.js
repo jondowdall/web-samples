@@ -11,13 +11,13 @@ class TiledLayer {
 
     draw(target) {
         // Calculate position of top left tile
-        let ty = this.y % this.tileHeight - this.tileHeight;
+        let ty = -(this.y % this.tileHeight);
 
         let tileX = Math.floor(Math.abs(this.x) / this.tileWidth);
         let tileY = Math.floor(Math.abs(this.y) / this.tileHeight);
 
         while (ty < target.height) {
-            let tx = this.x % this.tileWidth - this.tileWidth;
+            let tx = -(this.x % this.tileWidth);
             const row = this.pattern[tileY % this.pattern.length];
             while (tx < target.width) {
                 const tile = row[tileX % row.length];
