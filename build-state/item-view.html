@@ -26,6 +26,15 @@
             background-color: lightgray;
         }
 
+        #content-layout {
+            display: grid;
+            grid-template-columns: 1fr 4fr 1fr;
+        }
+        
+        #notes {
+            grid-column: 1 / -1;
+        }
+        
         .rack {
           border: 1px solid darkgray;
           background: white;
@@ -59,6 +68,7 @@
 
         svg .fault {
           fill: red;
+          stroke: red;
         }
 
         .note::after {
@@ -72,12 +82,33 @@
             clip-path: polygon(0 0, 100% 0, 100% 100%);
         }
 
+        #debug {
+            position: absolute;
+            bottom: 1em;
+            right: 1em;
+            width: 25%;
+            max-height: 25%;
+            padding: 0.5em;
+            border-radius: 1em;
+            background-color: rgb(50, 50, 50, 0.75);
+            color: orange;
+            overflow: auto;
+        }
+        
+        .hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
-    
-    <h1 class="context"></h1>
 
+    <h1 class="context template" data-inner-text="Site {site}, {array} Array, Bunker {bunker}"></h1>
+    
+    <div id="content-layout">
+        <div class="left-bunker template" data-class-hidden="bunker < 2">
+    <a class="template" data-href="#radar={radar};array={array};bunker={bunker-1}" data-inner-text="Bunker {bunker - 1}"></a>
+        </div>
+    <div id="main">
     <svg
   viewBox="0 0 300 100"
   xmlns="http://www.w3.org/2000/svg"
@@ -85,7 +116,7 @@
   >
   <circle id="test" class="clickable dynamic" cx="50" cy="50" r="40" />
   <circle class="clickable" cx="150" cy="50" r="4" />
-  
+  <path id="line" class="clickable" d="M50 50 L150 50" stroke="blue"><title>Bob</title></path>
   <text id="text" class="dynamic" x="150" y="50">%placeholder%</text>
   
   
@@ -98,31 +129,102 @@
       <div id="rxfe-2" class="rxfe">
         <div class="rxfe-label">rxfe 2</div>
       </div>
+    </div>
+    <div class="left-bunker template" data-class-hidden="bunker > 19">
+    <a class="template" data-href="#radar={radar};array={array};bunker={bunker + 1}" data-inner-text="Bunker {bunker + 1}"></a>
+    </div>
 
-    <textarea id="notes" cols="80" rows="10"></textarea>
+    <div id="notes">
+      <textarea id="notes" cols="80" rows="10"></textarea>
+    </div>
+</div>
+<div id="debug"></div>
 
   <script>
 
-
+function log(text) {
+    const node = document.getElementById('debug');
+    debug.innerHTML = debug.innerHTML + `<br>${text}`;
+}
+      
+      
 function writeState(state) {
     const state_str = JSON.stringify(state);
     localStorage.setItem('state', state_str);
 }
 
 function getContext() {
-    const stringContext = location.hash.slice(1).split('.');
-    for (const node of document.querySelectorAll('.context')) {
-        node.innerHTML = stringContext;
-    }
+    const contextList = location.hash.slice(1).split(';');
+    const context = contextList.reduce((context, item) => {
+        const [name, value] = item.split('=');
+        context[name] = Number(value);
+        if (isNaN(context[name])) {
+            context[name] = value;
+        }
+        return context;
+    }, {});
+    return context;
 }
 
 
+function fillTemplate(source, context) {
+    const vars = Object.keys(context);
+    const values = vars.map((key) => context[key]);
+    const result = source.replaceAll(/\{([^\}]+)\}/g, (match, exp) => {
+          try {
+            const func = new Function(...vars, `return ${exp}`);
+            return func(...values);
+        } catch (error) {
+            return match;
+        }
+    });
+
+    return result;
+}
+
+function evaluate(expr, context) {
+    const vars = Object.keys(context);
+    const values = vars.map((key) => context[key]);
+
+    try {
+        const func = new Function(...vars, `return ${expr}`);
+        return func(...values);
+    } catch (error) {
+        log(error);
+        return false;
+    }
+
+    return false;
+}
+
+function hashChange(event) {
+    const context = getContext();
+    for (const node of document.querySelectorAll('.template')) {
+        log(Object.keys(node.dataset));
+        for (const key of Object.keys(node.dataset)) {
+            if (key.startsWith('class')) {
+                const cls = key.slice(5).toLowerCase();
+                log (cls);
+                if (evaluate(node.dataset[key], context)) {
+                    node.classList.add(cls);
+                } else {
+                    node.classList.remove(cls);
+                }
+            } else {
+                node[key] = fillTemplate(node.dataset[key], context);
+            }
+        }
+    }
+}
+
 function main(event) {
     const context = getContext();
-    
+
+    hashChange();
+
     const state_json = localStorage.getItem('state');
     const state = state_json ? JSON.parse(state_json) : {};
-
+    
     for (id in state) {
       const node = document.getElementById(id);
       if (node) {
@@ -135,7 +237,6 @@ function main(event) {
         }
       }
     }
-
 
     const notes = document.getElementById('notes');
     let current;
@@ -153,13 +254,14 @@ function main(event) {
         writeState(state);
     });
     const click = (event) => {
+        const node = event.target;
         if (event.ctrlKey) {
-            const node = event.target;
             node.classList.toggle('fault');
             state[node.id] = state[node.id] || {};
             state[node.id].fault = node.classList.contains('fault');
         }
-        notes.value = state[node.id].note || '';
+        
+        notes.value = state[node.id]?.note || '';
         current = node.id;
         writeState(state);
     }
@@ -176,6 +278,7 @@ function main(event) {
         node.classList.add('fault');
         node.innerHTML = node.innerHTML.replace('%placeholder%', 'new text');
     }
+    window.addEventListener('hashchange', hashChange);
 }
 
 window.addEventListener('load', main)
