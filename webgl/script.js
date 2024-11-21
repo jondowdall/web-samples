@@ -214,7 +214,7 @@ function initialise() {
     const vsSource =
        `#define PI 3.1415926538
 
-        attribute vec4 aVertexPosition;    
+        attribute vec4 aVertexPosition;
         attribute vec3 aVertexNormal;
         attribute vec2 aTextureCoord;
         attribute vec4 aVertexColour;
