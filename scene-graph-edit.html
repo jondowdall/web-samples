@@ -8204,7 +8204,7 @@ ${svg.parentElement.innerHTML}`;
         }
 
         /**
-         * Create a duplicate tree based on the definition of the referenced node.
+         * Duplicate the first node with parameter matching value.
          * <parameter=value>
          */
         class ReferenceNode extends MetaNode {
@@ -8240,36 +8240,35 @@ ${svg.parentElement.innerHTML}`;
          * Add the contents if the condition is true
          */
         class ConditionalNode extends MetaNode {
+            static pattern = /^\?\[(?<condition>[^\]]+)\]\s*(?<value>.*)/;
             static match(content) {
-                const pattern = /^\?\[(?<expr>[^\]]+)\]\s*(?<content>.*)/;
-                return pattern.test(content);
+                return ConditionalNode.pattern.test(content);
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-                const pattern = /^\?\[(?<expr>[^\]]+)\]\s*(?<value>.*)/;
-                const match = value.match(pattern);
+                const match = value.match(ConditionalNode.pattern);
 
                 this.value = match.groups.value;
-                this.expr = match.groups.expr;
+                this.condition = match.groups.condition;
             }
             expand(context) {
                 context.modifiers.forEach((modifier) => {
-                    this.expr = modifier.apply(this.expr);
+                    this.condition = modifier.apply(this.condition);
                     this.value = modifier.apply(this.value);
                 });
 
-                const expr = `return ${context.resolve(this.expr)}`;
+                const condition = `return ${context.resolve(this.condition)}`;
                 try {
                     const variables = context.scope.toReversed().reduce((values, scope) =>
                         Object.assign(values, scope.values), {});
                     const names = Object.keys(variables).map((name) => name ? name : '_');
                     const values = Object.values(variables);
-                    const func = new Function(...names, expr);
+                    const func = new Function(...names, condition);
                     if (func(...values)) {
                         return this.content.flatMap((node) => node.expand(context));
                     }
                 } catch (err) {
-                    warn(`Invalid expression on line ${this.lineNumber} (${expr})`);
+                    warn(`Invalid expression on line ${this.lineNumber} (${condition})`);
                 }
                 // Return an empty list on test failure or exception;
                 return [];
@@ -8308,8 +8307,8 @@ ${svg.parentElement.innerHTML}`;
          * Replace node with content of file.
          */
         class ImportNode extends MetaNode {
-            static cache = {};
             static pattern = /^--<(?<url>[^>]+)>--\s*/;
+            static cache = {};
             static match(content) {
                 return this.pattern.test(content);
             }
@@ -8348,9 +8347,7 @@ ${svg.parentElement.innerHTML}`;
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-
                 const match = value.match(ParsedPatternNode.pattern);
-
                 this.pattern = match.groups.pattern;
                 this.flags = match.groups.flags;
                 this.replacement = match.groups.replacement.trim();
@@ -8374,15 +8371,13 @@ ${svg.parentElement.innerHTML}`;
          * Use format to define following nodes
          */
         class FormatNode extends MetaNode {
+            static pattern = /^\$(?<format>(<[^>]+>[^<]+)*(<[^>]+>))\s*;?\s*$/;
             static match(content) {
-                const pattern = /^\$(?<format>(<[^>]+>[^<]+)*(<[^>]+>))\s*;?\s*$/;
-                return pattern.test(content);
+                return FormatNode.pattern.test(content);
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
-
-                const pattern = /^\$(?<format>(<[^>]+>[^<]+)*(<[^>]+>))\s*;?\s*$/;
-                const match = value.match(pattern);
+                const match = value.match(FormatNode.pattern);
             }
             apply(value) {
 
@@ -8393,6 +8388,9 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
+        /**
+         * Process child nodes as a table
+         */
         class TableNode extends MetaNode {
             static pattern = /^\|(?<headings>[^\t;\|]+([\t;\|][^\t;\|]+)*)\|?$/;
             static match(value) {
@@ -8451,16 +8449,18 @@ ${svg.parentElement.innerHTML}`;
             }
         }
 
+        /**
+         * Node using path style notation to place in structure
+         */
         class PathNode extends MetaNode {
+            static pattern = /^[\./].+$/;
             static match(content) {
-                const pattern = /^[\./].+$/;
-                return pattern.test(content);
+                return PathNode.pattern.test(content);
             }
             constructor(value, level, lineNumber) {
                 super(value, level, lineNumber);
             }
             expand(context) {
-
                 this.value = `${this.value};${context.scope.flatMap((scope) => scope.defaults).join(';')}`;
                 context.modifiers.forEach((modifier) => {
                     this.value = modifier.apply(this.value);
