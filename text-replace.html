@@ -31,7 +31,7 @@
             height: 10em;
             resize: vertical;
         }
-        
+
         .output {
             resize: vertical;
             overflow: auto;
@@ -62,6 +62,7 @@
     <div id="controls">
         <button id="replace">Replace</button>
         <button id="use">Use</button>
+        <button id="clear">Clear History</button>
         <span id="message"></span>
     </div>
     <pre id="output"></pre>
@@ -69,46 +70,55 @@
     <script>
         class History {
             constructor() {
-                  this.content = [];
-                  this.position = 0;
-              }
-              setContent(content) {
+                this.content = [];
+                this.position = 0;
+            }
+            setContent(content) {
                 this.content = content;
-                this.position = this.content.length;
-              }
-              add(value) {
-                  if (value === this.content[this.content.length -1]) {
-                      return;
-                  }
-                  this.content.length = this.position;
-                  this.content.push(value);
-                  this.position = this.content.length;
-              }
-              back() {
-                  this.position -= 1;
-                  if (this.position < 1) {
-                      this.position = this.content.length;
-                  }
-                  return this.content[this.position - 1];
-              }
-              forward() {
-                  this.position += 1;
-                  if (this.position > this.content.length) {
-                      this.position = 1;
-                  }
-                  return this.content[this.position - 1];
-              }
-          }
-      
-          const inputHistory = new History();
-          const patternHistory = new History();
-          const replacerHistory = new History();
-    
+            }
+            save() {
+                if (this.content[0] === this.content[1]) {
+                    return;
+                }
+                this.content.unshift(this.content[0]);
+                this.position += 1;
+            }
+            back() {
+                if (this.position === 0 && this.content[0] === this.content[1]) {
+                    this.position = 1;
+                }
+                this.position += 1;
+                if (this.position > this.content.length - 1) {
+                    if (this.content[0] === this.content[1]) {
+                        this.position = 1;
+                    } else {
+                        this.position = 0;
+                    }
+                }
+                return this.content[this.position];
+            }
+            forward() {
+                this.position -= 1;
+                if (this.position === 0 && (this.content[0] === this.content[1])) {
+                    this.position -= 1;
+                }
+                if (this.position < 0) {
+                    this.position = this.content.length - 1;
+                }
+                return this.content[this.position];
+            }
+        }
+
+        const inputHistory = new History();
+        const patternHistory = new History();
+        const replacerHistory = new History();
+
         const inputNode = document.getElementById('input');
         const patternNode = document.getElementById('pattern');
         const replacerNode = document.getElementById('replacer');
         const replaceButton = document.getElementById('replace');
         const useButton = document.getElementById('use');
+        const clearButton = document.getElementById('clear');
         const messageNode = document.getElementById('message');
         const outputNode = document.getElementById('output');
 
@@ -116,35 +126,49 @@
             messageNode.innerText = '';
             const input = inputNode.value;
             const context = { count: 0 };
+            let replacement;
             try {
-                const pattern = new RegExp(patternNode.value, 'g');
                 const replacer = new Function('context', 'match', 'parts', 'offset', 'string',
                     replacerNode.value);
-                outputNode.innerText = input.replaceAll(pattern, (match, ...parts) => {
+                replacement = (match, ...parts) => {
                     const [offset, string] = parts.splice(-2, 2);
                     context.count++;
                     return replacer(context, match, parts, offset, string);
-                });
+                };
+            } catch (error) {
+                messageNode.innerText = `${error.message} using string replacement`;
+                replacement = replacerNode.value;
+            }
+
+            try {
+                const pattern = new RegExp(patternNode.value, 'g');
+                outputNode.innerText = input.replaceAll(pattern, replacement);
             } catch (error) {
                 messageNode.innerText = error.message;
             }
-            
-            patternHistory.add(patternNode.value);
-            replacerHistory.add(replacer.value);
+
+            patternHistory.save();
+            replacerHistory.save();
+            saveState();
         });
 
         useButton.addEventListener('click', (event) => {
-            inputHistory.add(inputNode.Value);
+            inputHistory.save();
+            inputHistory.content[0] = outputNode.innerText;
             inputNode.value = outputNode.innerText;
+        });
+
+        clearButton.addEventListener('click', (event) => {
+            inputHistory.content.length = 1;
+            patternHistory.content.length = 1;
+            replacerHistory.content.length = 1;
+            saveState();
         });
 
         function saveState() {
             const state = {
-                input: inputNode.value,
                 inputHistory: inputHistory.content,
-                pattern: patternNode.value,
                 patternHistory: patternHistory.content,
-                replacer: replacerNode.value,
                 replacerHistory: replacerHistory.content,
                 output: outputNode.innerText,
             }
@@ -155,13 +179,24 @@
             const savedState = localStorage.getItem('text-replace-state');
             if (savedState) {
                 const state = JSON.parse(savedState);
-                inputNode.value = state.input;
                 inputHistory.setContent(state.inputHistory);
-                patternNode.value = state.pattern;
-                patternHistory.setContent(state.inputHistory);
-                replacerNode.value = state.replacer;
+                patternHistory.setContent(state.patternHistory);
                 replacerHistory.setContent(state.replacerHistory);
                 outputNode.innerText = state.output;
+
+                if (inputHistory.content.length === 1) {
+                    inputHistory.content.unshift(inputHistory.content[0]);
+                }
+                if (patternHistory.content.length === 1) {
+                    patternHistory.content.unshift(patternHistory.content[0]);
+                }
+                if (replacerHistory.content.length === 1) {
+                    replacerHistory.content.unshift(replacerHistory.content[0]);
+                }
+
+                inputNode.value = inputHistory.content[0] || '';
+                patternNode.value = patternHistory.content[0] || '';
+                replacerNode.value = replacerHistory.content[0] || '';
             }
         }
 
@@ -172,20 +207,21 @@
         historyControls.forEach((control) => {
             const backButton = document.querySelector(`#${control[2]} .back`);
             const forwardButton = document.querySelector(`#${control[2]} .forward`);
+
             backButton.addEventListener('click', (event) => {
-                if (control[0].position === control[0].content.length) {
-                    control[0].add(control[1].value);
-                }
                 control[1].value = control[0].back();
             });
             forwardButton.addEventListener('click',
                 (event) => control[1].value = control[0].forward());
-        }); 
+
+            control[1].addEventListener('input', (event) => {
+                control[0].content[0] = control[1].value;
+                saveState()
+            });
+        });
 
         window.addEventListener('load', (event) => loadState());
-        inputNode.addEventListener('input', (event) => saveState());
-        patternNode.addEventListener('input', (event) => saveState());
-        replacerNode.addEventListener('input', (event) => saveState());
     </script>
 </body>
+
 </html>
