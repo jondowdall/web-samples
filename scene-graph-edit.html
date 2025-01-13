@@ -10569,13 +10569,13 @@ void main() {
                 const depth = node.depth || size[2] || size[0] || 1;
                 const bevel = Math.min(node.bevel || 0.1, width / 2, height / 2, depth / 2);
                 const mapping = node.mapping;
-                return [width, height, depth, mapping, bevel, node.sides, node.lines];
+                return [width, height, depth, bevel, mapping, node.sides, node.lines];
             }
             static make(view, node, index) {
-                return new BevelledBox(view, ...Box.parameters(node));
+                return new BevelledBox(view, ...BevelledBox.parameters(node));
             }
             static hash(node) {
-                return `bevelledbox ${Box.parameters(node)}`;
+                return `bevelledbox ${BevelledBox.parameters(node)}`;
             }
             constructor(view, width = 1, height = 1, depth = 1, bevel = 0.1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
                 super();
@@ -10590,17 +10590,36 @@ void main() {
                 this.width = width;
                 this.height = height;
                 this.depth = depth;
-                this.bevel = 0.1;
+                this.bevel = bevel;
                 const w = width / 2;
                 const h = height / 2;
                 const d = depth / 2;
                 const start = data.vertex.length / 8;
 
+
+                const addTriangle = (point, mapping) => {
+                    const start = data.vertex.length / 8;
+                    const normal = point.map((v) => Math.sign(v));
+                    const p1 = point.map((v, i) => i === 0 ? v : v - Math.sign(v) * this.bevel);
+                    const p2 = point.map((v, i) => i === 1 ? v : v - Math.sign(v) * this.bevel);
+                    const p3 = point.map((v, i) => i === 2 ? v : v - Math.sign(v) * this.bevel);
+                    if (mapping !== undefined) {
+                        const u1 = (mapping % 4) / 4;
+                        const v1 = Math.floor(mapping / 4) / 3;
+                        const u2 = ((mapping % 4) + 1) / 4;
+                        const v2 = (Math.floor(mapping / 4) + 1) / 3;
+                        data.vertex.push(...p1, ...normal, u1, v1);
+                        data.vertex.push(...p2, ...normal, u1, v2);
+                        data.vertex.push(...p3, ...normal, u2, v1);
+                    } else {
+                        data.vertex.push(...p1, ...normal, 0, 0);
+                        data.vertex.push(...p2, ...normal, 0, 1);
+                        data.vertex.push(...p3, ...normal, 1, 0);
+                    }
+                    data.indices.push(...[0, 1, 2].map((i) => i + start));
+                }
+
                 const addFace = (p1, p2, p3, p4, normal, mapping) => {
-                    p1 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
-                    p2 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
-                    p3 = p3.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
-                    p4 = p4.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
                     const start = data.vertex.length / 8;
                     if (mapping !== undefined) {
                         const u1 = (mapping % 4) / 4;
@@ -10618,6 +10637,29 @@ void main() {
                         data.vertex.push(...p4, ...normal, 1, 1);
                     }
                     data.indices.push(...[0, 1, 2, 3, 2, 1].map((i) => i + start));
+                };
+
+                const addBeveledFace = (p1, p2, p3, p4, normal, mapping) => {
+                    p1 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    p2 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    p3 = p3.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    p4 = p4.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    addFace(p1, p2, p3, p4, normal, mapping);
+                }
+
+
+                const addEdge = (p1, p2, normal, mapping) => {
+                    const axis = [[1,2], [0,2], [0, 1]][normal.indexOf(0)];
+                    const p3 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    const p4 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    const p5 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    const p6 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
+                    p3[axis[0]] =  p3[axis[0]] - Math.sign(p3[axis[0]]) * this.bevel;
+                    p4[axis[1]] =  p4[axis[1]] - Math.sign(p4[axis[1]]) * this.bevel;
+                    p5[axis[0]] =  p5[axis[0]] - Math.sign(p5[axis[0]]) * this.bevel;
+                    p6[axis[1]] =  p6[axis[1]] - Math.sign(p6[axis[1]]) * this.bevel;
+                    
+                    addFace(p3, p4, p5, p6, normal, mapping);
                 };
                 const indexStart = data.indices.length;
                 const points = [
@@ -10644,29 +10686,53 @@ void main() {
 
                 let count = 0;
                 if (sides[0]) {
-                    addFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
+                    addBeveledFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
                     count += 6;
                 }
                 if (sides[1]) {
-                    addFace(points[2], points[3], points[4], points[5], [1, 0, 0], mapping[1]);
+                    addBeveledFace(points[2], points[3], points[4], points[5], [1, 0, 0], mapping[1]);
                     count += 6;
                 }
                 if (sides[2]) {
-                    addFace(points[4], points[5], points[6], points[7], [0, 0, -1], mapping[2]);
+                    addBeveledFace(points[4], points[5], points[6], points[7], [0, 0, -1], mapping[2]);
                     count += 6;
                 }
                 if (sides[3]) {
-                    addFace(points[6], points[7], points[0], points[1], [-1, 0, 0], mapping[3]);
+                    addBeveledFace(points[6], points[7], points[0], points[1], [-1, 0, 0], mapping[3]);
                     count += 6;
                 }
                 if (sides[4]) {
-                    addFace(points[0], points[2], points[6], points[4], [0, -1, 0], mapping[4]);
+                    addBeveledFace(points[0], points[2], points[6], points[4], [0, -1, 0], mapping[4]);
                     count += 6;
                 }
                 if (sides[5]) {
-                    addFace(points[1], points[3], points[7], points[5], [0, 1, 0], mapping[5]);
+                    addBeveledFace(points[1], points[3], points[7], points[5], [0, 1, 0], mapping[5]);
                     count += 6;
                 }
+
+                addEdge(points[0], points[1], [-1, 0, -1]);
+                addEdge(points[2], points[3], [1, 0, -1]);
+                addEdge(points[4], points[5], [1, 0, 1]);
+                addEdge(points[6], points[7], [-1, 0, 1]);
+                addEdge(points[0], points[2], [0, -1, -1]);
+                addEdge(points[2], points[4], [1, -1, 0]);
+                addEdge(points[4], points[6], [0, -1, 1]);
+                addEdge(points[6], points[0], [-1, -1, 0]);
+                addEdge(points[1], points[3], [0, 1, -1]);
+                addEdge(points[3], points[5], [1, 1, 0]);
+                addEdge(points[5], points[7], [0, 1, 1]);
+                addEdge(points[7], points[1], [-1, 1, 0]);
+                count += 72;
+
+                addTriangle(points[0]); 
+                addTriangle(points[1]); 
+                addTriangle(points[2]); 
+                addTriangle(points[3]); 
+                addTriangle(points[4]); 
+                addTriangle(points[5]); 
+                addTriangle(points[6]); 
+                addTriangle(points[7]); 
+                count += 24;
 
                 this.elements = [];
                 if (count) {
