@@ -1013,17 +1013,22 @@
                     </svg>
                 </button>
 
-                <div id="playback-controls" style="display:none">
+                <!--div id="playback-controls" style="display:none">
                     <button id="start" class="media-button">&#x23ee;</button>
                     <button id="rewind" class="media-button">&#x23ea;</button>
                     <button id="play" class="media-button">&#x23ef;</button>
                     <button id="forward" class="media-button">&#x23e9;</button>
                     <button id="end" class="media-button">&#x23ed;</button>
-                </div>
+                </div-->
                 <input id="interactive-update" type="checkbox" checked />
                 <select id="add-view-selection"></select>
                 <button id="toggle-secondary-controls">&#9776;</button>
                 <button id="toggle-sidebar">Sidebar</button>
+                <button id="restart">&#x23EE;</button>
+                <button id="rewind">&#x23EA;</button>
+                <button id="reverse">&#x23F4;</button>
+                <button id="play">&#x23EF;</button>
+                <button id="fast-forward">&#x23E9;</button>
             </div>
             <div id="secondary-controls" class="hide-left">
                 <!--button id="toggle-tabbed-layout">
@@ -1073,12 +1078,12 @@
     </div>
 
     <script>
-        function getBool(value, def=false) {
+        function getBool(value, def = false) {
             if (value === undefined) {
                 return def;
             }
 
-            const falsy = ['false', '0', 'null', 'no', 'off']; 
+            const falsy = ['false', '0', 'null', 'no', 'off'];
             if (!value || falsy.includes((value + '').toLowerCase())) {
                 return false;
             }
@@ -2858,6 +2863,39 @@ ${svg.parentElement.innerHTML}`;
         }
 
         /**
+         * Return a numeric array with the given numberof elements
+         */
+         function getArray(input=[], template) {
+            input = Array.isArray(input) ? input : [input];
+            return template.map((value, index) => isNaN(input[index]) ? value : input[index]);
+        }
+
+        /**
+         * Convert a position, scale and rotation into a transformation matrix
+         */
+        function getTransform(position = [0, 0, 0], scale = [1, 1, 1], rotation = [0, 0, 0, 1]) {
+            position = getArray(position, [0, 0, 0]);
+            scale = getArray(scale, [1, 1, 1]);
+            rotation = getArray(rotation, [0, 0, 0, 1]);
+            const transform = [];
+            const angle = Math.PI * rotation[0] / 180;
+            const axis = normalised([...rotation.slice(1)]);
+            const q = new Quaternion(
+                Math.cos(angle / 2),
+                Math.sin(angle / 2) * axis[0],
+                Math.sin(angle / 2) * axis[1],
+                Math.sin(angle / 2) * axis[2]);
+            q.setMatrix(transform);
+            transform[0] *= scale[0];
+            transform[5] *= scale[1];
+            transform[10] *= scale[2];
+            transform[12] = position[0];
+            transform[13] = position[1];
+            transform[14] = position[2];
+            return transform;
+        }
+
+        /**
          * GLView component
          */
         class GLView extends View {
@@ -3047,9 +3085,11 @@ ${svg.parentElement.innerHTML}`;
                     report(typeName);
 
                     let shape;
+            
                     if (typeName && types[typeName]) {
                         const hash = types[typeName].hash(node);
-                        shapes[hash] = shapes[hash] || types[typeName].make(this, node, index, namedNodes);
+                        //shapes[hash] = shapes[hash] || types[typeName].make(this, node, index, namedNodes);
+                        shapes[hash] = types[typeName].make(this, node, index, namedNodes);
                         shape = shapes[hash];
                         this.shapes.push(shape);
                     }
@@ -3076,9 +3116,12 @@ ${svg.parentElement.innerHTML}`;
                         if (node.colour) {
                             background.colour = node.colour;
                         }
-                    } else if (position && position.length === 3) {
-                        position = position.map((v) => isNaN(v) ? 0 : v);
-                        const shader = this.shaders[node.shader] || (typeName === 'Text' ? this.shaders['textured2'] : this.shaders['shader4']);
+                    } else if (position && Array.isArray(position) && position.length > 2) {
+                        const transform = getTransform(node.position, node.scale, node.rotation);
+                        /*
+                        position = position.slice(0, 3).map((v) => isNaN(v) ? 0 : v);
+                        let rotation = node.rotation;
+                        let scale = node.scale;
                         const transform = [];
                         if (node.rotation && node.rotation.length === 4) {
                             node.rotation = node.rotation.map((v) => isNaN(v) ? 0 : v);
@@ -3105,6 +3148,12 @@ ${svg.parentElement.innerHTML}`;
                             transform[5] *= node.scale;
                             transform[10] *= node.scale;
                         }
+                        */
+
+
+
+                        const shader = this.shaders[node.shader] || (typeName === 'Text' ? this.shaders['textured2'] : this.shaders['shader4']);
+
                         const parent = node.parent;
                         let colour = node.colour;
                         let ancestor = parent;
@@ -3126,7 +3175,7 @@ ${svg.parentElement.innerHTML}`;
                         if (node.texture) {
                             sceneNode.texture = this.getTexture(texture, scene);
                         }
-                        node[meta].viewData.set(this, sceneNode);
+                        original[meta].viewData.set(this, sceneNode);
                         namedNodes[node.name] = sceneNode;
                         if (stack.length > 0) {
                             stack[0][meta].content.push(sceneNode);
@@ -3138,8 +3187,8 @@ ${svg.parentElement.innerHTML}`;
                         endScope = true;
                     }
 
-                    if (node[meta].content.length) {
-                        node[meta].content.forEach((part) => add(part));
+                    if (original[meta].content.length) {
+                        original[meta].content.forEach((part) => add(part));
                     }
 
                     if (endScope) {
@@ -3204,10 +3253,10 @@ ${svg.parentElement.innerHTML}`;
                 const gl = this.context;
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.vertex), gl.STATIC_DRAW);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.vertex), gl.DYNAMIC_DRAW);
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.STATIC_DRAW);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.DYNAMIC_DRAW);
                 glErrors(this.context, `${this.title} updateBuffers`);
             }
             /**
@@ -7494,7 +7543,7 @@ ${svg.parentElement.innerHTML}`;
             name: Symbol('name'),
             fullName: Symbol('fullName'),
         };
-        
+
         const meta = Symbol('meta');
 
 
@@ -7850,7 +7899,7 @@ ${svg.parentElement.innerHTML}`;
                     expanded.forEach((node) =>
                         Object.keys(node).forEach((key) => {
                             if (key !== 'name') {
-                                keys[key] = keys[key] || { name: key, [meta]: {source: node[meta].source } };
+                                keys[key] = keys[key] || { name: key, [meta]: { source: node[meta].source } };
                                 keys[key][node.name] = node[key];
                             }
                         }));
@@ -8245,7 +8294,7 @@ ${svg.parentElement.innerHTML}`;
                                 }, {});
 
                             nodes.forEach((node) => {
-                                node[meta].views[view] = node[meta].views[view] || { [meta]: {values: [] }};
+                                node[meta].views[view] = node[meta].views[view] || { [meta]: { values: [] } };
                                 Object.assign(node[meta].views[view], update);
                             });
                         });
@@ -8611,7 +8660,7 @@ ${svg.parentElement.innerHTML}`;
             }
             apply(context, node, namedValues, unnamed, references) {
                 const nodes = context.views.length ? context.views.map((view) => {
-                    node[meta].views[view] = node[meta].views[view] || { [meta]: {values: [] }};
+                    node[meta].views[view] = node[meta].views[view] || { [meta]: { values: [] } };
                     return node[meta].views[view];
                 }) : [node];
 
@@ -8930,13 +8979,42 @@ ${svg.parentElement.innerHTML}`;
                 }
             }
 
+            // Coerce value to a string
             value = value + '';
+
+            const runtimeValues = /<(time)>/g;
+            // Epmty value
             if (value.trim() === '') {
                 return { value: null };
+                // Quoted value
             } else if (/^"[^"]+"$/.test(value)) {
                 return { value: value.replace(/^"([^"]+)"$/, '$1') };
+                // Convert comma separated list to an array
             } else if (value.includes(',')) {
-                return { value: value.split(/,/g).map((val, index) => processValue(val.trim(), context).value) };
+                return {
+                    enumerable: true,
+                    value: value.split(/\s*,\s*/g).reduce((arr, val, index) =>
+                        Object.defineProperty(arr, index, processValue(val, context)), []),
+                };
+                // Replace runtime variables with function
+            } else if (runtimeValues.test(value)) {
+
+                const capturedContext = {};
+
+                Object.getOwnPropertyNames(Math).reduce((context, key) => {
+                    context[key] = Math[key];
+                    return context;
+                }, capturedContext);
+                capturedContext.runtime = runtime;
+
+                const MathDefinitions = MathProperties.map((name) => Math[name]);
+                value = value.replace(runtimeValues, 'runtime.$1');
+                const generator = new Function(...Object.keys(capturedContext), `return () => ${value}`);
+                return {
+                    enumerable: true,
+                    get: generator(...Object.values(capturedContext)),
+                };
+                // allow reference to decendents
             } else if (value.includes('...')) {
                 const descendants = (nodes) => nodes.flatMap((node) => [node, ...descendants(node[meta].content)]);
                 //*
@@ -8946,6 +9024,7 @@ ${svg.parentElement.innerHTML}`;
                     };
                 } else if (value === '....') {
                     return {
+                        enumerable: true,
                         get() { return descendants(this[meta].content); },
                     };
                 }
@@ -8971,24 +9050,36 @@ ${svg.parentElement.innerHTML}`;
                     }
                 });
                 //*/
-            } else if (value.startsWith('^')) { // value of parameter from ancestor
+                // value of parameter from ancestor
+            } else if (value.startsWith('^')) {
                 const referenced = value.length > 1 ? value.slice(1) : name;
                 let container = context.container.find((container) => container[referenced] !== undefined);
                 if (container) {
-                    return { value: container[referenced] };
+                    return {
+                        enumerable: true,
+                        value: container[referenced],
+                    };
                 }
             } else if (value.startsWith('@')) {
                 const nodes = getReference(value.slice(1).trim());
                 if (nodes) {
-                    return { value: (nodes.length === 1 ? nodes[0] : nodes) };
+                    return {
+                        enumerable: true,
+                        value: (nodes.length === 1 ? nodes[0] : nodes),
+                    };
                 }
             } else {
-                return { value: numberOrString(value) };
+                return {
+                    enumerable: true,
+                    value: numberOrString(value),
+                };
             }
 
-            return { value };
+            return {
+                enumerable: true,
+                value,
+            };
         }
-
 
         /**
          * Generate a node parameters from the value string and context
@@ -8996,7 +9087,7 @@ ${svg.parentElement.innerHTML}`;
         function valueParser(node, value, context, newNode) {
             if (value) {
                 const nodes = context.views.length ? context.views.map((view) => {
-                    node[meta].views[view] = node[meta].views[view] || { [meta]: {values: [] }};
+                    node[meta].views[view] = node[meta].views[view] || { [meta]: { values: [] } };
                     return node[meta].views[view];
                 }) : [node];
 
@@ -9107,7 +9198,7 @@ ${svg.parentElement.innerHTML}`;
                         const [view, partName] = getView(name);
                         let node = targetNode;
                         if (view && targetNode[meta].views) {
-                            targetNode[meta].views[view] = targetNode[meta].views[view] ?? { [meta]: {values: [] }};
+                            targetNode[meta].views[view] = targetNode[meta].views[view] ?? { [meta]: { values: [] } };
                             node = targetNode[meta].views[view];
                             name = partName;
                         }
@@ -9116,7 +9207,6 @@ ${svg.parentElement.innerHTML}`;
                         } else {
                             const definition = processValue(value);
                             if (definition.value === undefined) {
-                                definition.enumerable = true;
                                 Object.defineProperty(node, name, definition);
                             } else {
                                 node[name] = definition.value;
@@ -9226,7 +9316,7 @@ ${svg.parentElement.innerHTML}`;
                     TableNode,
                     PathNode,
                     PlainNode],
-                scope: [{ node: { [meta]: {values: [], content: [] }}, values: {}, modifiers: [], propagate: {}, defaults: [], finalisation: [] }],
+                scope: [{ node: { [meta]: { values: [], content: [] } }, values: {}, modifiers: [], propagate: {}, defaults: [], finalisation: [] }],
                 ancestors: [],
                 names: {},
                 rootNodes: [],
@@ -9237,11 +9327,14 @@ ${svg.parentElement.innerHTML}`;
                 warnings: [],
                 resolve(value) {
                     if (value) {
+                        // TODO: process after split into separate values
                         // Convert any variables in the string to the values in the context.
                         const variables = context.scope.toReversed().reduce((values, scope) =>
                             Object.assign(values, scope.node, scope.values), {});
                         const nodes = context.scope.map((scope) => scope.node).filter((node) => node);
                         let resolved = true;
+                        // Keep 'time' for resolution at runtime
+                        variables['time'] = '<time>';
                         value = value.replace(/<([^>]*)>/g, (match, name) => {
                             name = name.trim();
                             if (variables[name] !== undefined) {
@@ -10454,6 +10547,9 @@ void main() {
             constructor(data) {
                 this.depthMask = true;
             }
+            updateVertices(node) {
+                
+            }
             updateBuffers(gl) { }
             draw3d(gl, shader) {
                 gl.depthMask(this.depthMask);
@@ -10615,14 +10711,18 @@ void main() {
             }
             constructor(view, width = 1, height = 1, depth = 1, bevel = 0.1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
                 super();
+                this.view = view;
+                this.dataIndex = view.data.vertex.length;
                 const gl = view.context;
                 const data = view.data;
+                this.data = view.data;
                 if (!Array.isArray(sides)) {
                     sides = [];
                 }
                 for (let i = 0; i < 6; ++i) {
                     sides[i] = sides[i] === undefined ? true : sides[i];
                 }
+                this.sides = sides;
                 this.width = width;
                 this.height = height;
                 this.depth = depth;
@@ -10632,13 +10732,12 @@ void main() {
                 const d = depth / 2;
                 const start = data.vertex.length / 8;
 
-
                 const addTriangle = (point, mapping) => {
                     const start = data.vertex.length / 8;
-                    const normal = point.map((v) => Math.sign(v));
-                    const p1 = point.map((v, i) => i === 0 ? v : v - Math.sign(v) * this.bevel);
-                    const p2 = point.map((v, i) => i === 1 ? v : v - Math.sign(v) * this.bevel);
-                    const p3 = point.map((v, i) => i === 2 ? v : v - Math.sign(v) * this.bevel);
+                    const normal = normalised(point);
+                    const p1 = [point[0] - Math.sign(point[0]) * this.bevel, point[1] - Math.sign(point[1]) * this.bevel, point[2]];
+                    const p2 = [point[0] - Math.sign(point[0]) * this.bevel, point[1], point[2] - Math.sign(point[2]) * this.bevel];
+                    const p3 = [point[0], point[1] - Math.sign(point[1]) * this.bevel, point[2] - Math.sign(point[2]) * this.bevel];
                     if (mapping !== undefined) {
                         const u1 = (mapping % 4) / 4;
                         const v1 = Math.floor(mapping / 4) / 3;
@@ -10683,18 +10782,17 @@ void main() {
                     addFace(p1, p2, p3, p4, normal, mapping);
                 }
 
-
                 const addEdge = (p1, p2, normal, mapping) => {
-                    const axis = [[1,2], [0,2], [0, 1]][normal.indexOf(0)];
+                    const axis = [[1, 2], [0, 2], [0, 1]][normal.indexOf(0)];
                     const p3 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
                     const p4 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
                     const p5 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
                     const p6 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * this.bevel);
-                    p3[axis[0]] =  p3[axis[0]] - Math.sign(p3[axis[0]]) * this.bevel;
-                    p4[axis[1]] =  p4[axis[1]] - Math.sign(p4[axis[1]]) * this.bevel;
-                    p5[axis[0]] =  p5[axis[0]] - Math.sign(p5[axis[0]]) * this.bevel;
-                    p6[axis[1]] =  p6[axis[1]] - Math.sign(p6[axis[1]]) * this.bevel;
-                    
+                    p3[axis[0]] = p3[axis[0]] - Math.sign(p3[axis[0]]) * this.bevel;
+                    p4[axis[1]] = p4[axis[1]] - Math.sign(p4[axis[1]]) * this.bevel;
+                    p5[axis[0]] = p5[axis[0]] - Math.sign(p5[axis[0]]) * this.bevel;
+                    p6[axis[1]] = p6[axis[1]] - Math.sign(p6[axis[1]]) * this.bevel;
+
                     addFace(p3, p4, p5, p6, normal, mapping);
                 };
                 const indexStart = data.indices.length;
@@ -10711,6 +10809,7 @@ void main() {
                     [-w, -h, d],
                     [-w, h, d],
                 ];
+                /*
                 points.forEach((point) => {
                     data.vertex.push(...point, 0, 0, 1, 0, 0);
                 });
@@ -10718,31 +10817,32 @@ void main() {
                     0, 2, 4, 6, 0, 1, 3, 5, 7, 1,
                     2, 3, 4, 5, 6, 7,
                 ].map((i) => i + start));
-                mapping = mapping || Array(6);
+                */
+                this.mapping = mapping || Array(6);
 
                 let count = 0;
-                if (sides[0]) {
-                    addBeveledFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
+                if (this.sides[0]) {
+                    addBeveledFace(points[0], points[1], points[2], points[3], [0, 0, 1], this.mapping[0]);
                     count += 6;
                 }
-                if (sides[1]) {
-                    addBeveledFace(points[2], points[3], points[4], points[5], [1, 0, 0], mapping[1]);
+                if (this.sides[1]) {
+                    addBeveledFace(points[2], points[3], points[4], points[5], [1, 0, 0], this.mapping[1]);
                     count += 6;
                 }
-                if (sides[2]) {
-                    addBeveledFace(points[4], points[5], points[6], points[7], [0, 0, -1], mapping[2]);
+                if (this.sides[2]) {
+                    addBeveledFace(points[4], points[5], points[6], points[7], [0, 0, -1], this.mapping[2]);
                     count += 6;
                 }
-                if (sides[3]) {
-                    addBeveledFace(points[6], points[7], points[0], points[1], [-1, 0, 0], mapping[3]);
+                if (this.sides[3]) {
+                    addBeveledFace(points[6], points[7], points[0], points[1], [-1, 0, 0], this.mapping[3]);
                     count += 6;
                 }
-                if (sides[4]) {
-                    addBeveledFace(points[0], points[2], points[6], points[4], [0, -1, 0], mapping[4]);
+                if (this.sides[4]) {
+                    addBeveledFace(points[0], points[2], points[6], points[4], [0, -1, 0], this.mapping[4]);
                     count += 6;
                 }
-                if (sides[5]) {
-                    addBeveledFace(points[1], points[3], points[7], points[5], [0, 1, 0], mapping[5]);
+                if (this.sides[5]) {
+                    addBeveledFace(points[1], points[3], points[7], points[5], [0, 1, 0], this.mapping[5]);
                     count += 6;
                 }
 
@@ -10760,25 +10860,159 @@ void main() {
                 addEdge(points[7], points[1], [-1, 1, 0]);
                 count += 72;
 
-                addTriangle(points[0]); 
-                addTriangle(points[1]); 
-                addTriangle(points[2]); 
-                addTriangle(points[3]); 
-                addTriangle(points[4]); 
-                addTriangle(points[5]); 
-                addTriangle(points[6]); 
-                addTriangle(points[7]); 
+                addTriangle(points[0]);
+                addTriangle(points[1]);
+                addTriangle(points[2]);
+                addTriangle(points[3]);
+                addTriangle(points[4]);
+                addTriangle(points[5]);
+                addTriangle(points[6]);
+                addTriangle(points[7]);
                 count += 24;
 
                 this.elements = [];
                 if (count) {
-                    this.elements.push({ mode: gl.TRIANGLES, count, offset: (16 + indexStart) * 2 });
+                    this.elements.push({ mode: gl.TRIANGLES, count, offset: (indexStart) * 2 });
                 }
                 if (lines) {
                     this.elements.push(
                         { mode: gl.LINE_STRIP, count: 10, offset: (indexStart) * 2, colour: [1, 1, 1, 1] },
                         { mode: gl.LINES, count: 6, offset: (10 + indexStart) * 2, colour: [1, 1, 1, 1] });
                 }
+            }
+            updateVertices(node) {
+                const w = node.size[0] / 2;
+                const h = node.size[1] / 2;
+                const d = node.size[2] / 2;
+                const points = [
+                    [-w, -h, -d],
+                    [-w, h, -d],
+
+                    [w, -h, -d],
+                    [w, h, -d],
+
+                    [w, -h, d],
+                    [w, h, d],
+
+                    [-w, -h, d],
+                    [-w, h, d],
+                ];
+
+                let index = this.dataIndex;
+
+                const updateVertex = (px, py, pz, nx, ny, nz, u, v) => {
+                    this.data.vertex[index++] = px;
+                    this.data.vertex[index++] = py;
+                    this.data.vertex[index++] = pz;
+                    this.data.vertex[index++] = nx;
+                    this.data.vertex[index++] = ny;
+                    this.data.vertex[index++] = nz;
+                    this.data.vertex[index++] = u;
+                    this.data.vertex[index++] = v;
+                }
+
+                const updateTriangle = (point, mapping) => {
+                    const normal = normalised(point);
+                    const p1 = [point[0] - Math.sign(point[0]) * node.bevel, point[1] - Math.sign(point[1]) * node.bevel, point[2]];
+                    const p2 = [point[0] - Math.sign(point[0]) * node.bevel, point[1], point[2] - Math.sign(point[2]) * node.bevel];
+                    const p3 = [point[0], point[1] - Math.sign(point[1]) * node.bevel, point[2] - Math.sign(point[2]) * node.bevel];
+                    if (mapping !== undefined) {
+                        const u1 = (mapping % 4) / 4;
+                        const v1 = Math.floor(mapping / 4) / 3;
+                        const u2 = ((mapping % 4) + 1) / 4;
+                        const v2 = (Math.floor(mapping / 4) + 1) / 3;
+                        updateVertex(...p1, ...normal, u1, v1);
+                        updateVertex(...p2, ...normal, u1, v2);
+                        updateVertex(...p3, ...normal, u2, v1);
+                    } else {
+                        updateVertex(...p1, ...normal, 0, 0);
+                        updateVertex(...p2, ...normal, 0, 1);
+                        updateVertex(...p3, ...normal, 1, 0);
+                    }
+                }
+
+                const updateFace = (p1, p2, p3, p4, normal, mapping) => {
+                    if (mapping !== undefined) {
+                        const u1 = (mapping % 4) / 4;
+                        const v1 = Math.floor(mapping / 4) / 3;
+                        const u2 = ((mapping % 4) + 1) / 4;
+                        const v2 = (Math.floor(mapping / 4) + 1) / 3;
+                        updateVertex(...p1, ...normal, u1, v1);
+                        updateVertex(...p2, ...normal, u1, v2);
+                        updateVertex(...p3, ...normal, u2, v1);
+                        updateVertex(...p4, ...normal, u2, v2);
+                    } else {
+                        updateVertex(...p1, ...normal, 0, 0);
+                        updateVertex(...p2, ...normal, 0, 1);
+                        updateVertex(...p3, ...normal, 1, 0);
+                        updateVertex(...p4, ...normal, 1, 1);
+                    }
+                };
+
+                const updateBeveledFace = (p1, p2, p3, p4, normal, mapping) => {
+                    p1 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    p2 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    p3 = p3.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    p4 = p4.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    updateFace(p1, p2, p3, p4, normal, mapping);
+                }
+
+                const updateEdge = (p1, p2, normal, mapping) => {
+                    const axis = [[1, 2], [0, 2], [0, 1]][normal.indexOf(0)];
+                    const p3 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    const p4 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    const p5 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    const p6 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    p3[axis[0]] = p3[axis[0]] - Math.sign(p3[axis[0]]) * node.bevel;
+                    p4[axis[1]] = p4[axis[1]] - Math.sign(p4[axis[1]]) * node.bevel;
+                    p5[axis[0]] = p5[axis[0]] - Math.sign(p5[axis[0]]) * node.bevel;
+                    p6[axis[1]] = p6[axis[1]] - Math.sign(p6[axis[1]]) * node.bevel;
+
+                    updateFace(p3, p4, p5, p6, normal, mapping);
+                };
+
+                if (this.sides[0]) {
+                    updateBeveledFace(points[0], points[1], points[2], points[3], [0, 0, 1], this.mapping[0]);
+                }
+                if (this.sides[1]) {
+                    updateBeveledFace(points[2], points[3], points[4], points[5], [1, 0, 0], this.mapping[1]);
+                }
+                if (this.sides[2]) {
+                    updateBeveledFace(points[4], points[5], points[6], points[7], [0, 0, -1], this.mapping[2]);
+                }
+                if (this.sides[3]) {
+                    updateBeveledFace(points[6], points[7], points[0], points[1], [-1, 0, 0], this.mapping[3]);
+                }
+                if (this.sides[4]) {
+                    updateBeveledFace(points[0], points[2], points[6], points[4], [0, -1, 0], this.mapping[4]);
+                }
+                if (this.sides[5]) {
+                    updateBeveledFace(points[1], points[3], points[7], points[5], [0, 1, 0], this.mapping[5]);
+                }
+
+                updateEdge(points[0], points[1], [-1, 0, -1]);
+                updateEdge(points[2], points[3], [1, 0, -1]);
+                updateEdge(points[4], points[5], [1, 0, 1]);
+                updateEdge(points[6], points[7], [-1, 0, 1]);
+                updateEdge(points[0], points[2], [0, -1, -1]);
+                updateEdge(points[2], points[4], [1, -1, 0]);
+                updateEdge(points[4], points[6], [0, -1, 1]);
+                updateEdge(points[6], points[0], [-1, -1, 0]);
+                updateEdge(points[1], points[3], [0, 1, -1]);
+                updateEdge(points[3], points[5], [1, 1, 0]);
+                updateEdge(points[5], points[7], [0, 1, 1]);
+                updateEdge(points[7], points[1], [-1, 1, 0]);
+
+                updateTriangle(points[0]);
+                updateTriangle(points[1]);
+                updateTriangle(points[2]);
+                updateTriangle(points[3]);
+                updateTriangle(points[4]);
+                updateTriangle(points[5]);
+                updateTriangle(points[6]);
+                updateTriangle(points[7]);
+
+
             }
             intersects(line) {
                 const planes = [
@@ -11612,7 +11846,7 @@ void main() {
 
             const node = Object.assign(Object.create({ update }), {
                 name: source.name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, specularColour: source.specularColour, [meta]: {content: []},
+                shape, shader, colour, shininess, specularColour: source.specularColour, [meta]: { content: [] },
             });
             return node;
         }
@@ -11623,7 +11857,9 @@ void main() {
         function drawNode(view, gl, origin, node, time, level = 0) {
             const sceneNode = node[meta].viewData?.get(view);
             if (sceneNode) {
-                sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
+                sceneNode.shape.updateVertices(node);
+                const nodeTransform = getTransform(node.position, node.scale, node.rotation);
+                sceneNode.world = matrixMultiply(matrixMultiply(nodeTransform, sceneNode.movement), origin);
                 const transform = matrixMultiply(sceneNode.world, view.modelViewMatrix);
                 sceneNode.z = transform[14];
 
@@ -12038,6 +12274,7 @@ void main() {
                 }
             }
 
+            runtime.update(time);
             Core.views.forEach((view) =>
                 view.update(time));
 
@@ -12124,7 +12361,7 @@ void main() {
             // Calculate the determinant
             const det = a00 * b01 + a01 * b11 + a02 * b21;
             if (!det) {
-                return null;
+                return [1, 0, 0, 0, 1, 0, 0, 0, 1];
             }
             const idet = 1.0 / det;
             return [
@@ -12870,11 +13107,13 @@ void main() {
                 }
             });
 
+            /*
             document.getElementById('start').addEventListener('click', (event) => state.action = 'start');
             document.getElementById('rewind').addEventListener('click', (event) => state.action = 'rewind');
             document.getElementById('play').addEventListener('click', (event) => state.action = 'play');
             document.getElementById('forward').addEventListener('click', (event) => state.action = 'forward');
             document.getElementById('end').addEventListener('click', (event) => state.action = 'end');
+            */
         }
 
 
@@ -14058,12 +14297,67 @@ void main() {
             }
         }
 
+        const runtime = {
+            time: 0,
+            rate: 0,
+            previous: 0,
+            update(time) {
+                const delta = this.rate * (time - this.previous);
+                this.time += delta / 1000;
+                this.previous = time;
+            },
+        };
+
+        /**
+         * Enable actions for media controls
+         */
+        function enableMediaControls() {
+            const restartButton = document.getElementById('restart');
+            const rewindButton = document.getElementById('rewind');
+            const reverseButton = document.getElementById('reverse');
+            const playButton = document.getElementById('play');
+            const fastForwardButton = document.getElementById('fast-forward');
+
+            restartButton.addEventListener('click', (event) => {
+                runtime.time = 0;
+                runtime.rate = 0;
+            });
+
+            rewindButton.addEventListener('click', (event) => {
+                if (runtime.rate >= 0) {
+                    runtime.rate = -2;
+                } else {
+                    runtime.rate *= 2;
+                }
+            });
+
+            reverseButton.addEventListener('click', (event) => {
+                runtime.rate = -1;
+            });
+
+            playButton.addEventListener('click', (event) => {
+                if (runtime.rate === 1) {
+                    runtime.rate = 0;
+                } else {
+                    runtime.rate = 1;
+                }
+            });
+
+            fastForwardButton.addEventListener('click', (event) => {
+                if (runtime.rate <= 0) {
+                    runtime.rate = 2;
+                } else {
+                    runtime.rate *= 2;
+                }
+            });
+        }
+
         /**
          *
          */
         function main() {
             Core.initialise();
-
+            enableMediaControls();
             const hash = window.location.hash.slice(1);
             if (hash) {
                 const option = document.createElement('option');
