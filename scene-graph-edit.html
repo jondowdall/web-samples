@@ -2865,7 +2865,7 @@ ${svg.parentElement.innerHTML}`;
         /**
          * Return a numeric array with the given numberof elements
          */
-         function getArray(input=[], template) {
+        function getArray(input = [], template) {
             input = Array.isArray(input) ? input : [input];
             return template.map((value, index) => isNaN(input[index]) ? value : input[index]);
         }
@@ -2925,16 +2925,12 @@ ${svg.parentElement.innerHTML}`;
                 this.nodes = [];
                 this.overlays = [];
                 this.events = [];
-                this.activeEvents = [];
                 this.lightPosition = [-75, -90, 0];
                 this.data = {
                     vertex: [],
                     indices: [],
                 };
                 this.gl = this.context;
-                //if (this.gl.getSupportedExtensions().indexOf('EXT_frag_depth')) {
-                //    this.gl.getExtension('EXT_frag_depth');
-                //};
 
                 this.textureContext = this.textureCanvas.getContext('2d');
                 this.textureCanvas.width = 500;
@@ -3032,36 +3028,6 @@ ${svg.parentElement.innerHTML}`;
                 this.graph = [];
                 this.nodes = [];
 
-                function getEvents(node, sceneNode) {
-                    const eventPattern = /^@(?<trigger>[^,]+)\s*,\s*(?<transition>[^=]+)/
-                    const triggerPattern = /^(?<time>[^\/]+)\/(?<duration>[^\/]+)/
-                    return Object.entries(node).map(([item, value]) => {
-                        const event = item.match(eventPattern);
-                        if (event) {
-                            const transition = nodeTransitions[event.groups.transition];
-                            const triggerWithDuration = event.groups.trigger.match(triggerPattern);
-                            let startTime;
-                            let endTime;
-                            if (triggerWithDuration) {
-                                endTime = numberOrString(triggerWithDuration.groups.time);
-                                const duration = numberOrString(triggerWithDuration.groups.duration);
-                                startTime = endTime - duration;
-                            } else {
-                                endTime = numberOrString(event.groups.trigger)
-                                startTime = endTime - 1;
-                            }
-                            if (transition) {
-                                return {
-                                    node: sceneNode,
-                                    startTime,
-                                    endTime,
-                                    transition: new transition(node, value),
-                                };
-                            }
-                        }
-                    }).filter((i) => i);
-                }
-
                 const handler = {};
 
                 function toTitleCase(str) {
@@ -3071,7 +3037,7 @@ ${svg.parentElement.innerHTML}`;
                     );
                 }
 
-                const add = (node) => {
+                const add = (node, parent) => {
                     const original = node;
                     handler.get = (target, prop, receiver) =>
                         target[meta].views?.[this.title]?.[prop] ?? original[prop];
@@ -3085,11 +3051,11 @@ ${svg.parentElement.innerHTML}`;
                     report(typeName);
 
                     let shape;
-            
+
                     if (typeName && types[typeName]) {
                         const hash = types[typeName].hash(node);
                         //shapes[hash] = shapes[hash] || types[typeName].make(this, node, index, namedNodes);
-                        shapes[hash] = types[typeName].make(this, node, index, namedNodes);
+                        shapes[hash] = types[typeName].make(this, original, index, namedNodes);
                         shape = shapes[hash];
                         this.shapes.push(shape);
                     }
@@ -3116,47 +3082,14 @@ ${svg.parentElement.innerHTML}`;
                         if (node.colour) {
                             background.colour = node.colour;
                         }
-                    } else if (position && Array.isArray(position) && position.length > 2) {
+                    } else if (shape && position && Array.isArray(position) && position.length > 2) {
                         const transform = getTransform(node.position, node.scale, node.rotation);
-                        /*
-                        position = position.slice(0, 3).map((v) => isNaN(v) ? 0 : v);
-                        let rotation = node.rotation;
-                        let scale = node.scale;
-                        const transform = [];
-                        if (node.rotation && node.rotation.length === 4) {
-                            node.rotation = node.rotation.map((v) => isNaN(v) ? 0 : v);
-                            const angle = Math.PI * node.rotation[0] / 180;
-                            const axis = normalised([...node.rotation.slice(1)]);
-                            const q = new Quaternion(
-                                Math.cos(angle / 2),
-                                Math.sin(angle / 2) * axis[0],
-                                Math.sin(angle / 2) * axis[1],
-                                Math.sin(angle / 2) * axis[2]);
-                            q.setMatrix(transform);
-                            transform[12] = position[0];
-                            transform[13] = position[1];
-                            transform[14] = position[2];
-                        } else {
-                            transform.push(
-                                1, 0, 0, 0,
-                                0, 1, 0, 0,
-                                0, 0, 1, 0,
-                                ...position, 1);
-                        }
-                        if (node.scale && !isNaN(node.scale)) {
-                            transform[0] *= node.scale;
-                            transform[5] *= node.scale;
-                            transform[10] *= node.scale;
-                        }
-                        */
-
-
 
                         const shader = this.shaders[node.shader] || (typeName === 'Text' ? this.shaders['textured2'] : this.shaders['shader4']);
 
-                        const parent = node.parent;
+                        //const parent = node.parent;
                         let colour = node.colour;
-                        let ancestor = parent;
+                        let ancestor = node.parent;
                         while (ancestor && !colour) {
                             colour = ancestor.colour;
                             ancestor = ancestor.parent;
@@ -3171,24 +3104,37 @@ ${svg.parentElement.innerHTML}`;
 
                         }
 
-                        const sceneNode = addNode(node, transform, shape, shader, colour);
+                        const shininess = node.specular || 1 + 5 * Math.random();
+
+                        Object.assign(shape, {
+                            name: node.name, parent, transform,
+                            shader, colour, shininess, specularColour: node.specularColour,
+                        });
+
+                        //const sceneNode = addNode(node, transform, shape, shader, colour);
                         if (node.texture) {
-                            sceneNode.texture = this.getTexture(texture, scene);
+                            shape.texture = this.getTexture(texture, scene);
                         }
-                        original[meta].viewData.set(this, sceneNode);
-                        namedNodes[node.name] = sceneNode;
+                        original[meta].viewData.set(this, shape);
+                        namedNodes[node.name] = shape;
                         if (stack.length > 0) {
-                            stack[0][meta].content.push(sceneNode);
+                            stack[0][meta].content.push(shape);
                         } else {
-                            this.graph.push(sceneNode);
+                            // this.graph.push(shape);
                         }
-                        sceneNode.sourceNode = original;
-                        stack.unshift(sceneNode);
+
+                        if (parent) {
+                            parent.content.push(shape);
+                        } else {
+                            this.graph.push(shape);
+                        }
+                        stack.unshift(shape);
                         endScope = true;
+                        parent = shape;
                     }
 
                     if (original[meta].content.length) {
-                        original[meta].content.forEach((part) => add(part));
+                        original[meta].content.forEach((node) => add(node, parent));
                     }
 
                     if (endScope) {
@@ -3196,8 +3142,7 @@ ${svg.parentElement.innerHTML}`;
                     }
                 };
 
-                structure.forEach((part) => add(part));
-                //this.events.sort((a, b) => (a.startTime) - (b.startTime));
+                structure.forEach((node) => add(node));
 
                 glErrors(this.gl, '>>> Update Buffers');
             }
@@ -3466,7 +3411,7 @@ ${svg.parentElement.innerHTML}`;
                 ];
                 this.projectionMatrix = projectionMatrix;
 
-                this.graph.forEach((node) => node.update(this, identityMatrix(), node, time));
+                this.graph.forEach((node) => node.updateBuffers(this));
 
                 this.updateBuffers(this.data);
 
@@ -3500,9 +3445,9 @@ ${svg.parentElement.innerHTML}`;
                 gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
                 if (this.settings.split.checked) {
-                    drawScene2(this, gl, this.structure, this.shaders, time);
+                    drawScene2(this, gl, this.graph, this.shaders, time);
                 } else {
-                    drawScene(this, gl, this.structure, time);
+                    drawScene(this, gl, this.graph, time);
                 }
                 glErrors(gl, `${this.title} update 6`);
 
@@ -9562,158 +9507,6 @@ ${svg.parentElement.innerHTML}`;
 
         const namedNodes = {};
 
-        class Transition {
-            constructor(node) {
-                this.node = node.sceneNode;
-            }
-            start() { }
-            finish() { }
-        }
-
-        class Translate extends Transition {
-            constructor(node, value) {
-                super();
-                this.value = value;
-            }
-            progress(d) {
-                if (d < 0) {
-                    return;
-                }
-                if (d > 1) {
-                    this.node.movement = matrixMultiply(this.node.movement,
-                        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
-                }
-                const p = d * d * (3 - 2 * d);
-                const v = scaled(this.value, p);
-                this.node.movement = matrixMultiply(this.node.movement, [
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, 0,
-                    ...v, 1,
-                ]);
-            }
-            finish() {
-                this.node.transform = matrixMultiply(this.node.transform,
-                    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ...this.value, 1]);
-            }
-        }
-
-        class Rotate extends Transition {
-            constructor(node, value) {
-                super();
-                this.value = value;
-                if (this.value.length < 4) {
-                    const start = this.value.length;
-                    this.value.length = 4;
-                    this.value.fill(0, start);
-                }
-            }
-            progress(d) {
-                if (d < 0) {
-                    return;
-                }
-                if (d > 1) {
-                    this.node.movement = matrixMultiply(this.node.movement,
-                        getRotationMatrix(this.value[0], this.value.slice(1)));
-                }
-                const p = d * d * (3 - 2 * d);
-                const angle = this.value[0] * p;
-                this.node.movement = matrixMultiply(this.node.movement,
-                    getRotationMatrix(angle, this.value.slice(1)));
-            }
-            finish() {
-                this.node.transform = matrixMultiply(this.node.transform,
-                    getRotationMatrix(this.value[0], this.value.slice(1)));
-            }
-        }
-
-        class Scale extends Transition {
-            constructor(node, value) {
-                super();
-                if (Array.isArray(value)) {
-                    this.value = value;
-                } else {
-                    this.value = Array(3).fill(value);
-                }
-            }
-            progress(d) {
-                if (d < 0) {
-                    return;
-                }
-                if (d > 1) {
-                    this.node.movement = matrixMultiply(this.node.movement, [
-                        this.value[0], 0, 0, 0,
-                        0, this.value[1], 0, 0,
-                        0, 0, this.value[2], 0,
-                        0, 0, 0, 1,
-                    ]);
-                }
-                const p = d * d * (3 - 2 * d);
-                const s = scaled(this.value, p);
-                this.node.movement = matrixMultiply(this.node.movement, [
-                    s[0], 0, 0, 0,
-                    0, s[1], 0, 0,
-                    0, 0, s[2], 0,
-                    0, 0, 0, 1,
-                ]);
-            }
-            finish() {
-                this.node.transform = matrixMultiply(this.node.transform, [
-                    this.value[0], 0, 0, 0,
-                    0, this.value[1], 0, 0,
-                    0, 0, this.value[2], 0,
-                    0, 0, 0, 1,
-                ]);
-            }
-        }
-
-        class ColourChange extends Transition {
-            constructor(node, value) {
-                super();
-                this.value = value;
-            }
-            start() {
-                this.intialColour = this.node.colour;
-            }
-            progress(d) {
-                if (d < 0) {
-                    return;
-                }
-                if (d > 1) {
-                    this.node.colour = value;
-                }
-                const p = d * d * (3 - 2 * d);
-                const v = this.value.forEach((v, i) =>
-                    this.intialColour[i] + (v - this.intialColour[i]) * p);
-                this.node.colour = v;
-            }
-        }
-
-        class Fade extends Transition {
-            constructor(node, value) {
-                super();
-                this.value = value;
-            }
-            start() {
-                this.initialAlpha = this.node.colour[3];
-            }
-            progress(d) {
-                if (d < 0) {
-                    return;
-                }
-                if (d > 1) {
-                    this.node.colour = value;
-                }
-                const p = d * d * (3 - 2 * d);
-                const f = this.initialAlpha + (this.value - this.initialAlpha) * p;
-                this.node.colour[3] = f;
-            }
-        }
-
-        const nodeTransitions = {
-            Translate, Rotate, Scale, ColourChange, Fade,
-        };
-
         /**
          * Make a proxy that accesses view specific parameters then node parameters
          */
@@ -10544,13 +10337,29 @@ void main() {
         }
 
         class Shape {
-            constructor(data) {
+            constructor(view, node) {
+                this.view = view;
+                this.vertexDataOffset = this.view.data.vertex.length;
+                this.node = node;
                 this.depthMask = true;
+                this.content = [];
             }
-            updateVertices(node) {
-                
+            updateVertex(index, px, py, pz, nx, ny, nz, u, v) {
+                const vertexData = this.view.data.vertex;
+                vertexData[index++] = px;
+                vertexData[index++] = py;
+                vertexData[index++] = pz;
+                vertexData[index++] = nx;
+                vertexData[index++] = ny;
+                vertexData[index++] = nz;
+                vertexData[index++] = u;
+                vertexData[index++] = v;
+                return index;
             }
-            updateBuffers(gl) { }
+            updateVertices() {
+
+            }
+            updateBuffers(view) { }
             draw3d(gl, shader) {
                 gl.depthMask(this.depthMask);
                 this.elements.forEach((shape) => {
@@ -10576,27 +10385,33 @@ void main() {
                 return [width, height, depth, mapping, node.sides, node.lines];
             }
             static make(view, node, index) {
-                return new Box(view, ...Box.parameters(node));
+                return new Box(view, node, ...Box.parameters(node));
             }
             static hash(node) {
                 return `box ${Box.parameters(node)}`;
             }
-            constructor(view, width = 1, height = 1, depth = 1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
-                super();
+            getDimensions() {
+                const size = this.node.size || [1, 1, 1];
+                this.width = this.node.width ?? size[0] ?? 1;
+                this.height = this.node.height ?? size[1] ?? size[0] ?? 1;
+                this.depth = this.node.depth ?? size[2] ?? size[0] ?? 1;
+            }
+            constructor(view, node, width = 1, height = 1, depth = 1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
+                super(view, node);
                 const gl = view.context;
                 const data = view.data;
-                if (!Array.isArray(sides)) {
-                    sides = [];
+                if (!Array.isArray(this.sides)) {
+                    this.sides = [];
                 }
                 for (let i = 0; i < 6; ++i) {
-                    sides[i] = sides[i] === undefined ? true : sides[i];
+                    if (this.sides[i] === undefined) {
+                        this.sides[i] = true;
+                    }
                 }
-                this.width = width;
-                this.height = height;
-                this.depth = depth;
-                const w = width;
-                const h = height;
-                const d = depth;
+                this.getDimensions();
+                const w = this.width;
+                const h = this.height;
+                const d = this.depth;
                 const start = data.vertex.length / 8;
 
                 const addFace = (p1, p2, p3, p4, normal, mapping) => {
@@ -10632,50 +10447,99 @@ void main() {
                     [0, 0, d],
                     [0, h, d],
                 ];
-                points.forEach((point) => {
-                    data.vertex.push(...point, 0, 0, 1, 0, 0);
-                });
-                data.indices.push(...[
-                    0, 2, 4, 6, 0, 1, 3, 5, 7, 1,
-                    2, 3, 4, 5, 6, 7,
-                ].map((i) => i + start));
-                mapping = mapping || Array(6);
+                this.mapping = mapping || Array(6);
 
-                let count = 0;
-                if (sides[0]) {
-                    addFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
-                    count += 6;
+                const count = this.sides.reduce((count, side) => count + (side ? 6 : 0), 0);
+                if (this.sides[0]) {
+                    addFace(points[0], points[1], points[2], points[3], [0, 0, 1], this.mapping[0]);
                 }
-                if (sides[1]) {
-                    addFace(points[2], points[3], points[4], points[5], [1, 0, 0], mapping[1]);
-                    count += 6;
+                if (this.sides[1]) {
+                    addFace(points[2], points[3], points[4], points[5], [1, 0, 0], this.mapping[1]);
                 }
-                if (sides[2]) {
-                    addFace(points[4], points[5], points[6], points[7], [0, 0, -1], mapping[2]);
-                    count += 6;
+                if (this.sides[2]) {
+                    addFace(points[4], points[5], points[6], points[7], [0, 0, -1], this.mapping[2]);
                 }
-                if (sides[3]) {
-                    addFace(points[6], points[7], points[0], points[1], [-1, 0, 0], mapping[3]);
-                    count += 6;
+                if (this.sides[3]) {
+                    addFace(points[6], points[7], points[0], points[1], [-1, 0, 0], this.mapping[3]);
                 }
-                if (sides[4]) {
-                    addFace(points[0], points[2], points[6], points[4], [0, -1, 0], mapping[4]);
-                    count += 6;
+                if (this.sides[4]) {
+                    addFace(points[0], points[2], points[6], points[4], [0, -1, 0], this.mapping[4]);
                 }
-                if (sides[5]) {
-                    addFace(points[1], points[3], points[7], points[5], [0, 1, 0], mapping[5]);
-                    count += 6;
+                if (this.sides[5]) {
+                    addFace(points[1], points[3], points[7], points[5], [0, 1, 0], this.mapping[5]);
                 }
 
                 this.elements = [];
                 if (count) {
-                    this.elements.push({ mode: gl.TRIANGLES, count, offset: (16 + indexStart) * 2 });
+                    this.elements.push({ mode: gl.TRIANGLES, count, offset: (indexStart) * 2 });
                 }
                 if (lines) {
                     this.elements.push(
                         { mode: gl.LINE_STRIP, count: 10, offset: (indexStart) * 2, colour: [1, 1, 1, 1] },
                         { mode: gl.LINES, count: 6, offset: (10 + indexStart) * 2, colour: [1, 1, 1, 1] });
                 }
+            }
+            updateBuffers(view) {
+                const vertexData = [];
+                this.getDimensions();
+                const w = this.width / 2;
+                const h = this.height / 2;
+                const d = this.depth / 2;
+                const mapping = this.mapping;
+                const sides = this.sides;
+
+                let index = this.vertexDataOffset;
+                const addFace = (p1, p2, p3, p4, normal, mapping) => {
+                    if (mapping !== undefined) {
+                        const u1 = (mapping % 4) / 4;
+                        const v1 = Math.floor(mapping / 4) / 3;
+                        const u2 = ((mapping % 4) + 1) / 4;
+                        const v2 = (Math.floor(mapping / 4) + 1) / 3;
+                        index = this.updateVertex(index, ...p1, ...normal, u1, v1);
+                        index = this.updateVertex(index, ...p2, ...normal, u1, v2);
+                        index = this.updateVertex(index, ...p3, ...normal, u2, v1);
+                        index = this.updateVertex(index, ...p4, ...normal, u2, v2);
+                    } else {
+                        index = this.updateVertex(index, ...p1, ...normal, 0, 0);
+                        index = this.updateVertex(index, ...p2, ...normal, 0, 1);
+                        index = this.updateVertex(index, ...p3, ...normal, 1, 0);
+                        index = this.updateVertex(index, ...p4, ...normal, 1, 1);
+                    }
+                };
+                const points = [
+                    [-w, -h, -d],
+                    [-w, h, -d],
+
+                    [w, -h, -d],
+                    [w, h, -d],
+
+                    [w, -h, d],
+                    [w, h, d],
+
+                    [-w, -h, d],
+                    [-w, h, d],
+                ];
+
+                if (sides[0]) {
+                    addFace(points[0], points[1], points[2], points[3], [0, 0, 1], mapping[0]);
+                }
+                if (sides[1]) {
+                    addFace(points[2], points[3], points[4], points[5], [1, 0, 0], mapping[1]);
+                }
+                if (sides[2]) {
+                    addFace(points[4], points[5], points[6], points[7], [0, 0, -1], mapping[2]);
+                }
+                if (sides[3]) {
+                    addFace(points[6], points[7], points[0], points[1], [-1, 0, 0], mapping[3]);
+                }
+                if (sides[4]) {
+                    addFace(points[0], points[2], points[6], points[4], [0, -1, 0], mapping[4]);
+                }
+                if (sides[5]) {
+                    addFace(points[1], points[3], points[7], points[5], [0, 1, 0], mapping[5]);
+                }
+            }
+            updateVertices(gl) {
             }
             intersects(line) {
                 const planes = [
@@ -10704,13 +10568,13 @@ void main() {
                 return [width, height, depth, bevel, mapping, node.sides, node.lines];
             }
             static make(view, node, index) {
-                return new BevelledBox(view, ...BevelledBox.parameters(node));
+                return new BevelledBox(view, node, ...BevelledBox.parameters(node));
             }
             static hash(node) {
                 return `bevelledbox ${BevelledBox.parameters(node)}`;
             }
-            constructor(view, width = 1, height = 1, depth = 1, bevel = 0.1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
-                super();
+            constructor(view, node, width = 1, height = 1, depth = 1, bevel = 0.1, mapping, sides = [1, 1, 1, 1, 1, 1], lines) {
+                super(view, node);
                 this.view = view;
                 this.dataIndex = view.data.vertex.length;
                 const gl = view.context;
@@ -10809,15 +10673,6 @@ void main() {
                     [-w, -h, d],
                     [-w, h, d],
                 ];
-                /*
-                points.forEach((point) => {
-                    data.vertex.push(...point, 0, 0, 1, 0, 0);
-                });
-                data.indices.push(...[
-                    0, 2, 4, 6, 0, 1, 3, 5, 7, 1,
-                    2, 3, 4, 5, 6, 7,
-                ].map((i) => i + start));
-                */
                 this.mapping = mapping || Array(6);
 
                 let count = 0;
@@ -10880,10 +10735,11 @@ void main() {
                         { mode: gl.LINES, count: 6, offset: (10 + indexStart) * 2, colour: [1, 1, 1, 1] });
                 }
             }
-            updateVertices(node) {
-                const w = node.size[0] / 2;
-                const h = node.size[1] / 2;
-                const d = node.size[2] / 2;
+            updateBuffers() {
+                const w = this.node.size[0] / 2;
+                const h = this.node.size[1] / 2;
+                const d = this.node.size[2] / 2;
+                const bevel = this.node.bevel;
                 const points = [
                     [-w, -h, -d],
                     [-w, h, -d],
@@ -10898,36 +10754,25 @@ void main() {
                     [-w, h, d],
                 ];
 
-                let index = this.dataIndex;
-
-                const updateVertex = (px, py, pz, nx, ny, nz, u, v) => {
-                    this.data.vertex[index++] = px;
-                    this.data.vertex[index++] = py;
-                    this.data.vertex[index++] = pz;
-                    this.data.vertex[index++] = nx;
-                    this.data.vertex[index++] = ny;
-                    this.data.vertex[index++] = nz;
-                    this.data.vertex[index++] = u;
-                    this.data.vertex[index++] = v;
-                }
+                let index = this.vertexDataOffset;
 
                 const updateTriangle = (point, mapping) => {
                     const normal = normalised(point);
-                    const p1 = [point[0] - Math.sign(point[0]) * node.bevel, point[1] - Math.sign(point[1]) * node.bevel, point[2]];
-                    const p2 = [point[0] - Math.sign(point[0]) * node.bevel, point[1], point[2] - Math.sign(point[2]) * node.bevel];
-                    const p3 = [point[0], point[1] - Math.sign(point[1]) * node.bevel, point[2] - Math.sign(point[2]) * node.bevel];
+                    const p1 = [point[0] - Math.sign(point[0]) * bevel, point[1] - Math.sign(point[1]) * bevel, point[2]];
+                    const p2 = [point[0] - Math.sign(point[0]) * bevel, point[1], point[2] - Math.sign(point[2]) * bevel];
+                    const p3 = [point[0], point[1] - Math.sign(point[1]) * bevel, point[2] - Math.sign(point[2]) * bevel];
                     if (mapping !== undefined) {
                         const u1 = (mapping % 4) / 4;
                         const v1 = Math.floor(mapping / 4) / 3;
                         const u2 = ((mapping % 4) + 1) / 4;
                         const v2 = (Math.floor(mapping / 4) + 1) / 3;
-                        updateVertex(...p1, ...normal, u1, v1);
-                        updateVertex(...p2, ...normal, u1, v2);
-                        updateVertex(...p3, ...normal, u2, v1);
+                        index = this.updateVertex(index, ...p1, ...normal, u1, v1);
+                        index = this.updateVertex(index, ...p2, ...normal, u1, v2);
+                        index = this.updateVertex(index, ...p3, ...normal, u2, v1);
                     } else {
-                        updateVertex(...p1, ...normal, 0, 0);
-                        updateVertex(...p2, ...normal, 0, 1);
-                        updateVertex(...p3, ...normal, 1, 0);
+                        index = this.updateVertex(index, ...p1, ...normal, 0, 0);
+                        index = this.updateVertex(index, ...p2, ...normal, 0, 1);
+                        index = this.updateVertex(index, ...p3, ...normal, 1, 0);
                     }
                 }
 
@@ -10937,36 +10782,36 @@ void main() {
                         const v1 = Math.floor(mapping / 4) / 3;
                         const u2 = ((mapping % 4) + 1) / 4;
                         const v2 = (Math.floor(mapping / 4) + 1) / 3;
-                        updateVertex(...p1, ...normal, u1, v1);
-                        updateVertex(...p2, ...normal, u1, v2);
-                        updateVertex(...p3, ...normal, u2, v1);
-                        updateVertex(...p4, ...normal, u2, v2);
+                        index = this.updateVertex(index, ...p1, ...normal, u1, v1);
+                        index = this.updateVertex(index, ...p2, ...normal, u1, v2);
+                        index = this.updateVertex(index, ...p3, ...normal, u2, v1);
+                        index = this.updateVertex(index, ...p4, ...normal, u2, v2);
                     } else {
-                        updateVertex(...p1, ...normal, 0, 0);
-                        updateVertex(...p2, ...normal, 0, 1);
-                        updateVertex(...p3, ...normal, 1, 0);
-                        updateVertex(...p4, ...normal, 1, 1);
+                        index = this.updateVertex(index, ...p1, ...normal, 0, 0);
+                        index = this.updateVertex(index, ...p2, ...normal, 0, 1);
+                        index = this.updateVertex(index, ...p3, ...normal, 1, 0);
+                        index = this.updateVertex(index, ...p4, ...normal, 1, 1);
                     }
                 };
 
                 const updateBeveledFace = (p1, p2, p3, p4, normal, mapping) => {
-                    p1 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    p2 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    p3 = p3.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    p4 = p4.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
+                    p1 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    p2 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    p3 = p3.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    p4 = p4.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
                     updateFace(p1, p2, p3, p4, normal, mapping);
                 }
 
                 const updateEdge = (p1, p2, normal, mapping) => {
                     const axis = [[1, 2], [0, 2], [0, 1]][normal.indexOf(0)];
-                    const p3 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    const p4 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    const p5 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    const p6 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * node.bevel);
-                    p3[axis[0]] = p3[axis[0]] - Math.sign(p3[axis[0]]) * node.bevel;
-                    p4[axis[1]] = p4[axis[1]] - Math.sign(p4[axis[1]]) * node.bevel;
-                    p5[axis[0]] = p5[axis[0]] - Math.sign(p5[axis[0]]) * node.bevel;
-                    p6[axis[1]] = p6[axis[1]] - Math.sign(p6[axis[1]]) * node.bevel;
+                    const p3 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    const p4 = p1.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    const p5 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    const p6 = p2.map((v, i) => normal[i] ? v : v - Math.sign(v) * bevel);
+                    p3[axis[0]] = p3[axis[0]] - Math.sign(p3[axis[0]]) * bevel;
+                    p4[axis[1]] = p4[axis[1]] - Math.sign(p4[axis[1]]) * bevel;
+                    p5[axis[0]] = p5[axis[0]] - Math.sign(p5[axis[0]]) * bevel;
+                    p6[axis[1]] = p6[axis[1]] - Math.sign(p6[axis[1]]) * bevel;
 
                     updateFace(p3, p4, p5, p6, normal, mapping);
                 };
@@ -11011,8 +10856,6 @@ void main() {
                 updateTriangle(points[5]);
                 updateTriangle(points[6]);
                 updateTriangle(points[7]);
-
-
             }
             intersects(line) {
                 const planes = [
@@ -11041,13 +10884,13 @@ void main() {
                 return [width, height, text, colour, font];
             }
             static make(view, node, index) {
-                return new Text(view, ...Text.parameters(node));
+                return new Text(view, node, ...Text.parameters(node));
             }
             static hash(node) {
                 return `text ${Text.parameters(node)}`;
             }
-            constructor(view, width = 1, height = 1, text, colour, font) {
-                super();
+            constructor(view, node, width = 1, height = 1, text, colour, font) {
+                super(view, node);
                 this.depthMask = false;
                 const gl = view.context;
                 const data = view.data;
@@ -11081,13 +10924,13 @@ void main() {
          */
         class Diamond extends Shape {
             static make(view, node, index) {
-                return new Diamond(view, node.size);
+                return new Diamond(view, node, node.size);
             }
             static hash(node) {
                 return `diamond ${node.size}`;
             }
-            constructor(view, size = 1) {
-                super();
+            constructor(view, node, size = 1) {
+                super(view, node);
                 const gl = view.context;
                 const data = view.data;
                 this.size = size;
@@ -11181,12 +11024,12 @@ void main() {
                 const strips = node.strips || values[index++] || 12;
                 const mode = node.mode || values[index++] || 'solid';
 
-                return new Ball(view, width, depth, height, sides, strips);
+                return new Ball(view, node, width, depth, height, sides, strips);
             }
             static hash(node) {
                 return `ball ${node.size} ${node.height} ${node.depth} ${node.sides} ${node.strips}`;
             }
-            constructor(view, width = 2, depth = 0, height = 0, sides = 12, strips = 12) {
+            constructor(view, node, width = 2, depth = 0, height = 0, sides = 12, strips = 12) {
                 super();
                 const gl = view.context;
                 const data = view.data;
@@ -11264,13 +11107,13 @@ void main() {
                 const start = node.start || values[index++] || 0;
                 const mode = node.mode || values[index++] || 'solid';
 
-                return new Torus(gl, data, size, thickness, sides, strips, start, mode);
+                return new Torus(gl, node, data, size, thickness, sides, strips, start, mode);
             }
             static hash(node) {
                 return `torus ${node.size} ${node.thickness} ${node.sides} ${node.strips}`;
             }
-            constructor(view, mainRadius = 2, minorRadius = 1, sides = 12, strips = 12, startAngle = 0, mode = 'solid') {
-                super();
+            constructor(view, ndoe, mainRadius = 2, minorRadius = 1, sides = 12, strips = 12, startAngle = 0, mode = 'solid') {
+                super(view, node);
                 const gl = view.context;
                 const data = view.data;
                 this.sides = sides;
@@ -11335,13 +11178,13 @@ void main() {
          */
         class Frustum extends Shape {
             static make(view, node, index) {
-                return new Frustum(view, node.baseRadius, node.topRadius, node.height, node.sides);
+                return new Frustum(view, node, node.baseRadius, node.topRadius, node.height, node.sides);
             }
             static hash(node) {
                 return `frustum ${node.baseRadius} ${node.topRadius} ${node.height} ${node.sides}`;
             }
-            constructor(view, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
-                super();
+            constructor(view, node, baseRadius = 1, topRadius = 0.5, height = 2, sides = 12) {
+                super(view, node);
                 const gl = view.context;
                 const data = view.data;
                 height /= 2;
@@ -11481,13 +11324,13 @@ void main() {
          */
         class Tetrahedron extends Shape {
             static make(view, node, index) {
-                return new Tetrahedron(view, node.size);
+                return new Tetrahedron(view, node, node.size);
             }
             static hash(node) {
                 return `tetrahedron ${node.size}`;
             }
             constructor(view, size = 1) {
-                super();
+                super(view, node);
                 const gl = view.context;
                 const data = view.data;
                 const start = data.vertex.length / 8;
@@ -11570,13 +11413,13 @@ void main() {
                 return points;
             }
             static make(view, node, index) {
-                return new Prism(view, Prism.getPoints(node), node.height, node.smooth, node.sides, node.lines);
+                return new Prism(view, node, Prism.getPoints(node), node.height, node.smooth, node.sides, node.lines);
             }
             static hash(node) {
                 const points = Prism.getPoints(node);
                 return `Prism ${points.join(',')} ${node.height} ${node.smooth}, ${node.sides}`;
             }
-            constructor(view, points = [[0, 0], [0, 1], [0, -1]], height = 1, smooth, sides = [], lines) {
+            constructor(view, node, points = [[0, 0], [0, 1], [0, -1]], height = 1, smooth, sides = [], lines) {
                 super();
                 const gl = view.context;
                 const data = view.data;
@@ -11790,7 +11633,7 @@ void main() {
             }
             intersects(line) {
             }
-            updateBuffers(scene, node) {
+            updateBuffers(view, node) {
                 this.fromNode = this.fromNode || findNode(this.from) || node.parent;
                 this.toNode = this.toNode || findNode(this.to) || node.parent;
                 let inverse = identityMatrix();
@@ -11827,57 +11670,27 @@ void main() {
         }
 
         /**
-         * Function to update node data prior to rendering
-         */
-        function update(scene, origin, time) {
-            this.world = matrixMultiply(this.transform, origin);
-            if (this.shape) {
-                this.shape.updateBuffers(scene, this);
-            }
-            this[meta].content.forEach((child) => child.update(scene, this.world, time));
-        }
-
-        /**
-         *
-         */
-        function addNode(source, transform, shape, shader, colour = [1, 0, 1, 1]) {
-
-            shininess = source.specular || 1 + 5 * Math.random();
-
-            const node = Object.assign(Object.create({ update }), {
-                name: source.name, parent, transform, movement: identityMatrix(),
-                shape, shader, colour, shininess, specularColour: source.specularColour, [meta]: { content: [] },
-            });
-            return node;
-        }
-
-        /**
          *
          */
         function drawNode(view, gl, origin, node, time, level = 0) {
-            const sceneNode = node[meta].viewData?.get(view);
-            if (sceneNode) {
-                sceneNode.shape.updateVertices(node);
-                const nodeTransform = getTransform(node.position, node.scale, node.rotation);
-                sceneNode.world = matrixMultiply(matrixMultiply(nodeTransform, sceneNode.movement), origin);
-                const transform = matrixMultiply(sceneNode.world, view.modelViewMatrix);
-                sceneNode.z = transform[14];
+            const nodeTransform = getTransform(node.node.position, node.node.scale, node.node.rotation);
+            node.world = matrixMultiply(nodeTransform, origin);
+            const transform = matrixMultiply(node.world, view.modelViewMatrix);
+            node.z = transform[14];
 
-                gl.useProgram(sceneNode.shader.program);
-                gl.uniformMatrix4fv(sceneNode.shader.modelViewMatrix, false, transform);
-                const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
-                gl.uniformMatrix3fv(sceneNode.shader.normalMatrix, false, normalMatrix);
-                sceneNode.shader.setNodeData(gl, sceneNode);
-                if (sceneNode.shape && level >= view.minLevel) {
-                    sceneNode.shape.draw3d(gl, sceneNode.shader);
-                }
-                origin = sceneNode.world;
-                sceneNode.movement = identityMatrix();
-                level += 1;
+            gl.useProgram(node.shader.program);
+            gl.uniformMatrix4fv(node.shader.modelViewMatrix, false, transform);
+            const normalMatrix = transpose3x3(invert3x3(get3x3(transform)));
+            gl.uniformMatrix3fv(node.shader.normalMatrix, false, normalMatrix);
+            node.shader.setNodeData(gl, node);
+            if (level >= view.minLevel) {
+                node.draw3d(gl, node.shader);
             }
-            node[meta].content.sort((a, b) => a.z - b.z);
+            origin = node.world;
+            level += 1;
+            node.content.sort((a, b) => a.z - b.z);
             if ((view.maxLevel === 0) || (level < view.maxLevel)) {
-                node[meta].content.forEach((child) => drawNode(view, gl, origin, child, time));
+                node.content.forEach((child) => drawNode(view, gl, origin, child, time));
             }
         }
 
@@ -11895,7 +11708,7 @@ void main() {
         function drawNode2(view, gl, node, shader, time) {
             const sceneNode = node[meta].viewData.get(view);
             if (sceneNode && sceneNode.shader === shader) {
-                sceneNode.world = matrixMultiply(matrixMultiply(sceneNode.transform, sceneNode.movement), origin);
+                sceneNode.world = matrixMultiply(sceneNode.transform, origin);
                 const transform = matrixMultiply(sceneNode.world, scene.modelViewMatrix);
                 sceneNode.z = transform[14];
 
@@ -11907,7 +11720,6 @@ void main() {
                 if (sceneNode.shape) {
                     sceneNode.shape.draw3d(gl, sceneNode.shader);
                 }
-                sceneNode.movement = identityMatrix();
             }
             node[meta].content.sort((a, b) => a.z - b.z);
             node[meta].content.forEach((child) => drawNode2(view, gl, child, shader, time));
@@ -12167,20 +11979,6 @@ void main() {
         }
 
         /**
-         *
-         */
-        function processActiveEvents(time) {
-            return;
-            //report(`${scene.activeEvents.length} ${time.toFixed(2)}`);
-            scene.activeEvents.filter((event) => event.endTime <= time).forEach((event) => event.transition.finish());
-            scene.activeEvents = scene.activeEvents.filter((event) => event.endTime > time);
-            scene.activeEvents.forEach((event) => {
-                const d = (time - event.startTime) / (event.endTime - event.startTime);
-                event.transition.progress(d);
-            });
-        }
-
-        /**
          * Resize the canvas based on the node size
          */
         function updateCanvasSize(view) {
@@ -12242,17 +12040,7 @@ void main() {
                     const total = times.reduce((sum, delta) => sum + delta);
                     const average = 5000 / total;
                 }
-                if (state.mode === 'playing') {
-                    state.time += delta / 1000;
-                    while (scene.events[state.nextEvent] && state.time > scene.events[state.nextEvent].startTime) {
-                        const event = scene.events[state.nextEvent];
-                        event.transition.start();
-                        scene.activeEvents.push(event);
-                        ++state.nextEvent;
-                    }
-                }
             }
-            processActiveEvents(state.time);
             last = time;
             if (cameraMove.action === 'start') {
                 cameraStart = {
