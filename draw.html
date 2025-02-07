@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width" />
+    <title>Draw</title>
+    <style>
+        html {
+            font-family: sans-serif;
+            box-sizing: border-box;
+        }
+
+        *,
+        *:before,
+        *:after {
+            box-sizing: inherit;
+        }
+
+        body {
+            margin: 0;
+            width: 100dvw;
+            height: 100dvh;
+            overflow: hidden;
+            background-color: lightgray;
+        }
+
+        canvas {
+            width: 100dvw;
+            height: 100dvh;
+        }
+
+        #overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            background: gray;
+        }
+
+        button {
+            width: 2em;
+            height: 2em;
+        }
+
+        #overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            background: gray;
+        }
+
+        #controls {
+            position: fixed;
+            left: 1em;
+            top: 1em;
+        }
+
+        #tools {
+            transition: max-height 0.3s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            max-height: 100dvh;
+        }
+
+        #view-controls {
+            backdrop-filter: blur(10px);
+            padding: 5px;
+            border-radius: 5px;
+            /*background-color: rgb(200, 200, 200, 0.75);*/
+        }
+
+        .shrunk {
+            max-height: 0 !important;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="main" tabindex="1"></canvas>
+    <div id="controls">
+        <button id="toggle-tools">&#x2261;</button>
+        <button id="clear" title="clear">&#x239A;</button>
+        <button id="undo" title="undo">&#x27F2;</button>
+        <button id="redo" title="redo">&#x27F3;</button>
+        <div id="tools" class="shrunk">
+            <button id="pointer" title="pointer"></button>
+            <button id="freehand" title="freehand"></button>
+            <button id="lines" title="lines">
+                <svg viewport="0 0 10 10">
+                    <path d="M1 1 L9 4 L3 7 L5 9" stroke="black" fill="none"></path>
+                </svg></button>
+            <button id="boxes" title="boxes">&#x2BBC;</button>
+            <button id="circle" title="circle">&#x2B58;</button>
+            <button id="ellipse" title="ellipse">&#x2B2D;</button>
+            <input id="line-colour" type="color" />
+            <div><input id="fill-colour" type="color" /><input id="fill-shape" type="checkbox" /></div>
+            <input id="line-width" type="range" min="0.1" max="10" value="1" />
+        </div>
+        <div id="view-controls">
+            <div>Show Grid <input id="show-grid" type="checkbox"></div>
+            <div>Snap To Grid <input id="snap-to-grid" type="checkbox"></div>
+            <div><input id="grid-x" type="range" min="5" max="100" value="10" /><span id="grid-x-label">10</span></div>
+            <div><input id="grid-y" type="range" min="5" max="100" value="10" /><span id="grid-y-label">10</span></div>
+        </div>
+    </div>
+    <div id="overlay"></div>
+    <script>
+        const canvas = document.getElementById('main');
+        const context = canvas.getContext('2d');
+        const overlay = document.getElementById('overlay');
+
+        const toggleTools = document.getElementById('toggle-tools');
+        const tools = document.getElementById('tools');
+
+        let lineColour = 'black';
+        let fillColour;
+
+        const pointerButton = document.getElementById('pointer');
+        const freehandButton = document.getElementById('freehand');
+        const linesButton = document.getElementById('lines');
+        const boxesButton = document.getElementById('boxes');
+        const circleButton = document.getElementById('circle');
+        const ellipseButton = document.getElementById('ellipse');
+        const lineColourSelection = document.getElementById('line-colour');
+        const fillColourSelection = document.getElementById('fill-colour');
+        const eneblefill = document.getElementById('fill-shape');
+        const lineWidthSelection = document.getElementById('line-width');
+        const clear = document.getElementById('clear');
+        const undo = document.getElementById('undo');
+        const redo = document.getElementById('redo');
+
+        const viewControls = {
+            showGrid: document.getElementById('show-grid'),
+            snapToGrid: document.getElementById('snap-to-grid'),
+            gridX: document.getElementById('grid-x'),
+            gridXLabel: document.getElementById('grid-x-label'),
+            gridY: document.getElementById('grid-y'),
+            gridYLabel: document.getElementById('grid-y-label'),
+            addHandlers() {
+                this.gridX.addEventListener('input', (event) => grid.x = parseInt(this.gridXLabel.innerText = this.gridX.value));
+                this.gridY.addEventListener('input', (event) => grid.y = parseInt(this.gridYLabel.innerText = this.gridY.value));
+            }
+        }
+
+        /**
+         * SVGView component
+         */
+         class SVGView {
+            static ns = 'http://www.w3.org/2000/svg';
+
+            constructor(id='new-svg') {
+                this.svg = document.getElementById(id) || document.createElement('svg');
+                this.currentElement = this.svg;
+                this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
+                this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
+                this.title = title || 'SVG Diagram';
+                this.addControls();
+            }
+            make(type, attributes, content, classes) {
+                const element = document.createElementNS(SVGView.ns, type);
+                Object.entries(attributes).forEach(([name, value]) =>
+                    name !== 'name' ? element.setAttribute(name, value) : null);
+                if (attributes[SVGView.namedAttributes]) {
+                    Object.entries(attributes[SVGView.namedAttributes]).forEach(([namespace, values]) =>
+                        Object.entries(values).forEach(([name, value]) =>
+                            element.setAttributeNS(namespace, name, value)));
+                }
+                if (content) {
+                    element.append(content);
+                }
+                if (classes) {
+                    element.classList.add(...classes)
+                }
+                return element;
+            }
+            add(type, parent, attributes = {}, content, classes) {
+                parent = parent || this.svg;
+                const element = this.make(type, attributes, content, classes);
+                parent.appendChild(element);
+                return element;
+            }
+            addUnder(type, parent, attributes = {}, content, classes) {
+                parent = parent || this.svg;
+                const element = this.make(type, attributes, content, classes);
+                parent.insertBefore(element, parent.firstElementChild);
+                return element;
+            }
+            updateElement(element, attributes) {
+                Object.entries(attributes).forEach(([name, value]) =>
+                    name !== 'name' ? element.setAttribute(name, value) : null);
+
+                if (attributes[SVGView.namedAttributes]) {
+                    Object.entries(attributes[SVGView.namedAttributes]).forEach(([namespace, values]) =>
+                        Object.entries(values).forEach(([name, value]) =>
+                            element.setAttributeNS(namespace, name, value)));
+                }
+                return element
+            }
+            render() {
+                process(makeSVG, this.settings.rootNodes.value, this.settings.filter.value);
+                const extents = {
+                    left: 0,
+                    top: 0,
+                    right: 100,
+                    bottom: 100,
+                }
+                this.svg.setAttribute('viewBox', `${extents.left} ${extents.top} ${extents.right} ${extents.bottom}`);
+                this.svg.setAttribute('width', `${extents.right - extents.left}`);
+                this.svg.setAttribute('height', `${extents.bottom - extents.top}`);
+
+                this.svg.style.width = `${extents.right - extents.left}px`;
+                this.svg.style.height = `${extents.bottom - extents.top}px`;
+            }
+            addControls() {
+                const last = {};
+                let action;
+                const drag = (event, x, y) => {
+                    const dx = x - last.x;
+                    const dy = y - last.y;
+
+                    const m = new DOMMatrix([1, 0, 0, 1, dx, dy]);
+                    const t = m.multiply(initialMatrix);
+                    const attrs = {
+                        transform: `matrix(${t.a}, ${t.b}, ${t.c}, ${t.d}, ${t.e}, ${t.f})`,
+                    };
+                    this.updateElement(this.currentElement, attrs);
+                };
+                let initialMatrix;
+                const transform = (event, x, y) => {
+
+                    const box = this.svg.getBoundingClientRect();
+
+                    if (event.touches.length === 2) {
+                        const p1 = { x: last.x - box.x, y: last.y - box.y };
+                        const p2 = { x: last.second.x - box.x, y: last.second.y - box.y };
+                        const q1 = { x: event.touches[0].clientX - box.x, y: event.touches[0].clientY - box.y };
+                        const q2 = { x: event.touches[1].clientX - box.x, y: event.touches[1].clientY - box.y };
+
+                        const v1 = { x: p2.x - p1.x, y: p2.y - p1.y };
+                        const v2 = { x: q2.x - q1.x, y: q2.y - q1.y };
+
+                        const l2 = v1.x * v1.x + v1.y * v1.y;
+                        const scaledCosAngle = (v2.x * v1.x + v1.y * v2.y) / l2;
+                        const scaledSinAngle = (v1.x * v2.y - v1.y * v2.x) / l2;
+                        const tx = (v1.x * (q1.x * p2.x - p1.x * q2.x) + v1.y * (q1.x * p2.y - q2.x * p1.y) + v2.y * (p2.x * p1.y - p1.x * p2.y)) / l2;
+                        const ty = (v2.x * (p1.x * p2.y - p2.x * p1.y) + v1.y * (q1.y * p2.y - q2.y * p1.y) + v1.x * (q1.y * p2.x - q2.y * p1.x)) / l2;
+
+                        const m = new DOMMatrix([scaledCosAngle, scaledSinAngle, -scaledSinAngle, scaledCosAngle, tx, ty]);
+                        const t = m.multiply(initialMatrix);
+                        const attrs = {
+                            transform: `matrix(${t.a}, ${t.b}, ${t.c}, ${t.d}, ${t.e}, ${t.f})`,
+                        };
+                        this.updateElement(this.svg, attrs);
+                    }
+                };
+                this.svg.addEventListener('touchstart', (event) => {
+                    initialMatrix = this.currentElement.getCTM();
+                    last.x = event.touches[0].clientX;
+                    last.y = event.touches[0].clientY;
+                    const before = this.currentElement.getCTM();
+                    last.transform = [
+                        before.a, before.b, before.e,
+                        before.c, before.d, before.f,
+                        0, 0, 1];
+
+                    if (event.touches.length === 1) {
+                        action = drag;
+                    } else if (event.touches.length === 2) {
+                        event.preventDefault();
+                        last.second = {
+                            x: event.touches[1].clientX,
+                            y: event.touches[1].clientY,
+                        };
+                        action = transform;
+                    }
+                });
+
+                this.svg.addEventListener('touchmove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.touches[0].clientX, event.touches[0].clientY);
+                    }
+                });
+
+                this.svg.addEventListener('touchend', (event) => {
+                    action = null;
+                });
+
+                this.svg.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    initialMatrix = this.currentElement.getCTM();
+                    last.x = event.clientX;
+                    last.y = event.clientY;
+                    action = drag;
+                });
+
+                this.svg.addEventListener('mousemove', (event) => {
+                    event.preventDefault();
+                    if (action) {
+                        action(event, event.clientX, event.clientY);
+                    }
+                });
+
+                this.svg.addEventListener('mouseup', (event) => {
+                    event.preventDefault();
+                    action = null;
+                });
+
+                this.svg.addEventListener('wheel', (event) => {
+                    if (event.ctrlKey) {
+                        event.preventDefault();
+                        // Determine the scaling factor
+                        const delta = Math.pow(2, -event.deltaY / 1000);
+
+                        // Get the point under the mouse
+                        const point = new DOMPoint(event.clientX, event.clientY);
+                        const initial = this.currentElement.getCTM();
+                        const origin = point.matrixTransform(initial.inverse().multiply(this.svg.getScreenCTM().inverse()));
+
+                        const offset = initial.translate(origin.x, origin.y);
+                        const scaled = offset.scale(delta);
+                        const matrix = scaled.translate(-origin.x, -origin.y);
+
+                        const attrs = {
+                            transform: `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`,
+                        };
+                        this.updateElement(this.currentElement, attrs);
+                    }
+                });
+
+                this.svg.addEventListener('keydown', (event) => {
+                    report(event.key);
+                    event.preventDefault();
+                    const scale = event.ctrlKey ? 0.1 : 1;
+                    if (event.key === 'u') {
+                    }
+                    if (event.key === 'ArrowUp') {
+                    }
+                    if (event.key === 'ArrowDown') {
+                    }
+                    if (event.key === 'ArrowLeft') {
+                    }
+                    if (event.key === 'ArrowRight') {
+                    }
+                });
+            }
+        }
+
+        viewControls.addHandlers();
+
+        pointerButton.addEventListener('click', (event) => tool = new PointerTool());
+        freehandButton.addEventListener('click', (event) => tool = new Freehand());
+        linesButton.addEventListener('click', (event) => tool = new Curves());
+        boxesButton.addEventListener('click', (event) => tool = new Rectangle());
+        circleButton.addEventListener('click', (event) => tool = new Circle());
+        ellipseButton.addEventListener('click', (event) => tool = new Ellipse());
+        lineColourSelection.addEventListener('change', (event) => lineColour = lineColourSelection.value);
+        fillColourSelection.addEventListener('change', (event) => {
+            fillColour = fillColourSelection.value;
+            eneblefill.checked = true;
+        });
+        eneblefill.addEventListener('change', (event) => fillColour = eneblefill.checked ? fillColourSelection.value : null);
+
+        clear.addEventListener('click', (event) => {
+            elements.length = 0;
+            selected = null;
+        });
+
+        toggleTools.addEventListener('click', (event) => tools.classList.toggle('shrunk'));
+
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+
+        canvas.width = context.width = width;
+        canvas.height = context.height = height;
+
+        const elements = [];
+        let selected;
+
+        function update(time) {
+            context.clearRect(0, 0, width, height);
+            grid.draw(context);
+            elements.forEach((element) => element.draw(context));
+            if (selected) {
+                selected.drawSelected(context);
+            }
+            window.requestAnimationFrame(update);
+        }
+        overlay.innerText = `${width} x ${height}`;
+
+        /**
+         * Simple function to return the last element of an array.
+         */
+        function lastOf(arr) {
+            return arr[arr.length - 1];
+        }
+
+
+        const grid = {
+            x: 10,
+            y: 10,
+            snap(position) {
+                if (viewControls.snapToGrid.checked) {
+                    position.x = this.x * Math.round(position.x / this.x);
+                    position.y = this.y * Math.round(position.y / this.y);
+                }
+                return true;
+            },
+            draw(context) {
+                if (viewControls.showGrid.checked) {
+                    context.strokeStyle = 'rgb(100, 100, 255)';
+                    context.lineWidth = 1;
+                    context.beginPath();
+                    for (let x = 0; x < width; x += this.x) {
+                        context.moveTo(x, 0);
+                        context.lineTo(x, height);
+                    }
+                    for (let y = 0; y < height; y += this.y) {
+                        context.moveTo(0, y);
+                        context.lineTo(width, y);
+                    }
+                    context.stroke();
+                }
+            }
+        }
+
+        function snap(x, y) {
+            const position = { x, y };
+            grid.snap(position);
+            return [position.x, position.y];
+        }
+
+        class Tool {
+            constructor() {
+                overlay.innerText = this.constructor.name;
+                this.boundary = {
+                    x: {},
+                    y: {},
+                    get width() {
+                        return this.x.max - this.x.min;
+                    },
+                    get height() {
+                        return this.y.max - this.y.min;
+                    },
+                    get midX()  {
+                        return 0.5 * (this.x.min + this.x.max);
+                    },
+                    get midY()  {
+                        return 0.5 * (this.y.min + this.y.max);
+                    },
+                };
+                canvas.focus();
+            }
+            getStyle() {
+                this.lineColour = lineColour;
+                this.fillColour = eneblefill.checked ? fillColourSelection.value : null;
+                this.lineWidth = lineWidthSelection.value;
+            }
+            setStyle(context) {
+                context.strokeStyle = this.lineColour;
+                if (this.fillColour) {
+                    context.fillStyle = this.fillColour;
+                }
+                context.lineWidth = this.lineWidth;
+            }
+            drawSelected(context) {
+                if (this.boundary.x.min !== undefined) {
+                    context.save();
+                    //context.strokeStyle = 'rgb(200, 200, 200, 0.7)';
+                    this.drawBoundary(context);
+                    this.drawControls(context);
+                    context.restore();
+                }
+            }
+            drawBoundary(context) {
+                context.lineWidth = 1;
+                    context.setLineDash([5, 5]);
+                    context.beginPath();
+                    context.rect(this.boundary.x.min, this.boundary.y.min, this.boundary.width, this.boundary.height);
+                    context.stroke();
+
+                    context.setLineDash([]);
+                    context.beginPath();
+                    context.rect(this.boundary.x.min - 4, this.boundary.y.min - 4, 8, 8);
+                    context.rect(this.boundary.x.max - 4, this.boundary.y.min - 4, 8, 8);
+                    context.rect(this.boundary.x.min - 4, this.boundary.y.max - 4, 8, 8);
+                    context.rect(this.boundary.x.max - 4, this.boundary.y.max - 4, 8, 8);
+
+                    context.rect(this.boundary.x.min - 4, this.boundary.midY - 4, 8, 8);
+                    context.rect(this.boundary.x.max - 4, this.boundary.midY - 4, 8, 8);
+                    context.rect(this.boundary.midX - 4, this.boundary.y.min - 4, 8, 8);
+                    context.rect(this.boundary.midX - 4, this.boundary.y.min - 4, 8, 8);
+                    
+                    context.stroke();
+            }
+            drawControls(context) {
+                
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    tool = new PointerTool();
+                }
+            }
+        }
+
+        class Freehand extends Tool {
+            constructor() {
+                super();
+                this.started = false;
+                this.points = [];
+            }
+            start(x, y) {
+                this.getStyle();
+                this.getStyle();
+                this.points.push({x, y});
+                this.started = true;
+                elements.push(this);
+                this.updateBoundary(x, y);
+            }
+            move(x, y) {
+                if (this.started) {
+                    this.points.push({x, y});
+                    this.updateBoundary(x, y);
+                }
+            }
+            end() {
+                tool = new Freehand();
+            }
+            draw(context) {
+                if (this.points.length) {
+                    this.setStyle(context);
+                    context.beginPath();
+                    //context.moveTo(this.points.x, this.point.y);
+                    this.points.forEach((point) =>
+                        context.lineTo(point.x, point.y));
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            drawEdit(context) {
+                if (this.points.length) {
+                    context.save();
+                    //context.strokeStyle = 'rgb(200, 200, 200, 0.7)';
+                    this.drawBoundary(context);
+                    context.restore();
+                }
+            }
+            updateBoundary(x, y) {
+                if (!this.boundary.x.min || x < this.boundary.x.min) {
+                    this.boundary.x.min = x;
+                }
+                if (!this.boundary.x.max || x > this.boundary.x.max) {
+                 this.boundary.x.max = x;
+                }
+                if (!this.boundary.y.min || y < this.boundary.y.min) {
+                    this.boundary.y.min = y;
+                }
+                if (!this.boundary.y.max || y > this.boundary.y.max) {
+                    this.boundary.y.max = y;
+                }
+            }
+        }
+
+        class Lines extends Tool {
+            constructor() {
+                super();
+                this.points = [];
+            }
+            start(x, y) {
+                if (this.points.length === 0) {
+                    this.getStyle();
+                    elements.push(this);
+                }
+                this.points.push({x, y});
+                this.mouse = {x, y};
+            }
+            move(x, y) {
+                this.mouse = {x, y};
+            }
+            end() { }
+            draw(context) {
+                if (this.points.length) {
+                    this.setStyle(context);
+                    context.beginPath();
+                    context.moveTo(this.points[0].x, this.points[0].y);
+                    this.points.forEach((point) =>
+                        context.lineTo(point.x, point.y));
+                    if (this.mouse) {
+                        context.lineTo(this.mouse.x, this.mouse.y);
+                    }
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    if (this.points.length) {
+                        this.mouse = null;
+                        tool = new Lines();
+                    } else {
+                        tool = new PointerTool();
+                    }
+                }
+                if (event.key === 'z') {
+                    if (this.points.length) {
+                        this.mouse = null;
+                        this.points.push(this.points.x)
+                        tool = new Lines();
+                    }
+                }
+            }
+        }
+
+        class Curves extends Tool {
+            constructor() {
+                super();
+                this.segments = [];
+            }
+            start(x, y) {
+                if (this.segments.length === 0) {
+                    this.getStyle();
+                    this.startPoint = { x, y };
+                    elements.push(this);
+                } else {
+                    this.controlPoint = {x, y};
+                }
+                this.drag = 'start';
+                this.segment = this.addSegment(x, y);
+                this.previous = lastOf(this.segments);
+                this.segments.push(this.segment);
+                this.mouse = {x, y};
+            }
+            move(x, y) {
+                if (this.segment) {
+                    if (this.drag) {
+                        if (this.drag === 'start') {
+                            this.segment.controls.push({ x, y });
+                            if (this.previous) {
+                                this.previous.controls.push({ x, y })
+                            }
+                        }
+                        this.drag = 'move';
+                        this.segment.moveControl(x, y);
+                        if (this.previous) {
+                            this.previous.moveLastControl(x, y);
+                        }
+                    } else {
+                        this.segment.move(x, y);
+                    }
+                }
+            }
+            end() {
+                this.drag = null;
+                this.controlPoint = null;
+            }
+            addSegment(x, y, cx, cy) {
+                return {
+                    x, y, controls: [],
+                    move(x, y) {
+                        this.x = x;
+                        this.y = y;
+                    },
+                    moveControl(x, y) {
+                        this.controls[this.controls.length - 1] = { x, y };
+                    },
+                    moveLastControl(x, y) {
+                        x = 2 * this.x - x;
+                        y = 2 * this.y - y;
+                        this.controls[this.controls.length - 1] = { x, y };
+                    },
+                    draw(context) {
+                        if (this.controls.length === 0) {
+                            context.lineTo(this.x, this.y);
+                        } else if (this.controls.length === 1) {
+                            context.quadraticCurveTo(this.controls[0].x, this.controls[0].y, this.x, this.y);
+                        } else {
+                            context.bezierCurveTo(this.controls[0].x, this.controls[0].y, this.controls[1].x, this.controls[1].y, this.x, this.y);
+                        }
+                    },
+                    drawControls(context) {
+                        if (this.controls.length === 0) {
+                            context.lineTo(this.x, this.y);
+                        } else if (this.controls.length === 1) {
+                            context.quadraticCurveTo(this.controls[0].x, this.controls[0].y, this.x, this.y);
+                        } else {
+                            context.bezierCurveTo(this.controls[0].x, this.controls[0].y, this.controls[1].x, this.controls[1].y, this.x, this.y);
+                        }
+                    }
+                }
+            }
+            draw(context) {
+                if (this.segments.length) {
+                    this.setStyle(context);
+                    context.beginPath();
+                    context.moveTo(this.startPoint.x, this.startPoint.y);
+                    this.segments.forEach((segment) => segment.draw(context));
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            drawEdit(context) {
+                if (this.segments.length) {
+                    context.beginPath();
+                    context.strokeStyle = 'blue';
+                    this.segments.forEach((segment) =>
+                        segment.controls.forEach((control) => {
+                            context.moveTo(control.x + 3, control.y);
+                            context.arc(control.x, control.y, 3, 0, 2 * Math.PI);
+                        }));
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    if (this.segments.length) {
+                        this.segments.pop()
+                        tool = new Curves();
+                    } else {
+                        tool = new PointerTool();
+                    }
+                }
+                if (event.key === 'z') {
+                    if (this.segments.length) {
+                        this.segment.move(this.startPoint.x, this.startPoint.y);
+                        tool = new Curves();
+                    }
+                }
+            }
+        }
+
+        class Rectangle extends Tool {
+            constructor() {
+                super();
+            }
+            start(x, y) {
+                if (this.startPoint) {
+                    this.size = {x, y};
+                } else {
+                    this.getStyle();
+                    this.startPoint = {x, y};
+                    elements.push(this);
+                }
+            }
+            move(x, y) {
+                if (this.startPoint) {
+                    this.size = {x, y};
+                    this.boundary.x.min = Math.min(this.startPoint.x, this.size.x);
+                    this.boundary.y.min = Math.min(this.startPoint.y, this.size.y);
+                    this.boundary.x.max = Math.max(this.startPoint.x, this.size.x);
+                    this.boundary.y.max = Math.max(this.startPoint.y, this.size.y);
+                }
+            }
+            end() {
+                if (this.size) {
+                    tool = new Rectangle();
+                }
+            }
+            draw(context) {
+                if (this.size) {
+                    const x = Math.min(this.startPoint.x, this.size.x);
+                    const y = Math.min(this.startPoint.y, this.size.y);
+                    const width = Math.abs(this.startPoint.x - this.size.x);
+                    const height = Math.abs(this.startPoint.y - this.size.y);
+                    this.setStyle(context);
+                    context.strokeRect(x, y, width, height);
+                }
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    if (this.startPoint) {
+                        this.startPoint = null;
+                        this.size = null;
+                        elements.pop();
+                    } else {
+                        tool = new PointerTool();
+                    }
+                }
+            }
+        }
+
+        class Circle extends Tool {
+            constructor() {
+                super();
+            }
+            start(x, y) {
+                if (this.centre) {
+                    this.radius = Math.hypot(x - this.centre.x, y - this.centre.y);
+                } else {
+                    this.getStyle();
+                    this.centre = {x, y};
+                    elements.push(this);
+                }
+            }
+            move(x, y) {
+                if (this.centre) {
+                    this.radius = Math.hypot(x - this.centre.x, y - this.centre.y);
+                    this.boundary.x.min = this.centre.x - this.radius;
+                    this.boundary.y.min = this.centre.y - this.radius;
+                    this.boundary.x.max = this.centre.x + this.radius;
+                    this.boundary.y.max = this.centre.y + this.radius;
+                }
+            }
+            end() {
+                if (this.radius) {
+                    tool = new Circle();
+                }
+            }
+            draw(context) {
+                if (this.radius) {
+                    this.setStyle(context);
+                    context.beginPath();
+                    context.arc(this.centre.x, this.centre.y, this.radius, 0, 2 * Math.PI);
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    if (this.centre) {
+                        this.centre = null;
+                        this.radius = null;
+                        elements.pop();
+                    } else {
+                        tool = new PointerTool();
+                    }
+                }
+            }
+        }
+
+        class Ellipse extends Tool {
+            constructor() {
+                super();
+            }
+            start(x, y) {
+                if (this.centre) {
+                    this.size = [Math.abs(x - this.centre.x), Math.abs(y - this.centre.y)];
+                } else {
+                    this.getStyle();
+                    this.centre = {x, y};
+                    elements.push(this);
+                }
+            }
+            move(x, y) {
+                if (this.centre) {
+                    this.size = {x: Math.abs(x - this.centre.x), y: Math.abs(y - this.centre.y)};
+                    this.boundary.x.min = this.centre.x - this.size.x;
+                    this.boundary.y.min = this.centre.y - this.size.y;
+                    this.boundary.x.max = this.centre.x + this.size.x;
+                    this.boundary.y.max = this.centre.y + this.size.y;
+                }
+            }
+            end() {
+                if (this.size) {
+                    tool = new Ellipse();
+                }
+            }
+            draw(context) {
+                if (this.size) {
+                    this.setStyle(context);
+                    context.beginPath();
+                    context.ellipse(this.centre.x, this.centre.y, this.size.x, this.size.y, 0, 0, 2 * Math.PI);
+                    context.stroke();
+                    if (this.fillColour) {
+                        context.fill();
+                    }
+                }
+            }
+            key(event) {
+                if (event.key === 'Escape') {
+                    if (this.centre) {
+                        this.centre = null;
+                        this.size = null;
+                        elements.pop();
+                    }
+                }
+            }
+        }
+
+
+        class PointerTool extends Tool {
+            constructor() {
+                super();
+                if (elements.length) {
+                    selected = elements[0];
+                }
+            }
+            start(x, y) { }
+            move(x, y) { }
+            end() { }
+            key(event) {
+                if (event.key === 'f') {
+                    tool = new Freehand();
+                } else if (event.key === 'l') {
+                    tool = new Curves();
+                } else if (event.key === 'L') {
+                    tool = new Lines();
+                } else if (event.key === 'r') {
+                    tool = new Rectangle();
+                } else if (event.key === 'c') {
+                    tool = new Circle();
+                } else if (event.key === 'e') {
+                    tool = new Ellipse();
+                } else if (event.key === 'Tab') {
+                    const index = (1 + elements.indexOf(selected)) % elements.length;
+                    selected = elements[index];
+                    event.preventDefault();
+                }
+            }
+
+        }
+
+
+        let tool = new Freehand();
+        let action = null;
+        canvas.addEventListener('touchstart', (event) =>
+            tool.start(...snap(event.touches[0].clientX, event.touches[0].clientY)));
+
+        canvas.addEventListener('touchmove', (event) =>
+            tool.move(...snap(event.touches[0].clientX, event.touches[0].clientY)));
+
+        canvas.addEventListener('touchend', (event) =>
+            tool.end());
+
+
+        canvas.addEventListener('mousedown', (event) =>
+            tool.start(...snap(event.clientX, event.clientY)));
+
+        canvas.addEventListener('mousemove', (event) =>
+            tool.move(...snap(event.clientX, event.clientY)));
+
+        canvas.addEventListener('mouseup', (event) =>
+            tool.end());
+
+        canvas.addEventListener('keydown', (event) => tool.key(event));
+
+        update();
+    </script>
+</body>
+
+</html>

@@ -18,10 +18,10 @@
         }
 
         body {
-            margin: 0;
-            width: 100vw;
+            margin: 0.5rem;
+            width: calc(100vw - 2rem);
             height: 100dvh;
-            padding: 0.25rem;
+            padding: 0;
             background-color: lightgray;
             position: relative;
         }
@@ -31,10 +31,23 @@
             height: 10em;
             resize: vertical;
         }
-        
-        .output {
+
+        #output {
             resize: vertical;
             overflow: auto;
+            border: 1px inset grey;
+        }
+
+        #input {
+            resize: vertical;
+            overflow: auto;
+            background-color: white;
+            border: 1px inset grey;
+            height: 5em;
+        }
+
+        .match {
+            background: yellow;
         }
     </style>
 </head>
@@ -46,7 +59,7 @@
         <button class="back">&larr;</button>
         <button class="forward">&rarr;</button>
     </div>
-    <textarea id="input"></textarea>
+    <pre id="input"></pre>
     <h2>Pattern</h2>
     <div id="pattern-controls">
         <button class="back">&larr;</button>
@@ -62,6 +75,9 @@
     <div id="controls">
         <button id="replace">Replace</button>
         <button id="use">Use</button>
+        <button id="clear">Clear History</button>
+        <button id="copy">Copy</button>
+        Update Live: <input id="update-live" type="checkbox" />
         <span id="message"></span>
     </div>
     <pre id="output"></pre>
@@ -69,81 +85,200 @@
     <script>
         class History {
             constructor() {
-                  this.content = [];
-                  this.position = 0;
-              }
-              add(value) {
-                  if (value === this.content[this.content.length -1]) {
-                      return;
-                  }
-                  this.content.length = this.position;
-                  this.content.push(value);
-                  this.position = this.content.length;
-              }
-              back() {
-                  this.postion -= 1;
-                  if (this.position < 1) {
-                      this.position = this.content.length;
-                  }
-                  return this.content[this.position - 1];
-              }
-              forward() {
-                  this.position += 1;
-                  if (this.position > this.content.length) {
-                      this.position = 1;
-                  }
-                  return this.content[this.position - 1];
-              }
-          }
-      
-          const inputHistory = new History();
-          const patternHistory = new History();
-          const replacerHistory = new History();
-    
-        const inputNode = document.getElementById('input');
+                this.content = [];
+                this.position = 0;
+            }
+            setContent(content) {
+                this.content = content || [];
+            }
+            save() {
+                if (this.content[0] === this.content[1]) {
+                    return;
+                }
+                this.content.unshift(this.content[0]);
+                this.position += 1;
+            }
+            back() {
+                if (this.position === 0 && this.content[0] === this.content[1]) {
+                    this.position = 1;
+                }
+                this.position += 1;
+                if (this.position > this.content.length - 1) {
+                    if (this.content[0] === this.content[1]) {
+                        this.position = 1;
+                    } else {
+                        this.position = 0;
+                    }
+                }
+                return this.content[this.position];
+            }
+            forward() {
+                this.position -= 1;
+                if (this.position === 0 && (this.content[0] === this.content[1])) {
+                    this.position -= 1;
+                }
+                if (this.position < 0) {
+                    this.position = this.content.length - 1;
+                }
+                return this.content[this.position];
+            }
+        }
+
+        class StyledInput {
+            constructor(id) {
+                this.node = document.getElementById(id);
+                this._value = '';
+                //this.node.contentEditable = true;
+                this.node.tabIndex = 0;
+                this.edit = document.createElement('textarea');
+                this.edit.addEventListener('blur', (event) => {
+                    this._value = this.edit.value;
+                    this.edit.replaceWith(this.node);
+                    showMatches();
+                });
+                this.node.addEventListener('focus', (event) => {
+                    this.edit.value = this.value;
+                    this.node.replaceWith(this.edit);
+                    this.edit.style.height = `${this.node.style.height}`;
+                });
+            }
+            get value() {
+                return this._value;
+            }
+            set value(value) {
+                this._value = value;
+                this.node.innerHTML = this.escaped();
+            }
+            update() {
+                this._value = this.node.innerText;
+            }
+            highlight(pattern) {
+                const result = [];
+                let match;
+                let start = 0;
+                let count = 0;
+                while ((match = pattern.exec(this._value)) !== null) {
+                    result.push(this.escape(this._value.slice(start, match.index)));
+                    result.push(`<span class="match" title="Match: ${count + 1}">${this.escape(match[0])}</span>`)
+                    if (pattern.lastIndex === start) {
+                        break;
+                    }
+                    start = pattern.lastIndex;
+                    count++;
+                }
+                messageNode.innerText = `${count} matches found.`
+                result.push(this.escape(this._value.slice(start)));
+                this.node.innerHTML = result.join('');
+            }
+            escaped() {
+                return this.escape(this._value);
+            }
+            escape(string) {
+                return string.replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;')
+                    .replace(/\n/g, '<br>');
+            }
+            unescape(string) {
+                return string.replace(/<br>/g, '\n')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'");
+            }
+            addEventListener(event, action, options) {
+                return this.node.addEventListener(event, action, options);
+            }
+        }
+
+        const inputHistory = new History();
+        const patternHistory = new History();
+        const replacerHistory = new History();
+
+        const inputNode = new StyledInput('input');
         const patternNode = document.getElementById('pattern');
         const replacerNode = document.getElementById('replacer');
         const replaceButton = document.getElementById('replace');
         const useButton = document.getElementById('use');
+        const clearButton = document.getElementById('clear');
+        const copyButton = document.getElementById('copy');
+        const liveNode = document.getElementById('update-live');
         const messageNode = document.getElementById('message');
         const outputNode = document.getElementById('output');
 
-        replaceButton.addEventListener('click', (event) => {
-            messageNode.innerText = '';
-            const input = inputNode.value;
-            const context = { count: 0 };
+        const showMatches = () => {
             try {
                 const pattern = new RegExp(patternNode.value, 'g');
+                const input = inputNode.value;
+
+                inputNode.highlight(pattern);
+            } catch(error) {
+                messageNode.innerText = `${error.message} using string replacement`;
+            }
+        }
+
+        let result = '';
+        const update = () => {
+            messageNode.innerText = '';
+            const input = inputNode.value;
+            const context = { count: -1 };
+            let replacement;
+            try {
                 const replacer = new Function('context', 'match', 'parts', 'offset', 'string',
                     replacerNode.value);
-                outputNode.innerText = input.replaceAll(pattern, (match, ...parts) => {
+                replacer(context, '', [], 0, '');
+                replacement = (match, ...parts) => {
                     const [offset, string] = parts.splice(-2, 2);
                     context.count++;
                     return replacer(context, match, parts, offset, string);
-                });
+                };
+            } catch (error) {
+                messageNode.innerText = `${error.message} using string replacement`;
+                replacement = replacerNode.value;
+            }
+
+            try {
+                const pattern = new RegExp(patternNode.value, 'g');
+                result = input.replaceAll(pattern, replacement);
+                outputNode.innerText = result;
             } catch (error) {
                 messageNode.innerText = error.message;
             }
 
-            
-            patternHistory.add(patternNode.value);
-            replacerHistory.add(replacer.value);
-        });
+            patternHistory.save();
+            replacerHistory.save();
+            saveState();
+        }
+
+        replaceButton.addEventListener('click', (event) => update());
 
         useButton.addEventListener('click', (event) => {
-            inputHistory.add(inputNode.Value);
+            inputHistory.save();
+            inputHistory.content[0] = outputNode.innerText;
             inputNode.value = outputNode.innerText;
+        });
+
+        clearButton.addEventListener('click', (event) => {
+            inputHistory.content.length = 1;
+            patternHistory.content.length = 1;
+            replacerHistory.content.length = 1;
+            saveState();
+        });
+
+        copyButton.addEventListener('click', (event) => {
+            navigator.clipboard.writeText(result);
         });
 
         function saveState() {
             const state = {
-                input: inputNode.value,
                 inputHistory: inputHistory.content,
-                pattern: patternNode.value,
                 patternHistory: patternHistory.content,
-                replacer: replacerNode.value,
                 replacerHistory: replacerHistory.content,
                 output: outputNode.innerText,
+                live: liveNode.checked,
             }
             localStorage.setItem('text-replace-state', JSON.stringify(state));
         }
@@ -152,33 +287,67 @@
             const savedState = localStorage.getItem('text-replace-state');
             if (savedState) {
                 const state = JSON.parse(savedState);
-                inputNode.value = state.input;
-                inputHistory.content = state.inputHistory;
-                patternNode.value = state.pattern;
-                patternHistory.content = state.inputHistory;
-                replacerNode.value = state.replacer;
-                replacerHistory.content = state.replacerHistory;
+                inputHistory.setContent(state.inputHistory);
+                patternHistory.setContent(state.patternHistory);
+                replacerHistory.setContent(state.replacerHistory);
+                result = state.output;
                 outputNode.innerText = state.output;
+                liveNode.checked = state.live;
+
+                if (inputHistory.content.length === 1) {
+                    inputHistory.content.unshift(inputHistory.content[0]);
+                }
+                if (patternHistory.content.length === 1) {
+                    patternHistory.content.unshift(patternHistory.content[0]);
+                }
+                if (replacerHistory.content.length === 1) {
+                    replacerHistory.content.unshift(replacerHistory.content[0]);
+                }
+
+                inputNode.value = inputHistory.content[0] || '';
+                patternNode.value = patternHistory.content[0] || '';
+                replacerNode.value = replacerHistory.content[0] || '';
+
+                showMatches();
             }
         }
 
         const historyControls = [
-            [inputHistory, inputNode, 'input-controls'],
+            [inputHistory, inputNode, 'input-controls', () => inputNode.update()],
             [patternHistory, patternNode, 'pattern-controls'],
             [replacerHistory, replacerNode, 'replacer-controls']];
         historyControls.forEach((control) => {
-            const backButton = document.querySelector(`#{control[2]} .back`);
-            const forwardButton = document.querySelector(`#{control[2]} .forward`);
-            backButton.addEventListener('click',
-                (event) => controls[1].value = controls[0].back());
-            forwardButton.addEventListener('click',
-                (event) => controls[1].value = controls[0].forward());
-        }); 
+            const backButton = document.querySelector(`#${control[2]} .back`);
+            const forwardButton = document.querySelector(`#${control[2]} .forward`);
+
+            backButton.addEventListener('click', (event) => {
+                control[1].value = control[0].back();
+                showMatches();
+            });
+            forwardButton.addEventListener('click', (event) => {
+                control[1].value = control[0].forward();
+                showMatches();
+            });
+
+            const onInput = (event) => {
+                if (control[3]) {
+                    control[3]();
+                    control[0].content[0] = control[1].value;
+                } else {
+                    control[0].content[0] = control[1].value;
+                    showMatches();
+                }
+                control[0].content[0] = control[1].value;
+                saveState();
+                if (liveNode.checked) {
+                    update();
+                }
+            };
+            control[1].addEventListener('input', onInput);
+        });
 
         window.addEventListener('load', (event) => loadState());
-        inputNode.addEventListener('input', (event) => saveState());
-        patternNode.addEventListener('input', (event) => saveState());
-        replacerNode.addEventListener('input', (event) => saveState());
     </script>
 </body>
+
 </html>
