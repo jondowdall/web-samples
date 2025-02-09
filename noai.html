@@ -24,23 +24,127 @@ background colour / picture
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width" />
     <title>js-notepad</title>
-    <link href="styles/noia-modern.css" rel="stylesheet" />
+    <link href="styles/noia-vt220.css" rel="stylesheet" />
 </head>
 
 <body>
     <div id="results"></div>
+    <div id="widgets"></div>
     <div id="input-area">
-        <span>&gt; </span><input id="command-entry" type="text">
+        <span id="current-index">0</span><span>&gt; </span><input id="command-entry" type="text">
     </div>
     <script>
+
+        /**
+         * Custom Actions
+         *
+         */
+        const actions = {
+            /**
+             * Toggle fullscreen mode
+             */
+            fullscreen() {
+                let result = '';
+                if (!navigator.userActivation.isActive) {
+                    return new Cell('fullscreen', 'full screen request ignored in script');
+                }
+                if (document.body.webkitRequestFullscreen) {
+                    if (document.body.webkitIsFullScreen) {
+                        document.body.webkitCancelFullScreen();
+                        result = 'exit fullscreen';
+                    } else {
+                        document.body.webkitRequestFullscreen(document.body.ALLOW_KEYBOARD_INPUT);
+                        result = 'enter fullscreen';
+                    }
+                }
+                if (document.body.requestFullscreen) {
+                    if (document.fullscreenElement) {
+                        document.exitFullscreen();
+                        result = 'exit fullscreen';
+                    } else {
+                        document.body.requestFullscreen();
+                        result = 'enter fullscreen';
+                    }
+                }
+                return new Cell('fullscreen', result);
+            },
+
+            /**
+             * Clear the screen
+             */
+            cls() {
+                const results = document.getElementById('results');
+                results.innerHTML = '';
+                return ignore;
+            },
+
+            /**
+             * Show the command history
+             */
+            history() {
+                const result = context.cells.map((cell, index) => `${index}: ${cell.raw}`).join('<br>')
+                return new Cell('history', result);
+            },
+
+            /**
+             * Add a clock to the widget area
+             */
+            clock(timezone) {
+                let clock = document.getElementById('clock');
+                if (!clock) {
+                    clock = document.createElement('canvas');
+                    clock.id = 'clock';
+                    document.getElementById('widgets').appendChild(clock);
+                }
+                const context = clock.getContext('2d');
+                const width = context.width = clock.clientWidth;
+                const height = context.height = clock.clientHeight;
+                const radius = Math.min(width, height) / 2;
+
+                let now = new Date();
+                const update = (time) => {
+                    now = new Date();
+                    context.clearRect(0, 0, width, height);
+                    context.fillStyle = 'lightgreen';
+                    context.strokeStyle = 'lightgreen';
+                    context.beginPath();
+                    for (let i = 0; i < 12; ++i) {
+                        const x1 = width / 2 + radius * Math.sin(i * 2 * Math.PI / 12);
+                        const y1 = height / 2 - radius * Math.cos(i * 2 * Math.PI / 12);
+                        context.moveTo(x1, y1);
+                        const x2 = width / 2 + (radius - 2) * Math.sin(i * 2 * Math.PI / 12);
+                        const y2 = height / 2 - (radius - 2) * Math.cos(i * 2 * Math.PI / 12);
+                        context.lineTo(x2, y2);
+                    }
+                    const x1 = width / 2 + radius * Math.sin(now.getSeconds() * 2 * Math.PI / 60);
+                    const y1 = height / 2 - radius * Math.cos(now.getSeconds() * 2 * Math.PI / 60);
+                    context.moveTo(width / 2, height / 2);
+                    context.lineTo(x1, y1);
+                    const x2 = width / 2 + 0.8 * radius * Math.sin(now.getMinutes() * 2 * Math.PI / 60);
+                    const y2 = height / 2 - 0.8 * radius * Math.cos(now.getMinutes() * 2 * Math.PI / 60);
+                    context.moveTo(width / 2, height / 2);
+                    context.lineTo(x2, y2);
+                    const x3 = width / 2 + 0.6 * radius * Math.sin(now.getHours() * 2 * Math.PI / 12);
+                    const y3 = height / 2 - 0.6 * radius * Math.cos(now.getHours() * 2 * Math.PI / 12);
+                    context.moveTo(width / 2, height / 2);
+                    context.lineTo(x3, y3);
+                    context.stroke();
+                    requestAnimationFrame(update);
+                }
+                update();
+                return new Cell('history', now);
+            }
+        }
+
+
 
         const inputNode = document.getElementById('command-entry');
 
         class Cell {
-            constructor(raw, expr, resolved, result, uses = []) {
+            constructor(raw, result, expr, resolved, uses = []) {
                 this.raw = raw;
-                this.expr = expr;
-                this.resolved = resolved;
+                this.expr = expr ?? raw;
+                this.resolved = resolved ?? raw;
                 this.result = result;
                 this.uses = [];
                 this.users = [];
@@ -73,6 +177,9 @@ background colour / picture
          * Process an input string
          */
         function execute(raw) {
+            if (actions[raw] !== undefined) {
+                return actions[raw]();
+            }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % context.cells.length;
             const expr = raw.replace(/<(-?[0-9]*)>/g, (match, index) =>
                 `context.cells.at(${getIndex(index)}).result`);
@@ -86,7 +193,7 @@ background colour / picture
                 result = error.message;
             }
 
-            return new Cell(raw, expr, resolved, result);
+            return new Cell(raw, result, expr, resolved);
         }
 
         /**
@@ -97,9 +204,8 @@ background colour / picture
 
             const indexNode = document.createElement('span');
             indexNode.classList.add('index');
-            indexNode.innerHTML = index;
+            indexNode.innerHTML = `${index}: `;
             resultsNode.appendChild(indexNode);
-            resultsNode.append(' ');
 
             const resultBg = document.createElement('div');
             resultBg.classList.add('result-background');
@@ -134,6 +240,8 @@ background colour / picture
             resultNode.classList.add('result');
             resultNode.innerHTML = output.result;
             itemNode.appendChild(resultNode);
+            resultNode.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+            output.node = resultNode;
         }
 
         /**
@@ -153,6 +261,8 @@ background colour / picture
                 context.index = context.cells.length;
                 inputNode.value = '';
             }
+            const currentIndex = document.getElementById('current-index');
+            currentIndex.innerHTML = context.cells.length;
             saveState();
         }
 
@@ -176,6 +286,10 @@ background colour / picture
                     inputNode.setSelectionRange(start, start + reference.length);
                 } else {
                     inputNode.value = context.cells[context.index].raw;
+                }
+                if (context.cells.at(context.index).node) {
+                    const node = context.cells.at(context.index).node;
+                    node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
                 }
             }
         }
@@ -227,7 +341,7 @@ background colour / picture
             const stateStr = localStorage.getItem('noia-state');
             if (stateStr) {
                 const state = JSON.parse(stateStr);
-                state.context.cells.forEach((cell) => {
+                state.context.cells.filter((cell) => cell).forEach((cell) => {
                     const result = execute(cell.raw);
                     if (result !== ignore) {
                         showResults(result, context.cells.length);
@@ -235,6 +349,8 @@ background colour / picture
                     context.cells.push(result);
                 });
                 context.index = context.cells.length;
+                const currentIndex = document.getElementById('current-index');
+                currentIndex.innerHTML = context.cells.length;
             }
         }
 
