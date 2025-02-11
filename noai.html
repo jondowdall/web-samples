@@ -31,7 +31,9 @@ background colour / picture
     <div id="results"></div>
     <div id="widgets"></div>
     <div id="input-area">
-        <span id="current-index">0</span><span>&gt; </span><input id="command-entry" type="text">
+        <span id="current-index">0</span><span>&gt; </span>
+        <datalist id="named-items"></datalist>
+        <input id="command-entry" type="text" autocorrect="off" autocapitalize="none" list="named-items">
     </div>
     <script>
 
@@ -42,6 +44,16 @@ background colour / picture
             return date1.getDate() === date2.getDate() &&
             date1.getMonth() === date2.getMonth() &&
             date1.getFullYear() === date2.getFullYear();
+        }
+
+        /**
+         * Add an item to the list used for completions
+         */
+        function addNamedItem(name) {
+            const list = document.getElementById('named-items');
+            const item = document.createElement('option');
+            item.innerText = name;
+            list.appendChild(item);
         }
 
         /**
@@ -236,17 +248,107 @@ background colour / picture
             },
 
             /**
-             * perform a google searcg
+             * perform a google search
              */
             google(raw) {
                 const string = raw.replace(/google\s+/, '').replace(/\s+/g, '+');
                 const url = `https://www.google.com/search?q=${string}`;
                 window.open(url, '_blank');
                 return new Cell(raw, `<a href="${url}>google ${raw.replace(/google\s+/, '')}</a>`);
-            }
+            },
+
+            /**
+             * Resit command history
+             */
+             reset(raw) {
+                const cell = new Cell(raw, 'Reset all? (Y/N)');
+                cell.action = (input) => {
+                    context.action = null;
+                };
+                return cell;
+            },
+
+            /**
+             * Add a date to the named items
+             */
+            date(raw) {
+                const string = raw.replace(/date\s*/, '');
+                const parts = string.split(/(\s+)/g);
+                const date = parts.pop();
+                const name = parts.join('').trim();
+                const [day, month, year] = date.split(/[-/_]/g).map((s) => parseInt(s));
+                named.dates[name] = new Date(year < 2000 ? year + 2000 : year, month - 1, day);
+                addNamedItem(name);
+                return new Cell(raw, named.dates[name]);
+            },
+
+            /**
+             * List dates
+             */
+             dates(raw) {
+                const list = Object.entries(named.dates)
+                    .map(([name, date]) => `${name}: ${date.toDateString()}`)
+                    .join('<br>');
+                return new Cell(raw, list);
+            },
+
+
+            /**
+             * Add a site to the named items
+             */
+            site(raw) {
+                const string = raw.replace(/site\s*/, '');
+                const [name, addr] = string.split(/\s*http/);
+                const url = `http${addr}`;
+                this[name] = (raw) => {
+                    window.open(url, '_blank');
+                    named.sites[name] = url;
+                    return new Cell(raw, `<a href="url">${name}</a>`);
+                };
+                addNamedItem(name);
+                return new Cell(raw, `added shortcut ${name} -> ${url}`);
+            },
+
+            /**
+             * List sites
+             */
+            sites(raw) {
+                const list = Object.entries(named.sites)
+                    .map(([name, url]) => `${name}: <a href="${url}">${url}</a>`)
+                    .join('<br>');
+                return new Cell(raw, list);
+            },
+
+            /**
+             * perform a google search
+             */
+            abbr(raw) {
+                const string = raw.replace(/abbr\s*/, '');
+                const parts = string.split(/(\s+)/);
+                const name = parts.shift();
+                const expansion = parts.join('').trim();
+                named.abbreviations[name] = expansion;
+                addNamedItem(name);
+                return new Cell(raw, `${name} -> ${expansion}`);
+            },
+
+            /**
+             * List abbreviations
+             */
+             abbreviations(raw) {
+                const list = Object.entries(named.abbreviations)
+                    .map(([name, expansion]) => `${name}: ${expansion}`)
+                    .join('<br>');
+                return new Cell(raw, list);
+            },
+        }
+        const named = {
+            dates: [],
+            sites: [],
+            abbreviations: [],
         }
 
-
+        Object.keys(actions).forEach(addNamedItem);
 
         const inputNode = document.getElementById('command-entry');
 
@@ -292,6 +394,10 @@ background colour / picture
             } else if (actions[raw.split(' ')[0]]) {
                 return actions[raw.split(' ')[0]](raw);
             }
+            const names = [named.abbreviations[raw], named.dates[raw], named.sites[raw]].filter((i) => i);
+            if (names.length) {
+                return new Cell(raw, names.join('<br>'));
+            }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % context.cells.length;
             const expr = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) =>
                 `context.cells.at(${getIndex(index)}).result`);
@@ -299,10 +405,17 @@ background colour / picture
                 `${context.cells.at(getIndex(index)).result}`);
             let result;
             try {
+                if (context.action) {
+                    const func = new Function(...Object.keys(context.args), `return context.action(${expr})`);
+                }
                 const func = new Function(...Object.keys(context.args), `return ${expr}`);
+                
                 result = func(...Object.values(context.args));
             } catch (error) {
                 result = error.message;
+            }
+            if (result.action) {
+                context.action === result.action();
             }
 
             return new Cell(raw, result, expr, resolved);
