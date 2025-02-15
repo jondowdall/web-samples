@@ -2,19 +2,13 @@
 <html>
 <!--
 TODO:
-Scroll to cell when added
-alt + arrow to insert reference to cell
 indicate change of state when input cell changes
-save state
-reload state at startup
 drag files to add as cell
 named cells
-named actions
 calendar functions
 code cell
 cell from sequence
-side widgets: clock, calendar, todos, notes
-view command history
+side widgets: todos, notes
 cell types?
 background colour / picture
 
@@ -42,8 +36,8 @@ background colour / picture
          */
         function sameDay(date1, date2) {
             return date1.getDate() === date2.getDate() &&
-            date1.getMonth() === date2.getMonth() &&
-            date1.getFullYear() === date2.getFullYear();
+                date1.getMonth() === date2.getMonth() &&
+                date1.getFullYear() === date2.getFullYear();
         }
 
         /**
@@ -111,20 +105,26 @@ background colour / picture
              * Add a clock to the widget area
              */
             clock(raw) {
-                if (this.clockWidget) {
-                    this.clockWidget.node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
-                    return this.clockWidget;
-                }
                 this.now = new Date();
-                this.clockWidget = new Cell(raw, this.now);
+                const cell = new Cell(raw, this.now);
+                cell.update = (time) =>
+                    cell.view.result.innerHTML = this.now;
 
-                this.clockWidget.node = document.createElement('canvas');
-                this.clockWidget.node.id = 'clock';
-                document.getElementById('widgets').appendChild(this.clockWidget.node);
+                if (this.clockWidget) {
+                    this.clockWidget.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+                    cell.view.widget = this.clockWidget;
+                    return cell;
+                }
 
-                const context = this.clockWidget.node.getContext('2d');
-                const width = context.width = this.clockWidget.node.clientWidth;
-                const height = context.height = this.clockWidget.node.clientHeight;
+                this.clockWidget = document.createElement('canvas');
+                this.clockWidget.id = 'clock';
+                document.getElementById('widgets').appendChild(this.clockWidget);
+
+                cell.view.widget = this.clockWidget;
+
+                const context = this.clockWidget.getContext('2d');
+                const width = context.width = this.clockWidget.clientWidth;
+                const height = context.height = this.clockWidget.clientHeight;
                 const radius = Math.min(width, height) / 2;
 
                 const dayStart = new Date();
@@ -164,7 +164,7 @@ background colour / picture
                     requestAnimationFrame(update);
                 }
                 update();
-                return this.clockWidget;
+                return cell;
             },
 
             calendar(raw) {
@@ -260,7 +260,7 @@ background colour / picture
             /**
              * Resit command history
              */
-             reset(raw) {
+            reset(raw) {
                 const cell = new Cell(raw, 'Reset all? (Y/N)');
                 cell.action = (input) => {
                     context.action = null;
@@ -285,7 +285,7 @@ background colour / picture
             /**
              * List dates
              */
-             dates(raw) {
+            dates(raw) {
                 const list = Object.entries(named.dates)
                     .map(([name, date]) => `${name}: ${date.toDateString()}`)
                     .join('<br>');
@@ -335,7 +335,7 @@ background colour / picture
             /**
              * List abbreviations
              */
-             abbreviations(raw) {
+            abbreviations(raw) {
                 const list = Object.entries(named.abbreviations)
                     .map(([name, expansion]) => `${name}: ${expansion}`)
                     .join('<br>');
@@ -358,8 +358,33 @@ background colour / picture
                 this.expr = expr ?? raw;
                 this.resolved = resolved ?? raw;
                 this.result = result;
-                this.uses = [];
+                this.uses = uses;
                 this.users = [];
+                this.view = {};
+            }
+            makeView() {
+                this.view.input = document.createElement('div');
+                this.view.input.classList.add('input');
+
+                this.view.raw = document.createElement('span');
+                this.view.raw.classList.add('raw');
+                this.view.raw.innerHTML = this.raw;
+                this.view.input.appendChild(this.view.raw);
+
+                if (this.raw !== this.resolved) {
+                    const arrow = document.createElement('span');
+                    arrow.innerHTML = ' &rarr; ';
+                    this.view.input.appendChild(arrow);
+
+                    this.view.resolved = document.createElement('span');
+                    this.view.resolved.classList.add('resolved');
+                    this.view.resolved.innerHTML = this.resolved;
+                    this.view.input.appendChild(resolvedNode);
+                }
+
+                this.view.result = document.createElement('div');
+                this.view.result.classList.add('result');
+                this.view.result.innerHTML = this.result;
             }
             toJSON(key) {
                 return {
@@ -373,11 +398,21 @@ background colour / picture
             }
         }
 
+
         const context = {
             args: {},
             cells: [],
             index: 0,
         };
+
+        /**
+         * Update dynamic cells of display
+         */
+        function update(time) {
+            context.cells.filter((cell) => cell.update).forEach((cell) => cell.update(time));
+            window.requestAnimationFrame(update);
+        }
+        update();
 
         Object.getOwnPropertyNames(Math).forEach((prop) =>
             context.args[prop] = Math[prop]);
@@ -398,33 +433,38 @@ background colour / picture
             if (names.length) {
                 return new Cell(raw, names.join('<br>'));
             }
+            const cell = new Cell(raw);
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % context.cells.length;
             const expr = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) =>
                 `context.cells.at(${getIndex(index)}).result`);
-            const resolved = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) =>
-                `${context.cells.at(getIndex(index)).result}`);
-            let result;
+            const references = [];
+            const resolved = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) => {
+                const referenced = context.cells.at(getIndex(index));
+                referenced.users.push(cell);
+                cell.uses.push(referenced);
+                return `${referenced.result}`;
+            });
             try {
                 if (context.action) {
                     const func = new Function(...Object.keys(context.args), `return context.action(${expr})`);
                 }
                 const func = new Function(...Object.keys(context.args), `return ${expr}`);
-                
-                result = func(...Object.values(context.args));
+
+                cell.result = func(...Object.values(context.args));
             } catch (error) {
-                result = error.message;
+                cell.result = error.message;
             }
-            if (result.action) {
-                context.action === result.action();
+            if (cell.result.action) {
+                context.action === cell.result.action();
             }
 
-            return new Cell(raw, result, expr, resolved);
+            return cell;
         }
 
         /**
          * Add the results to the output
          */
-        function showResults(output, index) {
+        function showResults(cell, index) {
             const resultsNode = document.getElementById('results');
 
             const indexNode = document.createElement('span');
@@ -436,10 +476,17 @@ background colour / picture
             resultBg.classList.add('result-background');
             indexNode.appendChild(resultBg);
 
+            cell.makeView();
+
             const itemNode = document.createElement('div');
             itemNode.classList.add('result-box');
             resultsNode.appendChild(itemNode);
 
+            itemNode.appendChild(cell.view.input);
+            itemNode.appendChild(cell.view.result);
+            cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+
+            /*
             const inputNode = document.createElement('div');
             inputNode.classList.add('input');
             itemNode.appendChild(inputNode);
@@ -467,6 +514,7 @@ background colour / picture
             itemNode.appendChild(resultNode);
             resultNode.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
             output.resultNode = resultNode;
+            */
         }
 
         /**
@@ -590,6 +638,50 @@ background colour / picture
                 currentIndex.innerHTML = context.cells.length;
             }
         }
+
+        function dropHandler(event) {
+            event.preventDefault();
+
+            function loadFile(file) {
+                const reader = new FileReader();
+                const cell = new Cell(`dropped file ${file.name}`, '');
+                reader.addEventListener('load', (event) => {
+                    cell.view.result.innerText = reader.result;
+                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' })
+                });
+                reader.readAsText(file);
+
+                showResults(cell, context.cells.length);
+                //saveState();
+            }
+
+            if (event.dataTransfer.items) {
+                [...event.dataTransfer.items].forEach((item, index) => {
+                    if (item.kind === 'file') {
+                        const file = item.getAsFile();
+                        loadFile(file);
+                    }
+                });
+            } else {
+                // Use DataTransfer interface to access the file(s)
+                [...event.dataTransfer.files].forEach((file, i) =>
+                    loadFile(file));
+            }
+        }
+
+        function dragOverHandler(event) {
+            console.log("File(s) in drop zone");
+
+            // Prevent default behavior (Prevent file from being opened)
+            event.preventDefault();
+        }
+
+        const results = document.getElementById('results');
+        inputNode.addEventListener('dragover', dragOverHandler);
+        inputNode.addEventListener('drop', dropHandler);
+        results.addEventListener('drop', dragOverHandler);
+        results.addEventListener('drop', dropHandler);
+
 
         loadState();
         inputNode.focus();
