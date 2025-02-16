@@ -3,7 +3,6 @@
 <!--
 TODO:
 indicate change of state when input cell changes
-drag files to add as cell
 named cells
 calendar functions
 code cell
@@ -11,7 +10,6 @@ cell from sequence
 side widgets: todos, notes
 cell types?
 background colour / picture
-
 -->
 
 <head>
@@ -258,6 +256,44 @@ background colour / picture
             },
 
             /**
+             * Create a js cell
+             */
+            js(raw) {
+                const cell = new Cell('js');
+                const string = raw.replace(/^js\s*/, '');
+                cell.getResultNode = () => {
+                    const node = document.createElement('textarea');
+                    node.rows = 20;
+                    node.value = string;
+                    node.classList.add('code-area');
+                    node.addEventListener('blur', (event) => {
+                        cell.users.filter((cell) => cell.update).forEach((cell) => cell.update);
+                    });
+                    return node;
+                };
+                const getValue = () => {
+                    const expr = cell.view.result.value;
+                    try {
+                        const func = new Function(`${expr};return value;`);
+                        return func();
+                    } catch (error) {
+                        return error.message;
+                    }
+                };
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: getValue,
+                    },
+                    content: {
+                        enumerable: true,
+                        get: () => cell.view.result.value,
+                    },
+                });
+                return cell;
+            },
+
+            /**
              * Resit command history
              */
             reset(raw) {
@@ -353,14 +389,20 @@ background colour / picture
         const inputNode = document.getElementById('command-entry');
 
         class Cell {
-            constructor(raw, result, expr, resolved, uses = []) {
+            constructor(raw, value, expr, resolved, uses = []) {
                 this.raw = raw;
                 this.expr = expr ?? raw;
                 this.resolved = resolved ?? raw;
-                this.result = result;
+                this.value = value;
                 this.uses = uses;
                 this.users = [];
                 this.view = {};
+            }
+            getResultNode() {
+                const node = document.createElement('div');
+                node.classList.add('result');
+                node.innerHTML = this.value;
+                return node;
             }
             makeView() {
                 this.view.input = document.createElement('div');
@@ -381,23 +423,20 @@ background colour / picture
                     this.view.resolved.innerHTML = this.resolved;
                     this.view.input.appendChild(resolvedNode);
                 }
-
-                this.view.result = document.createElement('div');
-                this.view.result.classList.add('result');
-                this.view.result.innerHTML = this.result;
+                this.view.result = this.getResultNode();
             }
             toJSON(key) {
                 return {
                     raw: this.raw,
                     expr: this.expr,
                     resolved: this.resolved,
-                    result: this.result,
+                    content: this.content,
+                    value: this.value,
                     uses: this.uses.map((cell) => context.cells.indexOf(cell)),
                     users: this.users.map((cell) => context.cells.indexOf(cell)),
                 }
             }
         }
-
 
         const context = {
             args: {},
@@ -436,13 +475,13 @@ background colour / picture
             const cell = new Cell(raw);
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % context.cells.length;
             const expr = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) =>
-                `context.cells.at(${getIndex(index)}).result`);
+                `context.cells.at(${getIndex(index)}).value`);
             const references = [];
             const resolved = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) => {
                 const referenced = context.cells.at(getIndex(index));
                 referenced.users.push(cell);
                 cell.uses.push(referenced);
-                return `${referenced.result}`;
+                return `${referenced.value}`;
             });
             try {
                 if (context.action) {
@@ -450,12 +489,12 @@ background colour / picture
                 }
                 const func = new Function(...Object.keys(context.args), `return ${expr}`);
 
-                cell.result = func(...Object.values(context.args));
+                cell.value = func(...Object.values(context.args));
             } catch (error) {
-                cell.result = error.message;
+                cell.value = error.message;
             }
-            if (cell.result.action) {
-                context.action === cell.result.action();
+            if (cell.action) {
+                context.action === cell.action();
             }
 
             return cell;
@@ -485,36 +524,6 @@ background colour / picture
             itemNode.appendChild(cell.view.input);
             itemNode.appendChild(cell.view.result);
             cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
-
-            /*
-            const inputNode = document.createElement('div');
-            inputNode.classList.add('input');
-            itemNode.appendChild(inputNode);
-
-            const rawNode = document.createElement('span');
-            rawNode.classList.add('raw');
-            rawNode.innerHTML = output.raw;
-            inputNode.appendChild(rawNode);
-
-
-            if (output.raw !== output.resolved) {
-                const arrow = document.createElement('span');
-                arrow.innerHTML = ' &rarr; ';
-                inputNode.appendChild(arrow);
-
-                const resolvedNode = document.createElement('span');
-                resolvedNode.classList.add('resolved');
-                resolvedNode.innerHTML = output.resolved;
-                inputNode.appendChild(resolvedNode);
-            }
-
-            const resultNode = document.createElement('div');
-            resultNode.classList.add('result');
-            resultNode.innerHTML = output.result;
-            itemNode.appendChild(resultNode);
-            resultNode.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
-            output.resultNode = resultNode;
-            */
         }
 
         /**
@@ -554,14 +563,14 @@ background colour / picture
                 if (event.altKey) {
                     const start = inputNode.selectionStart;
                     const end = inputNode.selectionEnd ?? start;
-                    const reference = event.ctrlKey ? `${context.cells.at(context.index).result}` : `<${context.index - context.cells.length}>`;
+                    const reference = event.ctrlKey ? `${context.cells.at(context.index).value}` : `<${context.index - context.cells.length}>`;
                     inputNode.value = inputNode.value.slice(0, start) + reference + inputNode.value.slice(end);
                     inputNode.setSelectionRange(start, start + reference.length);
                 } else {
                     inputNode.value = context.cells[context.index].raw;
                 }
-                if (context.cells.at(context.index).resultNode) {
-                    const node = context.cells.at(context.index).resultNode;
+                if (context.cells.at(context.index).view.result) {
+                    const node = context.cells.at(context.index).view.result;
                     node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
                 }
             }
@@ -582,14 +591,14 @@ background colour / picture
                 if (event.altKey) {
                     const start = inputNode.selectionStart;
                     const end = inputNode.selectionEnd ?? start;
-                    const reference = event.ctrlKey ? `${context.cells.at(context.index).result}` : `<${context.index - context.cells.length}>`;
+                    const reference = event.ctrlKey ? `${context.cells.at(context.index).value}` : `<${context.index - context.cells.length}>`;
                     inputNode.value = inputNode.value.slice(0, start) + reference + inputNode.value.slice(end);
                     inputNode.setSelectionRange(start, start + reference.length);
                 } else {
                     inputNode.value = context.cells[context.index].raw;
                 }
-                if (context.cells.at(context.index).resultNode) {
-                    const node = context.cells.at(context.index).resultNode;
+                if (context.cells.at(context.index).view.result) {
+                    const node = context.cells.at(context.index).view.result;
                     node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
                 }
             }
@@ -646,6 +655,7 @@ background colour / picture
                 const reader = new FileReader();
                 const cell = new Cell(`dropped file ${file.name}`, '');
                 reader.addEventListener('load', (event) => {
+                    cell.value = reader.result;
                     cell.view.result.innerText = reader.result;
                     cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' })
                 });
