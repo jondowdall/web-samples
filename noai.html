@@ -30,7 +30,7 @@ background colour / picture
     <script>
 
         /**
-         * Uility functions
+         * Utility functions
          */
         function sameDay(date1, date2) {
             return date1.getDate() === date2.getDate() &&
@@ -49,6 +49,14 @@ background colour / picture
         }
 
         /**
+         * Add a date to the named items
+         */
+        function getDate(string) {
+            const [day, month, year] = string.trim().split(/[-/_]/g).map((s) => parseInt(s));
+            return new Date(year < 2000 ? year + 2000 : year, month - 1, day);
+        }
+
+        /**
          * Custom Actions
          *
          */
@@ -59,7 +67,7 @@ background colour / picture
             fullscreen(raw) {
                 let result = '';
                 if (!navigator.userActivation.isActive) {
-                    return new Cell('fullscreen', 'full screen request ignored in script');
+                    return new Cell('fullscreen', 'fullscreen request ignored in script');
                 }
                 if (document.body.webkitRequestFullscreen) {
                     if (document.body.webkitIsFullScreen) {
@@ -95,7 +103,7 @@ background colour / picture
              * Show the command history
              */
             history(raw) {
-                const result = context.cells.map((cell, index) => `${index}: ${cell.raw}`).join('<br>')
+                const result = context.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.length ? ' (' + cell.users.length + ')' : ''}`).join('<br>')
                 return new Cell(raw, result);
             },
 
@@ -398,6 +406,67 @@ background colour / picture
                     .join('<br>');
                 return new Cell(raw, list);
             },
+
+            /**
+             * Load user specified data file
+             */
+            async loadData(raw) {
+                if (!navigator.userActivation.isActive) {
+                    return new Cell('loadData', 'loadData request ignored in script');
+                }
+                const cell = new Cell(raw, '');
+
+                if ('showOpenFilePicker' in self) {
+                    const [fileHandle] = await window.showOpenFilePicker();
+                    if (fileHandle) {
+                        const file = await fileHandle.getFile();
+                        cell.content = file;
+                        cell.value = await file.text();
+                        const named = {};
+                        let sectionName;
+                        let current;
+                        const section = /^[^\s]+[^:]*:\s*$/;
+                        cell.value.split(/\r?\n/g).forEach((line) => {
+                            if (section.test(line)) {
+                                sectionName = line.replace(/:\s*$/, '');
+                                named[sectionName] = named[sectionName] || {};
+                            } else if (sectionName && line.trim() !== '') {
+                                const [pre, ...values] = line.split(/:/);
+                                const name = pre.trim();
+                                const value = values.join(':').trim();
+                                named[sectionName][name] = named[sectionName][name] || [];
+                                named[sectionName][name].push(value);
+                            }
+                        });
+                        Object.entries(named.abbreviations).forEach(([name, expansion]) => {
+                            this[name] = (raw) => {
+                                return new Cell(name, expansion);
+                            }
+                            addNamedItem(name);
+                        });
+                        Object.entries(named.dates).forEach(([name, date]) => {
+                            named.dates[name] = getDate(date[0]);
+                            this[name] = (raw) => {
+                                return new Cell(name, named.dates[name]);
+                            }
+                            addNamedItem(name);
+                        });
+                        Object.entries(named.sites).forEach(([name, urls]) => {
+                            const url = urls[0];
+                            this[name] = (raw) => {
+                                const windowReference = window.open(url, name, 'pop');
+                                named.sites[name] = url;
+                                if (windowReference) {
+                                    windowReference.focus();
+                                }
+                                return new Cell(raw, `<a href="url">${name}</a>`);
+                            };
+                            addNamedItem(name);
+                        });
+                    }
+                }
+                return cell;
+            },
         }
         const named = {
             dates: [],
@@ -449,8 +518,8 @@ background colour / picture
             toJSON(key) {
                 return {
                     raw: this.raw,
-                    expr: this.expr,
-                    resolved: this.resolved,
+                    expr: this.expr !== this.raw ? this.expr : undefined,
+                    resolved: this.resolved !== this.raw ? this.resolved : undefined,
                     content: this.content,
                     value: this.value,
                     uses: this.uses.map((cell) => context.cells.indexOf(cell)),
@@ -553,10 +622,20 @@ background colour / picture
         function process(event) {
             const str = (context.index === context.cells.length && inputNode.value === '') ? context.cells.at(-1).raw : inputNode.value;
             const cell = execute(str);
-            if (cell !== ignore) {
+            if (cell instanceof Promise) {
+                cell.then((result) => {
+                    showResults(result, context.cells.length)
+                    context.cells.push(result);
+                    const currentIndex = document.getElementById('current-index');
+                    currentIndex.innerHTML = context.cells.length;
+                    saveState();
+                });
+            } else if (cell !== ignore) {
                 showResults(cell, context.cells.length);
+            } else {
+                context.cells.push(cell);
             }
-            context.cells.push(cell);
+
             if (event.ctrlKey && (context.index < (context.cells.length - 1))) {
                 context.index += 1;
                 inputNode.value = context.cells.at(context.index).raw;
@@ -656,12 +735,20 @@ background colour / picture
             const stateStr = localStorage.getItem('noia-state');
             if (stateStr) {
                 const state = JSON.parse(stateStr);
-                state.context.cells.filter((cell) => cell).forEach((cell) => {
+                state.context.cells.filter((cell) => cell && cell.raw).forEach((cell) => {
                     const result = execute(cell.raw);
                     if (result && result !== ignore) {
-                        showResults(result, context.cells.length);
+                        if (result instanceof Promise) {
+                            result.then((result) => {
+                                showResults(result, context.cells.length)
+                                context.cells.push(result);
+                                saveState();
+                            });
+                        } else {
+                            showResults(result, context.cells.length);
+                            context.cells.push(result);
+                        }
                     }
-                    context.cells.push(result);
                 });
                 context.index = context.cells.length;
                 const currentIndex = document.getElementById('current-index');
@@ -712,7 +799,6 @@ background colour / picture
         inputNode.addEventListener('drop', dropHandler);
         results.addEventListener('drop', dragOverHandler);
         results.addEventListener('drop', dropHandler);
-
 
         loadState();
         inputNode.focus();
