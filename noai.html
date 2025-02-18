@@ -206,7 +206,7 @@ background colour / picture
                     update()
                 });
 
-                'MTWTFSS'.split('').forEach((c) => {
+                'SMTWTFS'.split('').forEach((c) => {
                     const day = document.createElement('span');
                     day.classList.add('calendar-day');
                     day.innerHTML = c;
@@ -264,6 +264,28 @@ background colour / picture
             },
 
             /**
+             * Load a file using a handle in the database
+             */
+            load(raw) {
+                const file = raw.replace(/^\s*load\s*/, '');
+                const cell = new Cell(raw, '');
+                if (file) {
+                    load(cell, file);
+                } else {
+                    load(cell, Object.keys(named.files)[0]);
+                }
+                return cell;
+            },
+
+            /**
+             * List the know files
+             */
+            files(raw) {
+                const result = Object.keys(named.files).map((file, index) => `${index}: ${file}`).join('<br>')
+                return new Cell(raw, result);
+            },
+
+            /**
              * Create a js cell
              */
             js(raw) {
@@ -282,28 +304,27 @@ background colour / picture
                     return i % index;
                 }
 
-                cell.getResultNode = () => {
-                    const container = document.createElement('div');
-                    const node = document.createElement('textarea');
-                    node.rows = 20;
-                    node.value = string;
-                    node.classList.add('code-area');
-                    node.addEventListener('blur', (event) => {
-                        cell.users.filter((cell) => cell.update).forEach((cell) => cell.update);
-                    });
-                    /*
-                    container.appendChild(node);
-                    const result = document.creaetElement('div');
-                    container.appendChild(result);
-                    */
-                    return node;
-                };
+                cell.view.result = document.createElement('div');
+                const node = document.createElement('textarea');
+                node.rows = 20;
+                node.value = string;
+                node.classList.add('code-area');
+                node.addEventListener('blur', (event) => {
+                    cell.users.filter((cell) => cell.update).forEach((cell) => cell.update);
+                });
+                /*
+                container.appendChild(node);
+                const result = document.creaetElement('div');
+                container.appendChild(result);
+                */
+                cell.view.result.appendChild(node);
                 const getValue = () => {
-                    const expr = cell.view.result.value.replace(/^\\/, '')
+                    const expr = node.value.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
                             `context.cells.at(${getIndex(index)}).value`);
                     try {
-                        const func = new Function(`${expr}`);
+                        const args = string.split(/[\s+]/);
+                        const func = new Function(...args, `${expr}`);
                         return func();
                     } catch (error) {
                         return error.message;
@@ -316,14 +337,15 @@ background colour / picture
                     },
                     content: {
                         enumerable: true,
-                        get: () => cell.view.result.value,
+                        get: () => node.value,
+                        set: (value) => node.value = value,
                     },
                 });
                 return cell;
             },
 
             /**
-             * Resit command history
+             * Reset command history
              */
             reset(raw) {
                 const cell = new Cell(raw, 'Reset all? (Y/N)');
@@ -472,6 +494,7 @@ background colour / picture
             dates: [],
             sites: [],
             abbreviations: [],
+            files: [],
         }
 
         Object.keys(actions).forEach(addNamedItem);
@@ -495,10 +518,10 @@ background colour / picture
                 return node;
             }
             makeView() {
-                this.view.input = document.createElement('div');
+                this.view.input = this.view.input || document.createElement('div');
                 this.view.input.classList.add('input');
 
-                this.view.raw = document.createElement('span');
+                this.view.raw = this.view.raw || document.createElement('span');
                 this.view.raw.classList.add('raw');
                 this.view.raw.innerHTML = this.raw;
                 this.view.input.appendChild(this.view.raw);
@@ -508,12 +531,12 @@ background colour / picture
                     arrow.innerHTML = ' &rarr; ';
                     this.view.input.appendChild(arrow);
 
-                    this.view.resolved = document.createElement('span');
+                    this.view.resolved = this.view.resolved || document.createElement('span');
                     this.view.resolved.classList.add('resolved');
                     this.view.resolved.innerHTML = this.resolved;
                     this.view.input.appendChild(resolvedNode);
                 }
-                this.view.result = this.getResultNode();
+                this.view.result = this.view.result || this.getResultNode();
             }
             toJSON(key) {
                 return {
@@ -737,6 +760,9 @@ background colour / picture
                 const state = JSON.parse(stateStr);
                 state.context.cells.filter((cell) => cell && cell.raw).forEach((cell) => {
                     const result = execute(cell.raw);
+                    if (cell.content) {
+                        result.content = cell.content;
+                    }
                     if (result && result !== ignore) {
                         if (result instanceof Promise) {
                             result.then((result) => {
@@ -756,6 +782,130 @@ background colour / picture
             }
         }
 
+        (function loadFileList() {
+            const request = window.indexedDB.open('NoaiDatabase', 1);
+
+            // Handle a failure
+            request.onerror = (event) => {
+                console.error(`Database error: ${event.target.error?.message}`);
+            };
+
+            // save the files
+            request.onsuccess = (event) => {
+                const db = event.target.result;
+
+                const transaction = db.transaction(['files']);
+                const objectStore = transaction.objectStore('files');
+                const request = objectStore.getAll();
+                request.onerror = (event) => {
+                    console.error(`Database error: ${event.target.error?.message}`);
+                };
+                request.onsuccess = async (event) => {
+                    event.target.result.forEach((file) =>
+                        named.files[file.name] = file.handle);
+                };
+            };
+        })();
+
+        /**
+         * Check the permissions for the file to load
+         */
+        async function verifyPermission(fileHandle, readWrite) {
+            const options = {};
+            if (readWrite) {
+                options.mode = 'readwrite';
+            }
+            // Check if permission was already granted. If so, return true.
+            if ((await fileHandle.queryPermission(options)) === 'granted') {
+                return true;
+            }
+            // Request permission. If the user grants permission, return true.
+            if ((await fileHandle.requestPermission(options)) === 'granted') {
+                return true;
+            }
+            // The user didn't grant permission, so return false.
+            return false;
+        }
+
+        /**
+         * Load a file from a handle in an indexeddb database
+         */
+        async function load(cell, filename = 'main.js') {
+            if (named.files[filename]) {
+                const handle = named.files[filename];
+                if (verifyPermission(handle)) {
+                    const file = await handle.getFile();
+                    const contents = await file.text();
+                    cell.view.result.innerHTML = `<pre>${contents}</pre>`;
+                } else {
+                    console.log('Permission not granted for file :(');
+                }
+            }
+        }
+
+
+        /**
+         * Save a list of file handles to a indexeddb database
+         */
+        function saveFileHandles(files) {
+            // Open the database
+            const request = window.indexedDB.open('NoaiDatabase', 1);
+
+            // Handle a failure
+            request.onerror = (event) => {
+                console.error(`Database error: ${event.target.error?.message}`);
+            };
+
+            let db;
+            // save the files
+            request.onsuccess = (event) => {
+                const db = event.target.result;
+
+                const transaction = db.transaction(['files'], 'readwrite');
+                // Do something with request.result!
+                // Do something when all the data is added to the database.
+                transaction.oncomplete = (event) => {
+                    console.log('All done!');
+                };
+
+                transaction.onerror = (event) => {
+                    // Don't forget to handle errors!
+                };
+
+                const fileHandleStore = transaction.objectStore('files');
+                files.forEach((file) => {
+                    const request = fileHandleStore.add(file);
+                    request.onsuccess = (event) => {
+                        console.log(`stored handle for ${file.name}`);
+                    };
+                    request.onerror = (event) => {
+                        console.log(`Database error: ${event.target.error?.message}`);
+                    };
+                });
+            };
+
+            request.onupgradeneeded = (event) => {
+                // Save the IDBDatabase interface
+                const db = event.target.result;
+
+                // Create an objectStore for this database
+                const objectStore = db.createObjectStore('files', { keyPath: 'name' });
+
+                // Use transaction oncomplete to make sure the objectStore creation is
+                // finished before adding data into it.
+                objectStore.transaction.oncomplete = (event) => {
+                    // Store values in the newly created objectStore.
+                    const fileHandleStore = db
+                        .transaction('files', 'readwrite')
+                        .objectStore('files');
+                    files.forEach((file) => {
+                        fileHandleStore.add(file);
+                    });
+                };
+            };
+        }
+
+
         function dropHandler(event) {
             event.preventDefault();
 
@@ -764,7 +914,7 @@ background colour / picture
                 const cell = new Cell(`dropped file ${file.name}`, '');
                 reader.addEventListener('load', (event) => {
                     cell.value = reader.result;
-                    cell.view.result.innerText = reader.result;
+                    cell.view.result.innerHTML = `<pre>${reader.result}</pre>`;
                     cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' })
                 });
                 reader.readAsText(file);
@@ -778,6 +928,10 @@ background colour / picture
                     if (item.kind === 'file') {
                         const file = item.getAsFile();
                         loadFile(file);
+                        item.getAsFileSystemHandle().then((handle) => {
+                            saveFileHandles([{ name: file.name, handle }]);
+                            named.files[file.name] = handle;
+                        });
                     }
                 });
             } else {
@@ -788,8 +942,6 @@ background colour / picture
         }
 
         function dragOverHandler(event) {
-            console.log("File(s) in drop zone");
-
             // Prevent default behavior (Prevent file from being opened)
             event.preventDefault();
         }
