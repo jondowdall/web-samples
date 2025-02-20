@@ -29,7 +29,9 @@ background colour / picture
         <datalist id="named-items"></datalist>
         <input id="command-entry" type="text" autocorrect="off" autocapitalize="none" list="named-items">
     </div>
-    <script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: false });
 
         /**
          * Utility functions
@@ -173,7 +175,7 @@ background colour / picture
 
             calendar(cell) {
                 cell.update = (time) => cell.view.result.innerHTML = this.calendarDate.toDateString();
-                
+
                 if (this.calendarWidget) {
                     cell.value = this.calendarDate;
                     cell.view.widget = this.calendarWidget;
@@ -349,7 +351,7 @@ background colour / picture
             },
 
             /**
-             * Create a js cell
+             * Create a notes cell
              */
             notes(cell) {
                 const string = cell.raw.replace(/^js\s*/, '');
@@ -377,12 +379,13 @@ background colour / picture
                 }
 
                 cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('notes');
                 cell.view.result.contentEditable = true;
                 cell.view.result.innerText = 'notes';
                 cell.content = '';
                 cell.view.result.addEventListener('blur', (event) => {
                     cell.content = cell.view.result.innerText;
-                    cell.view.result.innerText = resolve(cell.content);
+                    cell.view.result.innerText = resolve(cell.content) || `<enter note>`;
                     saveState();
                 });
                 cell.view.result.addEventListener('focus', (event) => {
@@ -397,6 +400,136 @@ background colour / picture
                     value: {
                         enumerable: true,
                         get: () => resolve(cell.content),
+                    },
+                });
+            },
+
+            /**
+             * Create a notes cell
+             */
+            html(cell) {
+                const string = cell.raw.replace(/^js\s*/, '');
+                const index = context.cells.length;
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                const resolve = (str) => {
+                    const allNamed = Object.values(named)
+                        .reduce((all, value) => Object.assign(all, value), {});
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `context.cells.at(${getIndex(index)}).value`)
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            allNamed[name] ?? match);
+                }
+
+                cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('notes');
+                cell.view.result.contentEditable = true;
+                cell.view.result.innerText = 'notes';
+                cell.content = '';
+                cell.view.result.addEventListener('blur', (event) => {
+                    cell.content = cell.view.result.innerText;
+                    cell.view.result.innerHTML = resolve(cell.content) || `<i>&lt;enter note&gt;</i>`;
+                    saveState();
+                });
+                cell.view.result.addEventListener('focus', (event) => {
+                    cell.view.result.innerText = cell.content;
+                });
+                cell.view.result.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        cell.view.result.blur();
+                    }
+                });
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: () => resolve(cell.content),
+                    },
+                });
+            },
+
+            /**
+             * Create a mermaid diagram cell
+             */
+            mermaid(cell) {
+                const string = cell.raw.replace(/^js\s*/, '');
+                const index = context.cells.length;
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                const resolve = (str) => {
+                    const allNamed = Object.values(named)
+                        .reduce((all, value) => Object.assign(all, value), {});
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `context.cells.at(${getIndex(index)}).value`)
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            allNamed[name] ?? match);
+                }
+
+                cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('mermaid-cell');
+
+                const definition = document.createElement('textarea');
+                definition.classList.add('code-area');
+                definition.rows = 10;
+                definition.value = ''
+
+                const diagram = document.createElement('div');
+                cell.view.result.appendChild(definition);
+
+                diagram.classList.add('mermaid');
+                cell.view.result.appendChild(diagram);
+                cell.content = '';
+
+                async function update() {
+                    try {
+                        const { svg } = await mermaid.render(`graph${context.cells.indexOf(cell)}`, resolve(cell.content));
+                        diagram.innerHTML = svg;
+                    } catch (error) {
+                        diagram.innerHTML = error.message;
+
+                    }
+                    saveState();
+                }
+
+                definition.addEventListener('blur', (event) => update());
+                definition.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        definition.blur();
+                    }
+                });
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: () => resolve(cell.content),
+                    },
+                    content: {
+                        enumerable: true,
+                        get: () => definition.value,
+                        set: (value) => {
+                            definition.value = resolve(value);
+                            update();
+                        },
                     },
                 });
             },
@@ -556,7 +689,7 @@ background colour / picture
                         cell.content = file.name;
                         cell.value = await file.text();
                         cell.view.result.innerHTML = `<pre>${cell.value}</pre>`;
-                        saveFileHandles([{path: file.name, handle: fileHandle}]);
+                        saveFileHandles([{ path: file.name, handle: fileHandle }]);
                         let sectionName;
                         let current;
                         const section = /^[^\s]+[^:]*:\s*$/;
@@ -1072,8 +1205,14 @@ background colour / picture
         results.addEventListener('drop', dropHandler);
 
         loadState();
+        results.addEventListener('click', (event) => {
+            if (event.target === results) {
+                inputNode.focus();
+            }
+        });
         inputNode.focus();
 
     </script>
 </body>
+
 </html>
