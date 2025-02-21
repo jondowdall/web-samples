@@ -106,7 +106,12 @@ background colour / picture
              * Show the command history
              */
             history(cell) {
-                cell.value = context.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.length ? ' (' + cell.users.length + ')' : ''}`).join('<br>')
+                cell.value = context.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`).join('<br>');
+                cell.update = (time) => {
+                    cell.value = context.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`).join('<br>');
+                    cell.view.result.innerHTML = cell.value;
+                }
+                context.events.historyChange.add(cell);
             },
 
             /**
@@ -281,6 +286,34 @@ background colour / picture
             },
 
             /**
+             * Toggle the 'widget' state for a cell
+             */
+            widget(cell) {
+                const string = cell.raw.replace(/\s*widget\s*/, '');
+
+                const cells = string ? string.split(/\s+/g).map((cell) =>
+                    context.cells.at(cell.replace(/^</, '').replace(/>$/, ''))) :
+                    [context.cells.at(-1)];
+                const result = [];
+                cells.forEach((cell) => {
+                    const node = cell.view.result;
+                    if (node.classList.contains('widget')) {
+                        cell.view.container.appendChild(node);
+                        node.classList.remove('widget');
+                        result.push(`<${context.cells.indexOf(cell)}> no longer a widget`);
+
+                    } else {
+                        document.getElementById('widgets').appendChild(node);
+                        node.classList.add('widget');
+                        result.push(`<${context.cells.indexOf(cell)}> now a widget`);
+
+                    }
+                });
+                cell.value = result.join('<br>');
+            },
+
+
+            /**
              * Toggle the 'sticky' state for a cell
              */
             keep(cell) {
@@ -354,8 +387,14 @@ background colour / picture
              * Create a notes cell
              */
             notes(cell) {
-                const string = cell.raw.replace(/^js\s*/, '');
+                const string = cell.raw.replace(/^\s*notes\s*/, '');
                 const index = context.cells.length;
+
+                const cells = string ? string.split(/\s+/g).map((cell) =>
+                    context.cells.at(cell.replace(/^</, '').replace(/>$/, ''))) :
+                    [context.cells.at(-1)];
+
+                const content = cells.map((cell) => cell.value).join('\n');
 
                 const getIndex = (str) => {
                     const i = parseInt(str);
@@ -381,8 +420,8 @@ background colour / picture
                 cell.view.result = document.createElement('div');
                 cell.view.result.classList.add('notes');
                 cell.view.result.contentEditable = true;
-                cell.view.result.innerText = 'notes';
-                cell.content = '';
+                cell.content = content;
+                cell.view.result.innerText = content || '<enter notes>';
                 cell.view.result.addEventListener('blur', (event) => {
                     cell.content = cell.view.result.innerText;
                     cell.view.result.innerText = resolve(cell.content) || `<enter note>`;
@@ -400,6 +439,15 @@ background colour / picture
                     value: {
                         enumerable: true,
                         get: () => resolve(cell.content),
+                    },
+                    content: {
+                        enumerable: true,
+                        get: () => cell.view.result.innerText,
+                        set: (value) => {
+                            cell.view.result.innerText = value;
+                            const users = Array.from(cell.users);
+                            users.forEach((user) => user.update());
+                        },
                     },
                 });
             },
@@ -461,8 +509,74 @@ background colour / picture
             /**
              * Create a mermaid diagram cell
              */
+            diagram(cell) {
+                const string = cell.raw.replace(/^diagram\s*/, '');
+                const index = context.cells.length;
+
+                cell.content = string || '<-1>';
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                const resolve = (str) => {
+                    const allNamed = Object.values(named)
+                        .reduce((all, value) => Object.assign(all, value), {});
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) => {
+                            const input = context.cells.at(getIndex(index));
+                            input.users.add(cell);
+                            cell.uses.add(input);
+                            return input.value;
+                        })
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            allNamed[name] ?? match);
+                }
+
+                cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('mermaid-cell');
+
+                const diagram = document.createElement('div');
+
+                diagram.classList.add('mermaid');
+                //document.getElementById('widgets').appendChild(diagram);
+                cell.view.result.appendChild(diagram);
+                diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
+
+                cell.update = async (time) => {
+                    try {
+                        // Remove references to this sell - will be re-added by resolve
+                        cell.uses.forEach((input) => input.users.delete(cell));
+                        const { svg } = await mermaid.render(`graph${context.cells.indexOf(cell)}`, resolve(cell.content));
+                        diagram.innerHTML = svg;
+                    } catch (error) {
+                        diagram.innerHTML = error.message;
+
+                    }
+                    saveState();
+                }
+
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: () => resolve(cell.content),
+                    },
+                });
+                cell.update();
+            },
+
+            /**
+             * Create a mermaid diagram cell
+             */
             mermaid(cell) {
-                const string = cell.raw.replace(/^js\s*/, '');
+                const string = cell.raw.replace(/^mermaid\s*/, '');
                 const index = context.cells.length;
 
                 const getIndex = (str) => {
@@ -498,7 +612,8 @@ background colour / picture
                 cell.view.result.appendChild(definition);
 
                 diagram.classList.add('mermaid');
-                cell.view.result.appendChild(diagram);
+                document.getElementById('widgets').appendChild(diagram);
+                diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
                 cell.content = '';
 
                 async function update() {
@@ -558,7 +673,7 @@ background colour / picture
                 node.value = string;
                 node.classList.add('code-area');
                 node.addEventListener('blur', (event) => {
-                    cell.users.filter((cell) => cell.update).forEach((cell) => cell.update);
+                    cell.users.entries().filter((cell) => cell.update).forEach((cell) => cell.update);
                 });
                 /*
                 container.appendChild(node);
@@ -744,14 +859,15 @@ background colour / picture
         const inputNode = document.getElementById('command-entry');
 
         class Cell {
-            constructor(raw, value, expr, resolved, uses = []) {
+            constructor(raw, content, expr, resolved, uses = []) {
                 this.raw = raw;
                 this.timestamp = new Date();
                 this.expr = expr ?? raw;
                 this.resolved = resolved ?? raw;
-                this.value = value;
-                this.uses = uses;
-                this.users = [];
+                this.content = content;
+                this.value = content;
+                this.uses = new Set(uses);
+                this.users = new Set();
                 this.view = {};
             }
             getResultNode() {
@@ -761,13 +877,25 @@ background colour / picture
                 return node;
             }
             makeView() {
+                this.view.container = document.createElement('div');
+                this.view.container.classList.add('result-box');
+
                 this.view.input = this.view.input || document.createElement('div');
                 this.view.input.classList.add('input');
+                this.view.container.appendChild(this.view.input);
 
                 this.view.raw = this.view.raw || document.createElement('span');
                 this.view.raw.classList.add('raw');
                 this.view.raw.innerHTML = this.raw;
                 this.view.input.appendChild(this.view.raw);
+                this.view.raw.addEventListener('dblclick', (event) => {
+                    this.view.raw.contentEditable = true;
+                    this.view.raw.focus();
+                });
+                this.view.raw.addEventListener('blur', (event) => {
+                    this.view.raw.contentEditable = false;
+                    this.raw = this.view.raw.innerText;
+                });
 
                 if (this.raw !== this.resolved) {
                     const arrow = document.createElement('span');
@@ -780,6 +908,7 @@ background colour / picture
                     this.view.input.appendChild(resolvedNode);
                 }
                 this.view.result = this.view.result || this.getResultNode();
+                this.view.container.appendChild(this.view.result);
             }
             toJSON(key) {
                 return {
@@ -789,8 +918,8 @@ background colour / picture
                     resolved: this.resolved !== this.raw ? this.resolved : undefined,
                     content: this.content,
                     value: this.value,
-                    uses: this.uses.map((cell) => context.cells.indexOf(cell)),
-                    users: this.users.map((cell) => context.cells.indexOf(cell)),
+                    uses: this.uses.entries().map((cell) => context.cells.indexOf(cell)),
+                    users: this.users.entries().map((cell) => context.cells.indexOf(cell)),
                 }
             }
         }
@@ -799,13 +928,16 @@ background colour / picture
             args: {},
             cells: [],
             index: 0,
+            events: {
+                historyChange: new Set(),
+            },
         };
 
         /**
          * Update dynamic cells of display
          */
         function update(time) {
-            context.cells.filter((cell) => cell.update).forEach((cell) => cell.update(time));
+            //context.cells.filter((cell) => cell.update).forEach((cell) => cell.update(time));
             window.requestAnimationFrame(update);
         }
         update();
@@ -817,9 +949,9 @@ background colour / picture
         const ignore = Symbol('ignore');
 
         /**
-         * Process an input string
+         * Evaluate an input string
          */
-        function execute(raw) {
+        function evaluate(raw) {
             const cell = new Cell(raw);
             if (actions[raw] !== undefined) {
                 actions[raw](cell);
@@ -839,23 +971,26 @@ background colour / picture
             const references = [];
             const resolved = raw.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) => {
                 const referenced = context.cells.at(getIndex(index));
-                referenced.users.push(cell);
-                cell.uses.push(referenced);
+                referenced.users.add(cell);
+                cell.uses.add(referenced);
                 return `${referenced.value}`;
             });
-            try {
-                if (context.action) {
-                    const func = new Function(...Object.keys(context.args), `return context.action(${expr})`);
-                }
-                const func = new Function(...Object.keys(context.args), `return ${expr}`);
+            cell.update = () => {
+                try {
+                    if (context.action) {
+                        const func = new Function('context', ...Object.keys(context.args), `return context.action(${expr})`);
+                    }
+                    const func = new Function('context', ...Object.keys(context.args), `return ${expr}`);
 
-                cell.value = func(...Object.values(context.args));
-            } catch (error) {
-                cell.value = error.message;
+                    cell.value = func(context, ...Object.values(context.args));
+                } catch (error) {
+                    cell.value = error.message;
+                }
+                if (cell.action) {
+                    context.action === cell.action();
+                }
             }
-            if (cell.action) {
-                context.action === cell.action();
-            }
+            cell.update();
 
             return cell;
         }
@@ -873,18 +1008,9 @@ background colour / picture
 
             cell.view.index = indexNode;
 
-            const resultBg = document.createElement('div');
-            resultBg.classList.add('result-background');
-            indexNode.appendChild(resultBg);
-
             cell.makeView();
 
-            const itemNode = document.createElement('div');
-            itemNode.classList.add('result-box');
-            resultsNode.appendChild(itemNode);
-
-            itemNode.appendChild(cell.view.input);
-            itemNode.appendChild(cell.view.result);
+            resultsNode.appendChild(cell.view.container);
             cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
         }
 
@@ -893,7 +1019,7 @@ background colour / picture
          */
         function process(event) {
             const str = (context.index === context.cells.length && inputNode.value === '') ? context.cells.at(-1).raw : inputNode.value;
-            const cell = execute(str);
+            const cell = evaluate(str);
             if (cell instanceof Promise) {
                 cell.then((result) => {
                     showResults(result, context.cells.length)
@@ -906,6 +1032,7 @@ background colour / picture
                 showResults(cell, context.cells.length);
                 context.cells.push(cell);
             }
+            context.events.historyChange.forEach((cell) => cell.update());
 
             if (event.ctrlKey && (context.index < (context.cells.length - 1))) {
                 context.index += 1;
@@ -1011,7 +1138,7 @@ background colour / picture
             if (stateStr) {
                 const state = JSON.parse(stateStr);
                 state.context.cells.filter((cell) => cell && cell.raw).forEach((cell) => {
-                    const result = execute(cell.raw);
+                    const result = evaluate(cell.raw);
                     if (cell.content) {
                         result.content = cell.content;
                     }
@@ -1033,6 +1160,7 @@ background colour / picture
                 context.index = context.cells.length;
                 const currentIndex = document.getElementById('current-index');
                 currentIndex.innerHTML = context.cells.length;
+                context.events.historyChange.forEach((cell) => cell.update());
             }
         }
 
@@ -1164,7 +1292,7 @@ background colour / picture
 
             function loadFile(file) {
                 const reader = new FileReader();
-                const cell = new Cell(`dropped file ${file.name}`, '');
+                const cell = new Cell(`dropped file ${file.name}`);
                 reader.addEventListener('load', (event) => {
                     cell.value = reader.result;
                     cell.view.result.innerHTML = `<pre>${reader.result}</pre>`;
