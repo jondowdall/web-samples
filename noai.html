@@ -66,7 +66,7 @@ background colour / picture
          */
         function getCells(string) {
             return string ? string.split(/\s+/g).map((cell) =>
-                app.cells.at(cell.replace(/^</, '').replace(/>$/, ''))) :
+                app.cells.at(cell.replace(/^</, '').replace(/>$/, ''))).filter((cell) => cell) :
                 [app.cells.at(-1)];
         }
 
@@ -389,11 +389,15 @@ background colour / picture
                 const string = cell.raw.replace(/^\s*delete\s*/, '');
                 const len = app.cells.length;
                 const cells = getCells(string);
+                if (cells.length === 0) {
+                    cell.value = `No cells deleted!`;
+                } else if (cells.length === 1) {
+                    cell.value = `deleted cell ${app.cells.indexOf(cells[0])}`;
+                } else {
+                    cell.value = `deleted cells ${cells.map((cell) => app.cells.indexOf(cell)).join()}`;
+                }
                 app.cells = app.cells.filter((cell) => !cells.includes(cell));
-                cells.forEach((cell) => {
-                    cell.view.result.parentElement.remove();
-                    cell.view.index.remove();
-                });
+                cells.forEach((cell) => cell.remove());
                 cell.type = Status;
             },
 
@@ -538,35 +542,17 @@ background colour / picture
              * Create a mermaid diagram cell
              */
             diagram(cell) {
+
                 const string = cell.raw.replace(/^diagram\s*/, '');
-                const index = app.cells.length;
+                const index = app.mermaidCount++;
+
+                const cells = getCells(string);
+                cells.forEach((input) => {
+                    input.users.add(cell);
+                    cell.uses.add(input);
+                });
 
                 cell.content = string || '<-1>';
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
-                }
-
-                const resolve = (str) => {
-                    const allNamed = Object.values(named)
-                        .reduce((all, value) => Object.assign(all, value), {});
-                    return str.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) => {
-                            const input = app.cells.at(getIndex(index));
-                            input.users.add(cell);
-                            cell.uses.add(input);
-                            return input.value;
-                        })
-                        .replace(/<([^>]+)>/g, (match, name) =>
-                            allNamed[name] ?? match);
-                }
 
                 cell.view.result = document.createElement('div');
                 cell.view.result.classList.add('mermaid-cell');
@@ -574,27 +560,29 @@ background colour / picture
                 const diagram = document.createElement('div');
 
                 diagram.classList.add('mermaid');
-                //document.getElementById('widgets').appendChild(diagram);
                 cell.view.result.appendChild(diagram);
                 diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
 
                 cell.update = async (time) => {
+                    const source = cells.map((input) => input.value).join('\n');
                     try {
-                        // Remove references to this sell - will be re-added by resolve
-                        cell.uses.forEach((input) => input.users.delete(cell));
-                        const { svg } = await mermaid.render(`graph${app.cells.indexOf(cell)}`, resolve(cell.content));
+                        const { svg } = await mermaid.render(`graph_${index}`, source);
                         diagram.innerHTML = svg;
+                        cell.svg = diagram.firstElementChild;
                     } catch (error) {
                         diagram.innerHTML = error.message;
 
                     }
-                    saveState();
+                    cell.users.forEach((user) => user.update());
+                    if (cell.users.size === 0) {
+                        saveState();
+                    }
                 }
 
                 Object.defineProperties(cell, {
                     value: {
                         enumerable: true,
-                        get: () => resolve(cell.content),
+                        get: () => diagram.innerHTML,
                     },
                 });
                 cell.update();
@@ -605,6 +593,7 @@ background colour / picture
              */
             mermaid(cell) {
                 const string = cell.raw.replace(/^mermaid\s*/, '');
+                const idx = app.mermaidCount++;
                 const index = app.cells.length;
 
                 const getIndex = (str) => {
@@ -646,8 +635,9 @@ background colour / picture
 
                 async function update() {
                     try {
-                        const { svg } = await mermaid.render(`graph${app.cells.indexOf(cell)}`, resolve(cell.content));
+                        const { svg } = await mermaid.render(`graph_${idx}`, resolve(cell.content));
                         diagram.innerHTML = svg;
+                        cell.svg = diagram.firstElementChild;
                     } catch (error) {
                         diagram.innerHTML = error.message;
 
@@ -887,8 +877,27 @@ background colour / picture
                     const file = await fileHandle.getFile();
                     cell.contents = file.name;
                     cell.raw += ` as ${file.name}`;
-                    saveFileHandles([{name: file.name, handle: fileHandle}]);
+                    saveFileHandles([{ name: file.name, handle: fileHandle }]);
                 }
+                cell.update();
+            },
+
+            saveSvg(cell) {
+                const string = cell.raw.replace(/^\s*saveSvg\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+                const cells = getCells(string.replace(pattern, ''));
+
+                cells.forEach((input) => {
+                    input.users.add(cell);
+                    cell.uses.add(input);
+                });
+
+                cell.update = () => {
+                    cells.filter((cell) => cell.svg).forEach((cell, index) =>
+                        cells.length > 1 ? convertSVGtoImg(cell.svg, `${filename}_${index}.png`) : convertSVGtoImg(cell.svg, `${filename}.png`));
+                };
+
                 cell.update();
             },
 
@@ -1046,6 +1055,125 @@ background colour / picture
                     users: this.users.entries().map((cell) => app.cells.indexOf(cell)),
                 }
             }
+            remove() {
+                this.view.index.remove();
+                this.view.container.remove();
+                this.uses.forEach((input) => input.users.delete(this));
+                this.users.forEach((user) => user.uses.delete(this));
+            }
+        }
+
+        function copyStylesInline(destinationNode, sourceNode) {
+            var containerElements = ["svg", "g"];
+            for (var cd = 0; cd < destinationNode.childNodes.length; cd++) {
+                var child = destinationNode.childNodes[cd];
+                if (containerElements.indexOf(child.tagName) != -1) {
+                    copyStylesInline(child, sourceNode.childNodes[cd]);
+                    continue;
+                }
+                var style = sourceNode.childNodes[cd].currentStyle || window.getComputedStyle(sourceNode.childNodes[cd]);
+                if (style == "undefined" || style == null) continue;
+                for (var st = 0; st < style.length; st++) {
+                    child.style.setProperty(style[st], style.getPropertyValue(style[st]));
+                }
+            }
+        }
+
+
+
+
+
+
+
+
+        const dataHeader = 'data:image/svg+xml;charset=utf-8';
+
+        const loadImage = async url => {
+            const img = document.createElement('img');
+            img.src = url;
+            return new Promise((resolve, reject) => {
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+            });
+        }
+
+        const serializeAsXML = (e) => (new XMLSerializer()).serializeToString(e);
+
+        const encodeAsUTF8 = (str) => `${dataHeader},${encodeURIComponent(str)}`;
+        const encodeAsB64 = (str) => `${dataHeader};base64,${btoa(str)}`;
+
+        const convertSVGtoImg = async (svg, filename, format = 'png') => {
+            const copy = svg.cloneNode(true);
+            copyStylesInline(copy, svg);
+            const svgData = encodeAsUTF8(serializeAsXML(copy));
+
+            const img = await loadImage(svgData);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = svg.clientWidth;
+            canvas.height = svg.clientHeight;
+            const context = canvas.getContext('2d');
+            context.fillStyle = 'rgb(240, 248, 255)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(img, 0, 0, svg.clientWidth, svg.clientHeight);
+
+            const dataURL = await canvas.toDataURL(`image/${format}`, 1.0);
+            triggerDownload(dataURL, filename);
+        }
+
+
+
+
+
+
+
+
+
+
+
+        function triggerDownload(imgURI, fileName) {
+            const event = new MouseEvent('click', {
+                view: window,
+                bubbles: false,
+                cancelable: true
+            });
+            const link = document.createElement('a');
+            link.setAttribute('download', fileName);
+            link.setAttribute('href', imgURI);
+            link.setAttribute('target', '_blank');
+            link.dispatchEvent(event);
+        }
+
+        function downloadSvg(svg, fileName) {
+            var copy = svg.cloneNode(true);
+            copyStylesInline(copy, svg);
+            var canvas = document.createElement('canvas');
+            var bbox = svg.getBBox();
+            canvas.width = bbox.width;
+            canvas.height = bbox.height;
+            var ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, bbox.width, bbox.height);
+            var data = (new XMLSerializer()).serializeToString(copy);
+            var DOMURL = window.URL || window.webkitURL || window;
+            var img = new Image();
+            var svgBlob = new Blob([data], { type: 'image/svg+xml;charset=utf-8' });
+            var url = DOMURL.createObjectURL(svgBlob);
+            img.onload = function () {
+                ctx.drawImage(img, 0, 0);
+                DOMURL.revokeObjectURL(url);
+                if (typeof navigator !== 'undefined' && navigator.msSaveOrOpenBlob) {
+                    var blob = canvas.msToBlob();
+                    navigator.msSaveOrOpenBlob(blob, fileName);
+                }
+                else {
+                    var imgURI = canvas
+                        .toDataURL('image/png')
+                        .replace('image/png', 'image/octet-stream');
+                    triggerDownload(imgURI, fileName);
+                }
+                //document.removeChild(canvas);
+            };
+            img.src = url;
         }
 
         const app = {
@@ -1057,6 +1185,7 @@ background colour / picture
                 historyChange: new Set(),
             },
             context: [{ process }],
+            mermaidCount: 0,
             setPrompt(prompt) {
                 const currentIndex = document.getElementById('current-index');
                 if (prompt) {
@@ -1263,16 +1392,20 @@ background colour / picture
             if (stateStr) {
                 const state = JSON.parse(stateStr);
                 state.app = state.app ?? state.context;
-                state.app.cells.filter((cell) => cell && cell.raw).forEach((cell) => {
-                    app.history.push(cell.raw);
-                    const result = evaluate(cell.raw);
-                    if (cell.content) {
-                        result.content = cell.content;
+                state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
+                    app.history.push(storedCell.raw);
+                    const cell = evaluate(storedCell.raw);
+                    if (storedCell.content) {
+                        cell.content = storedCell.content;
                     }
-                    if (result && result !== Ignore) {
-                        result.timestamp = new Date(cell.timestamp);
-                        showResults(result, app.cells.length);
-                        app.cells.push(result);
+                    if (cell && cell !== Ignore) {
+                        cell.timestamp = new Date(storedCell.timestamp);
+                        if (cell.type === Status) {
+                            app.setStatus(cell.value);
+                        } else {
+                            showResults(cell, app.cells.length);
+                            app.cells.push(cell);
+                        }
                     }
                 });
                 app.index = app.cells.length;
