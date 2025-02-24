@@ -31,6 +31,9 @@ background colour / picture
     </div>
     <div id="status" class="fade"></div>
     <script type="module">
+        const themes = ['vt-220', 'workbench-1.3', 'workbench-4.1'];
+
+
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
         mermaid.initialize({ startOnLoad: false });
 
@@ -101,7 +104,7 @@ background colour / picture
         function getCells(string) {
             if (string) {
                 const list = getList(string);
-                const cells = list.map((index) => isNaN(Number(index)) ? app.namedCells[index] : app.cells.at(index));
+                const cells = list.map((index) => app.namedCells[index] ?? app.cells.at(index));
                 return cells.filter((cell) => cell);
             }
             return [app.cells.at(-1)];
@@ -550,7 +553,7 @@ background colour / picture
         /**
          * Unlock a cell
          */
-         function unstick(cell) {
+        function unstick(cell) {
             const node = cell.view.result.parentElement;
             const box = node.getBoundingClientRect();
             Array.from(document.querySelectorAll('.sticky'))
@@ -609,6 +612,34 @@ background colour / picture
                 location.reload();
                 return Ignore;
             },
+
+            /**
+             * Change the theme
+             */
+            theme(cell) {
+                const themeName = cell.raw.replace(/^\s*theme\s+/, '').trim();
+                document.documentElement.setAttribute('data-theme', themeName);
+                cell.type = Status;
+                cell.value = `theme set to ${themeName}`;
+                if (!themes.includes(themeName)) {
+                    cell.value += ' (unknown theme)!';
+                }
+                app.theme = themeName;
+            },
+
+            /**
+             * List the themes
+             */
+             themes(cell) {
+                const themeName = document.documentElement.getAttribute('data-theme');
+                const themesNames = themes.map((name) => name === themeName ? name + ' *' : name);
+                cell.type = Status;
+                cell.value = themesNames.join('<br>');
+                if (!themes.includes(themeName)) {
+                    cell.value += ` ${themeName} unknown theme!`;
+                }
+            },
+
 
             /**
              * Show the command history
@@ -1350,7 +1381,7 @@ background colour / picture
             /**
              * Save the contents of the specified files
              */
-            async save(cell) {
+            save(cell) {
                 const string = cell.raw.replace(/^\s*save\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
@@ -1374,6 +1405,14 @@ background colour / picture
                     }
                 }
 
+                const pickfile = async () => {
+                    fileHandle = await window.showSaveFilePicker(options);
+                    const file = await fileHandle.getFile();
+                    cell.contents = file.name;
+                    cell.raw += ` as ${file.name}`;
+                    saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                }
+
                 if (filename && named.files[filename]) {
                     fileHandle = named.files[filename];
                 } else {
@@ -1387,11 +1426,7 @@ background colour / picture
                             },
                         ],
                     };
-                    fileHandle = await window.showSaveFilePicker(options);
-                    const file = await fileHandle.getFile();
-                    cell.contents = file.name;
-                    cell.raw += ` as ${file.name}`;
-                    saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                    pickfile();
                 }
                 cell.update();
             },
@@ -1568,6 +1603,9 @@ background colour / picture
                 this.view.container.appendChild(this.view.result);
             }
             toJSON(key) {
+                if (this.type === Status) {
+                    return undefined;
+                }
                 return {
                     raw: this.raw,
                     timestamp: this.timestamp.getTime(),
@@ -1579,8 +1617,10 @@ background colour / picture
                 }
             }
             remove() {
-                this.view.index.remove();
-                this.view.container.remove();
+                if (this.view.index) {
+                    this.view.index.remove();
+                    this.view.container.remove();
+                }
                 this.uses.forEach((input) => input.users.delete(this));
                 this.users.forEach((user) => user.uses.delete(this));
             }
@@ -1797,6 +1837,7 @@ background colour / picture
             if (cell !== Ignore) {
                 if (cell.type === Status) {
                     app.setStatus(cell.value);
+                    app.cells.push(cell);
                 } else {
                     showResults(cell, app.cells.length);
                     app.cells.push(cell);
@@ -1906,12 +1947,14 @@ background colour / picture
                             showResults(cell, app.cells.length);
                             app.cells.push(cell);
                             app.namedCells[cell.name] = cell;
-                            if (storedCell.state.hidden) {
-                                cell.view.result.classList.toggle('hidden');
-                                cell.view.input.classList.toggle('dim');
-                            }
-                            if (storedCell.state.sticky) {
-                                stick(cell);
+                            if (storedCell.state) {
+                                if (storedCell.state.hidden) {
+                                    cell.view.result.classList.toggle('hidden');
+                                    cell.view.input.classList.toggle('dim');
+                                }
+                                if (storedCell.state.sticky) {
+                                    stick(cell);
+                                }
                             }
                         }
                     }
@@ -1920,6 +1963,9 @@ background colour / picture
                 const currentIndex = document.getElementById('current-index');
                 currentIndex.innerHTML = app.cells.length;
                 app.events.historyChange.forEach((cell) => cell.update());
+                if (state.app.theme) {
+                    document.documentElement.setAttribute('data-theme', state.app.theme);
+                }
             }
             inputNode.focus();
         }
