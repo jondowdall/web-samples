@@ -139,11 +139,15 @@ moving sticky cells
                 date.setMilliseconds(0);
                 return date;
             },
+            days(start, end) {
+                start = getDate(start);
+                end = getDate(end);
+                return Math.abs(calendar.dayNumber(end) - calendar.dayNumber(start));
+            },
             isWorkingDay(date) {
                 const day = calendar.dayNumber(date);
                 return ((day % 7) < 5 && !calendar.holidays.includes(day));
             },
-
             workingDays(start, end) {
                 start = getDate(start);
                 end = getDate(end);
@@ -304,12 +308,11 @@ moving sticky cells
          * Unlock a cell
          */
         function unstick(cell) {
-            const node = cell.view.result.parentElement;
-            const box = node.getBoundingClientRect();
+            const box = cell.view.cell.getBoundingClientRect();
+            cell.view.cell.classList.remove('sticky');
             Array.from(document.querySelectorAll('.sticky'))
                 .filter((node) => node.getBoundingClientRect().y > box.y)
                 .forEach((node) => node.style.top = `${node.getBoundingClientRect().y - box.height}px`);
-            node.classList.remove('sticky');
         }
 
         /**
@@ -351,8 +354,8 @@ moving sticky cells
              */
             cls(cell) {
                 const results = document.getElementById('results');
-                results.innerHTML = '';
-                return Ignore;
+                results.innerHTML = 'clear cells';
+                cell.type = Status;
             },
 
             /**
@@ -395,13 +398,12 @@ moving sticky cells
              * Show the command history
              */
             history(cell) {
-                cell.value = app.history.map((command, index) => `${index}: ${command}`).join('<br>');
+                const toString = (cell, index) => `${index}: ${cell.raw}`
+                cell.value = app.cells.map(toString).join('<br>');
+                const cellMap = new Map();
                 cell.update = (time) => {
-                    cell.value = app.history.map((command, index) => `${index}: ${command}`).join('<br>');
+                    cell.value = app.cells.map(toString).join('<br>');
                     cell.view.result.innerHTML = cell.value;
-                    if (app.show) {
-                        app.show();
-                    }
                 }
                 app.events.historyChange.add(cell);
             },
@@ -410,11 +412,40 @@ moving sticky cells
              * Show the list of cells
              */
             cells(cell) {
-                cell.value = app.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`).join('<br>');
+                const toString = (cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`;
+                cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
                 cell.update = (time) => {
-                    cell.value = app.cells.map((cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`).join('<br>');
-                    cell.view.result.innerHTML = cell.value;
-                }
+                    cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
+                    cell.view.result.innerHTML = '';
+                    cell.view.result.classList.add('table');
+                    cell.view.result.style.gridTemplateColumns = `min-content min-content 1fr`;
+                    app.cells.filter((cell) => cell.view.result).forEach((eachCell) => {
+                        const indexNode = document.createElement('span');
+                        indexNode.innerHTML = `${app.cells.indexOf(eachCell)}:`;
+                        indexNode.classList.add('cells-list-index');
+                        cell.view.result.appendChild(indexNode);
+                        indexNode.addEventListener('click', (event) => {
+                            eachCell.view.result.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                        });
+
+                        const nameNode = document.createElement('span');
+                        nameNode.innerHTML = `${eachCell.name ?? ''}`;
+                        nameNode.classList.add('cells-list-name');
+                        cell.view.result.appendChild(nameNode);
+
+                        const rawNode = document.createElement('span');
+                        rawNode.innerHTML = `${eachCell.raw}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
+                        rawNode.classList.add('cells-list-raw');
+                        cell.view.result.appendChild(rawNode);
+                        rawNode.addEventListener('click', (event) => {
+                            const start = inputNode.selectionStart;
+                            const end = inputNode.selectionEnd;
+                            inputNode.value = inputNode.value.slice(0, start) + eachCell.raw + inputNode.value.slice(end);
+                            inputNode.selectionStart = start;
+                            inputNode.selectionEnd = start + eachCell.raw.length;
+                        });
+                    });
+                };
                 app.events.historyChange.add(cell);
             },
 
@@ -571,10 +602,10 @@ moving sticky cells
              * perform a google search
              */
             google(cell) {
-                const string = cell.raw.replace(/google\s+/, '').replace(/\s+/g, '+');
-                const url = `https://www.google.com/search?q=${string}`;
-                window.open(url, '_blank');
-                //cell.value = `<a href="${url}>google ${cell.raw.replace(/google\s+/, '')}</a>`;
+                const string = cell.raw.replace(/google\s+/, '');
+                const pattern = string.replace(/\s+/g, '+');
+                const url = `https://www.google.com/search?q=${pattern}`;
+                window.open(url, string, 'pop');
                 cell.value = `googling ${string}`;
                 cell.type = Status;
             },
@@ -641,17 +672,15 @@ moving sticky cells
             /**
              * Toggle the 'sticky' state for a cell
              */
-            keep(cell) {
-                const string = cell.raw.replace(/\s*keep\s*/, '');
+            stick(cell) {
+                const string = cell.raw.replace(/\s*stick\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
-                    if (cell.view.result.parentElement.classList.contains('sticky')) {
+                    cell.view.cell.classList.remove('floating');
+                    if (cell.view.cell.classList.contains('sticky')) {
                         unstick(cell);
-                        result.push(`<${app.cells.indexOf(cell)}> now unstuck`);
-                    } else if (cell.view.result.parentElement.classList.contains('fixed')) {
-                        cell.view.result.parentElement.classList.remove('fixed')
                         result.push(`<${app.cells.indexOf(cell)}> now unstuck`);
                     } else {
                         stick(cell);
@@ -666,10 +695,16 @@ moving sticky cells
              * Delete a cell
              */
             delete(cell) {
+                cell.type = Status;
                 if (!navigator.userActivation.isActive) {
                     cell.value = 'delete ignored when reloading state';
                     return;
                 }
+                if (!app.interactive) {
+                    cell.value = 'delete ignored in non-interactive mode';
+                    return;
+                }
+
                 const string = cell.raw.replace(/^\s*delete\s*/, '');
                 const len = app.cells.length;
                 const cells = getCells(string);
@@ -682,7 +717,6 @@ moving sticky cells
                 }
                 app.cells = app.cells.filter((cell) => !cells.includes(cell));
                 cells.forEach((cell) => cell.remove());
-                cell.type = Status;
             },
 
             /**
@@ -975,6 +1009,7 @@ moving sticky cells
                 }
 
                 cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('result');
                 const node = document.createElement('textarea');
                 node.placeholder = 'Enter code';
                 node.rows = 20;
@@ -1370,25 +1405,46 @@ moving sticky cells
                 this.view.input.classList.add('input');
                 this.view.container.appendChild(this.view.input);
 
+                const references = {
+                    x: [],
+                    y: [],
+                };
                 const mousemove = (event) => {
                     unstick(this);
-                    action.node.classList.add('fixed');
+                    action.node.classList.add('floating');
                     const x = event.clientX - action.start.x + action.pos.x;
                     const y = event.clientY - action.start.y + action.pos.y;
-                    action.node.style.left = `${x}px`
-                    action.node.style.top = `${y}px`;
+                    if (!event.ctrlKey) {
+                        const x2 = references.x.reduce((x, rx) =>
+                            Math.abs(rx - x) < 10 ? rx : x, x);
+                        const y2 = references.y.reduce((y, ry) =>
+                            Math.abs(ry - y) < 10 ? ry : y, y);
+                        action.node.style.left = `${x2}px`
+                        action.node.style.top = `${y2}px`;
+                    } else {
+                        action.node.style.left = `${x}px`
+                        action.node.style.top = `${y}px`;
+                    }
                 };
 
                 this.view.input.addEventListener('mousedown', (event) => {
+                    references.x.length = 0;
+                    references.y.length = 0;
+                    for (const node of document.querySelectorAll('.floating .result-box')) {
+                        if (node !== this.view.result.parentElement) {
+                            const box = node.getBoundingClientRect();
+                            references.x.push(box.x, box.x + box.width, box.x - this.view.result.clientWidth);
+                            references.y.push(box.y, box.y + box.height, box.y - this.view.result.clientHeight);
+                        }
+                    }
                     if (this.view.cell.classList.contains('sticky') ||
-                        this.view.cell.classList.contains('fixed')) {
+                        this.view.cell.classList.contains('floating')) {
                         action.node = this.view.cell;
                         action.move = mousemove;
                         action.start = { x: event.clientX, y: event.clientY };
                         action.pos = action.node.getBoundingClientRect();
                     }
                 });
-                //this.view.input.addEventListener('mouseup', (event) => action.move = null);
 
                 this.view.raw = this.view.raw || document.createElement('span');
                 this.view.raw.classList.add('raw');
@@ -1431,6 +1487,9 @@ moving sticky cells
                     content: this.content,
                     state: {
                         sticky: this.view.cell.classList.contains('sticky'),
+                        floating: this.view.cell.classList.contains('floating'),
+                        x: this.view.cell.clientX,
+                        y: this.view.cell.clientY,
                         hidden: this.view.result.classList.contains('hidden'),
                     }
                 }
@@ -1656,16 +1715,17 @@ moving sticky cells
         function process(event) {
             app.history.push(inputNode.value);
             const str = (app.index === app.cells.length && inputNode.value === '') ? app.cells.at(-1).raw : inputNode.value;
+            app.interactive = true;
             const cell = evaluate(str);
+            app.interactive = false;
             if (cell !== Ignore) {
                 if (cell.type === Status) {
                     app.setStatus(cell.value);
-                    app.cells.push(cell);
                 } else {
                     showResults(cell, app.cells.length);
-                    app.cells.push(cell);
-                    app.namedCells[cell.name] = cell;
                 }
+                app.namedCells[cell.name] = cell;
+                app.cells.push(cell);
             }
             app.events.historyChange.forEach((cell) => cell.update());
 
@@ -1775,7 +1835,11 @@ moving sticky cells
                                     cell.view.result.classList.toggle('hidden');
                                     cell.view.input.classList.toggle('dim');
                                 }
-                                if (storedCell.state.sticky) {
+                                if (storedCell.state.floating) {
+                                    cell.view.cell.classList.add('floating');
+                                    cell.view.cell.style.left = `${storedCell.state.x}px`;
+                                    cell.view.cell.style.top = `${storedCell.state.y}px`;
+                                } else if (storedCell.state.sticky) {
                                     stick(cell);
                                 }
                             }
