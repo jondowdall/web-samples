@@ -70,7 +70,7 @@ moving sticky cells
         }
 
         /**
-         *  Helper function to get list of from a string
+         *  Helper function to get list of items from a string
          */
         function getList(string, sep = " ", start = "<", end = ">") {
             const list = [];
@@ -115,6 +115,18 @@ moving sticky cells
             return [app.cells.at(-1)];
         }
 
+
+        /**
+         *  Helper function to get list of cells from input string and set up users / uses relationships
+         */
+        function getReferences(string, cell) {
+            const cells = getCells(string);
+            cells.forEach((input) => {
+                input.users.add(cell);
+                cell.uses.add(input);
+            });
+            return cells;
+        }
 
 
         /**
@@ -434,7 +446,7 @@ moving sticky cells
                         cell.view.result.appendChild(nameNode);
 
                         const rawNode = document.createElement('span');
-                        rawNode.innerHTML = `${eachCell.raw}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
+                        rawNode.innerHTML = `${eachCell.command}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
                         rawNode.classList.add('cells-list-raw');
                         cell.view.result.appendChild(rawNode);
                         rawNode.addEventListener('click', (event) => {
@@ -814,6 +826,8 @@ moving sticky cells
                 const string = cell.raw.replace(/^html\s*/, '');
                 const index = app.cells.length;
 
+                const cells = getReferences(string, cell);
+
                 const getIndex = (str) => {
                     const i = parseInt(str);
                     if (isNaN(i)) {
@@ -834,46 +848,21 @@ moving sticky cells
                         .replace(/<([^>]+)>/g, (match, name) =>
                             allNamed[name] ?? match);
                 }
-
-                cell.view.result = document.createElement('div');
-                cell.view.result.classList.add('notes');
-                cell.view.result.contentEditable = true;
-                cell.view.result.innerText = 'notes';
-                cell.content = '';
-                cell.view.result.addEventListener('blur', (event) => {
-                    cell.content = cell.view.result.innerText;
-                    cell.view.result.innerHTML = resolve(cell.content) || `<i>&lt;enter note&gt;</i>`;
-                    saveState();
-                });
-                cell.view.result.addEventListener('focus', (event) => {
-                    cell.view.result.innerText = cell.content;
-                });
-                cell.view.result.addEventListener('keydown', (event) => {
-                    if (event.key === 'Escape') {
-                        cell.view.result.blur();
-                    }
-                });
-                Object.defineProperties(cell, {
-                    value: {
-                        enumerable: true,
-                        get: () => resolve(cell.content),
-                    },
-                });
+                cell.update = (time) => {
+                    cell.content = cells.map((cell) => cell.value).join('\n');
+                    cell.value = resolve(cell.content);
+                    cell.view.result.innerHTML = cell.value;
+                };
             },
 
             /**
              * Create a mermaid diagram cell
              */
             diagram(cell) {
-
                 const string = cell.raw.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
-                const cells = getCells(string);
-                cells.forEach((input) => {
-                    input.users.add(cell);
-                    cell.uses.add(input);
-                });
+                const cells = getReferences(string, cell);
 
                 cell.content = string || '<-1>';
 
@@ -897,9 +886,11 @@ moving sticky cells
 
                     }
                     cell.users.forEach((user) => user.update());
+                    /*
                     if (cell.users.size === 0) {
                         saveState();
                     }
+                    */
                 }
 
                 Object.defineProperties(cell, {
@@ -908,7 +899,7 @@ moving sticky cells
                         get: () => diagram.innerHTML,
                     },
                 });
-                cell.update();
+                //cell.update();
             },
 
             /**
@@ -1024,6 +1015,7 @@ moving sticky cells
                 node.addEventListener('keydown', (event) => {
                     if (event.key === 'Escape') {
                         node.blur();
+                        //app.focusHistory.push(cell);
                     }
                 });
                 cell.view.result.appendChild(node);
@@ -1054,8 +1046,45 @@ moving sticky cells
                     },
                 });
                 cell.focus = node;
-                return cell;
             },
+
+            /**
+             * Create a js cell
+             */
+            exec(cell) {
+                const string = cell.raw.replace(/^exec\s*/, '');
+                const index = app.cells.length;
+
+                const cells = getReferences(string, cell);
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                };
+
+                cell.update = (time) => {
+                    cell.content = cells.map((cell) => cell.value).join('\n');
+                    const expr = cell.content.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`);
+                    try {
+                        const func = new Function('app', `${expr}`);
+                        cell.value = func(app);
+                    } catch (error) {
+                        cell.value = error.message;
+                    }
+                    app.setStatus(cell.value);
+                    cell.view.result.innerText = cell.value;
+                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                };
+            },
+
 
             /**
              * Reset command history
@@ -1173,12 +1202,7 @@ moving sticky cells
                 const string = cell.raw.replace(/^\s*save\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
-                const cells = getCells(string.replace(pattern, ''));
-
-                cells.forEach((input) => {
-                    input.users.add(cell);
-                    cell.uses.add(input);
-                });
+                const cells = getReferences(string.replace(pattern, ''), cell);
 
                 let fileHandle;
                 cell.update = async () => {
@@ -1223,12 +1247,7 @@ moving sticky cells
                 const string = cell.raw.replace(/^\s*saveSvg\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
-                const cells = getCells(string.replace(pattern, ''));
-
-                cells.forEach((input) => {
-                    input.users.add(cell);
-                    cell.uses.add(input);
-                });
+                const cells = getReferences(string.replace(pattern, ''), cell);
 
                 cell.update = () => {
                     cells.filter((cell) => cell.svg).forEach((cell, index) =>
@@ -1361,7 +1380,12 @@ moving sticky cells
                 action.move(event);
             }
         });
-        document.body.addEventListener('mouseup', (event) => action.move = null);
+        document.body.addEventListener('mouseup', (event) => {
+            action.move = null;
+            saveState();
+        });
+        document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
+        document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
 
 
         class Cell {
@@ -1481,17 +1505,19 @@ moving sticky cells
                 if (this.type === Status) {
                     return undefined;
                 }
+                const state = {};
+                if (this.view) {
+                    const box = this.view.cell.getBoundingClientRect();
+                    state.sticky = this.view.cell.classList.contains('sticky');
+                    state.box = { x: box.x, y: box.y, width: box.width, height: box.height };
+                    state.floating = this.view.cell.classList.contains('floating');
+                    state.hidden = this.view.result.classList.contains('hidden');
+                }
                 return {
                     raw: this.raw,
                     timestamp: this.timestamp.getTime(),
                     content: this.content,
-                    state: {
-                        sticky: this.view.cell.classList.contains('sticky'),
-                        floating: this.view.cell.classList.contains('floating'),
-                        x: this.view.cell.clientX,
-                        y: this.view.cell.clientY,
-                        hidden: this.view.result.classList.contains('hidden'),
-                    }
+                    state,
                 }
             }
             remove() {
@@ -1639,7 +1665,7 @@ moving sticky cells
             const cell = new Cell(raw);
             const namePattern = /^\s*<([^>]+)>:\s*/;
             cell.name = raw.match(namePattern)?.[1];
-            const command = raw.replace(namePattern, '');
+            const command = raw.replace(namePattern, '') || 'notes';
             cell.command = command;
 
             if (actions[command] !== undefined) {
@@ -1648,7 +1674,6 @@ moving sticky cells
                 return actions[command.split(' ')[0]](cell) ?? cell;
             }
             const allNamed = Object.values(named).reduce((all, value) => Object.assign(all, value), {});
-            // [named.abbreviations[command], named.dates[command], named.sites[command]].filter((i) => i);
             if (allNamed[command]) {
                 cell.value = allNamed[command];
                 return cell;
@@ -1735,6 +1760,9 @@ moving sticky cells
             } else {
                 app.index = app.cells.length;
                 inputNode.value = '';
+            }
+            if (cell.update) {
+                cell.update();
             }
             app.setPrompt(cell.prompt);
             saveState();
@@ -1837,12 +1865,19 @@ moving sticky cells
                                 }
                                 if (storedCell.state.floating) {
                                     cell.view.cell.classList.add('floating');
-                                    cell.view.cell.style.left = `${storedCell.state.x}px`;
-                                    cell.view.cell.style.top = `${storedCell.state.y}px`;
+                                    if (storedCell.state.box) {
+                                        cell.view.cell.style.left = `${storedCell.state.box.x}px`;
+                                        cell.view.cell.style.top = `${storedCell.state.box.y}px`;
+                                        cell.view.cell.style.width = `${storedCell.state.box.width}px`;
+                                        cell.view.cell.style.height = `${storedCell.state.box.height}px`;
+                                    }
                                 } else if (storedCell.state.sticky) {
                                     stick(cell);
                                 }
                             }
+                        }
+                        if (cell.update) {
+                            cell.update();
                         }
                     }
                 });
