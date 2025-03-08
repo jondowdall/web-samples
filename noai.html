@@ -72,7 +72,7 @@ moving sticky cells
         /**
          *  Helper function to get list of items from a string
          */
-        function getList(string, sep = " ", start = "<", end = ">") {
+         function getList_old(string, sep = " ", start = "<", end = ">") {
             const list = [];
             const quoted = (char) => {
                 if (char === end) {
@@ -87,6 +87,57 @@ moving sticky cells
                 list.at(-1).push(char);
             }
             const init = (char) => {
+                if (char === start) {
+                    list.push(['']);
+                    return quoted;
+                } else if (char !== sep) {
+                    list.push([char]);
+                    return unquoted
+                }
+            }
+            let action = init
+            for (let i = 0; i < string.length; ++i) {
+                action = action(string[i]) || action;
+            }
+            return list.map((item) => item.join(''));
+        }
+
+        /**
+         *  Helper function to get list of items from a string
+         */
+         function getList(string, sep = ' ', start = '<', end = '>', esc = '\\') {
+            const list = [];
+            const invalid = [];
+            const escaped = (char) => {
+                list.at(-1).push(char);
+                return escaped.next;
+            };
+            const quoted = (char) => {
+                if (char === esc) {
+                    escaped.next = quoted;
+                    return escaped;
+                }
+                if (char === end) {
+                    return init;
+                }
+                list.at(-1).push(char);
+            };
+            const unquoted = (char) => {
+                if (char === esc) {
+                    escaped.next = unquoted;
+                    return escaped;
+                }
+                if (char === sep) {
+                    if (list.at(-1))
+                    return init;
+                }
+                list.at(-1).push(char);
+            }
+            const init = (char) => {
+                if (char === esc) {
+                    escaped.next = unquoted;
+                    return escaped;
+                }
                 if (char === start) {
                     list.push(['']);
                     return quoted;
@@ -493,12 +544,14 @@ moving sticky cells
                 dayStart.setMilliseconds(0);
                 const style = window.getComputedStyle(document.body);
                 const colour = style.getPropertyValue('--colour');
+                const dim = style.getPropertyValue('--dim');
+
                 const update = (timer) => {
                     this.now = new Date();
                     const time = (this.now.getTime() - dayStart.getTime()) / 1000;
                     ctx.clearRect(0, 0, width, height);
-                    ctx.fillStyle = colour; //'lightgreen';
-                    ctx.strokeStyle = colour; //'lightgreen';
+                    ctx.fillStyle = colour;
+                    ctx.strokeStyle = colour;
                     ctx.beginPath();
                     for (let i = 0; i < 12; ++i) {
                         const x1 = width / 2 + radius * Math.sin(i * 2 * Math.PI / 12);
@@ -508,11 +561,6 @@ moving sticky cells
                         const y2 = height / 2 - (radius - 5) * Math.cos(i * 2 * Math.PI / 12);
                         ctx.lineTo(x2, y2);
                     }
-                    const seconds = Math.floor(time);
-                    const x1 = width / 2 + radius * Math.sin(seconds * 2 * Math.PI / 60);
-                    const y1 = height / 2 - radius * Math.cos(seconds * 2 * Math.PI / 60);
-                    ctx.moveTo(width / 2, height / 2);
-                    ctx.lineTo(x1, y1);
                     const x2 = width / 2 + 0.8 * radius * Math.sin(time * 2 * Math.PI / 3600);
                     const y2 = height / 2 - 0.8 * radius * Math.cos(time * 2 * Math.PI / 3600);
                     ctx.moveTo(width / 2, height / 2);
@@ -522,6 +570,19 @@ moving sticky cells
                     ctx.moveTo(width / 2, height / 2);
                     ctx.lineTo(x3, y3);
                     ctx.stroke();
+
+                    ctx.fillStyle = dim;
+                    ctx.strokeStyle = dim;
+                    ctx.beginPath();
+
+                    const seconds = Math.floor(time);
+                    const x1 = width / 2 + radius * Math.sin(seconds * 2 * Math.PI / 60);
+                    const y1 = height / 2 - radius * Math.cos(seconds * 2 * Math.PI / 60);
+                    ctx.moveTo(width / 2, height / 2);
+                    ctx.lineTo(x1, y1);
+                    ctx.stroke();
+
+
                     requestAnimationFrame(update);
                 }
                 update();
@@ -698,6 +759,44 @@ moving sticky cells
                         stick(cell);
                         result.push(`<${app.cells.indexOf(cell)}> now stuck`);
                     }
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+            },
+
+            /**
+             * Fix a cell at a position
+             */
+            fix(cell) {
+                const string = cell.raw.replace(/\s*fix\s*/, '');
+
+                const args = getList(string);
+                const {cells, values} = args.reduce((results, value) => {
+                    const index = Number(value);
+                    if (app.namedCells[value] !== undefined) {
+                        results.cells.push(app.namedCells[value]);
+                    } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                        results.cells.push(app.cells.at(index));
+                    } else {
+                        results.values.push(value);
+                    }
+                    return results;
+                }, {cells: [], values: []});
+
+                const pos = values.map((val) => Number(val));
+                const result = [];
+                cells.forEach((cell) => {
+                    cell.view.cell.classList.add('floating');
+                    if (cell.view.cell.classList.contains('sticky')) {
+                        unstick(cell);
+                    }
+                    if (!isNaN(pos[0])) {
+                        cell.view.cell.style.left = `${pos[0]}px`;
+                    }
+                    if (!isNaN(pos[1])) {
+                        cell.view.cell.style.top = `${pos[1]}px`;
+                    }
+                    result.push(`${cell.getName()} position fixed`);
                 });
                 cell.value = result.join('<br>');
                 cell.type = Status;
@@ -1382,7 +1481,9 @@ moving sticky cells
         });
         document.body.addEventListener('mouseup', (event) => {
             action.move = null;
+            document.body.classList.remove('noselect');
             saveState();
+            inputNode.focus();
         });
         document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
         document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
@@ -1399,6 +1500,15 @@ moving sticky cells
                 this.uses = new Set(uses);
                 this.users = new Set();
                 this.view = {};
+            }
+            getName() {
+                const name = [];
+                name.push(`${app.cells.indexOf(this)}:`);
+                if (this.name) {
+                    name.push(this.name);
+                }
+                name.push(this.raw);
+                return name.join(' ');
             }
             getResultNode() {
                 const node = document.createElement('div');
@@ -1434,8 +1544,11 @@ moving sticky cells
                     y: [],
                 };
                 const mousemove = (event) => {
+                    event.preventDefault();
                     unstick(this);
                     action.node.classList.add('floating');
+                    document.getElementById('results').appendChild(action.node);
+
                     const x = event.clientX - action.start.x + action.pos.x;
                     const y = event.clientY - action.start.y + action.pos.y;
                     if (!event.ctrlKey) {
@@ -1467,6 +1580,7 @@ moving sticky cells
                         action.move = mousemove;
                         action.start = { x: event.clientX, y: event.clientY };
                         action.pos = action.node.getBoundingClientRect();
+                        document.body.classList.add('noselect');
                     }
                 });
 
