@@ -51,7 +51,7 @@ moving sticky cells
         /**
          * Add an item to the list used for completions
          */
-        function addNamedItem(name) {
+        function addNamedItem(name, type) {
             const list = document.getElementById('named-items');
             const item = document.createElement('option');
             item.innerText = name;
@@ -72,7 +72,7 @@ moving sticky cells
         /**
          *  Helper function to get list of items from a string
          */
-         function getList_old(string, sep = " ", start = "<", end = ">") {
+        function getList_old(string, sep = " ", start = "<", end = ">") {
             const list = [];
             const quoted = (char) => {
                 if (char === end) {
@@ -105,7 +105,7 @@ moving sticky cells
         /**
          *  Helper function to get list of items from a string
          */
-         function getList(string, sep = ' ', start = '<', end = '>', esc = '\\') {
+        function getList(string, sep = ' ', start = '<', end = '>', esc = '\\') {
             const list = [];
             const invalid = [];
             const escaped = (char) => {
@@ -129,7 +129,7 @@ moving sticky cells
                 }
                 if (char === sep) {
                     if (list.at(-1))
-                    return init;
+                        return init;
                 }
                 list.at(-1).push(char);
             }
@@ -440,7 +440,7 @@ moving sticky cells
                 if (!themes.includes(themeName)) {
                     cell.value += ' (unknown theme)!';
                 }
-                app.theme = themeName;
+                app.state.theme = themeName;
             },
 
             /**
@@ -485,7 +485,7 @@ moving sticky cells
                     app.cells.filter((cell) => cell.view.result).forEach((eachCell) => {
                         const indexNode = document.createElement('span');
                         indexNode.innerHTML = `${app.cells.indexOf(eachCell)}:`;
-                        indexNode.classList.add('cells-list-index');
+                        indexNode.classList.add('cells-list', 'cells-list-index');
                         cell.view.result.appendChild(indexNode);
                         indexNode.addEventListener('click', (event) => {
                             eachCell.view.result.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
@@ -493,12 +493,12 @@ moving sticky cells
 
                         const nameNode = document.createElement('span');
                         nameNode.innerHTML = `${eachCell.name ?? ''}`;
-                        nameNode.classList.add('cells-list-name');
+                        nameNode.classList.add('cells-list', 'cells-list-name');
                         cell.view.result.appendChild(nameNode);
 
                         const rawNode = document.createElement('span');
                         rawNode.innerHTML = `${eachCell.command}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
-                        rawNode.classList.add('cells-list-raw');
+                        rawNode.classList.add('cells-list', 'cells-list-raw');
                         cell.view.result.appendChild(rawNode);
                         rawNode.addEventListener('click', (event) => {
                             const start = inputNode.selectionStart;
@@ -765,13 +765,13 @@ moving sticky cells
             },
 
             /**
-             * Fix a cell at a position
+             * Convert a cell to a window and set it's position
              */
-            fix(cell) {
-                const string = cell.raw.replace(/\s*fix\s*/, '');
+            window(cell) {
+                const string = cell.raw.replace(/\s*window\s*/, '');
 
                 const args = getList(string);
-                const {cells, values} = args.reduce((results, value) => {
+                const { cells, values } = args.reduce((results, value) => {
                     const index = Number(value);
                     if (app.namedCells[value] !== undefined) {
                         results.cells.push(app.namedCells[value]);
@@ -781,7 +781,7 @@ moving sticky cells
                         results.values.push(value);
                     }
                     return results;
-                }, {cells: [], values: []});
+                }, { cells: [], values: [] });
 
                 const pos = values.map((val) => Number(val));
                 const result = [];
@@ -800,6 +800,18 @@ moving sticky cells
                 });
                 cell.value = result.join('<br>');
                 cell.type = Status;
+            },
+
+            /**
+             * Set a background image
+             */
+            background(cell) {
+                const string = cell.raw.replace(/\s*background\s*/, '');
+                const url = string || 'https://taws.ch/Patterns/Boing.jpg';
+                document.body.style.backgroundImage = `url("${url}")`;
+                cell.type = Status;
+                cell.value = `background set to ${url}`;
+                app.state.background = url;
             },
 
             /**
@@ -866,13 +878,11 @@ moving sticky cells
                 }
 
                 const resolve = (str) => {
-                    const allNamed = Object.values(named)
-                        .reduce((all, value) => Object.assign(all, value), {});
                     return str.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
                             `app.cells.at(${getIndex(index)}).value`)
                         .replace(/<([^>]+)>/g, (match, name) =>
-                            allNamed[name] ?? match);
+                            named.all[name] ?? match);
                 }
 
                 cell.view.result = document.createElement('pre');
@@ -939,13 +949,11 @@ moving sticky cells
                 }
 
                 const resolve = (str) => {
-                    const allNamed = Object.values(named)
-                        .reduce((all, value) => Object.assign(all, value), {});
                     return str.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
                             `app.cells.at(${getIndex(index)}).value`)
                         .replace(/<([^>]+)>/g, (match, name) =>
-                            allNamed[name] ?? match);
+                            named.all[name] ?? match);
                 }
                 cell.update = (time) => {
                     cell.content = cells.map((cell) => cell.value).join('\n');
@@ -1021,13 +1029,11 @@ moving sticky cells
                 }
 
                 const resolve = (str) => {
-                    const allNamed = Object.values(named)
-                        .reduce((all, value) => Object.assign(all, value), {});
                     return str.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
                             `app.cells.at(${getIndex(index)}).value`)
                         .replace(/<([^>]+)>/g, (match, name) =>
-                            allNamed[name] ?? match);
+                            named.all[name] ?? match);
                 }
 
                 cell.view.result = document.createElement('div');
@@ -1228,11 +1234,13 @@ moving sticky cells
                 const url = `http${addr}`;
                 this[name] = (cell) => {
                     window.open(url, '_blank');
-                    named.sites[name] = url;
                     cell.value = `<a href="url">${name}</a>`;
                 };
+                named.sites[name] = url;
                 addNamedItem(name);
+                cell.type = Status;
                 cell.value = `added shortcut ${name} -> ${url}`;
+                saveState();
             },
 
             /**
@@ -1468,6 +1476,13 @@ moving sticky cells
             abbreviations: {},
             files: {},
         }
+        Object.defineProperties(named, {
+            all: {
+                get() {
+                    return Object.values(this).reduce((all, value) => Object.assign(all, value), {});
+                },
+            }
+        })
 
         Object.keys(actions).forEach(addNamedItem);
 
@@ -1480,10 +1495,15 @@ moving sticky cells
             }
         });
         document.body.addEventListener('mouseup', (event) => {
-            action.move = null;
+            if (action.move) {
+                action.move = null;
+                inputNode.focus();
+            }
             document.body.classList.remove('noselect');
             saveState();
-            inputNode.focus();
+            for (const node of document.querySelectorAll('.dragging')) {
+                node.classList.remove('dragging');
+            }
         });
         document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
         document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
@@ -1547,6 +1567,7 @@ moving sticky cells
                     event.preventDefault();
                     unstick(this);
                     action.node.classList.add('floating');
+                    action.node.classList.add('dragging');
                     document.getElementById('results').appendChild(action.node);
 
                     const x = event.clientX - action.start.x + action.pos.x;
@@ -1644,6 +1665,110 @@ moving sticky cells
             }
         }
 
+
+        /**
+         * Create and editable span.
+         */
+        function editableSpan(update) {
+            const node = document.createElement('span');
+            node.contentEditable = true;
+            node.addEventListener('blur', (event) => update(node.innerText));
+            let previous;
+            node.addEventListener('focus', (event) => {
+                previous = node.innerText;
+            });
+            node.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    update(node.innerText);
+                }
+                if (event.key === 'escape') {
+                    node.innerText = previous;
+                }
+            });
+
+            return node;
+        }
+
+
+        /**
+         * Cell types applied to a cell after creation.
+         */
+        const cellTypes = {
+            table: {
+                tableFromString(string) {
+                    const data = string.split(/\r?\n/g).map((row) => row.split(/\s*,\s*/g));
+                    const cols = data.shift().map((value) => ({ name: value }));
+                    const rows = data.map((row) => ({ name: row.shift() }));
+                    return { data, cols, rows };
+                },
+                init(table = {}) {
+                    if (table instanceof String) {
+                        table = this.tableFromString(table);
+                    }
+                    const nRows = table.rows?.length || table.data?.length || 2;
+                    const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 2;
+                    this.value = table.data || [];
+                    this.cols = [];
+                    this.rows = [];
+
+                    for (let x = 0; x < nCols; ++x) {
+                        const col = table.cols?.[x] || {};
+                        this.cols.push({ name: col.name || x, size: col.size || 'max-content' });
+                    }
+                    for (let y = 0; y < nRows; ++y) {
+                        const row = table.rows?.[y] || {};
+                        this.rows.push({ name: row.name || y, size: row.size || 'max-content' });
+                    }
+                },
+                getResultNode() {
+                    const resultNode = document.createElement('div');
+                    resultNode.classList.add('table');
+                    const background = document.createElement('div');
+                    background.classList.add('grid');
+                    resultNode.appendChild(background);
+                    return resultNode;
+                },
+                update() {
+                    const makeTemplate = (definition) => `max-content ${definition.map((col) => col.size).join(' ')}`;
+                    this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
+                    this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
+
+                    const updateCell = (col, x, row, y) => {
+                        this.value[y] = this.value[y] || [];
+                        let node = this.view.result.querySelector(`.cell-${x}-${y}`);
+                        if (node === null) {
+                            node = editableSpan((text) => this.value[y - 1][x - 1] = text);
+                            node.style.gridColumn = x + 1;
+                            node.style.gridRow = y + 1;
+                            node.classList.add('table-cell', `.cell-${x}-${y}`);
+                            this.view.result.appendChild(node);
+                        }
+
+                        if (x === 0 && y === 0) {
+                            node.innerText = this.name ?? '';
+                            node.classList.add('table-header');
+                        } else if (x === 0) {
+                            node.innerText = row.name ?? y;
+                            node.classList.add('table-header', 'row-name');
+                        } else if (y === 0) {
+                            node.innerText = col.name ?? x;
+                            node.classList.add('table-header', 'col-name');
+                        } else {
+                            node.innerText = this.value[y - 1]?.[x - 1];
+                            node.classList.add('table-data');
+                        }
+                    }
+
+                    const cols = [{ name: '' }, ...this.cols];
+                    const rows = [{ name: '' }, ...this.rows];
+                    cols.forEach((col, colIndex) =>
+                        rows.forEach((row, rowIndex) => updateCell(col, colIndex, row, rowIndex)))
+
+                },
+            }
+        }
+
+
         function copyStylesInline(destinationNode, sourceNode) {
             var containerElements = ["svg", "g"];
             for (var cd = 0; cd < destinationNode.childNodes.length; cd++) {
@@ -1716,7 +1841,6 @@ moving sticky cells
         }
 
         const app = {
-            args: {},
             history: [],
             cells: [],
             namedCells: {},
@@ -1725,6 +1849,7 @@ moving sticky cells
                 historyChange: new Set(),
             },
             context: [{ process }],
+            state: {},
             mermaidCount: 0,
             setPrompt(prompt) {
                 const currentIndex = document.getElementById('current-index');
@@ -1766,8 +1891,15 @@ moving sticky cells
         }
         //update();
 
-        Object.getOwnPropertyNames(Math).forEach((prop) => app.args[prop] = Math[prop]);
-        Object.getOwnPropertyNames(calendar).forEach((prop) => app.args[prop] = calendar[prop]);
+        /**
+         * Return the predefined functions passed to expressions
+         */
+        function getPredefined() {
+            const predefined = {};
+            Object.getOwnPropertyNames(Math).forEach((prop) => predefined[prop] = Math[prop]);
+            Object.getOwnPropertyNames(calendar).forEach((prop) => predefined[prop] = calendar[prop]);
+            return predefined;
+        }
 
         const Ignore = Symbol('ignore');
         const Status = Symbol('status');
@@ -1787,9 +1919,13 @@ moving sticky cells
             } else if (actions[command.split(' ')[0]]) {
                 return actions[command.split(' ')[0]](cell) ?? cell;
             }
-            const allNamed = Object.values(named).reduce((all, value) => Object.assign(all, value), {});
-            if (allNamed[command]) {
-                cell.value = allNamed[command];
+            if (cellTypes[command]) {
+                Object.assign(cell, cellTypes[command]);
+                cell.init();
+                return cell;
+            }
+            if (named.all[command]) {
+                cell.value = named.all[command];
                 return cell;
             }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % app.cells.length;
@@ -1797,7 +1933,7 @@ moving sticky cells
                 .replace(/<([^>]+)>/g, (match, name) => {
                     if (app.namedCells[name]?.value !== undefined) {
                         return `app.namedCells['${name}''].value`;
-                    } else if (allNamed[name] !== undefined) {
+                    } else if (named.all[name] !== undefined) {
                         return `named['${name}']`;
                     } else if (app.cells.at(getIndex(name)) !== undefined) {
                         return `app.cells.at(${getIndex(name)}).value`;
@@ -1812,15 +1948,16 @@ moving sticky cells
                 return `${referenced.value}`;
             });
             cell.update = () => {
-                const args = Object.keys(app.args);
-                const parameters = Object.values(app.args);
+                const predefined = getPredefined();
+                const args = Object.keys(predefined);
+                const parameters = Object.values(predefined);
                 try {
                     if (app.action) {
                         const func = new Function('app', ...args, 'named', `return app.action(${expr})`);
                     }
                     const func = new Function('app', ...args, 'named', `return ${expr}`);
 
-                    cell.value = func(app, ...parameters, allNamed);
+                    cell.value = func(app, ...parameters, named.all);
                 } catch (error) {
                     cell.value = error.message;
                 }
@@ -1946,7 +2083,7 @@ moving sticky cells
          * Save the current state to local storage
          */
         function saveState() {
-            const state = { app };
+            const state = { app, named };
             localStorage.setItem('noia-state', JSON.stringify(state));
         }
 
@@ -1999,8 +2136,12 @@ moving sticky cells
                 const currentIndex = document.getElementById('current-index');
                 currentIndex.innerHTML = app.cells.length;
                 app.events.historyChange.forEach((cell) => cell.update());
-                if (state.app.theme) {
-                    document.documentElement.setAttribute('data-theme', state.app.theme);
+                Object.assign(app.state, state.app.state);
+                if (app.state.theme) {
+                    document.documentElement.setAttribute('data-theme', app.state.theme);
+                }
+                if (app.state.background) {
+                    document.body.style.backgroundImage = `url("${app.state.background}")`;
                 }
             }
             inputNode.focus();
