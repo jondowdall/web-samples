@@ -873,8 +873,7 @@ moving sticky cells
                 const string = cell.raw.replace(/^\s*notes\s*/, '');
                 const index = app.cells.length;
 
-                const cells = string ? getCells(string) : [];
-                const content = cells.map((cell) => cell.value).join('\n');
+                const content = string ? getCells(string).map((cell) => cell.value).join('\n') : '';
 
                 const getIndex = (str) => {
                     const i = parseInt(str);
@@ -1003,11 +1002,6 @@ moving sticky cells
 
                     }
                     cell.users.forEach((user) => user.update());
-                    /*
-                    if (cell.users.size === 0) {
-                        saveState();
-                    }
-                    */
                 }
 
                 Object.defineProperties(cell, {
@@ -1020,86 +1014,9 @@ moving sticky cells
             },
 
             /**
-             * Create a mermaid diagram cell
-             */
-            mermaid(cell) {
-                const string = cell.raw.replace(/^mermaid\s*/, '');
-                const idx = app.mermaidCount++;
-                const index = app.cells.length;
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
-                }
-
-                const resolve = (str) => {
-                    return str.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`)
-                        .replace(/<([^>]+)>/g, (match, name) =>
-                            named.all[name] ?? match);
-                }
-
-                cell.view.result = document.createElement('div');
-                cell.view.result.classList.add('mermaid-cell');
-
-                const definition = document.createElement('textarea');
-                definition.classList.add('code-area');
-                definition.rows = 10;
-                definition.value = ''
-
-                const diagram = document.createElement('div');
-                cell.view.result.appendChild(definition);
-
-                diagram.classList.add('mermaid');
-                document.getElementById('widgets').appendChild(diagram);
-                diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
-                cell.content = '';
-
-                async function update() {
-                    try {
-                        const { svg } = await mermaid.render(`graph_${idx}`, resolve(cell.content));
-                        diagram.innerHTML = svg;
-                        cell.svg = diagram.firstElementChild;
-                    } catch (error) {
-                        diagram.innerHTML = error.message;
-
-                    }
-                    saveState();
-                }
-
-                definition.addEventListener('blur', (event) => update());
-                definition.addEventListener('keydown', (event) => {
-                    if (event.key === 'Escape') {
-                        definition.blur();
-                    }
-                });
-                Object.defineProperties(cell, {
-                    value: {
-                        enumerable: true,
-                        get: () => resolve(cell.content),
-                    },
-                    content: {
-                        enumerable: true,
-                        get: () => definition.value,
-                        set: (value) => {
-                            definition.value = resolve(value);
-                            update();
-                        },
-                    },
-                });
-            },
-
-            /**
              * Create a js cell
              */
-            js(cell) {
+            js_old(cell) {
                 const string = cell.raw.replace(/^js\s*/, '');
                 const index = app.cells.length;
 
@@ -1166,8 +1083,8 @@ moving sticky cells
             /**
              * Create a js cell
              */
-            exec(cell) {
-                const string = cell.raw.replace(/^exec\s*/, '');
+            js(cell) {
+                const string = cell.raw.replace(/^js\s*/, '');
                 const index = app.cells.length;
 
                 const cells = getReferences(string, cell);
@@ -1313,7 +1230,7 @@ moving sticky cells
             },
 
             /**
-             * Save the contents of the specified files
+             * Save the contents of the specified cells
              */
             save(cell) {
                 const string = cell.raw.replace(/^\s*save\s*/, '');
@@ -1358,6 +1275,54 @@ moving sticky cells
                     pickfile();
                 }
                 cell.update();
+            },
+
+            /**
+             * Save the session
+             */
+            'save session'(cell) {
+                const string = cell.raw.replace(/^\s*save session\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+
+                cell.update = async () => {
+                    if (cell.fileHandle) {
+                        const contents = JSON.stringify(app.cells);
+                        console.log(contents);
+                        // Create a FileSystemWritableFileStream to write to.
+                        const writable = await cell.fileHandle.createWritable();
+                        // Write the contents of the file to the stream.
+                        await writable.write(contents);
+                        // Close the file and write the contents to disk.
+                        await writable.close();
+                    }
+                }
+
+                const pickfile = async (options) => {
+                    cell.fileHandle = await window.showSaveFilePicker(options);
+                    const file = await cell.fileHandle.getFile();
+                    cell.contents = file.name;
+                    cell.raw += ` as ${file.name}`;
+                    saveFileHandles([{ name: file.name, handle: cell.fileHandle }]);
+                    cell.update();
+                }
+
+                if (cell.filename && named.files[filename]) {
+                    cell.fileHandle = named.files[filename];
+                    cell.update();
+                } else {
+                    const options = {
+                        types: [
+                            {
+                                description: 'Text Files',
+                                accept: {
+                                    'text/plain': ['.json'],
+                                },
+                            },
+                        ],
+                    };
+                    pickfile(options);
+                }
             },
 
             saveSvg(cell) {
@@ -1515,8 +1480,8 @@ moving sticky cells
                 node.classList.remove('dragging');
             }
         });
-        document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
-        document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
+        //document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
+        //document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
 
 
         class Cell {
@@ -1718,9 +1683,10 @@ moving sticky cells
                     if (table instanceof String) {
                         table = this.tableFromString(table);
                     }
-                    const nRows = table.rows?.length || table.data?.length || 2;
-                    const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 2;
-                    this.content = table.data || [];
+                    const nRows = table.rows?.length || table.data?.length || 1;
+                    const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 1;
+
+                    this.content = Array.isArray(table.data) ? table.data : (table.data ? [[table.data]] : []);
                     this.cols = [];
                     this.rows = [];
 
@@ -1745,7 +1711,9 @@ moving sticky cells
                     const makeTemplate = (definition) => `max-content ${definition.map((col) => col.size).join(' ')}`;
                     this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
                     this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
-
+                    if (!Array.isArray(this.content)) {
+                        this.content = this.content ? [[this.content]] : [];
+                    }
                     const updateCell = (col, x, row, y) => {
                         this.content[y] = this.content[y] || [];
                         let node = this.view.result.querySelector(`.cell-${x}-${y}`);
@@ -1810,6 +1778,14 @@ moving sticky cells
                         this.view.result.appendChild(makeSpan(box.width));
                         this.view.result.appendChild(makeSpan(box.height));
                     });
+                },
+            },
+            messages: { // Display dynamic list of messages
+                init() {
+                    app.events.statusChange.add(this);
+                },
+                update() {
+                    this.view.result.innerHTML = app.statusHistory.join('<br>');
                 },
             }
         }
@@ -1895,9 +1871,15 @@ moving sticky cells
             events: {
                 historyChange: new Set(),
                 layoutChange: new Set(),
+                statusChange: new Set(),
             },
             layoutChange() {
                 for(const cell of this.events.layoutChange) {
+                    cell.update();
+                }
+            },
+            statusChange() {
+                for(const cell of this.events.statusChange) {
                     cell.update();
                 }
             },
@@ -1913,7 +1895,9 @@ moving sticky cells
                 }
             },
             status: [],
+            statusHistory: [],
             setStatus(text, timeout = 3) {
+                this.statusHistory.push(text);
                 this.status.push(text);
 
                 const statusNode = document.getElementById('status');
@@ -1933,6 +1917,7 @@ moving sticky cells
                     }
                 }
                 app.timeout = setTimeout(remove, timeout * 1000);
+                this.statusChange();
             }
         };
 
@@ -1958,12 +1943,20 @@ moving sticky cells
 
         /**
          * Evaluate an input string
+         * 
+         * <name>[:#=] command parameters
          */
         function evaluate(raw) {
             const cell = new Cell(raw);
-            const namePattern = /^\s*<([^>]+)>:\s*/;
+            const namePattern = /^\s*<([^>]+)>([:#=])\s*/;
             cell.name = raw.match(namePattern)?.[1];
-            const command = raw.replace(namePattern, '') || 'notes';
+            const command = {
+                ':': 'notes',
+                '#': 'table',
+                '=': 'evaluate',
+                undefined: raw.replace(namePattern, ''),
+            }[raw.match(namePattern)?.[2]];
+            //const command = raw.replace(namePattern, '') || 'notes';
             cell.command = command;
 
             if (actions[command] !== undefined) {
@@ -1981,13 +1974,19 @@ moving sticky cells
                 return cell;
             }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % app.cells.length;
+            const link = (from, to) => {
+                from.users.add(to);
+                to.uses.add(from);
+            };
             const expr = command.replace(/^\\/, '')
-                .replace(/<([^>]+)>/g, (match, name) => {
+                .replace(/<(-?[^>]*)>/g, (match, name) => {
                     if (app.namedCells[name]?.value !== undefined) {
+                        link(app.namedCells[name], cell);
                         return `app.namedCells['${name}''].value`;
                     } else if (named.all[name] !== undefined) {
                         return `named['${name}']`;
                     } else if (app.cells.at(getIndex(name)) !== undefined) {
+                        link(app.cells.at(getIndex(name)), cell);
                         return `app.cells.at(${getIndex(name)}).value`;
                     }
                     return match;
