@@ -2291,6 +2291,11 @@ moving sticky cells
                         this.parent = parent;
                         this.tree = tree;
                         this.result = [];
+                        if (min === 0) {
+                            const cloned = this.parent.clone();
+                            const next = cloned.matched({ value: structuredClone(this.result) }, structuredClone(tree));
+                            return [tokenOrRule(rule, this, tree), next].flatMap((rules) => rules);
+                        }
                         return tokenOrRule(rule, this, tree);
                     },
                     matched(result, tree) {
@@ -2322,24 +2327,8 @@ moving sticky cells
             }
 
             function optional(rule) {
-                return makeControl({
-                    init(parent, tree) {
-                        this.parent = parent;
-                        return tokenOrRule(rule, this, tree);
-                    },
-                    matched(result, tree) {
-                        return this.parent.matched(result, tree);
-                    },
-                    failed(test, tree) {
-                        return this.parent.matched([], tree);
-                    },
-                    clone() {
-                        const clone = Object.assign(Object.create(control), this);
-                        clone.parent = clone.parent.clone();
-                        clone.result = [...clone.result];
-                        return clone;
-                    },
-                });            }
+                return repeat(rule, 0, 1);
+            }
 
             function any(chars) {
                 return makeControl({
@@ -2352,9 +2341,7 @@ moving sticky cells
                 });
             }
 
-            // Rule...
-            // syntax
-            // value node
+            const whitespace = optional(any(' \t\r\n'));
 
             const Rule = {
                 init(parent, tree) {
@@ -2377,46 +2364,85 @@ moving sticky cells
             function makeRule(definition) {
                 return Object.assign(Object.create(Rule), definition);
             }
-            const digit = makeRule({
-                syntax: any('0123456789'),
-                matched(node, tree) {
-                    return this.parent.matched({ value: parseInt(node.value) }, tree);
-                },
-            });
 
-            const lhs = makeRule({
-                syntax: digit,
-            });
-            const rhs = makeRule({
-                syntax: digit,
-            });
-            const op = makeRule({
-                syntax: any('+-*/'),
-            });
-            const binOp = makeRule({
-                syntax: sequence(lhs, op, rhs),
-                matched(node, tree) {
-                    return this.parent.matched({
-                        lhs: node.value[0].value,
-                        op: node.value[1].value,
-                        rhs: node.value[2].value,
-                        get value() {
-                            if (this.op === '+') {
-                                return this.lhs + this.rhs;
-                            }
-                            if (this.op === '-') {
-                                return this.lhs - this.rhs;
-                            }
-                            if (this.op === '*') {
-                                return this.lhs * this.rhs;
-                            }
-                            if (this.op === '/') {
-                                return this.lhs / this.rhs;
-                            }
-                        }
-                    }, tree);
+            /**
+             * Hacky McHack Face:
+             * Define parser as executable properties on the global object to make syntax nicer.
+             */
+            const parser = {
+                digit: {
+                    get() {
+                        return makeRule({
+                            syntax: repeat(any('0123456789')),
+                            matched(node, tree) {
+                                return this.parent.matched({ value: parseInt(node.value.map((node) => node.value).join('')) }, tree);
+                            },
+                        });
+                    },
                 },
-            });
+                lhs: {
+                    get() {
+                        return makeRule({
+                            syntax: digit,
+                        });
+                    },
+                },
+                rhs: {
+                    get() {
+                        return makeRule({
+                            syntax: digit,
+                        });
+                    },
+                },
+                op: {
+                    get() {
+                        return makeRule({
+                            syntax: any('+-/*'),
+                        });
+                    },
+                },
+                exp: {
+                    get() {
+                        return makeRule({
+                            syntax: sequence('(', binOp, ')'),
+                            matched(node, tree) {
+                                return this.parent.matched({
+                                    value: node.value[1].value,
+                                }, tree);
+                            },
+                        });
+                    }
+                },
+                binOp: {
+                    get() {
+                        return makeRule({
+                            syntax: sequence(lhs, whitespace, op, whitespace, rhs),
+                            matched(node, tree) {
+                                return this.parent.matched({
+                                    lhs: node.value[0].value,
+                                    op: node.value[2].value,
+                                    rhs: node.value[4].value,
+                                    get value() {
+                                        if (this.op === '+') {
+                                            return this.lhs + this.rhs;
+                                        }
+                                        if (this.op === '-') {
+                                            return this.lhs - this.rhs;
+                                        }
+                                        if (this.op === '*') {
+                                            return this.lhs * this.rhs;
+                                        }
+                                        if (this.op === '/') {
+                                            return this.lhs / this.rhs;
+                                        }
+                                    }
+                                }, tree);
+                            },
+                        });
+                    }
+                }
+            };
+            Object.defineProperties(globalThis, parser);
 
             function getTree(root, input) {
                 const results = [];
@@ -2439,7 +2465,7 @@ moving sticky cells
                     clone() {
                         return this;
                     },
-                }, [])];
+                }, [])].flatMap((item) => item);
                 for (let i = 0; i < input.length; ++i) {
                     const result = rules.flatMap((rule) => rule.test(input[i]));
                     rules = result;
@@ -2452,7 +2478,7 @@ moving sticky cells
             const expr = '(4-2)+(4*5)';
 
             {
-                const tree = getTree(binOp, '4+9');
+                const tree = getTree(binOp, '44+9');
                 console.log(tree.map((tree) => tree[0].value));
             }
             const tree = getTree(binOp, expr);
@@ -2501,40 +2527,8 @@ moving sticky cells
             });
 
             return tree.value;
-            const syntaxTree = {
-                name: 'add',
-                lhs: {
-                    name: 'subtract',
-                    lhs: {
-                        value: 4
-                    },
-                    rhs: {
-                        value: 2
-                    },
-                    get value() {
-                        return this.lhs.value - this.rhs.value;
-                    }
-                },
-                rhs: {
-                    name: 'multiply',
-                    lhs: {
-                        value: 4
-                    },
-                    rhs: {
-                        value: 5
-                    },
-                    get value() {
-                        return this.lhs.value * this.rhs.value;
-                    }
-                },
-                get value() {
-                    return this.lhs.value + this.rhs.value;
-                }
-            };
 
-            console.log(syntaxTree.value);
             const saveSession = sequence('save', ' ', 'session');
-            //return parse(input, choice('save', saveSession));
         };
         parserTest('5+4');
         /*
