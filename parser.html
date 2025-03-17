@@ -1,0 +1,2793 @@
+<!DOCTYPE html>
+<html>
+<!--
+TODO:
+indicate change of state when input cell changes
+cell from sequence
+side widgets: todos, notes
+cell types?
+background colour / picture
+markdown
+better handling of file access when api not present
+web midi
+
+don't add named items to actions?
+ammending config files
+moving sticky cells
+-->
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width" />
+    <title>js-notepad</title>
+    <link href="styles/noia-workbench-1.3.css" rel="stylesheet" />
+</head>
+
+<body>
+    <div id="results"></div>
+    <div id="widgets"></div>
+    <div id="input-area">
+        <span id="current-index">0</span><span>&gt; </span>
+        <datalist id="named-items"></datalist>
+        <input id="command-entry" type="text" autocorrect="off" autocapitalize="none"><!-- list="named-items"> -->
+    </div>
+    <div id="status" class="fade"></div>
+    <script type="module">
+        const themes = ['vt-220', 'workbench-1.3', 'workbench-4.1'];
+
+
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: false });
+
+        /**
+         * Utility functions
+         */
+        function sameDay(date1, date2) {
+            return date1.getDate() === date2.getDate() &&
+                date1.getMonth() === date2.getMonth() &&
+                date1.getFullYear() === date2.getFullYear();
+        }
+
+        /**
+         * Add an item to the list used for completions
+         */
+        function addNamedItem(name, type) {
+            const list = document.getElementById('named-items');
+            const item = document.createElement('option');
+            item.innerText = name;
+            list.appendChild(item);
+        }
+
+        /**
+         * Add a date to the named items
+         */
+        function getDate(string) {
+            if (string instanceof Date) {
+                return string
+            }
+            const [day, month, year] = string.trim().split(/[-/_]/g).map((s) => parseInt(s));
+            return new Date(year < 2000 ? year + 2000 : year, month - 1, day);
+        }
+
+        /**
+         *  Helper function to get list of items from a string
+         */
+        function getList_old(string, sep = " ", start = "<", end = ">") {
+            const list = [];
+            const quoted = (char) => {
+                if (char === end) {
+                    return init;
+                }
+                list.at(-1).push(char);
+            };
+            const unquoted = (char) => {
+                if (char === sep) {
+                    return init;
+                }
+                list.at(-1).push(char);
+            }
+            const init = (char) => {
+                if (char === start) {
+                    list.push(['']);
+                    return quoted;
+                } else if (char !== sep) {
+                    list.push([char]);
+                    return unquoted
+                }
+            }
+            let action = init
+            for (let i = 0; i < string.length; ++i) {
+                action = action(string[i]) || action;
+            }
+            return list.map((item) => item.join(''));
+        }
+
+        /**
+         *  Helper function to get list of items from a string
+         */
+        function getList(string, sep = ' ', start = '<', end = '>', esc = '\\') {
+            const list = [];
+            const invalid = [];
+            const escaped = (char) => {
+                list.at(-1).push(char);
+                return escaped.next;
+            };
+            const quoted = (char) => {
+                if (char === esc) {
+                    escaped.next = quoted;
+                    return escaped;
+                }
+                if (char === end) {
+                    return init;
+                }
+                list.at(-1).push(char);
+            };
+            const unquoted = (char) => {
+                if (char === esc) {
+                    escaped.next = unquoted;
+                    return escaped;
+                }
+                if (char === sep) {
+                    if (list.at(-1))
+                        return init;
+                }
+                list.at(-1).push(char);
+            }
+            const init = (char) => {
+                if (char === esc) {
+                    escaped.next = unquoted;
+                    return escaped;
+                }
+                if (char === start) {
+                    list.push(['']);
+                    return quoted;
+                } else if (char !== sep) {
+                    list.push([char]);
+                    return unquoted
+                }
+            }
+
+            let action = init
+            for (let i = 0; i < string.length; ++i) {
+                action = action(string[i]) || action;
+            }
+            return list.map((item) => item.join(''));
+        }
+
+        /**
+         *  Helper function to get list of cells from input string
+         */
+        function getCells(string) {
+            if (string) {
+                const list = getList(string);
+                const cells = list.map((index) => app.namedCells[index] ?? app.cells.at(index));
+                return cells.filter((cell) => cell);
+            }
+            return [app.cells.at(-1)];
+        }
+
+
+        /**
+         *  Helper function to get list of cells from input string and set up users / uses relationships
+         */
+        function getReferences(string, cell) {
+            const cells = getCells(string);
+            cells.forEach((input) => {
+                input.users.add(cell);
+                cell.uses.add(input);
+            });
+            return cells;
+        }
+
+
+        /**
+         * calendar functions
+         */
+        const calendar = {
+            holidays: [],
+            // Offset of time from UCT so that day number is consistent even if date includes time information
+            offset: (new Date(1970, 0, 4, 23)).getTime(),
+            dayNumber: (date) => Math.floor((date.getTime() - calendar.offset) / (24 * 60 * 60 * 1000)),
+            setStart: (date) => {
+                date.setHours(8);
+                date.setMinutes(0);
+                date.setSeconds(0);
+                date.setMilliseconds(0);
+                return date;
+            },
+            setFinish: (date) => {
+                date.setHours(18);
+                date.setMinutes(0);
+                date.setSeconds(0);
+                date.setMilliseconds(0);
+                return date;
+            },
+            days(start, end) {
+                start = getDate(start);
+                end = getDate(end);
+                return Math.abs(calendar.dayNumber(end) - calendar.dayNumber(start));
+            },
+            isWorkingDay(date) {
+                const day = calendar.dayNumber(date);
+                return ((day % 7) < 5 && !calendar.holidays.includes(day));
+            },
+            workingDays(start, end) {
+                start = getDate(start);
+                end = getDate(end);
+
+                if (isNaN(start) || isNaN(end)) return;
+                if (start > end) {
+                    [end, start] = [start, end];
+                }
+                let days = 0;
+                const day = new Date(start.getTime());
+                if (day.getHours() > 12) {
+                    day.setDate(day.getDate() + 1);
+                }
+                while (!calendar.isWorkingDay(day)) {
+                    day.setDate(day.getDate() + 1);
+                }
+                while (day < end) {
+                    days += 1;
+                    day.setDate(day.getDate() + 1);
+                    while (!calendar.isWorkingDay(day)) {
+                        day.setDate(day.getDate() + 1);
+                    }
+                }
+                return days;
+            },
+
+            getTimeToGo(start, end) {
+                const workingDays = calendar.workingDays(start, end);
+                let timeToGo = `${workingDays} working days`
+                if (workingDays > 5) {
+                    const weeks = Math.floor(workingDays / 5);
+                    timeToGo += ` (${weeks} weeks)`;
+                }
+                return timeToGo;
+            },
+
+            /**
+             * Get the end date of an activity based on its start and duration, assumes monday to friday minus public holidays.
+             * Start assumed to be start of day, end is COB, hence start and end will be same date for single day task.
+             */
+            getEndDate(start, duration) {
+                const end = new Date(start.getTime());
+                --duration;
+                while (!calendar.isWorkingDay(end)) {
+                    end.setDate(end.getDate() + 1);
+                }
+                while (duration > 0) {
+                    --duration;
+                    end.setDate(end.getDate() + 1);
+                    while (!calendar.isWorkingDay(end)) {
+                        end.setDate(end.getDate() + 1);
+                    }
+                }
+                calendar.setFinish(end);
+                return end;
+            },
+
+            /**
+             * Update a date by the given number of working days
+             */
+            offsetDate(date, workingDays = 0) {
+                if (isNaN(date) || isNaN(workingDays)) {
+                    return date;
+                }
+                workingDays = Math.round(workingDays);
+                const delta = Math.sign(workingDays);
+                while (workingDays !== 0) {
+                    date.setDate(date.getDate() + delta);
+                    while (!calendar.isWorkingDay(date)) {
+                        date.setDate(date.getDate() + delta);
+                    }
+                    workingDays -= delta;
+                }
+                return date;
+            },
+
+            /**
+             * Get the start date of an activity based on its finish and duration, assumes monday to friday minus public holidays.
+             * Start assumed to be start of day, end is COB, hence start and end will be same date for single day task.
+             */
+            getStartDate(finish, duration) {
+                const start = new Date(finish.getTime());
+                --duration;
+                while ((start.getDay() === 0) || (start.getDay() === 6) || calendar.holidays.includes(calendar.dayNumber(start))) {
+                    start.setDate(start.getDate() - 1);
+                }
+                while (duration > 0) {
+                    --duration;
+                    start.setDate(start.getDate() - 1);
+                    while ((start.getDay() === 0) || (start.getDay() === 6) || calendar.holidays.includes(calendar.dayNumber(start))) {
+                        start.setDate(start.getDate() - 1);
+                    }
+                }
+                calendar.setStart(start);
+                return start;
+            },
+
+            /**
+             * Return the financial month end for a given date.
+             */
+            getMonthEnd(date) {
+                const year = date.getFullYear();
+                const monthEnd = new Date(date.getMonth() < 5 ? year - 1 : year, 6, 1, 23, 59, 59, 999);
+                const sequence = [28, 28, 35];
+                let next = 0;
+                if (monthEnd.getDay() < 4) {
+                    next = 28;
+                } else {
+                    next = 35;
+                }
+                let i = 0;
+                while (monthEnd <= date) {
+                    monthEnd.setDate(monthEnd.getDate() + (next || sequence[i]) - monthEnd.getDay());
+                    next = 0;
+                    if (monthEnd.getMonth() === 11) {
+                        monthEnd.setDate(31);
+                        if (monthEnd.getDay() > 3) {
+                            next = 35
+                        }
+                    }
+                    if (monthEnd.getMonth() === 0 && monthEnd.getDate() < 7) {
+                        monthEnd.setDate(0);
+                        if (monthEnd.getDay() > 3) {
+                            next = 35
+                        }
+                    }
+                    if (monthEnd.getMonth() === 5) {
+                        monthEnd.setDate(31);
+                    }
+                    if (monthEnd.getMonth() === 0 && monthEnd.getDate() < 7) {
+                        console.log('> ' + monthEnd.toLocaleDateString());
+                        monthEnd.setDate(0);
+                        console.log(monthEnd.toLocaleDateString());
+                    }
+                    i = (i + 1) % 3;
+                }
+                return monthEnd;
+            }
+        };
+
+
+        /**
+         * Lock a cell to the screen.
+         */
+        function stick(cell) {
+            const top = Math.max(0, ...Array.from(document.querySelectorAll('.sticky'))
+                .map((node) => {
+                    const box = node.getBoundingClientRect();
+                    return box.y + box.height;
+                })
+            );
+            cell.view.cell.classList.add('sticky');
+            cell.view.cell.style.top = `${top}px`;
+            cell.view.cell.style.left = 0;
+        }
+
+        /**
+         * Unlock a cell
+         */
+        function unstick(cell) {
+            const box = cell.view.cell.getBoundingClientRect();
+            cell.view.cell.classList.remove('sticky');
+            Array.from(document.querySelectorAll('.sticky'))
+                .filter((node) => node.getBoundingClientRect().y > box.y)
+                .forEach((node) => node.style.top = `${node.getBoundingClientRect().y - box.height}px`);
+        }
+
+        /**
+         * Custom Actions
+         *
+         */
+        const actions = {
+            /**
+             * Toggle fullscreen mode
+             */
+            fullscreen(cell) {
+                if (!navigator.userActivation.isActive) {
+                    cell.value = 'fullscreen request ignored in script';
+                    return;
+                }
+                if (document.body.webkitRequestFullscreen) {
+                    if (document.body.webkitIsFullScreen) {
+                        document.body.webkitCancelFullScreen();
+                        cell.value = 'exit fullscreen';
+                    } else {
+                        document.body.webkitRequestFullscreen(document.body.ALLOW_KEYBOARD_INPUT);
+                        cell.value = 'enter fullscreen';
+                    }
+                }
+                if (document.body.requestFullscreen) {
+                    if (document.fullscreenElement) {
+                        document.exitFullscreen();
+                        cell.value = 'exit fullscreen';
+                    } else {
+                        document.body.requestFullscreen();
+                        cell.value = 'enter fullscreen';
+                    }
+                }
+                cell.type = Status;
+            },
+
+            /**
+             * Clear the screen
+             */
+            cls(cell) {
+                const results = document.getElementById('results');
+                results.innerHTML = 'clear cells';
+                cell.type = Status;
+            },
+
+            /**
+             * Reload the page
+             */
+            reload(cell) {
+                if (!app.loaded) {
+                    cell.value = 'reload request ignored until app initialised';
+                    return;
+                }
+                location.reload();
+                cell.toJSON = () => undefined;
+            },
+
+            /**
+             * Change the theme
+             */
+            theme(cell) {
+                const themeName = cell.raw.replace(/^\s*theme\s+/, '').trim();
+                document.documentElement.setAttribute('data-theme', themeName);
+                cell.type = Status;
+                cell.value = `theme set to ${themeName}`;
+                if (!themes.includes(themeName)) {
+                    cell.value += ' (unknown theme)!';
+                }
+                app.state.theme = themeName;
+            },
+
+            /**
+             * List the themes
+             */
+            themes(cell) {
+                const themeName = document.documentElement.getAttribute('data-theme');
+                const themesNames = themes.map((name) => name === themeName ? name + ' *' : name);
+                cell.type = Status;
+                cell.value = themesNames.join('<br>');
+                if (!themes.includes(themeName)) {
+                    cell.value += ` ${themeName} unknown theme!`;
+                }
+            },
+
+
+            /**
+             * Show the command history
+             */
+            history(cell) {
+                const toString = (cell, index) => `${index}: ${cell.raw}`
+                cell.value = app.cells.map(toString).join('<br>');
+                const cellMap = new Map();
+                cell.update = (time) => {
+                    cell.value = app.cells.map(toString).join('<br>');
+                    cell.view.result.innerHTML = cell.value;
+                }
+                app.events.historyChange.add(cell);
+            },
+
+            /**
+             * Show the list of cells
+             */
+            cells(cell) {
+                const toString = (cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`;
+                cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
+                cell.update = (time) => {
+                    cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
+                    cell.view.result.innerHTML = '';
+                    cell.view.result.classList.add('table');
+                    cell.view.result.style.gridTemplateColumns = `min-content min-content 1fr`;
+                    app.cells.filter((cell) => cell.view.result).forEach((eachCell) => {
+                        const indexNode = document.createElement('span');
+                        indexNode.innerHTML = `${app.cells.indexOf(eachCell)}:`;
+                        indexNode.classList.add('cells-list', 'cells-list-index');
+                        cell.view.result.appendChild(indexNode);
+                        indexNode.addEventListener('click', (event) => {
+                            eachCell.view.result.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                        });
+
+                        const nameNode = document.createElement('span');
+                        nameNode.innerHTML = `${eachCell.name ?? ''}`;
+                        nameNode.classList.add('cells-list', 'cells-list-name');
+                        cell.view.result.appendChild(nameNode);
+
+                        const rawNode = document.createElement('span');
+                        rawNode.innerHTML = `${eachCell.command}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
+                        rawNode.classList.add('cells-list', 'cells-list-raw');
+                        cell.view.result.appendChild(rawNode);
+                        rawNode.addEventListener('click', (event) => {
+                            const start = inputNode.selectionStart;
+                            const end = inputNode.selectionEnd;
+                            inputNode.value = inputNode.value.slice(0, start) + eachCell.raw + inputNode.value.slice(end);
+                            inputNode.selectionStart = start;
+                            inputNode.selectionEnd = start + eachCell.raw.length;
+                        });
+                    });
+                };
+                app.events.historyChange.add(cell);
+            },
+
+            /**
+             * Add a clock to the widget area
+             */
+            clock(cell) {
+                this.now = new Date();
+                cell.value = this.now;
+                cell.update = (time) => cell.view.result.innerHTML = this.now;
+
+                if (app.clockWidget) {
+                    app.clockWidget.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                    cell.view.widget = app.clockWidget;
+                    return cell;
+                }
+
+                app.clockWidget = document.createElement('canvas');
+                app.clockWidget.id = 'clock';
+                document.getElementById('widgets').appendChild(app.clockWidget);
+
+                cell.view.widget = app.clockWidget;
+
+                const ctx = app.clockWidget.getContext('2d');
+                const width = ctx.width = app.clockWidget.clientWidth;
+                const height = ctx.height = app.clockWidget.clientHeight;
+                const radius = Math.min(width, height) / 2;
+
+                const dayStart = new Date();
+                dayStart.setHours(0);
+                dayStart.setMinutes(0);
+                dayStart.setSeconds(0);
+                dayStart.setMilliseconds(0);
+                const style = window.getComputedStyle(document.body);
+                const colour = style.getPropertyValue('--colour');
+                const dim = style.getPropertyValue('--dim');
+
+                const update = (timer) => {
+                    this.now = new Date();
+                    const time = (this.now.getTime() - dayStart.getTime()) / 1000;
+                    ctx.clearRect(0, 0, width, height);
+                    ctx.fillStyle = colour;
+                    ctx.strokeStyle = colour;
+                    ctx.beginPath();
+                    for (let i = 0; i < 12; ++i) {
+                        const x1 = width / 2 + radius * Math.sin(i * 2 * Math.PI / 12);
+                        const y1 = height / 2 - radius * Math.cos(i * 2 * Math.PI / 12);
+                        ctx.moveTo(x1, y1);
+                        const x2 = width / 2 + (radius - 5) * Math.sin(i * 2 * Math.PI / 12);
+                        const y2 = height / 2 - (radius - 5) * Math.cos(i * 2 * Math.PI / 12);
+                        ctx.lineTo(x2, y2);
+                    }
+                    const x2 = width / 2 + 0.8 * radius * Math.sin(time * 2 * Math.PI / 3600);
+                    const y2 = height / 2 - 0.8 * radius * Math.cos(time * 2 * Math.PI / 3600);
+                    ctx.moveTo(width / 2, height / 2);
+                    ctx.lineTo(x2, y2);
+                    const x3 = width / 2 + 0.6 * radius * Math.sin(time * 2 * Math.PI / (12 * 3600));
+                    const y3 = height / 2 - 0.6 * radius * Math.cos(time * 2 * Math.PI / (12 * 3600));
+                    ctx.moveTo(width / 2, height / 2);
+                    ctx.lineTo(x3, y3);
+                    ctx.stroke();
+
+                    ctx.fillStyle = dim;
+                    ctx.strokeStyle = dim;
+                    ctx.beginPath();
+
+                    const seconds = Math.floor(time);
+                    const x1 = width / 2 + radius * Math.sin(seconds * 2 * Math.PI / 60);
+                    const y1 = height / 2 - radius * Math.cos(seconds * 2 * Math.PI / 60);
+                    ctx.moveTo(width / 2, height / 2);
+                    ctx.lineTo(x1, y1);
+                    ctx.stroke();
+
+
+                    requestAnimationFrame(update);
+                }
+                update();
+            },
+
+            calendar(cell) {
+                cell.update = (time) => cell.view.result.innerHTML = this.calendarDate.toDateString();
+
+                if (app.calendarWidget) {
+                    cell.value = this.calendarDate;
+                    cell.view.widget = app.calendarWidget;
+                    app.calendarWidget.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                    return;
+                }
+                this.calendarDate = new Date();
+                cell.value = this.calendarDate;
+                app.calendarWidget = document.createElement('div');
+                cell.view.widget = app.calendarWidget;
+                app.calendarWidget.classList.add('calendar');
+                document.getElementById('widgets').appendChild(app.calendarWidget);
+
+                const previousMonth = document.createElement('span');
+                previousMonth.innerHTML = '&lt;';
+                previousMonth.classList.add('calendar-day');
+                app.calendarWidget.appendChild(previousMonth);
+                previousMonth.addEventListener('click', (event) => {
+                    this.calendarDate.setMonth(this.calendarDate.getMonth() - 1);
+                    update()
+                });
+
+                const monthName = document.createElement('span');
+                monthName.classList.add('calendar-month-name');
+                app.calendarWidget.appendChild(monthName);
+
+                const nextMonth = document.createElement('span');
+                nextMonth.innerHTML = '&gt;';
+                nextMonth.classList.add('calendar-day');
+                app.calendarWidget.appendChild(nextMonth);
+                nextMonth.addEventListener('click', (event) => {
+                    this.calendarDate.setMonth(this.calendarDate.getMonth() + 1);
+                    update()
+                });
+
+                'SMTWTFS'.split('').forEach((c) => {
+                    const day = document.createElement('span');
+                    day.classList.add('calendar-day');
+                    day.innerHTML = c;
+                    app.calendarWidget.appendChild(day);
+                });
+                const days = [];
+                for (let i = 0; i < 42; ++i) {
+                    const day = document.createElement('span');
+                    day.classList.add('calendar-day');
+                    app.calendarWidget.appendChild(day);
+                    days.push(day);
+                }
+
+                const update = () => {
+                    const today = new Date();
+                    monthName.innerHTML = this.calendarDate.toLocaleDateString('en-AU', { month: 'long' });
+                    const month = this.calendarDate.getMonth();
+                    const year = this.calendarDate.getFullYear();
+                    const date = new Date(year, month, 1);
+                    date.setDate(date.getDate() - date.getDay());
+                    const end = new Date(year, month + 1, 0);
+                    end.setDate(end.getDate() + 7 - end.getDay());
+                    days.forEach((day) => {
+                        if (sameDay(today, date)) {
+                            day.classList.add('calendar-day-today');
+                        } else {
+                            day.classList.remove('calendar-day-today');
+                        }
+                        if (date.getMonth() === month) {
+                            day.classList.remove('calendar-day-fade');
+                        } else {
+                            day.classList.add('calendar-day-fade');
+                        }
+                        if (date < end) {
+                            day.innerHTML = ('' + date.getDate()).padStart(2, '0');
+                        } else {
+                            day.innerHTML = '';
+                        }
+                        date.setDate(date.getDate() + 1);
+                    });
+                }
+                update();
+            },
+
+            /**
+             * perform a google search
+             */
+            google(cell) {
+                const string = cell.raw.replace(/google\s+/, '');
+                const pattern = string.replace(/\s+/g, '+');
+                const url = `https://www.google.com/search?q=${pattern}`;
+                window.open(url, string, 'pop');
+                cell.value = `googling ${string}`;
+                cell.type = Status;
+            },
+
+            /**
+             * Download a resource from the net
+             */
+            wget(cell) {
+                const url = cell.raw.replace(/wget\s+/, '').replace(/\s+/g, '%20');
+                const name = url.split(/\//g).at(-1);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = name;
+                link.click();
+                cell.value = `fetching ${url}`;
+                cell.type = Status;
+            },
+
+            /**
+             * Toggle the 'hide' state for a cell
+             */
+            hide(cell) {
+                const string = cell.raw.replace(/\s*hide\s*/, '');
+
+                const cells = getCells(string);
+                const result = [];
+                cells.forEach((cell) => {
+                    cell.view.result.classList.toggle('hidden');
+                    cell.view.input.classList.toggle('dim');
+                    const index = app.cells.indexOf(cell);
+                    const hidden = cell.view.result.classList.contains('hidden');
+                    result.push(`<${index}> now ${hidden ? 'hidden' : 'visible'}`);
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+            },
+
+            /**
+             * Toggle the 'widget' state for a cell
+             */
+            widget(cell) {
+                const string = cell.raw.replace(/\s*widget\s*/, '');
+
+                const cells = getCells(string);
+                const result = [];
+                cells.forEach((cell) => {
+                    const node = cell.view.result;
+                    if (node.classList.contains('widget')) {
+                        cell.view.container.appendChild(node);
+                        node.classList.remove('widget');
+                        result.push(`<${app.cells.indexOf(cell)}> no longer a widget`);
+
+                    } else {
+                        document.getElementById('widgets').appendChild(node);
+                        node.classList.add('widget');
+                        result.push(`<${app.cells.indexOf(cell)}> now a widget`);
+
+                    }
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+            },
+
+            /**
+             * Toggle the 'sticky' state for a cell
+             */
+            stick(cell) {
+                const string = cell.raw.replace(/\s*stick\s*/, '');
+
+                const cells = getCells(string);
+                const result = [];
+                cells.forEach((cell) => {
+                    cell.view.cell.classList.remove('floating');
+                    if (cell.view.cell.classList.contains('sticky')) {
+                        unstick(cell);
+                        result.push(`<${app.cells.indexOf(cell)}> now unstuck`);
+                    } else {
+                        stick(cell);
+                        result.push(`<${app.cells.indexOf(cell)}> now stuck`);
+                    }
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+                app.layoutChange();
+            },
+
+            /**
+             * Convert a cell to a window and set it's position
+             */
+            window(cell) {
+                const string = cell.raw.replace(/\s*window\s*/, '');
+
+                const args = getList(string);
+                const { cells, values } = args.reduce((results, value) => {
+                    const index = Number(value);
+                    if (app.namedCells[value] !== undefined) {
+                        results.cells.push(app.namedCells[value]);
+                    } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                        results.cells.push(app.cells.at(index));
+                    } else {
+                        results.values.push(value);
+                    }
+                    return results;
+                }, { cells: [], values: [] });
+
+                const pos = values.map((val) => Number(val));
+                const result = [];
+                cells.forEach((cell) => {
+                    cell.view.cell.classList.add('floating');
+                    if (cell.view.cell.classList.contains('sticky')) {
+                        unstick(cell);
+                    }
+                    if (!isNaN(pos[0])) {
+                        cell.view.cell.style.left = `${pos[0]}px`;
+                    }
+                    if (!isNaN(pos[1])) {
+                        cell.view.cell.style.top = `${pos[1]}px`;
+                    }
+                    result.push(`${cell.getName()} position fixed`);
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+                app.layoutChange();
+            },
+
+            /**
+             * Set a background image
+             */
+            background(cell) {
+                const string = cell.raw.replace(/\s*background\s*/, '');
+                const url = string || 'https://taws.ch/Patterns/Boing.jpg';
+                if (url === 'none') {
+                    document.body.style.backgroundImage = `none`;
+                } else {
+                    document.body.style.backgroundImage = `url("${url}")`;
+                }
+                cell.type = Status;
+                cell.value = `background set to ${url}`;
+                app.state.background = url;
+            },
+
+            /**
+             * Delete a cell
+             */
+            delete(cell) {
+                cell.type = Status;
+                if (!navigator.userActivation.isActive) {
+                    cell.value = 'delete ignored when reloading state';
+                    return;
+                }
+                if (!app.interactive) {
+                    cell.value = 'delete ignored in non-interactive mode';
+                    return;
+                }
+
+                const string = cell.raw.replace(/^\s*delete\s*/, '');
+                const len = app.cells.length;
+                const cells = getCells(string);
+                if (cells.length === 0) {
+                    cell.value = `No cells deleted!`;
+                } else if (cells.length === 1) {
+                    cell.value = `deleted cell ${app.cells.indexOf(cells[0])}`;
+                } else {
+                    cell.value = `deleted cells ${cells.map((cell) => app.cells.indexOf(cell)).join()}`;
+                }
+                app.cells = app.cells.filter((cell) => !cells.includes(cell));
+                cells.forEach((cell) => cell.remove());
+            },
+
+            /**
+             * List the known commands
+             */
+            actions(cell) {
+                cell.value = Object.keys(actions).map((action, index) => `${index}: ${action}`).join('<br>')
+            },
+
+            /**
+             * List the known files
+             */
+            files(cell) {
+                cell.value = Object.keys(named.files).map((file, index) => `${index}: ${file}`).join('<br>')
+            },
+
+            /**
+             * Create a notes cell
+             */
+            notes(cell) {
+                const string = cell.raw.replace(/^\s*notes\s*/, '');
+                const index = app.cells.length;
+
+                const content = string ? getCells(string).map((cell) => cell.value).join('\n') : '';
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                const resolve = (str) => {
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`)
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            named.all[name] ?? match);
+                }
+
+                cell.view.result = document.createElement('pre');
+                cell.view.result.classList.add('notes');
+                cell.view.result.contentEditable = true;
+                cell.content = content;
+                cell.view.result.innerText = content || '<enter notes>';
+                cell.view.result.addEventListener('blur', (event) => {
+                    cell.content = cell.view.result.innerText;
+                    cell.view.result.innerText = resolve(cell.content) || `<enter note>`;
+                    saveState();
+                    inputNode.focus();
+                });
+                cell.view.result.addEventListener('focus', (event) => {
+                    if (cell.content) {
+                        cell.view.result.innerText = cell.content;
+                    } else {
+                        cell.view.result.innerText = '<enter note>';
+                        cell.view.result.selectionStart = 0;
+                        cell.view.result.selectionEnd = 12;
+                    }
+                });
+                cell.view.result.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        cell.view.result.blur();
+                    }
+                });
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: () => resolve(cell.content),
+                    },
+                    content: {
+                        enumerable: true,
+                        get: () => cell.view.result.innerText,
+                        set: (value) => {
+                            cell.view.result.innerText = value;
+                            const users = Array.from(cell.users);
+                            users.forEach((user) => user.update());
+                        },
+                    },
+                });
+                cell.focus = cell.view.result;
+            },
+
+            /**
+             * Create a notes cell
+             */
+            html(cell) {
+                const string = cell.raw.replace(/^html\s*/, '');
+                const index = app.cells.length;
+
+                const cells = getReferences(string, cell);
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                const resolve = (str) => {
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`)
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            named.all[name] ?? match);
+                }
+                cell.update = (time) => {
+                    cell.content = cells.map((cell) => cell.value).join('\n');
+                    cell.value = resolve(cell.content);
+                    cell.view.result.innerHTML = cell.value;
+                };
+            },
+
+            /**
+             * Create a mermaid diagram cell
+             */
+            diagram(cell) {
+                const string = cell.raw.replace(/^diagram\s*/, '');
+                const index = app.mermaidCount++;
+
+                const cells = getReferences(string, cell);
+
+                cell.content = string || '<-1>';
+
+                cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('mermaid-cell');
+
+                const diagram = document.createElement('div');
+
+                diagram.classList.add('mermaid');
+                cell.view.result.appendChild(diagram);
+                diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
+
+                cell.update = async (time) => {
+                    const source = cells.map((input) => input.value).join('\n');
+                    try {
+                        const { svg } = await mermaid.render(`graph_${index}`, source);
+                        diagram.innerHTML = svg;
+                        cell.svg = diagram.firstElementChild;
+                    } catch (error) {
+                        diagram.innerHTML = error.message;
+
+                    }
+                    cell.users.forEach((user) => user.update());
+                }
+
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: () => diagram.innerHTML,
+                    },
+                });
+                //cell.update();
+            },
+
+            /**
+             * Create a js cell
+             */
+            js_old(cell) {
+                const string = cell.raw.replace(/^js\s*/, '');
+                const index = app.cells.length;
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                }
+
+                cell.view.result = document.createElement('div');
+                cell.view.result.classList.add('result');
+                const node = document.createElement('textarea');
+                node.placeholder = 'Enter code';
+                node.rows = 20;
+                node.value = string;
+                node.classList.add('code-area');
+                node.addEventListener('blur', (event) => {
+                    evaluate();
+                    cell.users.entries().filter((cell) => cell.update).forEach((cell) => cell.update);
+                    saveState();
+                    inputNode.focus();
+                });
+                node.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        node.blur();
+                        //app.focusHistory.push(cell);
+                    }
+                });
+                cell.view.result.appendChild(node);
+                const evaluate = () => {
+                    const expr = node.value.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`);
+                    try {
+                        const args = string.split(/[\s+]/);
+                        const func = new Function('app', ...args, `${expr}`);
+                        const result = func(app);
+                        app.setStatus(result);
+                        return result;
+                    } catch (error) {
+                        app.setStatus(error.message);
+                        return error.message;
+                    }
+                };
+                Object.defineProperties(cell, {
+                    value: {
+                        enumerable: true,
+                        get: evaluate,
+                    },
+                    content: {
+                        enumerable: true,
+                        get: () => node.value,
+                        set: (value) => node.value = value,
+                    },
+                });
+                cell.focus = node;
+            },
+
+            /**
+             * Create a js cell
+             */
+            js(cell) {
+                const string = cell.raw.replace(/^js\s*/, '');
+                const index = app.cells.length;
+
+                const cells = getReferences(string, cell);
+
+                const getIndex = (str) => {
+                    const i = parseInt(str);
+                    if (isNaN(i)) {
+                        return index - 1;
+                    }
+                    if (i < 0) {
+                        return index + (i % index);
+                    }
+                    return i % index;
+                };
+
+                cell.update = (time) => {
+                    cell.content = cells.map((cell) => cell.value).join('\n');
+                    const expr = cell.content.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`);
+                    try {
+                        const func = new Function('app', `${expr}`);
+                        cell.value = func(app);
+                    } catch (error) {
+                        cell.value = error.message;
+                    }
+                    app.setStatus(cell.value);
+                    cell.view.result.innerText = cell.value;
+                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                };
+            },
+
+
+            /**
+             * Reset command history
+             */
+            reset(cell) {
+                cell.prompt = 'Reset all? (Y/n)';
+                cell.action = (input) => {
+                    app.action = null;
+                };
+            },
+
+            /**
+             * Add a date to the named items
+             */
+            date(cell) {
+                const string = cell.raw.replace(/date\s*/, '');
+                const parts = string.split(/(\s+)/g);
+                const date = parts.pop();
+                const name = parts.join('').trim();
+                const [day, month, year] = date.split(/[-/_]/g).map((s) => parseInt(s));
+                named.dates[name] = new Date(year < 2000 ? year + 2000 : year, month - 1, day);
+                addNamedItem(name);
+                cell.value = named.dates[name];
+            },
+
+            /**
+             * List dates
+             */
+            dates(cell) {
+                cell.value = Object.entries(named.dates)
+                    .map(([name, date]) => `${name}: ${date.toDateString()}`)
+                    .join('<br>');
+            },
+
+
+            /**
+             * Add a site to the named items
+             */
+            site(cell) {
+                const string = cell.raw.replace(/site\s*/, '');
+                const [name, addr] = string.split(/\s*http/);
+                const url = `http${addr}`;
+                this[name] = (cell) => {
+                    window.open(url, '_blank');
+                    cell.value = `<a href="url">${name}</a>`;
+                };
+                named.sites[name] = url;
+                addNamedItem(name);
+                cell.type = Status;
+                cell.value = `added shortcut ${name} -> ${url}`;
+                saveState();
+            },
+
+            /**
+             * List sites
+             */
+            sites(cell) {
+                cell.value = Object.entries(named.sites)
+                    .map(([name, url]) => `${name}: <a href="${url}">${url}</a>`)
+                    .join('<br>');
+            },
+
+            /**
+             * Add an abbreviation
+             */
+            abbr(cell) {
+                const string = cell.raw.replace(/abbr\s*/, '');
+                const parts = string.split(/(\s+)/);
+                const name = parts.shift();
+                const expansion = parts.join('').trim();
+                named.abbreviations[name] = expansion;
+                addNamedItem(name);
+                cell.value = `${name} -> ${expansion}`;
+            },
+
+            /**
+             * List abbreviations
+             */
+            abbreviations(cell) {
+                cell.value = Object.entries(named.abbreviations)
+                    .map(([name, expansion]) => `${name}: ${expansion}`)
+                    .join('<br>');
+            },
+
+            /**
+             * Load a file using a handle in the database
+             */
+            async load(cell) {
+                if (!navigator.userActivation.isActive) {
+                    cell.value = 'load request ignored in script';
+                    return;
+                }
+
+                const file = cell.raw.replace(/^\s*load\s*/, '');
+                if (file) {
+                    load(cell, file, (contents) => cell.view.result.innerHTML = `<pre>${contents}</pre>`);
+                } else {
+                    cell.value = `Select File...`;
+                    if ('showOpenFilePicker' in self) {
+                        const [fileHandle] = await window.showOpenFilePicker();
+                        if (fileHandle) {
+                            cell.view.result.innerHTML = `Loading...`;
+                            const file = await fileHandle.getFile();
+                            cell.content = file.name;
+                            cell.value = await file.text();
+                            cell.view.result.innerHTML = `<pre>${cell.value}</pre>`;
+                            saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                        }
+                    }
+                }
+            },
+
+            /**
+             * Save the contents of the specified cells
+             */
+            save(cell) {
+                const string = cell.raw.replace(/^\s*save\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+                const cells = getReferences(string.replace(pattern, ''), cell);
+
+                let fileHandle;
+                cell.update = async () => {
+                    if (fileHandle) {
+                        const contents = cells.map((cell) => cell.value).join('\n');
+                        // Create a FileSystemWritableFileStream to write to.
+                        const writable = await fileHandle.createWritable();
+                        // Write the contents of the file to the stream.
+                        await writable.write(contents);
+                        // Close the file and write the contents to disk.
+                        await writable.close();
+                    }
+                }
+
+                const pickfile = async () => {
+                    fileHandle = await window.showSaveFilePicker(options);
+                    const file = await fileHandle.getFile();
+                    cell.contents = file.name;
+                    cell.raw += ` as ${file.name}`;
+                    saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                }
+
+                if (filename && named.files[filename]) {
+                    fileHandle = named.files[filename];
+                } else {
+                    const options = {
+                        types: [
+                            {
+                                description: 'Text Files',
+                                accept: {
+                                    'text/plain': ['.txt'],
+                                },
+                            },
+                        ],
+                    };
+                    pickfile();
+                }
+                cell.update();
+            },
+
+            /**
+             * Save the session
+             */
+            'save session'(cell) {
+                const string = cell.raw.replace(/^\s*save session\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+
+                cell.update = async () => {
+                    if (cell.fileHandle) {
+                        const contents = JSON.stringify(app.cells);
+                        console.log(contents);
+                        // Create a FileSystemWritableFileStream to write to.
+                        const writable = await cell.fileHandle.createWritable();
+                        // Write the contents of the file to the stream.
+                        await writable.write(contents);
+                        // Close the file and write the contents to disk.
+                        await writable.close();
+                    }
+                }
+
+                const pickfile = async (options) => {
+                    cell.fileHandle = await window.showSaveFilePicker(options);
+                    const file = await cell.fileHandle.getFile();
+                    cell.contents = file.name;
+                    cell.raw += ` as ${file.name}`;
+                    saveFileHandles([{ name: file.name, handle: cell.fileHandle }]);
+                    cell.update();
+                }
+
+                if (cell.filename && named.files[filename]) {
+                    cell.fileHandle = named.files[filename];
+                    cell.update();
+                } else {
+                    const options = {
+                        types: [
+                            {
+                                description: 'Text Files',
+                                accept: {
+                                    'text/plain': ['.json'],
+                                },
+                            },
+                        ],
+                    };
+                    pickfile(options);
+                }
+            },
+
+            saveSvg(cell) {
+                const string = cell.raw.replace(/^\s*saveSvg\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+                const cells = getReferences(string.replace(pattern, ''), cell);
+
+                cell.update = () => {
+                    cells.filter((cell) => cell.svg).forEach((cell, index) =>
+                        cells.length > 1 ? convertSVGtoImg(cell.svg, `${filename}_${index}.png`) : convertSVGtoImg(cell.svg, `${filename}.png`));
+                };
+
+                cell.update();
+            },
+
+            /**
+             * Load user specified data file
+             */
+            loadData(cell) {
+                if (!navigator.userActivation.isActive) {
+                    cell.value = 'loadData request ignored in script';
+                    return;
+                }
+                const file = cell.raw.replace(/^\s*loadData\s*/, '');
+
+                const process = (contents) => {
+                    cell.value = contents;
+                    cell.view.result.innerHTML = `<pre>${cell.value}</pre>`;
+
+                    let sectionName;
+                    let current;
+                    const section = /^[^\s]+[^:]*:\s*$/;
+                    const data = {};
+                    cell.value.split(/\r?\n/g).forEach((line) => {
+                        if (section.test(line)) {
+                            sectionName = line.replace(/:\s*$/, '');
+                            data[sectionName] = named[sectionName] || {};
+                        } else if (sectionName && line.trim() !== '') {
+                            const [pre, ...values] = line.split(/:/);
+                            const name = pre.trim();
+                            const value = values.join(':').trim();
+                            data[sectionName][name] = data[sectionName][name] || [];
+                            data[sectionName][name].push(value);
+                        }
+                    });
+                    if (data.abbreviations) {
+                        Object.entries(data.abbreviations).forEach(([name, expansion]) => {
+                            this[name] = (cell) => {
+                                cell.value = expansion;
+                                return;
+                            };
+                            named.abbreviations[name] = expansion;
+                            addNamedItem(name);
+                        });
+                    }
+                    if (data.dates) {
+                        Object.entries(data.dates).forEach(([name, dates]) => {
+                            named.dates[name] = dates.map((date) => getDate(date));
+                            this[name] = (cell) => {
+                                cell.value = named.dates[name][0];
+                                return;
+                            };
+                            addNamedItem(name);
+                        });
+                    }
+                    if (data.sites) {
+                        Object.entries(data.sites).forEach(([name, urls]) => {
+                            named.sites[name] = urls;
+                            const url = urls[0];
+                            this[name] = (cell) => {
+                                const windowReference = window.open(url, name, 'pop');
+                                named.sites[name] = url;
+                                if (windowReference) {
+                                    windowReference.focus();
+                                }
+                                cell.value = `<a href="url">${name}</a>`;
+                            };
+                            addNamedItem(name);
+                        });
+                    }
+                    if (data.holidays) {
+                        Object.entries(data.holidays).forEach(([date, name]) => {
+                            calendar.holidays.push(calendar.dayNumber(getDate(date)));
+                            if (name) {
+                                named.holidays[name] = named.holidays[name] || [];
+                                named.holidays[name].push(getDate(date));
+                                this[name] = (cell) => {
+                                    cell.value = named.holidays[name];
+                                    return;
+                                };
+                                addNamedItem(name);
+                            }
+                        });
+                    }
+                    cell.users.forEach((user) => user.update());
+                }
+
+                const chooseFile = async () => {
+                    const [fileHandle] = await window.showOpenFilePicker();
+                    if (fileHandle) {
+                        const file = await fileHandle.getFile();
+                        cell.raw += ` ${file.name}`;
+                        cell.content = file.name;
+                        const contents = await file.text();
+                        process(contents);
+                        saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                        saveState();
+                    }
+                }
+
+                if (file) {
+                    load(cell, file, process);
+                } else {
+                    if ('showOpenFilePicker' in self) {
+                        chooseFile();
+                    }
+                }
+            },
+        }
+
+        const named = {
+            dates: {},
+            holidays: {},
+            sites: {},
+            abbreviations: {},
+            files: {},
+        }
+        Object.defineProperties(named, {
+            all: {
+                get() {
+                    return Object.values(this).reduce((all, value) => Object.assign(all, value), {});
+                },
+            }
+        })
+
+        Object.keys(actions).forEach(addNamedItem);
+
+        const inputNode = document.getElementById('command-entry');
+
+        const action = {};
+        document.body.addEventListener('mousemove', (event) => {
+            if (action.move) {
+                action.move(event);
+            }
+        });
+        document.body.addEventListener('mouseup', (event) => {
+            if (action.move) {
+                action.move = null;
+                inputNode.focus();
+            }
+            document.body.classList.remove('noselect');
+            saveState();
+            for (const node of document.querySelectorAll('.dragging')) {
+                node.classList.remove('dragging');
+            }
+        });
+        //document.body.addEventListener('focusin', () => console.log('focus in', document.activeElement));
+        //document.body.addEventListener('focusout', () => console.log('focus out', document.activeElement));
+
+
+        class Cell {
+            constructor(raw, content, expr, resolved, uses = []) {
+                this.raw = raw;
+                this.timestamp = new Date();
+                this.expr = expr ?? raw;
+                this.resolved = resolved ?? raw;
+                this.content = content;
+                this.value = content;
+                this.uses = new Set(uses);
+                this.users = new Set();
+                this.view = {};
+            }
+            getName() {
+                const name = [];
+                name.push(`${app.cells.indexOf(this)}:`);
+                if (this.name) {
+                    name.push(this.name);
+                }
+                name.push(this.raw);
+                return name.join(' ');
+            }
+            getResultNode() {
+                const node = document.createElement('div');
+                node.classList.add('result');
+                node.innerHTML = this.value ?? '';
+                return node;
+            }
+            makeView() {
+                this.view.cell = document.createElement('div');
+                this.view.cell.classList.add('cell');
+
+                this.view.index = document.createElement('span');
+                this.view.index.classList.add('index');
+                this.view.cell.appendChild(this.view.index);
+                this.view.index.addEventListener('click', (event) => {
+                    const str = ` <${app.cells.indexOf(this)}>`;
+                    const pos = inputNode.selectionStart;
+                    inputNode.value = inputNode.value.slice(0, pos) + str + inputNode.value.slice(pos);
+                    inputNode.focus();
+                    inputNode.selectionStart = inputNode.selectionEnd = pos + str.length;
+                });
+
+                this.view.container = document.createElement('div');
+                this.view.container.classList.add('result-box');
+                this.view.cell.appendChild(this.view.container);
+
+                this.view.input = this.view.input || document.createElement('div');
+                this.view.input.classList.add('input');
+                this.view.container.appendChild(this.view.input);
+
+                const references = {
+                    x: [],
+                    y: [],
+                };
+                const mousemove = (event) => {
+                    event.preventDefault();
+                    unstick(this);
+                    action.node.classList.add('floating');
+                    action.node.classList.add('dragging');
+                    document.getElementById('results').appendChild(action.node);
+
+                    const x = event.clientX - action.start.x + action.pos.x;
+                    const y = event.clientY - action.start.y + action.pos.y;
+                    if (!event.ctrlKey) {
+                        const x2 = references.x.reduce((x, rx) =>
+                            Math.abs(rx - x) < 10 ? rx : x, x);
+                        const y2 = references.y.reduce((y, ry) =>
+                            Math.abs(ry - y) < 10 ? ry : y, y);
+                        action.node.style.left = `${x2}px`
+                        action.node.style.top = `${y2}px`;
+                    } else {
+                        action.node.style.left = `${x}px`
+                        action.node.style.top = `${y}px`;
+                    }
+                    app.layoutChange();
+                };
+
+                this.view.input.addEventListener('mousedown', (event) => {
+                    references.x.length = 0;
+                    references.y.length = 0;
+                    for (const node of document.querySelectorAll('.floating .result-box')) {
+                        if (node !== this.view.result.parentElement) {
+                            const box = node.getBoundingClientRect();
+                            references.x.push(box.x, box.x + box.width, box.x - this.view.result.clientWidth);
+                            references.y.push(box.y, box.y + box.height, box.y - this.view.result.clientHeight);
+                        }
+                    }
+                    if (this.view.cell.classList.contains('sticky') ||
+                        this.view.cell.classList.contains('floating')) {
+                        action.node = this.view.cell;
+                        action.move = mousemove;
+                        action.start = { x: event.clientX, y: event.clientY };
+                        action.pos = action.node.getBoundingClientRect();
+                        document.body.classList.add('noselect');
+                    }
+                });
+
+                this.view.raw = this.view.raw || document.createElement('span');
+                this.view.raw.classList.add('raw');
+                this.view.raw.innerText = this.raw;
+                this.view.input.appendChild(this.view.raw);
+                this.view.raw.addEventListener('dblclick', (event) => {
+                    if (event.ctrlKey) {
+                        this.view.raw.contentEditable = true;
+                        this.view.raw.focus();
+                    } else {
+                        this.view.result.classList.toggle('hidden');
+                        this.view.input.classList.toggle('dim');
+                    }
+                });
+                this.view.raw.addEventListener('blur', (event) => {
+                    this.view.raw.contentEditable = false;
+                    this.raw = this.view.raw.innerText;
+                });
+
+                if (this.raw !== this.resolved) {
+                    const arrow = document.createElement('span');
+                    arrow.innerHTML = ' &rarr; ';
+                    this.view.input.appendChild(arrow);
+
+                    this.view.resolved = this.view.resolved || document.createElement('span');
+                    this.view.resolved.classList.add('resolved');
+                    this.view.resolved.innerHTML = this.resolved;
+                    this.view.input.appendChild(resolvedNode);
+                }
+                this.view.result = this.view.result || this.getResultNode();
+                this.view.container.appendChild(this.view.result);
+            }
+            toJSON(key) {
+                if (this.type === Status) {
+                    return undefined;
+                }
+                const state = {};
+                if (this.view) {
+                    const pos = this.view.cell.getBoundingClientRect();
+                    const size = this.view.result.getBoundingClientRect();
+
+                    state.sticky = this.view.cell.classList.contains('sticky');
+                    state.box = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+                    state.floating = this.view.cell.classList.contains('floating');
+                    state.hidden = this.view.result.classList.contains('hidden');
+                }
+                return {
+                    raw: this.raw,
+                    timestamp: this.timestamp.getTime(),
+                    content: this.content,
+                    state,
+                }
+            }
+            remove() {
+                if (this.view.index) {
+                    this.view.index.remove();
+                    this.view.container.remove();
+                }
+                this.uses.forEach((input) => input.users.delete(this));
+                this.users.forEach((user) => user.uses.delete(this));
+            }
+        }
+
+
+        /**
+         * Create and editable span.
+         */
+        function editableSpan(get, set) {
+            const node = document.createElement('span');
+            node.contentEditable = true;
+            node.addEventListener('blur', (event) => set(node));
+            let previous;
+            node.addEventListener('focus', (event) => {
+                node.innerText = get();
+                previous = node.innerText;
+            });
+            node.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    set(node);
+                }
+                if (event.key === 'escape') {
+                    node.innerText = previous;
+                }
+            });
+
+            return node;
+        }
+
+        /**
+         * Cell types applied to a cell after creation.
+         */
+        const cellTypes = {
+            table: {
+                tableFromString(string) {
+                    const data = string.split(/\r?\n/g).map((row) => row.split(/\s*,\s*/g));
+                    const cols = data.shift().map((value) => ({ name: value }));
+                    const rows = data.map((row) => ({ name: row.shift() }));
+                    return { data, cols, rows };
+                },
+                init(table = {}) {
+                    if (table instanceof String) {
+                        table = this.tableFromString(table);
+                    }
+                    const nRows = table.rows?.length || table.data?.length || 1;
+                    const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 1;
+
+                    this.content = Array.isArray(table.data) ? table.data : (table.data ? [[table.data]] : []);
+                    this.cols = [];
+                    this.rows = [];
+
+                    for (let x = 0; x < nCols; ++x) {
+                        const col = table.cols?.[x] || {};
+                        this.cols.push({ name: col.name || x, size: col.size || 'max-content' });
+                    }
+                    for (let y = 0; y < nRows; ++y) {
+                        const row = table.rows?.[y] || {};
+                        this.rows.push({ name: row.name || y, size: row.size || 'max-content' });
+                    }
+                },
+                getResultNode() {
+                    const resultNode = document.createElement('div');
+                    resultNode.classList.add('table');
+                    const background = document.createElement('div');
+                    background.classList.add('grid');
+                    resultNode.appendChild(background);
+                    return resultNode;
+                },
+                update() {
+                    const makeTemplate = (definition) => `max-content ${definition.map((col) => col.size).join(' ')}`;
+                    this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
+                    this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
+                    if (!Array.isArray(this.content)) {
+                        this.content = this.content ? [[this.content]] : [];
+                    }
+                    const updateCell = (col, x, row, y) => {
+                        this.content[y] = this.content[y] || [];
+                        let node = this.view.result.querySelector(`.cell-${x}-${y}`);
+                        if (node === null) {
+                            node = editableSpan(
+                                () => this.content[y - 1][x - 1],
+                                (node) => this.content[y - 1][x - 1] = node.innerText);
+                            node.style.gridColumn = x + 1;
+                            node.style.gridRow = y + 1;
+                            node.classList.add('table-cell', `.cell-${x}-${y}`);
+                            this.view.result.appendChild(node);
+                        }
+
+                        if (x === 0 && y === 0) {
+                            node.innerText = this.name ?? '';
+                            node.classList.add('table-header');
+                        } else if (x === 0) {
+                            node.innerText = row.name ?? y;
+                            node.classList.add('table-header', 'row-name');
+                        } else if (y === 0) {
+                            node.innerText = col.name ?? x;
+                            node.classList.add('table-header', 'col-name');
+                        } else {
+                            node.innerText = this.content[y - 1]?.[x - 1];
+                            node.classList.add('table-data');
+                        }
+                    }
+
+                    const cols = [{ name: '' }, ...this.cols];
+                    const rows = [{ name: '' }, ...this.rows];
+                    cols.forEach((col, colIndex) =>
+                        rows.forEach((row, rowIndex) => updateCell(col, colIndex, row, rowIndex)))
+
+                },
+            },
+            windows: { // Display dynamic list of windows
+                init() {
+                    app.events.layoutChange.add(this);
+                },
+                getResultNode() {
+                    const resultNode = document.createElement('div');
+                    resultNode.classList.add('result', 'table');
+                    resultNode.style.gridTemplateColumns = 'repeat(7, minmax(min-content, 1fr))';
+                    return resultNode;
+                },
+                update() {
+                    this.view.result.innerHTML = '';
+                    const windows = app.cells.filter((cell) => cell.view?.cell?.classList.contains('floating'));
+                    const makeSpan = (text) => {
+                        const node = document.createElement('span');
+                        node.innerText = text;
+                        node.classList.add('table-cell');
+                        return node;
+                    }
+                    windows.forEach((cell) => {
+                        const box = cell.view.cell.getBoundingClientRect();
+                        this.view.result.appendChild(makeSpan(`${app.cells.indexOf(cell)}:`));
+                        this.view.result.appendChild(makeSpan(cell.name || ''));
+                        this.view.result.appendChild(makeSpan(cell.command));
+                        this.view.result.appendChild(makeSpan(box.x));
+                        this.view.result.appendChild(makeSpan(box.y));
+                        this.view.result.appendChild(makeSpan(box.width));
+                        this.view.result.appendChild(makeSpan(box.height));
+                    });
+                },
+            },
+            messages: { // Display dynamic list of messages
+                init() {
+                    app.events.statusChange.add(this);
+                },
+                update() {
+                    this.view.result.innerHTML = app.statusHistory.join('<br>');
+                },
+            }
+        }
+
+
+        function copyStylesInline(destinationNode, sourceNode) {
+            var containerElements = ["svg", "g"];
+            for (var cd = 0; cd < destinationNode.childNodes.length; cd++) {
+                var child = destinationNode.childNodes[cd];
+                if (containerElements.indexOf(child.tagName) != -1) {
+                    copyStylesInline(child, sourceNode.childNodes[cd]);
+                    continue;
+                }
+                var style = sourceNode.childNodes[cd].currentStyle || window.getComputedStyle(sourceNode.childNodes[cd]);
+                if (style == "undefined" || style == null) continue;
+                for (var st = 0; st < style.length; st++) {
+                    child.style.setProperty(style[st], style.getPropertyValue(style[st]));
+                }
+            }
+        }
+
+        // https://stackoverflow.com/questions/3975499/convert-svg-to-image-jpeg-png-etc-in-the-browser
+        const dataHeader = 'data:image/svg+xml;charset=utf-8';
+
+        const loadImage = async url => {
+            const img = document.createElement('img');
+            img.src = url;
+            return new Promise((resolve, reject) => {
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+            });
+        }
+
+        const serializeAsXML = (e) => (new XMLSerializer()).serializeToString(e);
+
+        const encodeAsUTF8 = (str) => `${dataHeader},${encodeURIComponent(str)}`;
+        const encodeAsB64 = (str) => `${dataHeader};base64,${btoa(str)}`;
+
+        /**
+         * Extract SVG data and paste image to canvas to download
+         */
+        const convertSVGtoImg = async (svg, filename, format = 'png') => {
+            const copy = svg.cloneNode(true);
+            copyStylesInline(copy, svg);
+            const svgData = encodeAsUTF8(serializeAsXML(copy));
+
+            const img = await loadImage(svgData);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = svg.clientWidth;
+            canvas.height = svg.clientHeight;
+            const context = canvas.getContext('2d');
+            context.fillStyle = 'rgb(240, 248, 255)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(img, 0, 0, svg.clientWidth, svg.clientHeight);
+
+            const dataURL = await canvas.toDataURL(`image/${format}`, 1.0);
+            triggerDownload(dataURL, filename);
+        }
+
+        /**
+         * Create link and click it to trigger download
+         */
+        function triggerDownload(imgURI, fileName) {
+            const event = new MouseEvent('click', {
+                view: window,
+                bubbles: false,
+                cancelable: true
+            });
+            const link = document.createElement('a');
+            link.setAttribute('download', fileName);
+            link.setAttribute('href', imgURI);
+            link.setAttribute('target', '_blank');
+            link.dispatchEvent(event);
+        }
+
+        const app = {
+            loaded: false,
+            history: [],
+            cells: [],
+            namedCells: {},
+            index: 0,
+            events: {
+                historyChange: new Set(),
+                layoutChange: new Set(),
+                statusChange: new Set(),
+            },
+            layoutChange() {
+                for (const cell of this.events.layoutChange) {
+                    cell.update();
+                }
+            },
+            statusChange() {
+                for (const cell of this.events.statusChange) {
+                    cell.update();
+                }
+            },
+            context: [{ process }],
+            state: {},
+            mermaidCount: 0,
+            setPrompt(prompt) {
+                const currentIndex = document.getElementById('current-index');
+                if (prompt) {
+                    currentIndex.innerHTML = prompt;
+                } else {
+                    currentIndex.innerHTML = this.cells.length;
+                }
+            },
+            status: [],
+            statusHistory: [],
+            setStatus(text, timeout = 3) {
+                this.statusHistory.push(text);
+                this.status.push(text);
+
+                const statusNode = document.getElementById('status');
+                statusNode.innerHTML = this.status.join('<br>');
+                statusNode.classList.remove('fade');
+                /*
+                if (app.timeout) {
+                    clearTimeout(app.timeout);
+                }*/
+                const remove = () => {
+                    const pos = this.status.indexOf(text);
+                    this.status.splice(pos, 1);
+                    if (this.status.length < 1) {
+                        statusNode.classList.add('fade');
+                    } else {
+                        statusNode.innerHTML = this.status.join('<br>');
+                    }
+                }
+                app.timeout = setTimeout(remove, timeout * 1000);
+                this.statusChange();
+            }
+        };
+
+        /**
+         * Update dynamic cells of display
+         */
+        function update(time) {
+            window.requestAnimationFrame(update);
+        }
+        //update();
+
+        /**
+         * Return the predefined functions passed to expressions
+         */
+        function getPredefined() {
+            const predefined = {};
+            Object.getOwnPropertyNames(Math).forEach((prop) => predefined[prop] = Math[prop]);
+            Object.getOwnPropertyNames(calendar).forEach((prop) => predefined[prop] = calendar[prop]);
+            return predefined;
+        }
+
+        const Status = Symbol('status');
+
+        /**
+         * Evaluate an input string
+         * 
+         * <name>[:#=] command parameters
+         */
+        function evaluate(raw) {
+            const cell = new Cell(raw);
+            const namePattern = /^\s*<([^>]+)>([:#=])\s*/;
+            cell.name = raw.match(namePattern)?.[1];
+            const command = {
+                ':': 'notes',
+                '#': 'table',
+                '=': 'evaluate',
+                undefined: raw.replace(namePattern, ''),
+            }[raw.match(namePattern)?.[2]];
+            //const command = raw.replace(namePattern, '') || 'notes';
+            cell.command = command;
+
+            if (actions[command] !== undefined) {
+                return actions[command](cell) ?? cell;
+            } else if (actions[command.split(' ')[0]]) {
+                return actions[command.split(' ')[0]](cell) ?? cell;
+            }
+            if (cellTypes[command]) {
+                Object.assign(cell, cellTypes[command]);
+                cell.init();
+                return cell;
+            }
+            if (named.all[command]) {
+                cell.value = named.all[command];
+                return cell;
+            }
+            const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % app.cells.length;
+            const link = (from, to) => {
+                from.users.add(to);
+                to.uses.add(from);
+            };
+            const expr = command.replace(/^\\/, '')
+                .replace(/<(-?[^>]*)>/g, (match, name) => {
+                    if (app.namedCells[name]?.value !== undefined) {
+                        link(app.namedCells[name], cell);
+                        return `app.namedCells['${name}''].value`;
+                    } else if (named.all[name] !== undefined) {
+                        return `named['${name}']`;
+                    } else if (app.cells.at(getIndex(name)) !== undefined) {
+                        link(app.cells.at(getIndex(name)), cell);
+                        return `app.cells.at(${getIndex(name)}).value`;
+                    }
+                    return match;
+                });
+            const references = [];
+            const resolved = command.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) => {
+                const referenced = app.cells.at(getIndex(index));
+                referenced.users.add(cell);
+                cell.uses.add(referenced);
+                return `${referenced.value}`;
+            });
+            cell.update = () => {
+                const predefined = getPredefined();
+                const args = Object.keys(predefined);
+                const parameters = Object.values(predefined);
+                try {
+                    if (app.action) {
+                        const func = new Function('app', ...args, 'named', `return app.action(${expr})`);
+                    }
+                    const func = new Function('app', ...args, 'named', `return ${expr}`);
+
+                    cell.value = func(app, ...parameters, named.all);
+                } catch (error) {
+                    cell.value = error.message;
+                }
+                if (cell.action) {
+                    app.action === cell.action();
+                }
+            }
+            cell.update();
+
+            return cell;
+        }
+
+        /**
+         * Add the results to the output
+         */
+        function showCell(cell, index) {
+            const resultsNode = document.getElementById('results');
+
+            cell.makeView();
+
+            cell.view.index.innerHTML = `${index}: `;
+
+            resultsNode.appendChild(cell.view.cell);
+            cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            app.show = () => cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+        }
+
+        /**
+         * Process the input
+         */
+        function process(event) {
+            app.history.push(inputNode.value);
+            const str = (app.index === app.cells.length && inputNode.value === '') ? app.cells.at(-1).raw : inputNode.value;
+            app.interactive = true;
+            const cell = evaluate(str);
+            app.interactive = false;
+
+            if (cell.type === Status) {
+                app.setStatus(cell.value);
+            } else {
+                showCell(cell, app.cells.length);
+            }
+            app.namedCells[cell.name] = cell;
+            app.cells.push(cell);
+
+            app.events.historyChange.forEach((cell) => cell.update());
+
+            if (event.ctrlKey && (app.index < (app.cells.length - 1))) {
+                app.index += 1;
+                inputNode.value = app.cells.at(app.index).raw;
+            } else {
+                app.index = app.cells.length;
+                inputNode.value = '';
+            }
+            if (cell.update) {
+                cell.update();
+            }
+            app.setPrompt(cell.prompt);
+            saveState();
+            if (cell.focus) {
+                cell.focus.focus();
+            }
+            inputNode.removeAttribute('list');
+        }
+
+        /**
+         * Process cursor up in input box
+         */
+        function cursorUp(event) {
+            if (app.index === app.cells.length) {
+                app.draft = inputNode.value;
+            }
+            app.index -= 1;
+            if (app.index < 0) {
+                app.index = app.cells.length;
+                inputNode.value = app.draft;
+            } else {
+                if (event.altKey) {
+                    const start = inputNode.selectionStart;
+                    const end = inputNode.selectionEnd ?? start;
+                    const reference = event.ctrlKey ? `${app.cells.at(app.index).value}` : `<${app.index - app.cells.length}>`;
+                    inputNode.value = inputNode.value.slice(0, start) + reference + inputNode.value.slice(end);
+                    inputNode.setSelectionRange(start, start + reference.length);
+                } else {
+                    inputNode.value = app.cells[app.index].raw;
+                }
+                if (app.cells.at(app.index).view.result) {
+                    const node = app.cells.at(app.index).view.result;
+                    node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                }
+            }
+        }
+
+        /**
+         * Process cursor up in input box
+         */
+        function cursorDown(event) {
+            if (app.index === app.cells.length) {
+                app.draft = inputNode.value;
+                app.index = -1;
+            }
+            app.index += 1;
+            if (app.index === app.cells.length) {
+                inputNode.value = app.draft;
+            } else {
+                if (event.altKey) {
+                    const start = inputNode.selectionStart;
+                    const end = inputNode.selectionEnd ?? start;
+                    const reference = event.ctrlKey ? `${app.cells.at(app.index).value}` : `<${app.index - app.cells.length}>`;
+                    inputNode.value = inputNode.value.slice(0, start) + reference + inputNode.value.slice(end);
+                    inputNode.setSelectionRange(start, start + reference.length);
+                } else {
+                    inputNode.value = app.cells[app.index].raw;
+                }
+                if (app.cells.at(app.index).view.result) {
+                    const node = app.cells.at(app.index).view.result;
+                    node.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                }
+            }
+        }
+
+        /**
+         * Save the current state to local storage
+         */
+        function saveState() {
+            const state = { app, named };
+            localStorage.setItem('noia-state', JSON.stringify(state));
+        }
+
+        /**
+         * Reload the state from local storage
+         */
+        function loadState() {
+            const stateStr = localStorage.getItem('noia-state');
+            if (stateStr) {
+                const state = JSON.parse(stateStr);
+                state.app = state.app ?? state.context;
+                state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
+                    app.history.push(storedCell.raw);
+                    const cell = evaluate(storedCell.raw);
+                    if (storedCell.content) {
+                        cell.content = storedCell.content;
+                    }
+
+                    cell.timestamp = new Date(storedCell.timestamp);
+                    if (cell.type === Status) {
+                        app.setStatus(cell.value);
+                    } else {
+                        showCell(cell, app.cells.length);
+                        app.cells.push(cell);
+                        app.namedCells[cell.name] = cell;
+                        if (storedCell.state) {
+                            if (storedCell.state.hidden) {
+                                cell.view.result.classList.toggle('hidden');
+                                cell.view.input.classList.toggle('dim');
+                            }
+                            if (storedCell.state.floating) {
+                                cell.view.cell.classList.add('floating');
+                                if (storedCell.state.box) {
+                                    cell.view.cell.style.left = `${storedCell.state.box.x}px`;
+                                    cell.view.cell.style.top = `${storedCell.state.box.y}px`;
+                                    cell.view.result.style.width = `${storedCell.state.box.width}px`;
+                                    cell.view.result.style.height = `${storedCell.state.box.height}px`;
+                                }
+                            } else if (storedCell.state.sticky) {
+                                stick(cell);
+                            }
+                        }
+                    }
+                    if (cell.update) {
+                        cell.update();
+                    }
+                });
+                app.index = app.cells.length;
+                const currentIndex = document.getElementById('current-index');
+                currentIndex.innerHTML = app.cells.length;
+                app.events.historyChange.forEach((cell) => cell.update());
+                Object.assign(app.state, state.app.state);
+                if (app.state.theme) {
+                    document.documentElement.setAttribute('data-theme', app.state.theme);
+                }
+                if (app.state.background) {
+                    document.body.style.backgroundImage = `url("${app.state.background}")`;
+                }
+            }
+            inputNode.focus();
+        }
+
+        function parserTest(input) {
+            function token(value) {
+                return {
+                    value,
+                    index: 0,
+                    init(parent, tree) {
+                        this.parent = parent;
+                        this.tree = tree;
+                        return this;
+                    },
+                    test(char) {
+                        if (char === value[this.index++]) {
+                            this.result = value.slice(0, this.index);
+                            if (this.index === value.length) {
+                                return this.parent.matched({ value }, this.tree);
+                            }
+                            return this
+                        }
+                        return this.parent.failed(this, this.tree);
+                    },
+                };
+            }
+
+            const control = {
+                init(parent, tree) {
+                    this.parent = parent;
+                    this.tree = tree;
+                    return this;
+                },
+                failed(test, tree) {
+                    return this.parent.failed(this, tree);
+                },
+                clone() {
+                    const clone = Object.assign(Object.create(control), this);
+                    clone.parent = clone.parent.clone();
+                    return clone;
+                },
+
+            }
+            function makeControl(definition) {
+                return Object.assign(Object.create(control), definition);
+            }
+
+            const tokenOrRule = (item, parent, tree) => item === undefined ? item : (item.init) ? item.init(parent, tree) : token(item).init(parent, tree);
+            const initItems = (list, parent, tree) => list.map((item) => tokenOrRule(item, parent, tree));
+
+            function choice(...options) {
+                return makeControl({
+                    init() {
+                        return initItems(options, this, this.tree);
+                    },
+                    matched(result, tree) {
+                        // One of the results mathched. Use a copy of the syntax tree when passing back to parent to allow for other choices
+                        const cloned = clone.parent.clone();
+                        return cloned.matched(result, structuredClone(tree));
+                    },
+                });
+            }
+
+            function sequence(...items) {
+                return makeControl({
+                    init(parent, tree) {
+                        this.result = [];
+                        this.items = [...items];
+                        this.parent = parent;
+                        return tokenOrRule(this.items.shift(), this, tree);
+                    },
+                    matched(result, tree) {
+                        this.result.push(result);
+                        const next = tokenOrRule(this.items.shift(), this, tree);
+                        if (next) {
+                            return next;
+                        }
+                        return this.parent.matched({ value: this.result }, tree);
+                    },
+                    failed(test, tree) {
+                        return this.parent.failed(this, tree);
+                    },
+                    clone() {
+                        const clone = Object.assign(Object.create(control), this);
+                        clone.parent = clone.parent.clone();
+                        clone.items = [...this.items];
+                        clone.result = [...clone.result];
+                        return clone;
+                    },
+                });
+            }
+
+            function repeat(rule, min = 1, max = Infinity) {
+                return makeControl({
+                    init(parent, tree) {
+                        this.parent = parent;
+                        this.tree = tree;
+                        this.result = [];
+                        return tokenOrRule(rule, this, tree);
+                    },
+                    matched(result, tree) {
+                        this.result.push(result);
+                        if (this.result.length < max) {
+                            if (this.result.length >= min) {
+                                const cloned = this.parent.clone();
+                                const next = cloned.matched({ value: structuredClone(this.result) }, structuredClone(tree));
+                                return [tokenOrRule(rule, this, tree), next].flatMap((rules) => rules);
+                            }
+                            return this.rule;
+                        }
+                        return this.parent.matched({ value: this.result }, tree);
+                    },
+                    failed(test, tree) {
+                        if (this.result.length < min) {
+                            this.parent.failed(test, tree);
+                            return [];
+                        }
+                        return [];//this.parent.matched({ value: this.result }, tree);
+                    },
+                    clone() {
+                        const clone = Object.assign(Object.create(control), this);
+                        clone.parent = clone.parent.clone();
+                        clone.result = [...clone.result];
+                        return clone;
+                    },
+                });
+            }
+
+            function optional(rule) {
+                return makeControl({
+                    init(parent, tree) {
+                        this.parent = parent;
+                        return tokenOrRule(rule, this, tree);
+                    },
+                    matched(result, tree) {
+                        return this.parent.matched(result, tree);
+                    },
+                    failed(test, tree) {
+                        return this.parent.matched([], tree);
+                    },
+                    clone() {
+                        const clone = Object.assign(Object.create(control), this);
+                        clone.parent = clone.parent.clone();
+                        clone.result = [...clone.result];
+                        return clone;
+                    },
+                });            }
+
+            function any(chars) {
+                return makeControl({
+                    test(char) {
+                        if (chars.indexOf(char) > -1) {
+                            return this.parent.matched({ value: char }, this.tree);
+                        }
+                        return this.parent.failed(this, this.tree);
+                    },
+                });
+            }
+
+            // Rule...
+            // syntax
+            // value node
+
+            const Rule = {
+                init(parent, tree) {
+                    this.parent = parent;
+                    this.tree = tree;
+                    return this.syntax.init(this, tree);
+                },
+                matched(node, tree) {
+                    return this.parent.matched(node, tree);
+                },
+                failed(test, tree) {
+                    return this.parent.failed(test, tree);
+                },
+                clone() {
+                    const clone = Object.assign(Object.create(Rule), this);
+                    clone.parent = clone.parent.clone();
+                    return clone;
+                }
+            }
+            function makeRule(definition) {
+                return Object.assign(Object.create(Rule), definition);
+            }
+            const digit = makeRule({
+                syntax: any('0123456789'),
+                matched(node, tree) {
+                    return this.parent.matched({ value: parseInt(node.value) }, tree);
+                },
+            });
+
+            const lhs = makeRule({
+                syntax: digit,
+            });
+            const rhs = makeRule({
+                syntax: digit,
+            });
+            const op = makeRule({
+                syntax: any('+-*/'),
+            });
+            const binOp = makeRule({
+                syntax: sequence(lhs, op, rhs),
+                matched(node, tree) {
+                    return this.parent.matched({
+                        lhs: node.value[0].value,
+                        op: node.value[1].value,
+                        rhs: node.value[2].value,
+                        get value() {
+                            if (this.op === '+') {
+                                return this.lhs + this.rhs;
+                            }
+                            if (this.op === '-') {
+                                return this.lhs - this.rhs;
+                            }
+                            if (this.op === '*') {
+                                return this.lhs * this.rhs;
+                            }
+                            if (this.op === '/') {
+                                return this.lhs / this.rhs;
+                            }
+                        }
+                    }, tree);
+                },
+            });
+
+            function getTree(root, input) {
+                const results = [];
+                let rules = [root.init({
+                    matched(node, tree) {
+                        tree.push(node);
+                        results.push(tree);
+                        return [{
+                            test(char) {
+                                tree.unused = tree.unused || '';
+                                tree.unused += char;
+                                return this;
+                            }
+                        }];
+                    },
+                    failed(test, tree) {
+                        //console.log('Failed', test, tree);
+                        return [];
+                    },
+                    clone() {
+                        return this;
+                    },
+                }, [])];
+                for (let i = 0; i < input.length; ++i) {
+                    const result = rules.flatMap((rule) => rule.test(input[i]));
+                    rules = result;
+                    //rules = rules.flatMap((rule) => rule.test(input[i]));
+                }
+
+                return results;
+            }
+
+            const expr = '(4-2)+(4*5)';
+
+            {
+                const tree = getTree(binOp, '4+9');
+                console.log(tree.map((tree) => tree[0].value));
+            }
+            const tree = getTree(binOp, expr);
+            console.log(tree.map((tree) => tree[0].value));
+
+            const A = makeRule({
+                syntax: repeat('A'),
+                matched(node, tree) {
+                    return this.parent.matched({
+                        value: node.value.map((node) => node.value).join(''),
+                    }, tree);
+                },
+            });
+            const B = makeRule({
+                syntax: repeat('B'),
+                matched(node, tree) {
+                    return this.parent.matched({
+                        value: node.value.map((node) => node.value).join(''),
+                    }, tree);
+                },
+            });
+            const AB = makeRule({
+                syntax: sequence(A, B),
+                matched(node, tree) {
+                    return this.parent.matched({
+                        value: node.value.map((node) => node.value).join(''),
+                    }, tree);
+                },
+            });
+
+            const testStrings = ['A', 'AAA', 'AAAB', 'AB', 'BB', 'ABBB', 'ABA', '', 'BAAA'];
+
+            testStrings.forEach((input) => {
+                const result = getTree(A, input).filter((result) => result.unused === undefined);
+                console.log(input, result.map((tree) => tree[0].value));
+            });
+
+            testStrings.forEach((input) => {
+                const result = getTree(AB, input).filter((result) => result.unused === undefined);
+                console.log(input, result.map((tree) => tree[0].value));
+            });
+
+            testStrings.forEach((input) => {
+                const result = getTree(sequence(repeat('A'), optional('B')), input).filter((result) => result.unused === undefined);
+                console.log(input, result.map((tree) => tree[0].value));
+            });
+
+            return tree.value;
+            const syntaxTree = {
+                name: 'add',
+                lhs: {
+                    name: 'subtract',
+                    lhs: {
+                        value: 4
+                    },
+                    rhs: {
+                        value: 2
+                    },
+                    get value() {
+                        return this.lhs.value - this.rhs.value;
+                    }
+                },
+                rhs: {
+                    name: 'multiply',
+                    lhs: {
+                        value: 4
+                    },
+                    rhs: {
+                        value: 5
+                    },
+                    get value() {
+                        return this.lhs.value * this.rhs.value;
+                    }
+                },
+                get value() {
+                    return this.lhs.value + this.rhs.value;
+                }
+            };
+
+            console.log(syntaxTree.value);
+            const saveSession = sequence('save', ' ', 'session');
+            //return parse(input, choice('save', saveSession));
+        };
+        parserTest('5+4');
+        /*
+        console.log('save = ', parserTest('save'));
+        console.log('save session = ', parserTest('save session'));
+        console.log('save session stuff = ', parserTest('save session stuff'));
+        console.log('save sessio = ', parserTest('save sessio'));
+        console.log('save sessio n = ', parserTest('save sessio n'));
+        console.log('sav = ', parserTest('sav'));
+        console.log('= ', parserTest(''));
+*/
+        (function loadFileList() {
+            const request = window.indexedDB.open('NoaiDatabase', 1);
+
+            // Handle a failure
+            request.onerror = (event) => {
+                console.error(`Database error: ${event.target.error?.message}`);
+            };
+
+            // save the files
+            request.onsuccess = (event) => {
+                const db = event.target.result;
+
+                if (db.objectStoreNames.contains('files')) {
+                    const transaction = db.transaction(['files']);
+                    const objectStore = transaction.objectStore('files');
+                    const request = objectStore.getAll();
+                    request.onerror = (event) => {
+                        console.error(`Database error: ${event.target.error?.message}`);
+                    };
+                    request.onsuccess = async (event) => {
+                        event.target.result.forEach((file) =>
+                            named.files[file.name] = file.handle);
+                    };
+                }
+            };
+
+            request.onupgradeneeded = (event) => {
+                // Save the IDBDatabase interface
+                const db = event.target.result;
+
+                // Create an objectStore for this database
+                const objectStore = db.createObjectStore('files', { keyPath: 'name' });
+            };
+        })();
+
+        /**
+         * Check the permissions for the file to load
+         */
+        async function verifyPermission(fileHandle, readWrite) {
+            const options = {};
+            if (readWrite) {
+                options.mode = 'readwrite';
+            }
+            // Check if permission was already granted. If so, return true.
+            if ((await fileHandle.queryPermission(options)) === 'granted') {
+                return true;
+            }
+            // Request permission. If the user grants permission, return true.
+            if ((await fileHandle.requestPermission(options)) === 'granted') {
+                return true;
+            }
+            // The user didn't grant permission, so return false.
+            return false;
+        }
+
+        /**
+         * Load a file from a handle in an indexeddb database
+         */
+        async function load(cell, filename, process) {
+            if (named.files[filename]) {
+                const handle = named.files[filename];
+                if (await verifyPermission(handle)) {
+                    const file = await handle.getFile();
+                    const contents = await file.text();
+                    if (process) {
+                        process(contents);
+                    }
+                } else {
+                    console.log('Permission not granted for file :(');
+                }
+            }
+        }
+
+        /**
+         * Save the value of a cell to a file
+         */
+        async function save(cell, filename) {
+            if (named.files[filename]) {
+                const handle = named.files[filename];
+                if (verifyPermission(handle)) {
+                    const file = await handle.getFile();
+                    const contents = await file.text();
+                    if (process) {
+                        process(contents);
+                    }
+                } else {
+                    console.log('Permission not granted for file :(');
+                }
+            }
+        }
+
+
+        /**
+         * Save a list of file handles to a indexeddb database
+         */
+        function saveFileHandles(files) {
+            // Open the database
+            const request = window.indexedDB.open('NoaiDatabase', 1);
+
+            // Handle a failure
+            request.onerror = (event) => {
+                console.error(`Database error: ${event.target.error?.message}`);
+            };
+
+            // save the files
+            request.onsuccess = (event) => {
+                const db = event.target.result;
+
+                const transaction = db.transaction(['files'], 'readwrite');
+                // Do something with request.result!
+                // Do something when all the data is added to the database.
+                transaction.oncomplete = (event) => {
+                    console.log('All matched!');
+                };
+
+                transaction.onerror = (event) => {
+                    // Don't forget to handle errors!
+                };
+
+                const fileHandleStore = transaction.objectStore('files');
+                files.forEach((file) => {
+                    named.files[file.name] = file.handle;
+                    const request = fileHandleStore.put(file);
+                    request.onsuccess = (event) => {
+                        console.log(`stored handle for ${file.name}`);
+                    };
+                    request.onerror = (event) => {
+                        console.log(`Database error: ${event.target.error?.message}`);
+                    };
+                });
+            };
+
+            request.onupgradeneeded = (event) => {
+                // Save the IDBDatabase interface
+                const db = event.target.result;
+
+                // Create an objectStore for this database
+                const objectStore = db.createObjectStore('files', { keyPath: 'name' });
+
+                // Use transaction oncomplete to make sure the objectStore creation is
+                // finished before adding data into it.
+                objectStore.transaction.oncomplete = (event) => {
+                    // Store values in the newly created objectStore.
+                    const fileHandleStore = db
+                        .transaction('files', 'readwrite')
+                        .objectStore('files');
+                    files.forEach((file) => {
+                        fileHandleStore.add(file);
+                    });
+                };
+            };
+        }
+
+
+        function dropHandler(event) {
+            event.preventDefault();
+
+            function loadFile(file) {
+                const reader = new FileReader();
+                const cell = new Cell(`dropped file ${file.name}`);
+                reader.addEventListener('load', (event) => {
+                    cell.value = reader.result;
+                    cell.view.result.innerHTML = `<pre>${reader.result}</pre>`;
+                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' })
+                });
+                reader.readAsText(file);
+
+                showCell(cell, app.cells.length);
+                //saveState();
+            }
+
+            if (event.dataTransfer.items) {
+                [...event.dataTransfer.items].forEach((item, index) => {
+                    if (item.kind === 'file') {
+                        const file = item.getAsFile();
+                        loadFile(file);
+                        item.getAsFileSystemHandle().then((handle) => {
+                            saveFileHandles([{ name: file.name, handle }]);
+                        });
+                    }
+                });
+            } else {
+                // Use DataTransfer interface to access the file(s)
+                [...event.dataTransfer.files].forEach((file, i) => loadFile(file));
+            }
+        }
+
+        function dragOverHandler(event) {
+            // Prevent default behavior (Prevent file from being opened)
+            event.preventDefault();
+        }
+
+        /**
+         * Process a key press in the input box
+         */
+        function processKey(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                app.context.at(-1).process(event);
+            }
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                cursorUp(event);
+            }
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                cursorDown(event);
+            }
+            if (event.target.value) {
+                const list = document.getElementById('named-items');
+                event.target.setAttribute('list', 'named-items');
+            }
+        }
+
+        const results = document.getElementById('results');
+        inputNode.addEventListener('dragover', dragOverHandler);
+        inputNode.addEventListener('drop', dropHandler);
+        results.addEventListener('drop', dragOverHandler);
+        results.addEventListener('drop', dropHandler);
+
+        app.setPrompt('Load previous state (Y/n)');
+        app.context.push({
+            process: (event) => {
+                if (event.target.value.toLowerCase()[0] !== 'n') {
+                    loadState()
+                }
+                app.loaded = true;
+                event.target.value = '';
+                app.context.pop();
+            }
+        });
+
+        inputNode.addEventListener('keydown', processKey);
+
+        results.addEventListener('click', (event) => {
+            if (event.target === results) {
+                inputNode.focus();
+            }
+        });
+        inputNode.focus();
+
+    </script>
+</body>
+
+</html>
