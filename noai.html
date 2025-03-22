@@ -1203,17 +1203,13 @@ amending config files
             /**
              * Load a file using a handle in the database
              */
-            async load(cell) {
+            load(cell) {
                 if (!navigator.userActivation.isActive) {
                     cell.value = 'load request ignored in script';
                     return;
                 }
 
-                const file = cell.raw.replace(/^\s*load\s*/, '');
-                if (file) {
-                    load(cell, file, (contents) => cell.view.result.innerHTML = `<pre>${contents}</pre>`);
-                } else {
-                    cell.value = `Select File...`;
+                const chooseFile = async () => {
                     if ('showOpenFilePicker' in self) {
                         const [fileHandle] = await window.showOpenFilePicker();
                         if (fileHandle) {
@@ -1225,6 +1221,14 @@ amending config files
                             saveFileHandles([{ name: file.name, handle: fileHandle }]);
                         }
                     }
+                };
+
+                const file = cell.raw.replace(/^\s*load\s*/, '');
+                if (file) {
+                    load(cell, file, (contents) => cell.view.result.innerHTML = `<pre>${contents}</pre>`);
+                } else {
+                    cell.value = `Select File...`;
+                    chooseFile();
                 }
             },
 
@@ -1286,8 +1290,7 @@ amending config files
 
                 cell.update = async () => {
                     if (cell.fileHandle) {
-                        const contents = JSON.stringify(app.cells);
-                        console.log(contents);
+                        const contents = JSON.stringify({ app, named });
                         // Create a FileSystemWritableFileStream to write to.
                         const writable = await cell.fileHandle.createWritable();
                         // Write the contents of the file to the stream.
@@ -1321,6 +1324,52 @@ amending config files
                         ],
                     };
                     pickfile(options);
+                }
+            },
+
+
+            /**
+             * Save the session
+             */
+            'load session'(cell) {
+                const string = cell.raw.replace(/^\s*save session\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1]
+
+                const update = async () => {
+                    if (cell.filename && named.files[cell.filename]) {
+                        const handle = named.files[cell.filename];
+                        if (await verifyPermission(handle)) {
+                            const file = await handle.getFile();
+                            cell.contents = await file.text();
+                            try {
+                                const state = JSON.parse(cell.contents);
+                                restoreState(state);
+                            } catch (error) {
+                                app.setStatus(error.message);
+                            }
+                        } else {
+                            console.log('Permission not granted for file :(');
+                        }
+                    }
+                }
+
+                const chooseFile = async () => {
+                    const [fileHandle] = await window.showOpenFilePicker();
+                    if (fileHandle) {
+                        cell.filename = fileHandle.name;
+                        named.files[cell.filename] = fileHandle;
+                        const file = await fileHandle.getFile();
+                        cell.raw += ` ${cell.filename}`;
+                        saveFileHandles([{ name: cell.filename, handle: fileHandle }]);
+                        update();
+                    }
+                }
+
+                if (cell.filename && named.files[cell.filename]) {
+                    update();
+                } else if ('showOpenFilePicker' in self) {
+                    chooseFile();
                 }
             },
 
@@ -1488,9 +1537,10 @@ amending config files
         */
         document.body.addEventListener('focusout', () => {
             setTimeout(() => {
-            if (document.activeElement === document.body) {
-                inputNode.focus();
-            }}, 10);
+                if (document.activeElement === document.body) {
+                    inputNode.focus();
+                }
+            }, 10);
 
             //console.log('focus out', document.activeElement);
         });
@@ -1685,6 +1735,16 @@ amending config files
          */
         const cellTypes = {
             table: {
+                setContent(content) {
+                    this.content = content;
+                    this.rows = this.content.map((row) => ({ size: 'minmax(1em, max-content' }));
+                    const cols = Math.max(0, ...this.content.map((row) => row.length));
+                    this.cols = [];
+                    for (let col = 0; col < cols; ++col) {
+                        this.cols.push({ size: 'minmax(2em, max-content)' });
+                    }
+                    //  this.update(true);
+                },
                 tableFromString(string) {
                     const data = string.split(/\r?\n/g).map((row) => row.split(/\s*,\s*/g));
                     const cols = data.shift().map((value) => ({ name: value }));
@@ -1701,6 +1761,7 @@ amending config files
                     this.content = Array.isArray(table.data) ? table.data : (table.data ? [[table.data]] : []);
                     this.cols = [];
                     this.rows = [];
+                    this.deleted = [];
 
                     for (let x = 0; x < nCols; ++x) {
                         const col = table.cols?.[x] || {};
@@ -1726,64 +1787,92 @@ amending config files
                         return cell;
                     }
                     resultNode.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            inputNode.focus();
+                        }
                         if (event.ctrlKey) {
                             const cell = getCell();
-
-                        }
-                        if (event.shiftKey && event.altKey) {
-                            const cell = getCell();
-                            if (cell.classList.contains('table-cell')) {
-                                if (event.key === 'ArrowRight') {
-                                    const col = parseInt(cell.dataset.col);
-                                    const row = parseInt(cell.dataset.row);
-                                    this.content[row][col] = cell.innerText;
-
-                                    this.cols.splice(col, 0, { size: 'max-content' });
-                                    this.content.forEach((row) => row.splice(col, 0, ''));
+                            const col = parseInt(cell.dataset.col);
+                            const row = parseInt(cell.dataset.row);
+                            if (event.key === 'Delete') {
+                                if (col === 0 && row > 0) {
+                                    const deleted = {};
+                                    deleted.rows = this.rows.splice(row - 1, 1);
+                                    deleted.content = this.content.splice(row - 1, 1);
+                                    this.deleted.push(deleted);
                                     this.update(true);
-                                    this.view.result.querySelector(`.cell-${col + 1}-${row}`).focus();
-                                    console.log(cell);
+                                }
+                                if (row === 0 && col > 0) {
+                                    const deleted = {};
+                                    deleted.cols = this.cols.splice(col - 1, 1);
+                                    deleted.content = this.content.map((row) => row.splice(col - 1, 1));
+                                    this.deleted.push(deleted);
+                                    this.update(true);
                                 }
                                 event.preventDefault();
+                            }
+                        }
+                        if (event.altKey) {
+                            const cell = getCell();
+                            const col = parseInt(cell.dataset.col);
+                            const row = parseInt(cell.dataset.row);
+                            if (cell.classList.contains('table-cell')) {
+                                if (event.key === 'ArrowRight') {
+                                    this.content[row][col] = cell.innerText;
+                                    if (event.shiftKey) {
+                                        this.cols.splice(col, 0, { size: 'max-content' });
+                                        this.content.forEach((row) => row.splice(col, 0, ''));
+                                        this.update(true);
+                                    }
+                                    if (col < this.content[row].length - 1) {
+                                        this.view.result.querySelector(`.cell-${col + 1}-${row}`).focus();
+                                    }
+                                    saveState();
+                                }
                             }
                             if (event.key === 'ArrowLeft') {
                                 if (cell.classList.contains('table-cell')) {
-                                    const col = parseInt(cell.dataset.col);
-                                    const row = parseInt(cell.dataset.row);
                                     this.content[row][col] = cell.innerText;
-
-                                    this.cols.splice(col - 1, 0, { size: 'max-content' });
-                                    this.content.forEach((row) => row.splice(col - 1, 0, ''));
-                                    this.update(true);
-                                    this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
-                                    console.log(cell);
+                                    if (col > 0) {
+                                        if (event.shiftKey) {
+                                            this.cols.splice(col - 1, 0, { size: 'max-content' });
+                                            this.content.forEach((row) => row.splice(col - 1, 0, ''));
+                                            this.update(true);
+                                            this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                        } else {
+                                            this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
+                                        }
+                                        saveState();
+                                    }
                                 }
-                                event.preventDefault();
                             }
                             if (event.key === 'ArrowUp') {
-                                const col = parseInt(cell.dataset.col);
-                                const row = parseInt(cell.dataset.row);
                                 this.content[row][col] = cell.innerText;
-
-                                this.rows.splice(row - 1, 0, { size: 'max-content' });
-                                this.content.splice(row - 1, 0, []);
-                                this.update(true);
-                                this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
-                                console.log(cell);
-                                event.preventDefault();
+                                if (row > 0) {
+                                    if (event.shiftKey) {
+                                        this.rows.splice(row - 1, 0, { size: 'max-content' });
+                                        this.content.splice(row - 1, 0, []);
+                                        this.update(true);
+                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
+                                    }
+                                    saveState();
+                                }
                             }
                             if (event.key === 'ArrowDown') {
-                                const col = parseInt(cell.dataset.col);
-                                const row = parseInt(cell.dataset.row);
                                 this.content[row][col] = cell.innerText;
-
-                                this.rows.splice(row, 0, { size: 'max-content' });
-                                this.content.splice(row, 0, []);
-                                this.update(true);
-                                this.view.result.querySelector(`.cell-${col}-${row + 1}`).focus();
-                                console.log(cell);
-                                event.preventDefault();
+                                if (event.shiftKey) {
+                                    this.rows.splice(row, 0, { size: 'max-content' });
+                                    this.content.splice(row, 0, []);
+                                    this.update(true);
+                                }
+                                if (row < this.content.length - 1) {
+                                    this.view.result.querySelector(`.cell-${col}-${row + 1}`).focus();
+                                }
+                                saveState();
                             }
+                            event.preventDefault();
                         }
                     });
                     return resultNode;
@@ -1804,9 +1893,29 @@ amending config files
                         this.content[y] = this.content[y] || [];
                         let node = this.view.result.querySelector(`.cell-${x}-${y}`);
                         if (node === null) {
-                            node = editableSpan(
-                                () => this.content[y - 1][x - 1],
-                                (node) => this.content[y - 1][x - 1] = node.innerText);
+                            if (y > 0 && x > 0) {
+                                node = editableSpan(
+                                    () => this.content[y - 1][x - 1] || '',
+                                    (node) => this.content[y - 1][x - 1] = node.innerText);
+                            } else if (x > 0) {
+                                node = editableSpan(
+                                    () => this.cols[x - 1].name || '',
+                                    (node) => {
+                                        this.cols[x - 1].name = node.innerText;
+                                        node.innerText = node.innerText || x;
+                                    });
+                            } else if (y > 0) {
+                                node = editableSpan(
+                                    () => this.rows[y - 1].name || '',
+                                    (node) => {
+                                        this.rows[y - 1].name = node.innerText;
+                                        node.innerText = node.innerText || y;
+                                    });
+
+                            } else {
+                                node = document.createElement('span');
+                            }
+
                             node.style.gridColumn = x + 1;
                             node.style.gridRow = y + 1;
                             node.classList.add('table-cell', `cell-${x}-${y}`);
@@ -1825,7 +1934,7 @@ amending config files
                             node.innerText = col.name ?? x;
                             node.classList.add('table-header', 'col-name');
                         } else {
-                            node.innerText = this.content[y - 1]?.[x - 1];
+                            node.innerText = this.content[y - 1]?.[x - 1] ?? '';
                             node.classList.add('table-data');
                         }
                     }
@@ -2044,13 +2153,20 @@ amending config files
                 '=': 'evaluate',
                 undefined: raw.replace(namePattern, ''),
             }[raw.match(namePattern)?.[2]];
-            //const command = raw.replace(namePattern, '') || 'notes';
             cell.command = command;
 
             if (actions[command] !== undefined) {
                 return actions[command](cell) ?? cell;
-            } else if (actions[command.split(' ')[0]]) {
-                return actions[command.split(' ')[0]](cell) ?? cell;
+            } else {
+                const commands = Object.getOwnPropertyNames(actions).sort((a, b) => b.length - a.length);
+                const match = commands.find((match) => command.startsWith(match));
+                if (match) {
+                    return actions[match](cell) ?? cell;
+                }
+
+                if (actions[command.split(' ')[0]]) {
+                    return actions[command.split(' ')[0]](cell) ?? cell;
+                }
             }
             if (cellTypes[command]) {
                 Object.assign(cell, cellTypes[command]);
@@ -2222,8 +2338,68 @@ amending config files
          * Save the current state to local storage
          */
         function saveState() {
-            const state = { app, named };
-            localStorage.setItem('noia-state', JSON.stringify(state));
+            if (app.save) {
+                const state = { app, named };
+                localStorage.setItem('noia-state', JSON.stringify(state));
+            }
+        }
+
+        /**
+         * Reload the state from local storage
+         */
+        function restoreState(state) {
+            state.app = state.app ?? state.context;
+            state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
+                app.history.push(storedCell.raw);
+                const cell = evaluate(storedCell.raw);
+                if (storedCell.content) {
+                    if (cell.setContent) {
+                        cell.setContent(storedCell.content);
+                    } else {
+                        cell.content = storedCell.content;
+                    }
+                }
+
+                cell.timestamp = new Date(storedCell.timestamp);
+                if (cell.type === Status) {
+                    app.setStatus(cell.value);
+                } else {
+                    showCell(cell, app.cells.length);
+                    app.cells.push(cell);
+                    app.namedCells[cell.name] = cell;
+                    if (storedCell.state) {
+                        if (storedCell.state.hidden) {
+                            cell.view.result.classList.toggle('hidden');
+                            cell.view.input.classList.toggle('dim');
+                        }
+                        if (storedCell.state.floating) {
+                            cell.view.cell.classList.add('floating');
+                            if (storedCell.state.box) {
+                                cell.view.cell.style.left = `${storedCell.state.box.x}px`;
+                                cell.view.cell.style.top = `${storedCell.state.box.y}px`;
+                                cell.view.result.style.width = `${storedCell.state.box.width}px`;
+                                cell.view.result.style.height = `${storedCell.state.box.height}px`;
+                            }
+                        } else if (storedCell.state.sticky) {
+                            stick(cell);
+                        }
+                    }
+                }
+                if (cell.update) {
+                    cell.update();
+                }
+            });
+            app.index = app.cells.length;
+            const currentIndex = document.getElementById('current-index');
+            currentIndex.innerHTML = app.cells.length;
+            app.events.historyChange.forEach((cell) => cell.update());
+            Object.assign(app.state, state.app.state);
+            if (app.state.theme) {
+                document.documentElement.setAttribute('data-theme', app.state.theme);
+            }
+            if (app.state.background) {
+                document.body.style.backgroundImage = `url("${app.state.background}")`;
+            }
         }
 
         /**
@@ -2232,55 +2408,10 @@ amending config files
         function loadState() {
             const stateStr = localStorage.getItem('noia-state');
             if (stateStr) {
+                app.save = false;
                 const state = JSON.parse(stateStr);
-                state.app = state.app ?? state.context;
-                state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
-                    app.history.push(storedCell.raw);
-                    const cell = evaluate(storedCell.raw);
-                    if (storedCell.content) {
-                        cell.content = storedCell.content;
-                    }
-
-                    cell.timestamp = new Date(storedCell.timestamp);
-                    if (cell.type === Status) {
-                        app.setStatus(cell.value);
-                    } else {
-                        showCell(cell, app.cells.length);
-                        app.cells.push(cell);
-                        app.namedCells[cell.name] = cell;
-                        if (storedCell.state) {
-                            if (storedCell.state.hidden) {
-                                cell.view.result.classList.toggle('hidden');
-                                cell.view.input.classList.toggle('dim');
-                            }
-                            if (storedCell.state.floating) {
-                                cell.view.cell.classList.add('floating');
-                                if (storedCell.state.box) {
-                                    cell.view.cell.style.left = `${storedCell.state.box.x}px`;
-                                    cell.view.cell.style.top = `${storedCell.state.box.y}px`;
-                                    cell.view.result.style.width = `${storedCell.state.box.width}px`;
-                                    cell.view.result.style.height = `${storedCell.state.box.height}px`;
-                                }
-                            } else if (storedCell.state.sticky) {
-                                stick(cell);
-                            }
-                        }
-                    }
-                    if (cell.update) {
-                        cell.update();
-                    }
-                });
-                app.index = app.cells.length;
-                const currentIndex = document.getElementById('current-index');
-                currentIndex.innerHTML = app.cells.length;
-                app.events.historyChange.forEach((cell) => cell.update());
-                Object.assign(app.state, state.app.state);
-                if (app.state.theme) {
-                    document.documentElement.setAttribute('data-theme', app.state.theme);
-                }
-                if (app.state.background) {
-                    document.body.style.backgroundImage = `url("${app.state.background}")`;
-                }
+                restoreState(state);
+                app.save = true;
             }
             inputNode.focus();
         }
@@ -2364,9 +2495,8 @@ amending config files
         async function save(cell, filename) {
             if (named.files[filename]) {
                 const handle = named.files[filename];
-                if (verifyPermission(handle)) {
+                if (verifyPermission(handle, true)) {
                     const file = await handle.getFile();
-                    const contents = await file.text();
                     if (process) {
                         process(contents);
                     }
