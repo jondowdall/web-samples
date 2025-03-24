@@ -885,6 +885,16 @@ amending config files
                     return i % index;
                 }
 
+                /*
+                const resolve = (str) => {
+                    return str.replace(/^\\/, '')
+                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                            `app.cells.at(${getIndex(index)}).value`)
+                        .replace(/<([^>]+)>/g, (match, name) =>
+                            named.all[name] ?? match);
+                }
+                */
+
                 const resolve = (str) => {
                     return str.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
@@ -901,6 +911,7 @@ amending config files
                 cell.view.result.addEventListener('blur', (event) => {
                     cell.content = cell.view.result.innerText;
                     cell.view.result.innerText = resolve(cell.content) || `<enter note>`;
+                    cell.users.forEach((user) => user.update());
                     saveState();
                     inputNode.focus();
                 });
@@ -1528,21 +1539,21 @@ amending config files
                 node.classList.remove('dragging');
             }
         });
-        /*
+
         document.body.addEventListener('focusin', () => {
-            if (document.activeElement === document.body) {
-                inputNode.focus();
+            const cell = app.cells.find((cell) => cell.view?.cell?.contains(document.activeElement));
+            if (cell) {
+                app.setStatus(`${cell.name || ''}: ${cell.raw}`);
             }
+            app.setCurrentCell(cell);
         });
-        */
+
         document.body.addEventListener('focusout', () => {
             setTimeout(() => {
                 if (document.activeElement === document.body) {
                     inputNode.focus();
                 }
             }, 10);
-
-            //console.log('focus out', document.activeElement);
         });
 
 
@@ -1557,6 +1568,9 @@ amending config files
                 this.uses = new Set(uses);
                 this.users = new Set();
                 this.view = {};
+            }
+            get index() {
+                return app.cells.indexOf(this);
             }
             getName() {
                 const name = [];
@@ -1575,6 +1589,7 @@ amending config files
             }
             makeView() {
                 this.view.cell = document.createElement('div');
+                this.view.cell.addEventListener('click', (event) => app.setCurrentCell(this));
                 this.view.cell.classList.add('cell');
 
                 this.view.index = document.createElement('span');
@@ -1674,6 +1689,9 @@ amending config files
                 this.view.result = this.view.result || this.getResultNode();
                 this.view.container.appendChild(this.view.result);
             }
+            getSettings() {
+                return undefined;
+            }
             toJSON(key) {
                 if (this.type === Status) {
                     return undefined;
@@ -1693,6 +1711,7 @@ amending config files
                     timestamp: this.timestamp.getTime(),
                     content: this.content,
                     state,
+                    settings: this.getSettings(),
                 }
             }
             remove() {
@@ -1734,6 +1753,127 @@ amending config files
          * Cell types applied to a cell after creation.
          */
         const cellTypes = {
+            replace: {
+                setContent(content) {
+                    if (this.localInput) {
+                        this.content = content;
+                    }
+                },
+                init(raw) {
+                    const parameters = raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^replace\s*/, '');
+                    if (parameters) {
+                        const link = (from, to) => {
+                            from.users.add(to);
+                            to.uses.add(from);
+                        };
+                        const args = getList(parameters);
+                        const { cells, values } = args.reduce((results, value) => {
+                            const index = Number(value);
+                            if (app.namedCells[value] !== undefined) {
+                                results.cells.push(app.namedCells[value]);
+                                link(app.namedCells[value], this);
+                            } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                                results.cells.push(app.cells.at(index));
+                                link(app.cells.at(index), this);
+                            } else {
+                                results.values.push(value);
+                            }
+                            return results;
+                        }, { cells: [], values: [] });
+                        this.cells = cells;
+                        this.pattern = values[0];
+                        this.replacement = values[1];
+                    } else {
+                        this.localInput = true;
+                        this.content = '';
+                    }
+                },
+                getResultNode() {
+                    const container = document.createElement('div');
+
+                    if (this.localInput) {
+                        this.sourceNode = document.createElement('textarea');
+                        this.sourceNode.classList.add('source');
+                        this.sourceNode.placeholder = 'Enter source text';
+                        this.sourceNode.value = this.content;
+                        container.appendChild(this.sourceNode);
+                        this.sourceNode.addEventListener('input', (event) => {
+                            this.content = this.sourceNode.value;
+                            dynamicUpdate(event)
+                        });
+                        this.sourceNode.addEventListener('change', (event) => update(event));
+                    }
+
+                    const controlsNode = document.createElement('div');
+                    controlsNode.classList.add('controls');
+                    container.appendChild(controlsNode);
+
+                    const dynamicUpdate = (event) => {
+                        if (dynamicUpdateNode.checked) {
+                            this.update();
+                        }
+                    }
+                    const update = (event) => {
+                        this.update();
+                    }
+
+                    controlsNode.append('Pattern:');
+                    this.patternNode = document.createElement('input');
+                    controlsNode.appendChild(this.patternNode);
+                    this.patternNode.placeholder = 'Search String';
+                    this.patternNode.value = this.pattern || '';
+                    this.patternNode.addEventListener('input', (event) => dynamicUpdate(event));
+                    this.patternNode.addEventListener('change', (event) => update(event));
+
+                    controlsNode.append('Replacement:');
+                    this.replacementNode = document.createElement('input');
+                    controlsNode.appendChild(this.replacementNode);
+                    this.replacementNode.placeholder = 'Replacement';
+                    this.replacementNode.value = this.replacement || '';
+                    this.replacementNode.addEventListener('input', (event) => dynamicUpdate(event));
+                    this.replacementNode.addEventListener('change', (event) => update(event));
+
+                    controlsNode.append('Live:');
+                    const dynamicUpdateNode = document.createElement('input');
+                    dynamicUpdateNode.type = 'checkbox';
+                    dynamicUpdateNode.checked = this.live ?? true;
+                    controlsNode.appendChild(dynamicUpdateNode);
+                    dynamicUpdateNode.addEventListener('input', (event) => dynamicUpdate(event));
+
+                    this.outputNode = document.createElement('pre');
+                    controlsNode.classList.add('output');
+                    container.appendChild(this.outputNode);
+                    this.outputNode.addEventListener('dblclick', (event) => this.outputNode.classList.toggle('shrink'));
+
+                    return container;
+                },
+                update() {
+                    try {
+                        if (!this.localInput) {
+                            this.content = this.cells.map((cell) => cell.value).join('\n');
+                        }
+                        const pattern = new RegExp(this.patternNode.value, 'g');
+                        const replacement = this.replacementNode.value;
+                        this.value = this.content.replace(pattern, replacement);
+                        this.outputNode.innerText = this.value;
+                    } catch (error) {
+                        app.setStatus(error.message);
+                    }
+                    saveState();
+                },
+                getSettings() {
+                    return {
+                        pattern: this.patternNode?.value,
+                        replacement: this.replacementNode?.value,
+                        live: this.dynamicUpdate?.checked,
+                    };
+                },
+                setSettings(settings) {
+                    this.pattern = settings.pattern;
+                    this.replacement = settings.replacement;
+                    this.live = settings.live;
+                },
+            },
             table: {
                 setContent(content) {
                     this.content = content;
@@ -1751,7 +1891,8 @@ amending config files
                     const rows = data.map((row) => ({ name: row.shift() }));
                     return { data, cols, rows };
                 },
-                init(table = {}) {
+                init(raw) {
+                    let table = {};
                     if (table instanceof String) {
                         table = this.tableFromString(table);
                     }
@@ -1999,6 +2140,24 @@ amending config files
                         row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
                 },
             },
+            'current cell': {
+                init() {
+                    app.events.currentCellChange.add(this);
+                },
+                update() {
+                    const lines = [];
+                    lines.push(`${app.currentCell?.raw}`);
+                    if (app.currentCell) {
+                        for (const input of app.currentCell.uses) {
+                            lines.push(`${input.index} ${input.name} --> ${app.currentCell.index} ${app.currentCell.name}`);
+                        }
+                        for (const output of app.currentCell.users) {
+                            lines.push(`${app.currentCell.index} ${app.currentCell.name} --> ${output.index} ${output.name}`);
+                        }
+                    }
+                    this.view.result.innerHTML = lines.join('<br>');
+                }
+            },
             windows: { // Display dynamic list of windows
                 init() {
                     app.events.layoutChange.add(this);
@@ -2122,6 +2281,7 @@ amending config files
                 historyChange: new Set(),
                 layoutChange: new Set(),
                 statusChange: new Set(),
+                currentCellChange: new Set(),
             },
             layoutChange() {
                 for (const cell of this.events.layoutChange) {
@@ -2131,6 +2291,28 @@ amending config files
             statusChange() {
                 for (const cell of this.events.statusChange) {
                     cell.update();
+                }
+            },
+            setCurrentCell(cell) {
+                if (this.currentCell !== cell) {
+                    this.currentCell = cell;
+                    for (const cell of this.events.currentCellChange) {
+                        cell.update();
+                    }
+                    for (const node of document.querySelectorAll('.source')) {
+                        node.classList.remove('source');
+                    }
+                    for (const node of document.querySelectorAll('.sink')) {
+                        node.classList.remove('sink');
+                    }
+                    if (cell) {
+                        for (const input of cell.uses) {
+                            input.view.cell.classList.add('source');
+                        }
+                        for (const output of cell.users) {
+                            output.view.cell.classList.add('sink');
+                        }
+                    }
                 }
             },
             context: [{ process }],
@@ -2216,14 +2398,13 @@ amending config files
                 if (match) {
                     return actions[match](cell) ?? cell;
                 }
-
-                if (actions[command.split(' ')[0]]) {
-                    return actions[command.split(' ')[0]](cell) ?? cell;
-                }
             }
-            if (cellTypes[command]) {
-                Object.assign(cell, cellTypes[command]);
-                cell.init();
+
+            const cellTypeNames = Object.getOwnPropertyNames(cellTypes).sort((a, b) => b.length - a.length);
+            const cellTypeMatch = cellTypeNames.find((match) => command.startsWith(match));
+            if (cellTypeMatch) {
+                Object.assign(cell, cellTypes[cellTypeMatch]);
+                cell.init(cell.raw);
                 return cell;
             }
             if (named.all[command]) {
@@ -2411,6 +2592,9 @@ amending config files
                     } else {
                         cell.content = storedCell.content;
                     }
+                }
+                if (storedCell.settings) {
+                    cell.setSettings(storedCell.settings);
                 }
 
                 cell.timestamp = new Date(storedCell.timestamp);
