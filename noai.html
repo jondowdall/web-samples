@@ -868,7 +868,7 @@ amending config files
             /**
              * Create a notes cell
              */
-            notes(cell) {
+            notes_old(cell) {
                 const string = cell.raw.replace(/^\s*(<[^>]+>:)?\s*/, '').replace(/^notes\s*/, '');
                 const index = app.cells.length;
 
@@ -898,7 +898,7 @@ amending config files
                 const resolve = (str) => {
                     return str.replace(/^\\/, '')
                         .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`)
+                            app.cells.at(getIndex(index)).value)
                         .replace(/<([^>]+)>/g, (match, name) =>
                             named.all[name] ?? match);
                 }
@@ -1750,6 +1750,94 @@ amending config files
          * Cell types applied to a cell after creation.
          */
         const cellTypes = {
+            notes: {
+                setContent(content) {
+                    this.content = content;
+                },
+                init(raw) {
+                    this.content = '';
+                    const parameters = raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^notes\s*/, '');
+                    const args = getList(parameters);
+                    const { cells, values } = args.reduce((results, value) => {
+                        const index = Number(value);
+                        if (app.namedCells[value] !== undefined) {
+                            results.cells.push(app.namedCells[value]);
+                            //link(app.namedCells[value], this);
+                        } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                            results.cells.push(app.cells.at(index));
+                            //link(app.cells.at(index), this);
+                        } else {
+                            results.values.push(value);
+                        }
+                        return results;
+                    }, { cells: [], values: [] });
+                    this.content = cells.map((cells) => cells.value).join('\n');
+
+                    Object.defineProperties(this, {
+                        value: {
+                            enumerable: true,
+                            get() {
+                                const index = app.cells.length;
+                                /*
+                                const resolve = (str) => {
+                                    return str.replace(/^\\/, '')
+                                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                                            `app.cells.at(${getIndex(index)}).value`)
+                                        .replace(/<([^>]+)>/g, (match, name) =>
+                                            named.all[name] ?? match);
+                                }
+                                */
+                                const getIndex = (str) => {
+                                    const i = parseInt(str);
+                                    if (isNaN(i)) {
+                                        return index - 1;
+                                    }
+                                    if (i < 0) {
+                                        return index + (i % index);
+                                    }
+                                    return i % index;
+                                }
+
+                                const content = this.content ?? '';
+                                return content.replace(/^\\/, '')
+                                    .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                                        index === this.index ? match : app.cells.at(getIndex(index)).value)
+                                    .replace(/<([^>]+)>/g, (match, name) =>
+                                        named.all[name] ?? match);
+                            },
+                        }
+                    });
+                },
+                getResultNode() {
+                    this.view.result = document.createElement('textarea');
+                    this.view.result.classList.add('notes');
+                    this.view.result.placeholder = '<enter notes>';
+                    this.view.result.value = this.value || '';
+                    this.view.result.addEventListener('blur', (event) => {
+                        this.content = this.view.result.value;
+                        this.view.result.value = this.value;
+                        this.view.result.rows = Math.max(1, this.view.result.value.split(/\n/).length);
+
+                        this.users.forEach((user) => user.update());
+                        saveState();
+                        inputNode.focus();
+                    });
+                    this.view.result.addEventListener('focus', (event) => {
+                        this.view.result.value = this.content;
+                    });
+                    this.view.result.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            this.view.result.blur();
+                        }
+                    });
+                    this.view.result.addEventListener('input', (event) => {
+                        this.view.result.rows = Math.max(1, this.view.result.value.split(/\n/).length);
+                    });
+                    this.focus = this.view.result;
+                    this.view.result.rows = Math.max(1, this.view.result.value.split(/\n/).length);
+                    return this.view.result;
+                },
+            },
             replace: {
                 setContent(content) {
                     if (this.localInput) {
