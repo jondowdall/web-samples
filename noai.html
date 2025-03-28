@@ -23,6 +23,7 @@ amending config files
 </head>
 
 <body>
+    <div id="header"></div>
     <div id="results"></div>
     <div id="widgets"></div>
     <div id="input-area">
@@ -1712,9 +1713,8 @@ amending config files
                 }
             }
             remove() {
-                if (this.view.index) {
-                    this.view.index.remove();
-                    this.view.container.remove();
+                if (this.view.cell) {
+                    this.view.cell.remove();
                 }
                 this.uses.forEach((input) => input.users.delete(this));
                 this.users.forEach((user) => user.uses.delete(this));
@@ -1728,6 +1728,7 @@ amending config files
         function editableSpan(get, set) {
             const node = document.createElement('span');
             node.contentEditable = true;
+            node.innerText = get();
             node.addEventListener('blur', (event) => set(node));
             let previous;
             node.addEventListener('focus', (event) => {
@@ -1745,6 +1746,22 @@ amending config files
 
             return node;
         }
+
+        /**
+         * Flatten a tree to a set of nodes
+         */
+        function flatten(node, partName = PartName, expanded = new Set()) {
+            if (expanded.has(node)) {
+                console.log('tree contains circular relationship');
+                return expanded;
+            }
+            expanded.add(node);
+            if (node[partName]) {
+                node[partName].forEach((node) => flatten(node, partName, expanded));
+            }
+            return expanded;
+        }
+
 
         /**
          * Cell types applied to a cell after creation.
@@ -1778,15 +1795,6 @@ amending config files
                             enumerable: true,
                             get() {
                                 const index = app.cells.length;
-                                /*
-                                const resolve = (str) => {
-                                    return str.replace(/^\\/, '')
-                                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                                            `app.cells.at(${getIndex(index)}).value`)
-                                        .replace(/<([^>]+)>/g, (match, name) =>
-                                            named.all[name] ?? match);
-                                }
-                                */
                                 const getIndex = (str) => {
                                     const i = parseInt(str);
                                     if (isNaN(i)) {
@@ -1962,7 +1970,7 @@ amending config files
             table: {
                 setContent(content) {
                     this.content = content;
-                    this.rows = this.content.map((row) => ({ size: 'minmax(1em, max-content' }));
+                    this.rows = this.content.map((row) => ({ size: 'minmax(1em, max-content)' }));
                     const cols = Math.max(0, ...this.content.map((row) => row.length));
                     this.cols = [];
                     for (let col = 0; col < cols; ++col) {
@@ -2223,6 +2231,218 @@ amending config files
 
                     this.content.forEach((row, rowIndex) =>
                         row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
+                },
+            },
+            'tree table': {
+                setContent(content) {
+                    this.content = [content].flatMap((node) => node);
+                    this.all = this.content.flatMap((item) => Array.from(flatten(item, 'children')));
+                    this.keys = [];
+                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !this.keys.includes(key))));
+                    this.rows = this.all.map((row) => ({ size: 'minmax(1em, max-content)' }));
+                    this.cols = this.keys.map((key) => ({ size: 'minmax(1em, max-content)' }));
+                },
+                init(raw) {
+                    this.setContent({name: 'root', value: 'foo'});
+                },
+                getResultNode() {
+                    const resultNode = document.createElement('div');
+                    resultNode.classList.add('table');
+                    const background = document.createElement('div');
+                    background.classList.add('grid');
+                    resultNode.appendChild(background);
+
+                    const getCell = () => {
+                        let cell = document.activeElement;
+                        while (!cell.classList.contains('table-cell') && cell.parentElement) {
+                            cell = cell.parentElement;
+                        }
+                        return cell;
+                    }
+                    resultNode.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            inputNode.focus();
+                        }
+                        const cell = getCell();
+                        const col = parseInt(cell.dataset.col);
+                        const row = parseInt(cell.dataset.row);
+                        if (event.key === 'Tab' && isNaN(col) && !isNaN(row)) {
+                            event.preventDefault();
+                            const node = this.all[row];
+                            const parent = this.all.find((parent) => parent['children'].includes(node));
+                            if (parent) {
+                                parent.children.splice(parent.indexOf(node), 1);
+                            }
+                            if (event.shiftKey) {
+                                if (parent) {
+                                    const newParent = this.all.find((newParent) => newParent['children'].includes(node));
+                                    if (newParent) {
+                                        const position = newParent.indexOf(parent);
+                                        newParent.splice(position, 0, node);
+                                    } else {
+                                        const position = this.content.indexOf(parent) + 1;
+                                        this.content.splice(position, 0, node);
+                                    }
+                                }
+                            } else if (row > 0) {
+                                const parent = this.all[row - 1];
+                                parent['children'].unshift(node);
+                            }
+                            this.update();
+                        }
+                        if (event.ctrlKey) {
+                            if (event.key === 'Delete') {
+                                if (isNaN(col) && !isNaN(row)) {
+                                    const deleted = {};
+                                    deleted.rows = this.rows.splice(row, 1);
+                                    deleted.content = this.content.splice(row, 1);
+                                    this.deleted.push(deleted);
+                                    this.update(true);
+                                    if (row <= this.rows.length) {
+                                        this.view.result.querySelector(`.cell-0-${row}`).focus();
+                                    } else if (this.rows.length > 1) {
+                                        this.view.result.querySelector(`.cell-0-${row - 1}`).focus();
+                                    } else {
+                                        inputNode.focus();
+                                    }
+                                }
+                                if (!isNaN(col) && isNaN(row)) {
+                                    const deleted = {};
+                                    deleted.cols = this.cols.splice(col, 1);
+                                    deleted.content = this.content.map((row) => row.splice(col, 1));
+                                    this.deleted.push(deleted);
+                                    this.update(true);
+                                    if (col <= this.cols.length) {
+                                        this.view.result.querySelector(`.cell-${col}-0`).focus();
+                                    } else if (this.cols.length > 1) {
+                                        this.view.result.querySelector(`.cell-${col - 1}-0`).focus();
+                                    } else {
+                                        inputNode.focus();
+                                    }
+                                }
+                                event.preventDefault();
+                            }
+                        }
+                        if (event.altKey) {
+                            event.preventDefault();
+                            if (event.key === 'ArrowRight') {
+                                const newCol = col ?? 0;
+                                if (!isNaN(col) && !isNaN(row)) {
+                                    this.content[row][col] = cell.innerText;
+                                }
+                                if (event.shiftKey) {
+                                    this.cols.splice(newCol, 0, { size: 'max-content' });
+                                    this.content.forEach((row) => row.splice(newCol, 0, ''));
+                                    this.update(true);
+                                }
+                                if (isNaN(col)) {
+                                    this.view.result.querySelector(`.cell-0-${row}`).focus();
+                                } else if (isNaN(row)) {
+                                    this.view.result.querySelector(`.table-column-${(col + 1) % this.cols.length}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${((isNaN(col) ? -1 : col) + 1) % this.cols.length}-${row}`).focus();
+                                }
+                                saveState();
+                            }
+                            if (event.key === 'ArrowLeft') {
+                                if (!isNaN(col) && !isNaN(row)) {
+                                    this.content[row][col] = cell.innerText;
+                                    if (event.shiftKey) {
+                                        this.cols.splice(col, 0, { size: 'max-content' });
+                                        this.content.forEach((row) => row.splice(col, 0, ''));
+                                        this.update(true);
+                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                    } else if (col === 0) {
+                                        this.view.result.querySelector(`.table-row-${row}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
+                                    }
+                                    saveState();
+                                } else if (isNaN(row)) {
+                                    this.view.result.querySelector(`.table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${this.cols.length - 1}-${row}`).focus();
+                                }
+                            }
+                            if (event.key === 'ArrowUp') {
+                                if (!isNaN(row) && !isNaN(col)) {
+                                    this.content[row][col] = cell.innerText;
+                                    if (event.shiftKey) {
+                                        this.rows.splice(row, 0, { size: 'max-content' });
+                                        this.content.splice(row, 0, []);
+                                        this.update(true);
+                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                    } else if (row === 0) {
+                                        this.view.result.querySelector(`.table-column-${col}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
+                                    }
+                                    saveState();
+                                } else if (isNaN(col)) {
+                                    this.view.result.querySelector(`.table-row-${(row > 0 ? row : this.content.length) - 1}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${col}-${this.content.length - 1}`).focus();
+                                }
+                            }
+                            if (event.key === 'ArrowDown') {
+                                const newRow = row ?? 0;
+                                if (!isNaN(row) && !isNaN(col)) {
+                                    this.content[row][col] = cell.innerText;
+                                }
+                                if (event.shiftKey) {
+                                    this.rows.splice(row, 0, { size: 'max-content' });
+                                    this.content.splice(row, 0, []);
+                                    this.update(true);
+                                }
+                                if (isNaN(row)) {
+                                    this.view.result.querySelector(`.cell-${col}-0`).focus();
+                                } else if (isNaN(col)) {
+                                    this.view.result.querySelector(`.table-row-${(row + 1) % this.content.length}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${col}-${((isNaN(row) ? -1 : row) + 1) % this.content.length}`).focus();
+                                }
+                                saveState();
+                            }
+                            event.preventDefault();
+                        }
+                    });
+                    return resultNode;
+                },
+                clearUpdate() {
+                    for (const node of this.view.result.querySelectorAll('.tree-table-cell')) {
+                        node.remove();
+                    }
+                    update();
+                },
+                update() {
+                    const makeTemplate = (definition) => `${definition.map((col) => col.size).join(' ')}`;
+                    this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
+                    this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
+
+                    this.keys.forEach((key) => {
+                        const cell = document.createElement('span');
+                        cell.classList.add('tree-table-header');
+                        cell.innerHTML = key;
+                        this.view.result.append(cell);
+                    });
+
+                    const addNode = (node, level = 0) => {
+                        this.keys.forEach((key, index) => {
+                            const cell = document.createElement('div');
+                            cell.classList.add('tree-table-cell');
+                            cell.dataset.row = this.all.indexOf(node);
+                            cell.dataset.col = index;
+                            if (index === 0) {
+                                cell.innerHTML = '&nbsp;'.repeat(level * 2);
+                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innderText));
+                            } else {
+                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innderText));
+                            }
+                            this.view.result.append(cell);
+                        });
+                        node['children']?.forEach((child) => addNode(child, level + 1));
+                    }
+                    this.content.forEach((node) => addNode(node));
                 },
             },
             'current cell': {
