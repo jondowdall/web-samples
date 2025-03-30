@@ -825,6 +825,33 @@ amending config files
             },
 
             /**
+             * Log the content of the specified cell(s)
+             */
+            log(cell) {
+                cell.type = Status;
+                if (!navigator.userActivation.isActive) {
+                    cell.value = 'delete ignored when reloading state';
+                    return;
+                }
+                if (!app.interactive) {
+                    cell.value = 'delete ignored in non-interactive mode';
+                    return;
+                }
+
+                const string = cell.raw.replace(/^\s*log\s*/, '');
+                const cells = getCells(string);
+                if (cells.length === 0) {
+                    cell.value = `No cells logged!`;
+                } else if (cells.length === 1) {
+                    cell.value = `log cell ${app.cells.indexOf(cells[0])}`;
+                } else {
+                    cell.value = `log cells ${cells.map((cell) => app.cells.indexOf(cell)).join()}`;
+                }
+                app.cells = app.cells.filter((cell) => !cells.includes(cell));
+                cells.forEach((cell) => console.log(cell.content));
+            },
+
+            /**
              * Delete a cell
              */
             delete(cell) {
@@ -1748,6 +1775,37 @@ amending config files
         }
 
         /**
+         * Create and editable span.
+         */
+        function expander(getState, expand, collapse) {
+            const node = document.createElement('span');
+            node.classList.add('expander');
+
+            const toggle = (event) => {
+                if (getState() === 'expanded') {
+                    node.innerHTML = '&#9654;';
+                    collapse(event);
+                } else if (getState() === 'collapsed') {
+                    node.innerHTML = '&#9660;';
+                    expand(event);
+                } else {
+                    node.innerHTML = '';
+                }
+            };
+
+            if (getState() === 'expanded') {
+                node.innerHTML = '&#9660;';
+            } else if (getState() === 'collapsed') {
+                node.innerHTML = '&#9654;';
+            } else {
+                node.innerHTML = '';
+            }
+
+            node.addEventListener('click', (event) => toggle(event));
+            return node;
+        }
+
+        /**
          * Flatten a tree to a set of nodes
          */
         function flatten(node, partName = PartName, expanded = new Set()) {
@@ -1756,7 +1814,7 @@ amending config files
                 return expanded;
             }
             expanded.add(node);
-            if (node[partName]) {
+            if (Array.isArray(node[partName])) {
                 node[partName].forEach((node) => flatten(node, partName, expanded));
             }
             return expanded;
@@ -2234,16 +2292,43 @@ amending config files
                 },
             },
             'tree table': {
+                modelNode(node) {
+                    return {
+                        getState() {
+                            if (node['children']?.length) {
+                                return this.state;
+                            }
+                        },
+                        state: 'expanded',
+                        expand(event) {
+                            this.state = 'expanded';
+                            if (event.ctrlKey && node['children']) {
+                                node['children'].forEach((child) => model.get(child).collapse(event));
+                            }
+                        },
+                        collapse(event) {
+                            this.state = 'collapsed';
+                            if (event.ctrlKey && node['children']) {
+                                node['children'].forEach((child) => model.get(child).collapse(event));
+                            }
+                        },
+                        nodes: [],
+                    }
+                },
                 setContent(content) {
                     this.content = [content].flatMap((node) => node);
                     this.all = this.content.flatMap((item) => Array.from(flatten(item, 'children')));
                     this.keys = [];
-                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !this.keys.includes(key))));
+                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !(this.keys.includes(key) || key === 'children'))));
                     this.rows = this.all.map((row) => ({ size: 'minmax(1em, max-content)' }));
                     this.cols = this.keys.map((key) => ({ size: 'minmax(1em, max-content)' }));
+                    this.model = new Map();
+                    const model = this.model;
+                    this.all.forEach((node) => this.model.set(node, this.modelNode(node)));
                 },
                 init(raw) {
-                    this.setContent({name: 'root', value: 'foo'});
+                    this.setContent({ name: 'root', value: 'foo' });
+                    this.deleted = [];
                 },
                 getResultNode() {
                     const resultNode = document.createElement('div');
@@ -2254,7 +2339,7 @@ amending config files
 
                     const getCell = () => {
                         let cell = document.activeElement;
-                        while (!cell.classList.contains('table-cell') && cell.parentElement) {
+                        while (!(cell.classList.contains('tree-table-cell') || cell.classList.contains('tree-table-header')) && cell.parentElement) {
                             cell = cell.parentElement;
                         }
                         return cell;
@@ -2266,58 +2351,70 @@ amending config files
                         const cell = getCell();
                         const col = parseInt(cell.dataset.col);
                         const row = parseInt(cell.dataset.row);
-                        if (event.key === 'Tab' && isNaN(col) && !isNaN(row)) {
+                        if (event.key === 'Tab' && col == 0 && row > 0) {
                             event.preventDefault();
                             const node = this.all[row];
-                            const parent = this.all.find((parent) => parent['children'].includes(node));
-                            if (parent) {
-                                parent.children.splice(parent.indexOf(node), 1);
-                            }
-                            if (event.shiftKey) {
+                            const parent = this.all.find((parent) => parent['children']?.includes(node));
+                            if (event.shiftKey) { // move item up in level
                                 if (parent) {
-                                    const newParent = this.all.find((newParent) => newParent['children'].includes(node));
+                                    parent['children'].splice(parent['children'].indexOf(node), 1);
+                                    const newParent = this.all.find((node) => node['children']?.includes(parent));
                                     if (newParent) {
-                                        const position = newParent.indexOf(parent);
-                                        newParent.splice(position, 0, node);
+                                        const position = newParent['children'].indexOf(parent);
+                                        newParent['children'].splice(position + 1, 0, node);
                                     } else {
                                         const position = this.content.indexOf(parent) + 1;
                                         this.content.splice(position, 0, node);
                                     }
                                 }
-                            } else if (row > 0) {
-                                const parent = this.all[row - 1];
-                                parent['children'].unshift(node);
+                            } else { // lower item
+                                const previous = parent['children'][parent['children'].indexOf(node) - 1];
+                                if (previous) {
+                                    // Remove the item from its current location in tree
+                                    if (parent) {
+                                        parent['children'].splice(parent['children'].indexOf(node), 1);
+                                    } else {
+                                        this.content.splice(this.content.indexOf(item), 1);
+                                    }
+                                    // Add the item back into the tree
+                                    previous['children'].push(node);
+                                }
                             }
                             this.update();
                         }
                         if (event.ctrlKey) {
                             if (event.key === 'Delete') {
-                                if (isNaN(col) && !isNaN(row)) {
-                                    const deleted = {};
-                                    deleted.rows = this.rows.splice(row, 1);
-                                    deleted.content = this.content.splice(row, 1);
-                                    this.deleted.push(deleted);
+                                if (isNaN(row) && this.keys.length > 1) {
+                                    const key = this.keys[col];
+                                    const deleted = { key };
+                                    this.keys.splice(col, 1);
                                     this.update(true);
-                                    if (row <= this.rows.length) {
-                                        this.view.result.querySelector(`.cell-0-${row}`).focus();
-                                    } else if (this.rows.length > 1) {
-                                        this.view.result.querySelector(`.cell-0-${row - 1}`).focus();
+                                    if (col < this.cols.length) {
+                                        this.view.result.querySelector(`.tree-table-column-${col}`).focus();
                                     } else {
-                                        inputNode.focus();
+                                        this.view.result.querySelector(`.tree-table-column-${col - 1}`).focus();
                                     }
-                                }
-                                if (!isNaN(col) && isNaN(row)) {
-                                    const deleted = {};
-                                    deleted.cols = this.cols.splice(col, 1);
-                                    deleted.content = this.content.map((row) => row.splice(col, 1));
+                                } else {
+                                    const item = this.all[row];
+                                    const parent = this.all.find((node) => node['children'].includes(item));
+                                    const position = (parent ? parent['children'] : this.content).indexOf(item);
+                                    const deleted = { item, parent, position };
                                     this.deleted.push(deleted);
-                                    this.update(true);
-                                    if (col <= this.cols.length) {
-                                        this.view.result.querySelector(`.cell-${col}-0`).focus();
-                                    } else if (this.cols.length > 1) {
-                                        this.view.result.querySelector(`.cell-${col - 1}-0`).focus();
+                                    this.all.splice(row, 1);
+                                    this.rows.splice(row, 1);
+                                    if (item?.['children'].length) {
+                                        (parent ? parent['children'] : this.content).splice(position, 1, ...item['children']);
                                     } else {
-                                        inputNode.focus();
+                                        (parent ? parent['children'] : this.content).splice(position, 1);
+                                    }
+                                    this.model.delete(item);
+                                    this.update();
+                                    if (row < this.rows.length) {
+                                        this.view.result.querySelector(`.cell-content-${col}-${row}`).focus();
+                                    } else if (this.rows.length > 0) {
+                                        this.view.result.querySelector(`.cell-content-${col}-${row - 1}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.tree-table-column-${col}`).focus();
                                     }
                                 }
                                 event.preventDefault();
@@ -2326,83 +2423,80 @@ amending config files
                         if (event.altKey) {
                             event.preventDefault();
                             if (event.key === 'ArrowRight') {
-                                const newCol = col ?? 0;
-                                if (!isNaN(col) && !isNaN(row)) {
-                                    this.content[row][col] = cell.innerText;
-                                }
                                 if (event.shiftKey) {
-                                    this.cols.splice(newCol, 0, { size: 'max-content' });
-                                    this.content.forEach((row) => row.splice(newCol, 0, ''));
-                                    this.update(true);
-                                }
-                                if (isNaN(col)) {
-                                    this.view.result.querySelector(`.cell-0-${row}`).focus();
-                                } else if (isNaN(row)) {
-                                    this.view.result.querySelector(`.table-column-${(col + 1) % this.cols.length}`).focus();
+                                    this.update();
                                 } else {
-                                    this.view.result.querySelector(`.cell-${((isNaN(col) ? -1 : col) + 1) % this.cols.length}-${row}`).focus();
+                                    if (isNaN(row)) {
+                                        this.view.result.querySelector(`.tree-table-column-${(col + 1) % this.cols.length}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.cell-content-${(col + 1) % this.cols.length}-${row}`).focus();
+                                    }
                                 }
-                                saveState();
                             }
                             if (event.key === 'ArrowLeft') {
-                                if (!isNaN(col) && !isNaN(row)) {
-                                    this.content[row][col] = cell.innerText;
-                                    if (event.shiftKey) {
-                                        this.cols.splice(col, 0, { size: 'max-content' });
-                                        this.content.forEach((row) => row.splice(col, 0, ''));
-                                        this.update(true);
-                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
-                                    } else if (col === 0) {
-                                        this.view.result.querySelector(`.table-row-${row}`).focus();
-                                    } else {
-                                        this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
-                                    }
-                                    saveState();
-                                } else if (isNaN(row)) {
-                                    this.view.result.querySelector(`.table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
+                                if (event.shiftKey) {
+                                    this.update();
                                 } else {
-                                    this.view.result.querySelector(`.cell-${this.cols.length - 1}-${row}`).focus();
+                                    if (isNaN(row)) {
+                                        this.view.result.querySelector(`.tree-table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
+                                    } else {
+                                        this.view.result.querySelector(`.cell-content-${(col > 0 ? col : this.cols.length) - 1}-${row}`).focus();
+                                    }
                                 }
                             }
                             if (event.key === 'ArrowUp') {
-                                if (!isNaN(row) && !isNaN(col)) {
-                                    this.content[row][col] = cell.innerText;
-                                    if (event.shiftKey) {
-                                        this.rows.splice(row, 0, { size: 'max-content' });
-                                        this.content.splice(row, 0, []);
-                                        this.update(true);
-                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
-                                    } else if (row === 0) {
-                                        this.view.result.querySelector(`.table-column-${col}`).focus();
+                                if (event.shiftKey && !isNaN(row)) {
+                                    // Add a new item before the current item
+                                    const current = this.all[row];
+                                    const newItem = {};
+                                    this.model.set(newItem, this.modelNode(newItem));
+                                    const parent = this.all.find((node) => node['childrent'].includes(current));
+                                    if (parent) {
+                                        const position = node['childrent'].indexOf(current);
+                                        parent.splice(position, 0, newItem);
                                     } else {
-                                        this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
+                                        const postion = this.content.indexOf(current);
+                                        this.content.splice(position, 0, newItem);
                                     }
-                                    saveState();
-                                } else if (isNaN(col)) {
-                                    this.view.result.querySelector(`.table-row-${(row > 0 ? row : this.content.length) - 1}`).focus();
+                                    this.all.splice(row, 0, newItem);
+                                    this.rows.splice(row, 0, { size: 'max-content' });
+
+                                    this.update();
+                                    this.view.result.querySelector(`.cell-content-${col}-${row}`).focus();
+
+                                } else if (row > 0) {
+                                    this.view.result.querySelector(`.cell-content-${col}-${row - 1}`).focus();
                                 } else {
-                                    this.view.result.querySelector(`.cell-${col}-${this.content.length - 1}`).focus();
+                                    this.view.result.querySelector(`.cell-content-${col}-${this.rows.length - 1}`).focus();
                                 }
                             }
                             if (event.key === 'ArrowDown') {
-                                const newRow = row ?? 0;
-                                if (!isNaN(row) && !isNaN(col)) {
-                                    this.content[row][col] = cell.innerText;
-                                }
                                 if (event.shiftKey) {
-                                    this.rows.splice(row, 0, { size: 'max-content' });
-                                    this.content.splice(row, 0, []);
-                                    this.update(true);
+                                    const newItem = {};
+                                    this.model.set(newItem, this.modelNode(newItem));
+                                    if (isNaN(row)) {
+                                        // Add a new item as the first child
+                                        this.content.unshift(newItem);
+                                        this.all.unshift(newItem);
+                                        this.rows.unshift({ size: 'max-content' });
+                                    } else {
+                                        // Add a new item as a child of the item at the current row
+                                        const current = this.all[row];
+                                        this.all.splice(row + 1, 0, newItem);
+                                        this.rows.splice(row + 1, 0, { size: 'max-content' });
+                                        current['children'] = current['children'] || [];
+                                        current['children'].unshift(newItem);
+                                    }
+                                    this.update();
                                 }
+
                                 if (isNaN(row)) {
                                     this.view.result.querySelector(`.cell-${col}-0`).focus();
-                                } else if (isNaN(col)) {
-                                    this.view.result.querySelector(`.table-row-${(row + 1) % this.content.length}`).focus();
                                 } else {
-                                    this.view.result.querySelector(`.cell-${col}-${((isNaN(row) ? -1 : row) + 1) % this.content.length}`).focus();
+                                    this.view.result.querySelector(`.cell-content-${col}-${(row + 1) % this.all.length}`).focus();
                                 }
-                                saveState();
                             }
+                            saveState();
                             event.preventDefault();
                         }
                     });
@@ -2415,32 +2509,49 @@ amending config files
                     update();
                 },
                 update() {
+                    this.view.result.innerHTML = '';
+
                     const makeTemplate = (definition) => `${definition.map((col) => col.size).join(' ')}`;
                     this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
                     this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
 
-                    this.keys.forEach((key) => {
-                        const cell = document.createElement('span');
-                        cell.classList.add('tree-table-header');
+                    this.keys.forEach((key, index) => {
+                        //const cell = document.createElement('span');
+                        const cell = editableSpan(() => this.keys[index], (node) => this.keys[index] = node.value);
+                        cell.classList.add('tree-table-header', `tree-table-column-${index}`);
                         cell.innerHTML = key;
+                        cell.dataset.col = index;
+                        cell.style.gridRow = 1;
+                        cell.style.gridColumn = index + 1;
                         this.view.result.append(cell);
                     });
 
+                    let row = 2;
                     const addNode = (node, level = 0) => {
                         this.keys.forEach((key, index) => {
                             const cell = document.createElement('div');
-                            cell.classList.add('tree-table-cell');
+                            cell.classList.add('tree-table-cell', `cell-${index}-${row - 2}`);
+                            cell.style.gridRow = row;
+                            cell.style.gridCol = index + 1;
                             cell.dataset.row = this.all.indexOf(node);
                             cell.dataset.col = index;
                             if (index === 0) {
-                                cell.innerHTML = '&nbsp;'.repeat(level * 2);
-                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innderText));
+                                cell.innerHTML = '&nbsp;'.repeat(level * 1);
+                                const meta = this.model.get(node);
+                                const expand = expander(() => meta.getState(), (event) => { meta.expand(event); this.update(); }, (event) => { meta.collapse(event); this.update(); });
+                                cell.appendChild(expand);
+                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
+                                cell.classList.add('tree-table-header');
                             } else {
-                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innderText));
+                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
                             }
+                            cell.lastElementChild.classList.add(`cell-content-${index}-${row - 2}`)
                             this.view.result.append(cell);
                         });
-                        node['children']?.forEach((child) => addNode(child, level + 1));
+                        row += 1;
+                        if (this.model.get(node).getState() === 'expanded') {
+                            node['children']?.forEach((child) => addNode(child, level + 1));
+                        }
                     }
                     this.content.forEach((node) => addNode(node));
                 },
