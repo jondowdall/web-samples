@@ -24,13 +24,16 @@ amending config files
 
 <body>
     <div id="header"></div>
-    <div id="results"></div>
-    <div id="widgets"></div>
-    <div id="input-area">
-        <span id="current-index">0</span><span>&gt; </span>
-        <datalist id="named-items"></datalist>
-        <input id="command-entry" type="text" autocorrect="off" autocapitalize="none"><!-- list="named-items"> -->
+    <div id="main">
+        <div id="results"></div>
+        <div id="input-area">
+            <span id="current-index">0</span><span>&gt; </span>
+            <datalist id="named-items"></datalist>
+            <input id="command-entry" type="text" autocorrect="off" autocapitalize="none"><!-- list="named-items"> -->
+        </div>
     </div>
+    <div id="widgets"></div>
+    <div id="footer"></div>
     <div id="status" class="fade"></div>
     <script type="module">
         const themes = ['vt-220', 'workbench-1.3', 'workbench-4.1'];
@@ -353,32 +356,6 @@ amending config files
 
 
         /**
-         * Lock a cell to the screen.
-         */
-        function stick(cell) {
-            const top = Math.max(0, ...Array.from(document.querySelectorAll('.sticky'))
-                .map((node) => {
-                    const box = node.getBoundingClientRect();
-                    return box.y + box.height;
-                })
-            );
-            cell.view.cell.classList.add('sticky');
-            cell.view.cell.style.top = `${top}px`;
-            cell.view.cell.style.left = 0;
-        }
-
-        /**
-         * Unlock a cell
-         */
-        function unstick(cell) {
-            const box = cell.view.cell.getBoundingClientRect();
-            cell.view.cell.classList.remove('sticky');
-            Array.from(document.querySelectorAll('.sticky'))
-                .filter((node) => node.getBoundingClientRect().y > box.y)
-                .forEach((node) => node.style.top = `${node.getBoundingClientRect().y - box.height}px`);
-        }
-
-        /**
          * Custom Actions
          *
          */
@@ -586,7 +563,6 @@ amending config files
                     ctx.lineTo(x1, y1);
                     ctx.stroke();
 
-
                     requestAnimationFrame(update);
                 }
                 update();
@@ -730,16 +706,12 @@ amending config files
                 const result = [];
                 cells.forEach((cell) => {
                     const node = cell.view.result;
-                    if (node.classList.contains('widget')) {
-                        cell.view.container.appendChild(node);
-                        node.classList.remove('widget');
+                    if (cell.view.cell.classList.contains('widget')) {
+                        cell.lastState();
                         result.push(`<${app.cells.indexOf(cell)}> no longer a widget`);
-
                     } else {
-                        document.getElementById('widgets').appendChild(node);
-                        node.classList.add('widget');
+                        cell.setState('widget');
                         result.push(`<${app.cells.indexOf(cell)}> now a widget`);
-
                     }
                 });
                 cell.value = result.join('<br>');
@@ -755,12 +727,11 @@ amending config files
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
-                    cell.view.cell.classList.remove('floating');
                     if (cell.view.cell.classList.contains('sticky')) {
-                        unstick(cell);
+                        cell.lastState();
                         result.push(`<${app.cells.indexOf(cell)}> now unstuck`);
                     } else {
-                        stick(cell);
+                        cell.setState('sticky');
                         result.push(`<${app.cells.indexOf(cell)}> now stuck`);
                     }
                 });
@@ -791,15 +762,17 @@ amending config files
                 const pos = values.map((val) => Number(val));
                 const result = [];
                 cells.forEach((cell) => {
-                    cell.view.cell.classList.add('floating');
-                    if (cell.view.cell.classList.contains('sticky')) {
-                        unstick(cell);
-                    }
-                    if (!isNaN(pos[0])) {
-                        cell.view.cell.style.left = `${pos[0]}px`;
-                    }
-                    if (!isNaN(pos[1])) {
-                        cell.view.cell.style.top = `${pos[1]}px`;
+                    if (cell.view.cell.classList.contains('floating')) {
+                        cell.lastState();
+                    } else {
+                        cell.setState('floating');
+
+                        if (!isNaN(pos[0])) {
+                            cell.view.cell.style.left = `${pos[0]}px`;
+                        }
+                        if (!isNaN(pos[1])) {
+                            cell.view.cell.style.top = `${pos[1]}px`;
+                        }
                     }
                     result.push(`${cell.getName()} position fixed`);
                 });
@@ -1366,12 +1339,48 @@ amending config files
                 }
             },
 
+            /**
+             * Show a status bar
+             */
+            'status bar'(cell) {
+                const string = cell.raw.replace(/^\s*status bar\s*/, '');
+
+                let update;
+
+                cell.type = Status;
+                if (document.getElementById('status-bar')) {
+                    document.getElementById('status-bar').remove();
+                    update = false;
+                    app.statusBar = false;
+                } else {
+                    const bar = document.createElement('div');
+                    bar.id = 'status-bar';
+                    document.getElementById('header').appendChild(bar);
+                    update = true;
+                    app.statusBar = true;
+                }
+
+                const node = document.getElementById('status-bar');
+                const time = document.createElement('div');
+                time.classList.add('status-bar-time');
+                node.appendChild(time);
+
+                const refresh = () => {
+                    const now = new Date();
+                    time.innerHTML = now.toLocaleTimeString();
+                    if (update) {
+                        requestAnimationFrame(refresh);
+                    }
+                }
+                refresh();
+            },
+
 
             /**
              * Save the session
              */
             'load session'(cell) {
-                const string = cell.raw.replace(/^\s*save session\s*/, '');
+                const string = cell.raw.replace(/^\s*load session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
 
@@ -1593,6 +1602,7 @@ amending config files
                 this.uses = new Set(uses);
                 this.users = new Set();
                 this.view = {};
+                this.stateStack = [];
             }
             get index() {
                 return app.cells.indexOf(this);
@@ -1642,10 +1652,9 @@ amending config files
                 };
                 const mousemove = (event) => {
                     event.preventDefault();
-                    unstick(this);
-                    action.node.classList.add('floating');
+                    this.setState('floating');
+
                     action.node.classList.add('dragging');
-                    document.getElementById('results').appendChild(action.node);
 
                     const x = event.clientX - action.start.x + action.pos.x;
                     const y = event.clientY - action.start.y + action.pos.y;
@@ -1722,6 +1731,7 @@ amending config files
                     return undefined;
                 }
                 const state = {};
+                const view = {};
                 if (this.view) {
                     const pos = this.view.cell.getBoundingClientRect();
                     const size = this.view.result.getBoundingClientRect();
@@ -1730,14 +1740,72 @@ amending config files
                     state.box = { x: pos.x, y: pos.y, width: size.width, height: size.height };
                     state.floating = this.view.cell.classList.contains('floating');
                     state.hidden = this.view.result.classList.contains('hidden');
+
+
+                    view.state = this.state;
+                    if (this.state === 'floating') {
+                        view.box = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+                    }
                 }
+
                 return {
                     raw: this.raw,
                     timestamp: this.timestamp.getTime(),
                     content: this.content,
-                    state,
+                    //state,
+                    view,
                     settings: this.getSettings(),
                 }
+            }
+            changeState(state) {
+                this.state = state;
+                const states = ['normal', 'sticky', 'floating', 'widget', 'hidden'];
+
+                this.view.cell.style.top = '';
+                this.view.cell.style.left = '';
+                this.view.cell.style.bottom = '';
+
+                if (state === 'sticky') {
+                    const top = Math.max(0, ...Array.from(document.querySelectorAll('.sticky'))
+                        .map((node) => {
+                            const box = node.getBoundingClientRect();
+                            return box.y + box.height;
+                        })
+                    );
+                    this.view.cell.style.top = `${top}px`;
+                    this.view.cell.style.left = 0;
+                    this.view.cell.style.bottom = 0;
+                } else if (this.stateStack.at(-1) === 'sticky') {
+                    const box = this.view.cell.getBoundingClientRect();
+                    this.view.cell.classList.remove('sticky');
+                    Array.from(document.querySelectorAll('.sticky'))
+                        .filter((node) => node.getBoundingClientRect().y > box.y)
+                        .forEach((node) => node.style.top = `${node.getBoundingClientRect().y - box.height}px`);
+                }
+
+                if (state === 'widget') {
+                    document.getElementById('widgets').appendChild(this.view.result);
+                } else if (this.stateStack.at(-1) === 'widget') {
+                    this.view.container.appendChild(this.view.result);
+                }
+
+                if (state === 'floating') {
+                    this.view.cell.style.top = '20%';
+                    this.view.cell.style.left = '20%';
+                }
+
+                const classes = this.view.cell.classList;
+                states.forEach((possibleState) => possibleState === state ? classes.add(state) : classes.remove(possibleState));
+            }
+            setState(state) {
+                if (state !== this.state) {
+                    this.stateStack.push(this.state);
+                    this.changeState(state);
+                }
+            }
+            lastState() {
+                const state = this.stateStack.pop() || 'normal';
+                this.changeState(state);
             }
             remove() {
                 if (this.view.cell) {
@@ -3040,6 +3108,15 @@ amending config files
                             stick(cell);
                         }
                     }
+                    if (storedCell.view) {
+                        cell.setState(storedCell.view.state);
+                        if (storedCell.view.box) {
+                            cell.view.cell.style.left = `${storedCell.view.box.x}px`;
+                            cell.view.cell.style.top = `${storedCell.view.box.y}px`;
+                            cell.view.result.style.width = `${storedCell.view.box.width}px`;
+                            cell.view.result.style.height = `${storedCell.view.box.height}px`;
+                        }
+                    }
                 }
                 if (cell.update) {
                     cell.update();
@@ -3055,6 +3132,9 @@ amending config files
             }
             if (app.state.background) {
                 document.body.style.backgroundImage = `url("${app.state.background}")`;
+            }
+            if (state.app.statusBar) {
+                actions['status bar']({ raw: '' });
             }
         }
 
