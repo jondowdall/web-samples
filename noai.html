@@ -444,10 +444,10 @@ amending config files
              */
             history(cell) {
                 const toString = (cell, index) => `${index}: ${cell.raw}`
-                cell.value = app.cells.map(toString).join('<br>');
+                cell.value = app.history.join('<br>');
                 const cellMap = new Map();
                 cell.update = (time) => {
-                    cell.value = app.cells.map(toString).join('<br>');
+                    cell.value = app.history.join('<br>');
                     cell.view.result.innerHTML = cell.value;
                 }
                 app.events.historyChange.add(cell);
@@ -523,17 +523,81 @@ amending config files
             /**
              * Toggle the 'hide' state for a cell
              */
-            hide(cell) {
+             fit(cell) {
+                const string = cell.raw.replace(/\s*hide\s*/, '');
+
+                const cells = getCells(string);
+                const result = [];
+
+                const fit = (cell) => {
+                    const origin = cell.view.cell.getBoundingClientRect();
+
+                    const size = {
+                        width: 0, height: 0,
+                    };
+                    for (let child of cell.view.cell.childNodes) {
+                        const box = child.getBoundingClientRect();
+                        size.width = Math.max(size.width, child.scrollWidth);
+                        size.height = Math.max(size.height, child.scrollHeight);
+                    }
+                    const name = cell.name || cell.index;
+                    cell.view.cell.style.width = `${size.width}px`;
+                    cell.view.cell.style.height = `${size.height}px`;
+                    cell.view.cell.style.maxWidth = `100dvw`;
+                    cell.view.cell.style.maxheight = `100dvh`;
+                    
+                    result.push(`<${name}> now hidden`);
+                };
+
+                cells.forEach((cell) => {
+                    fit(cell);
+                    result.push(`<${name}> now hidden`);
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+            },
+
+            /**
+             * Toggle the 'hide' state for a cell
+             */
+             hide(cell) {
                 const string = cell.raw.replace(/\s*hide\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
+                    cell.setState('hidden');
+                    /*
                     cell.view.result.classList.toggle('hidden');
                     cell.view.input.classList.toggle('dim');
                     const index = app.cells.indexOf(cell);
                     const hidden = cell.view.result.classList.contains('hidden');
-                    result.push(`<${index}> now ${hidden ? 'hidden' : 'visible'}`);
+                    */
+                    const name = cell.name || cell.index;
+                    result.push(`<${name}> now hidden`);
+                });
+                cell.value = result.join('<br>');
+                cell.type = Status;
+            },
+
+            /**
+             * Toggle the 'hide' state for a cell
+             */
+             collapse(cell) {
+                const string = cell.raw.replace(/\s*hide\s*/, '');
+
+                const cells = getCells(string);
+                const result = [];
+                cells.forEach((cell) => {
+                    cell.setState('collapsed');
+                    /*
+                    cell.view.result.classList.toggle('hidden');
+                    cell.view.input.classList.toggle('dim');
+                    const index = app.cells.indexOf(cell);
+                    const hidden = cell.view.result.classList.contains('hidden');
+                    */
+                   const name = cell.name || cell.index;
+                    result.push(`<${name}> now hidden`);
                 });
                 cell.value = result.join('<br>');
                 cell.type = Status;
@@ -915,7 +979,6 @@ amending config files
                 node.addEventListener('keydown', (event) => {
                     if (event.key === 'Escape') {
                         node.blur();
-                        //app.focusHistory.push(cell);
                     }
                 });
                 cell.view.result.appendChild(node);
@@ -1558,8 +1621,15 @@ amending config files
                         this.view.raw.contentEditable = true;
                         this.view.raw.focus();
                     } else {
+                        if (this.state === 'hidden') {
+                            this.setState('normal');
+                        } else {
+                            this.setState('hidden');
+                        }
+                        /*
                         this.view.result.classList.toggle('hidden');
                         this.view.input.classList.toggle('dim');
+                        */
                     }
                 });
                 this.view.raw.addEventListener('blur', (event) => {
@@ -1645,7 +1715,7 @@ amending config files
             }
             changeState(state) {
                 this.state = state;
-                const states = ['normal', 'sticky', 'floating', 'widget', 'hidden'];
+                const states = ['normal', 'sticky', 'floating', 'widget', 'collapsed', 'hidden'];
 
                 this.view.cell.style.top = '';
                 this.view.cell.style.left = '';
@@ -2861,6 +2931,11 @@ amending config files
         const app = {
             loaded: false,
             history: [],
+            saveCommand(command) {
+                this.history.push(command);
+                this.historyIndex = this.history.length;
+                this.historyChange();
+            },
             cells: [],
             namedCells: {},
             index: 0,
@@ -2869,6 +2944,9 @@ amending config files
                 layoutChange: new Set(),
                 statusChange: new Set(),
                 currentCellChange: new Set(),
+            },
+            historyChange() {
+                this.events.historyChange.forEach((cell) => cell.update());
             },
             layoutChange() {
                 for (const cell of this.events.layoutChange) {
@@ -3071,7 +3149,7 @@ amending config files
          */
         function process(event) {
             if (inputNode.value !== app.history.at(-1)) {
-                app.history.push(inputNode.value);
+                app.saveCommand(inputNode.value);
             }
             const str = (app.cellIndex === app.cells.length && inputNode.value === '') ? app.cells.at(-1).raw : inputNode.value;
             app.interactive = true;
@@ -3251,7 +3329,6 @@ amending config files
         function restoreState(state) {
             state.app = state.app ?? state.context;
             state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
-                //app.history.push(storedCell.raw);
                 const cell = evaluate(storedCell.raw);
                 if (storedCell.content) {
                     if (cell.setContent) {
@@ -3271,23 +3348,6 @@ amending config files
                     showCell(cell, app.cells.length);
                     app.cells.push(cell);
                     app.namedCells[cell.name] = cell;
-                    if (storedCell.state) {
-                        if (storedCell.state.hidden) {
-                            cell.view.result.classList.toggle('hidden');
-                            cell.view.input.classList.toggle('dim');
-                        }
-                        if (storedCell.state.floating) {
-                            cell.view.cell.classList.add('floating');
-                            if (storedCell.state.box) {
-                                cell.view.cell.style.left = `${storedCell.state.box.x}px`;
-                                cell.view.cell.style.top = `${storedCell.state.box.y}px`;
-                                cell.view.result.style.width = `${storedCell.state.box.width}px`;
-                                cell.view.result.style.height = `${storedCell.state.box.height}px`;
-                            }
-                        } else if (storedCell.state.sticky) {
-                            stick(cell);
-                        }
-                    }
                     if (storedCell.view) {
                         cell.setState(storedCell.view.state);
                         if (storedCell.view.box) {
@@ -3317,6 +3377,8 @@ amending config files
                 actions['status bar']({ raw: '' });
             }
             app.history.push(...state.app.history);
+            app.historyIndex = app.history.length;
+            app.historyChange();
         }
 
         /**
