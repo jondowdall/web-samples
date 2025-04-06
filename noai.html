@@ -2111,7 +2111,7 @@ amending config files
                     this.placeholder = '<enter text>';
 
                     Object.defineProperties(this, {
-                        value: {
+                        html: {
                             enumerable: true,
                             get() {
                                 if (!this.content || this.content === '') {
@@ -2139,6 +2139,28 @@ amending config files
 
                                 return lines.map((line) => `<div class="line">${line}</div>`).join('');
                             },
+                        },
+                        value: {
+                            enumerable: true,
+                            get() {
+                                const index = app.cells.length;
+                                const getIndex = (str) => {
+                                    const i = parseInt(str);
+                                    if (isNaN(i)) {
+                                        return index - 1;
+                                    }
+                                    if (i < 0) {
+                                        return index + (i % index);
+                                    }
+                                    return i % index;
+                                }
+
+                                return (this.content ?? '').replace(/^\\/, '')
+                                    .replace(/<(-?[0-9]*)>/g, (match, index) =>
+                                        index === this.index ? match : app.cells.at(getIndex(index)).value)
+                                    .replace(/<([^>]+)>/g, (match, name) =>
+                                        named.all[name] ?? match);//.replace(/ |\t/g, (match) => ({' ':'&nbsp;', '\t': ''}[match]));
+                            }
                         }
                     });
                 },
@@ -2191,11 +2213,11 @@ amending config files
                     this.view.result.ariaLabelledby = "codemirror-label focus-trap-help-panel";
                     this.view.result.ariaAutocomplete = "list";
                     */
-                    
-                    this.view.result.innerHTML = this.value || '<span class="dim"><enter text></span>';
+
+                    this.view.result.innerHTML = this.html;
                     this.view.result.addEventListener('blur', (event) => {
                         this.content = this.view.result.innerText;
-                        this.view.result.innerHTML = this.value;
+                        this.view.result.innerHTML = this.html;
                         this.users.forEach((user) => user.update());
                         saveState();
                         inputNode.focus();
@@ -2209,7 +2231,7 @@ amending config files
                         }
                         if (event.key === 'Enter') {
                             event.preventDefault();
-                            document.selection.createRange().pasteHTML("<br/>") ;
+                            document.selection.createRange().pasteHTML("<br/>");
                         }
                         if (event.key === 'Tab') {
                             event.preventDefault();
@@ -2220,7 +2242,7 @@ amending config files
                             }
                         }
                     });
-                    this.view.result.addEventListener('input', (event) => {});
+                    this.view.result.addEventListener('input', (event) => { });
                     this.focus = this.view.result;
                     return this.view.result;
                 },
@@ -2619,6 +2641,9 @@ amending config files
                         this.view.result.appendChild(titleNode);
                     }
 
+                    this.content.forEach((row, rowIndex) =>
+                        row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
+
                     this.cols.forEach((column, index) => {
                         const cls = `table-column-${index}`;
                         const node = this.view.result.querySelector(`.${cls}`) || editableSpan(
@@ -2657,9 +2682,6 @@ amending config files
                             this.view.result.appendChild(node);
                         }
                     });
-
-                    this.content.forEach((row, rowIndex) =>
-                        row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
                 },
             },
             'tree table': {
@@ -2888,16 +2910,6 @@ amending config files
                     this.view.result.style.gridTemplateColumns = makeTemplate(this.cols);
                     this.view.result.style.gridTemplateRows = makeTemplate(this.rows);
 
-                    this.keys.forEach((key, index) => {
-                        const cell = editableSpan(() => this.keys[index], (node) => this.keys[index] = node.innerText);
-                        cell.classList.add('tree-table-header', `tree-table-column-${index}`);
-                        cell.innerHTML = key || '<new key>';
-                        cell.dataset.col = index;
-                        cell.style.gridRow = 1;
-                        cell.style.gridColumn = index + 1;
-                        this.view.result.append(cell);
-                    });
-
                     let row = 2;
                     const addNode = (node, level = 0) => {
                         this.keys.forEach((key, index) => {
@@ -2925,8 +2937,51 @@ amending config files
                             node['children']?.forEach((child) => addNode(child, level + 1));
                         }
                     }
+
                     this.content.forEach((node) => addNode(node));
+                    this.keys.forEach((key, index) => {
+                        const cell = editableSpan(() => this.keys[index], (node) => this.keys[index] = node.innerText);
+                        cell.classList.add('tree-table-header', `tree-table-column-${index}`);
+                        cell.innerHTML = key || '<new key>';
+                        cell.dataset.col = index;
+                        cell.style.gridRow = 1;
+                        cell.style.gridColumn = index + 1;
+                        this.view.result.append(cell);
+                    });
                 },
+            },
+            'make tree': {
+                init() {
+                    const string = this.raw.replace(/\s*make tree\s*/, '');
+                    const args = getList(string);
+                    const { cells, values } = args.reduce((results, value) => {
+                        const index = Number(value);
+                        if (app.namedCells[value] !== undefined) {
+                            results.cells.push(app.namedCells[value]);
+                        } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                            results.cells.push(app.cells.at(index));
+                        } else {
+                            results.values.push(value);
+                        }
+                        return results;
+                    }, { cells: [], values: [] });
+                    this.input = cells.map((cell) => cell.value).join('');
+
+                    const lines = this.input.split(/\r?\n/g).map((line) => line.split(/\s*[,\t\|]\s*/g));
+                    const headers = lines.shift();
+                    const items = lines.map((line) => line.resolve((item, value, index) => {
+                        item[headers[index]] = value;
+                        return item;
+                    }, {}));
+
+                    // Assume the first col contains id
+                    const sorted = items.sort((a, b) => b[headers[0]].length - a[headers[0].length]);
+                    sorted.forEach((item) => {
+                        item.parts = sorted.filter((other) => other.parent === undefined && other[headers[0]].startsWith(item[headers[0]]) && other !== item);
+                        item.parts.forEach((part) => part.parent = item);
+                    });
+                    const roots = sorted.filter((item) => item.parent === undefined);
+                }
             },
             'current cell': {
                 init() {
