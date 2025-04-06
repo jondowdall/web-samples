@@ -560,7 +560,7 @@ amending config files
             /**
              * Set the 'hide' state for cells
              */
-             hide(cell) {
+            hide(cell) {
                 const string = cell.raw.replace(/\s*hide\s*/, '');
 
                 const cells = getCells(string);
@@ -598,9 +598,13 @@ amending config files
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
+                    if (cell.state === 'floating') {
+                        cell.view.box = cell.view.cell.getBoundingClientRect();
+                    }
                     cell.setMode('collapsed');
-                    const name = cell.name || cell.index;
-                    result.push(`<${name}> now collapsed`);
+                    result.push(`<${cell.name || cell.index}> now collapsed`);
+                    cell.view.cell.style.width = '';
+                    cell.view.cell.style.height = '';
                 });
                 cell.value = result.join('<br>');
                 cell.type = Status;
@@ -826,16 +830,6 @@ amending config files
                     }
                     return i % index;
                 }
-
-                /*
-                const resolve = (str) => {
-                    return str.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`)
-                        .replace(/<([^>]+)>/g, (match, name) =>
-                            named.all[name] ?? match);
-                }
-                */
 
                 const resolve = (str) => {
                     return str.replace(/^\\/, '')
@@ -1710,18 +1704,11 @@ amending config files
                 const state = {};
                 const view = {};
                 if (this.view) {
-                    const pos = this.view.cell.getBoundingClientRect();
-                    const size = this.view.result.getBoundingClientRect();
-
-                    state.sticky = this.view.cell.classList.contains('sticky');
-                    state.box = { x: pos.x, y: pos.y, width: size.width, height: size.height };
-                    state.floating = this.view.cell.classList.contains('floating');
-                    state.hidden = this.view.result.classList.contains('hidden');
-
+                    const box = this.view.cell.getBoundingClientRect();
 
                     view.state = this.state;
                     if (this.state === 'floating') {
-                        view.box = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+                        view.box = this.view.box || { x: box.x, y: box.y, width: box.width, height: box.height };
                     }
                     view.modes = Array.from(this.modes).filter((mode) => mode);
                 }
@@ -1730,7 +1717,6 @@ amending config files
                     raw: this.raw,
                     timestamp: this.timestamp.getTime(),
                     content: this.content,
-                    //state,
                     view,
                     settings: this.getSettings(),
                 }
@@ -1775,8 +1761,17 @@ amending config files
 
                 if (state === 'floating') {
                     document.getElementById('results').appendChild(this.view.cell);
-                    this.view.cell.style.top = '20%';
-                    this.view.cell.style.left = '20%';
+                    if (this.view.box) {
+                        this.view.cell.style.top = `${this.view.box.top}px`;
+                        this.view.cell.style.left = `${this.view.box.left}px`;
+                        this.view.cell.style.width = `${this.view.box.width}px`;
+                        this.view.cell.style.height = `${this.view.box.height}px`;
+                    } else {
+                        this.view.cell.style.top = '20%';
+                        this.view.cell.style.left = '20%';
+                    }
+                } else if (this.lastState === 'floating') {
+                    this.view.box = this.view.cell.getBoundingClientRect();
                 }
 
                 const classes = this.view.cell.classList;
@@ -1894,6 +1889,7 @@ amending config files
                 this.update(detail, raised, done, title);
                 // Add to the global list of todos.
                 app.addTyped(this);
+                app.notifyListeners('todos', { action: 'new', todo: this });
             }
             update(detail, raised, done, title) {
                 raised = detail.raised ?? raised;
@@ -1908,8 +1904,15 @@ amending config files
             toString() {
                 return this.detail;
             }
-            complete(date) {
+            complete(done) {
                 this.done = done ? new Date(done) : new Date();
+                app.notifyListeners('todos', { action: 'complete', todo: this });
+            }
+            toShortHTML() {
+                if (this.done) {
+                    return `<span class="dim"><s>${this.title || this.detail}</s></span>`;
+                }
+                return `<span>${this.title || this.detail}</span>`;
             }
         }
 
@@ -2105,11 +2108,15 @@ amending config files
                         return results;
                     }, { cells: [], values: [] });
                     this.content = cells.map((cells) => cells.value).join('\n');
+                    this.placeholder = '<enter text>';
 
                     Object.defineProperties(this, {
                         value: {
                             enumerable: true,
                             get() {
+                                if (!this.content || this.content === '') {
+                                    return `<span class="dim">${this.placeholder}</span>`;
+                                }
                                 const index = app.cells.length;
                                 const getIndex = (str) => {
                                     const i = parseInt(str);
@@ -2123,16 +2130,19 @@ amending config files
                                 }
 
                                 const content = this.content ?? '';
-                                return content.replace(/^\\/, '')
+                                const resolved = content.replace(/^\\/, '')
                                     .replace(/<(-?[0-9]*)>/g, (match, index) =>
                                         index === this.index ? match : app.cells.at(getIndex(index)).value)
                                     .replace(/<([^>]+)>/g, (match, name) =>
-                                        named.all[name] ?? match);
+                                        named.all[name] ?? match);//.replace(/ |\t/g, (match) => ({' ':'&nbsp;', '\t': ''}[match]));
+                                const lines = content.split(/\r?\n/g);
+
+                                return lines.map((line) => `<div class="line">${line}</div>`).join('');
                             },
                         }
                     });
                 },
-                getResultNode() {
+                getTextAreaResultNode() {
                     this.view.result = document.createElement('textarea');
                     this.view.result.classList.add('notes');
                     this.view.result.placeholder = '<enter notes>';
@@ -2162,6 +2172,56 @@ amending config files
                     });
                     this.focus = this.view.result;
                     this.view.result.rows = Math.max(1, this.view.result.value.split(/\n/).length);
+                    return this.view.result;
+                },
+                getResultNode() {
+                    this.view.result = document.createElement('div');
+                    this.view.result.classList.add('notes');
+
+                    this.view.result.contentEditable = true;
+                    this.view.result.spellcheck = false;
+                    this.view.result.autocorrect = "off";
+                    this.view.result.autocapitalize = "off";
+                    this.view.result.translate = "no";
+                    this.view.result.class = "cm-content cm-lineWrapping";
+                    this.view.result.style = "tab-size: 2;";
+                    this.view.result.role = "textbox";
+                    /*
+                    this.view.result.ariaMultiline = "true";
+                    this.view.result.ariaLabelledby = "codemirror-label focus-trap-help-panel";
+                    this.view.result.ariaAutocomplete = "list";
+                    */
+                    
+                    this.view.result.innerHTML = this.value || '<span class="dim"><enter text></span>';
+                    this.view.result.addEventListener('blur', (event) => {
+                        this.content = this.view.result.innerText;
+                        this.view.result.innerHTML = this.value;
+                        this.users.forEach((user) => user.update());
+                        saveState();
+                        inputNode.focus();
+                    });
+                    this.view.result.addEventListener('focus', (event) => {
+                        this.view.result.innerText = this.content || '';
+                    });
+                    this.view.result.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            this.view.result.blur();
+                        }
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            document.selection.createRange().pasteHTML("<br/>") ;
+                        }
+                        if (event.key === 'Tab') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const selection = document.getSelection();
+                            if (selection.isCollapsed && selection.rangeCount) {
+                                selection.getRangeAt(0).insertNode(document.createTextNode('    '));
+                            }
+                        }
+                    });
+                    this.view.result.addEventListener('input', (event) => {});
+                    this.focus = this.view.result;
                     return this.view.result;
                 },
             },
@@ -2310,6 +2370,7 @@ amending config files
                                 this.content.complete();
                             } else {
                                 this.content.done = null;
+                                app.notifyListeners('todos', { action: 'uncomplete', todo: this });
                             }
                             this.update();
                         });
@@ -2328,10 +2389,11 @@ amending config files
                 init(raw) {
                     const string = raw.replace(/^\s*todo\s*/, '');
                     this.content = string;
+                    app.addListener('todos', this);
                 },
                 update() {
                     const todos = app.types.get(ToDo) || [];
-                    this.view.result.innerHTML = '<ul>' + todos.map((todo) => `<li>${todo.title || todo.detail}</li>`).join('') + '</ul>';
+                    this.view.result.innerHTML = '<ul>' + todos.map((todo) => `<li>${todo.toShortHTML()}</li>`).join('') + '</ul>';
                 }
             },
             table: {
@@ -2997,6 +3059,7 @@ amending config files
             link.dispatchEvent(event);
         }
 
+
         const app = {
             loaded: false,
             history: [],
@@ -3007,10 +3070,10 @@ amending config files
             },
             cells: [],
             namedCells: {},
+            managedTypes: [ToDo],
             types: new Map(),
             addTyped(item) {
-                const managedTypes = [ToDo];
-                managedTypes.forEach((type) => {
+                this.managedTypes.forEach((type) => {
                     if (item instanceof type) {
                         const list = this.types.get(type);
                         if (list) {
@@ -3040,6 +3103,18 @@ amending config files
                 for (const cell of this.events.statusChange) {
                     cell.update();
                 }
+            },
+            listeners: new Map(),
+            addListener(event, listener) {
+                if (this.listeners.has(event)) {
+                    this.listeners.push(listener);
+                } else {
+                    this.listeners.set(event, [listener]);
+                }
+            },
+            notifyListeners(event, detail) {
+                const listeners = this.listeners.get(event) || [];
+                listeners.forEach((listener) => listener.update(detail));
             },
             setCurrentCell(cell) {
                 if (this.currentCell !== cell) {
@@ -3436,8 +3511,8 @@ amending config files
                         if (storedCell.view.box) {
                             cell.view.cell.style.left = `${storedCell.view.box.x}px`;
                             cell.view.cell.style.top = `${storedCell.view.box.y}px`;
-                            cell.view.result.style.width = `${storedCell.view.box.width}px`;
-                            cell.view.result.style.height = `${storedCell.view.box.height}px`;
+                            cell.view.cell.style.width = `${Math.max(storedCell.view.box.width, 100)}px`;
+                            cell.view.cell.style.height = `${Math.max(storedCell.view.box.height, 100)}px`;
                         }
                         storedCell.view.modes.forEach((mode) => cell.setMode(mode));
                     }
