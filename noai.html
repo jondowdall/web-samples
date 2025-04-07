@@ -1703,6 +1703,9 @@ amending config files
             getSettings() {
                 return undefined;
             }
+            serialiseContent() {
+                return this.content;
+            }
             toJSON(key) {
                 if (this.type === Status) {
                     return undefined;
@@ -1722,7 +1725,7 @@ amending config files
                 return {
                     raw: this.raw,
                     timestamp: this.timestamp.getTime(),
-                    content: this.content,
+                    content: this.serialiseContent(),
                     view,
                     settings: this.getSettings(),
                 }
@@ -1874,14 +1877,14 @@ amending config files
         /**
          * Flatten a tree to a set of nodes
          */
-        function flatten(node, partName = PartName, expanded = new Set()) {
+        function flatten(node, getParts = (node) => node[meta].parts, expanded = new Set()) {
             if (expanded.has(node)) {
                 console.log('tree contains circular relationship');
                 return expanded;
             }
             expanded.add(node);
-            if (Array.isArray(node[partName])) {
-                node[partName].forEach((node) => flatten(node, partName, expanded));
+            if (Array.isArray(getParts(node))) {
+                getParts(node).forEach((node) => flatten(node, getParts, expanded));
             }
             return expanded;
         }
@@ -1923,9 +1926,27 @@ amending config files
         }
 
 
+        const meta = Symbol('meta');
 
+        /**
+         * Convert a tree that uses symbol keys into a plain tree
+         */
+        function serialiseTree(all) {
+            return all.map((source) => ({ parts: source[meta].parts.map((part) => all.indexOf(part)), data: source }));
+        }
 
-
+        /**
+         * Convert a tree that uses symbol keys into a plain tree
+         */
+        function makeTree(all) {
+            return all.map((source) => {
+                source.data[meta] = {
+                    parts: source.parts.map((part) => all[part].data),
+                };
+                source.data[meta].parts.forEach((part) => part[meta].parent = source.data);
+                return source.data;
+            }).filter((node) => !node.parent);
+        }
 
         /**
          * Cell types applied to a cell after creation.
@@ -2096,9 +2117,9 @@ amending config files
                 setContent(content) {
                     this.content = content;
                 },
-                init(raw) {
+                init() {
                     this.content = '';
-                    const parameters = raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^notes\s*/, '');
+                    const parameters = this.raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^notes\s*/, '');
                     const args = getList(parameters);
                     const { cells, values } = args.reduce((results, value) => {
                         const index = Number(value);
@@ -2259,8 +2280,8 @@ amending config files
                         this.content = content;
                     }
                 },
-                init(raw) {
-                    const parameters = raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^replace\s*/, '');
+                init() {
+                    const parameters = this.raw.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^replace\s*/, '');
                     if (parameters) {
                         const link = (from, to) => {
                             from.users.add(to);
@@ -2376,8 +2397,8 @@ amending config files
             },
             todo: {
                 defaultState: 'widget',
-                init(raw) {
-                    const string = raw.replace(/^\s*todo\s*/, '');
+                init() {
+                    const string = this.raw.replace(/^\s*todo\s*/, '');
                     this.content = new ToDo(string);
                 },
                 setContent(content) {
@@ -2414,8 +2435,8 @@ amending config files
             },
             todos: {
                 defaultState: 'floating',
-                init(raw) {
-                    const string = raw.replace(/^\s*todo\s*/, '');
+                init() {
+                    const string = this.raw.replace(/^\s*todo\s*/, '');
                     this.content = string;
                     app.addListener('todos', this);
                 },
@@ -2441,7 +2462,7 @@ amending config files
                     const rows = data.map((row) => ({ name: row.shift() }));
                     return { data, cols, rows };
                 },
-                init(raw) {
+                init() {
                     let table = {};
                     if (table instanceof String) {
                         table = this.tableFromString(table);
@@ -2798,39 +2819,48 @@ amending config files
                 modelNode(node) {
                     return {
                         getState() {
-                            if (node['children']?.length) {
+                            if (node[meta].parts?.length) {
                                 return this.state;
                             }
                         },
                         state: 'expanded',
                         expand(event) {
                             this.state = 'expanded';
-                            if (event.ctrlKey && node['children']) {
-                                node['children'].forEach((child) => model.get(child).collapse(event));
+                            if (event.ctrlKey && node[meta].parts) {
+                                node[meta].parts.forEach((child) => model.get(child).collapse(event));
                             }
                         },
                         collapse(event) {
                             this.state = 'collapsed';
-                            if (event.ctrlKey && node['children']) {
-                                node['children'].forEach((child) => model.get(child).collapse(event));
+                            if (event.ctrlKey && node[meta].parts) {
+                                node[meta].parts.forEach((child) => model.get(child).collapse(event));
                             }
                         },
                         nodes: [],
                     }
                 },
-                setContent(content) {
-                    this.content = [content].flatMap((node) => node);
-                    this.all = this.content.flatMap((item) => Array.from(flatten(item, 'children')));
+                setData() {
                     this.keys = [];
-                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !(this.keys.includes(key) || key === 'children'))));
+                    this.all = this.content.flatMap((item) => Array.from(flatten(item)));
+                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !(this.keys.includes(key)))));
                     this.rows = this.all.map((row) => ({ size: 'minmax(1em, max-content)' }));
-                    this.cols = this.keys.map((key) => ({ size: 'minmax(1em, max-content)' }));
+                    this.cols = this.keys.map((key) => ({ size: 'minmax(min-content, max-content)' }));
                     this.model = new Map();
                     const model = this.model;
                     this.all.forEach((node) => this.model.set(node, this.modelNode(node)));
                 },
-                init(raw) {
-                    this.setContent({ name: 'root', value: 'foo' });
+                setContent(content) {
+                    this.content = this.deserialiseContent(content);
+                    this.setData();
+                },
+                init(string, cells = [], values = []) {
+                    if (cells.length) {
+                        this.cells = cells;
+                        this.content = cells.flatMap((cell) => cell.value);
+                        this.setData();
+                    } else {
+                        this.setContent([{parts: [], data: { name: 'root', value: 'foo' }}]);
+                    }
                     this.deleted = [];
                 },
                 getResultNode() {
@@ -2856,26 +2886,26 @@ amending config files
                         const row = parseInt(cell.dataset.row);
                         if (event.key === 'Tab' && col === 0 && row > 0) {
                             const node = this.all[row];
-                            const parent = this.all.find((parent) => parent['children']?.includes(node));
+                            const parent = this.all.find((parent) => parent[meta].parts?.includes(node));
                             if (event.shiftKey) { // move item up in level
                                 if (parent) {
-                                    parent['children'].splice(parent['children'].indexOf(node), 1);
-                                    const newParent = this.all.find((node) => node['children']?.includes(parent));
+                                    parent[meta].parts.splice(parent[meta].parts.indexOf(node), 1);
+                                    const newParent = this.all.find((node) => node[meta].parts?.includes(parent));
                                     if (newParent) {
-                                        const position = newParent['children'].indexOf(parent);
-                                        newParent['children'].splice(position + 1, 0, node);
+                                        const position = newParent[meta].parts.indexOf(parent);
+                                        newParent[meta].parts.splice(position + 1, 0, node);
                                     } else {
                                         const position = this.content.indexOf(parent) + 1;
                                         this.content.splice(position, 0, node);
                                     }
                                 }
                             } else {
-                                const container = parent ? parent['children'] : this.content;
+                                const container = parent ? parent[meta].parts : this.content;
                                 const position = container.indexOf(node);
                                 const previous = container[position - 1];
                                 if (previous) {
                                     container.splice(position, 1);
-                                    previous['children'].push(node)
+                                    previous[meta].parts.push(node)
                                 }
                             }
                             this.update();
@@ -2897,16 +2927,16 @@ amending config files
                                     }
                                 } else {
                                     const item = this.all[row];
-                                    const parent = this.all.find((node) => node['children'].includes(item));
-                                    const position = (parent ? parent['children'] : this.content).indexOf(item);
+                                    const parent = this.all.find((node) => node[meta].parts.includes(item));
+                                    const position = (parent ? parent[meta].parts : this.content).indexOf(item);
                                     const deleted = { item, parent, position };
                                     this.deleted.push(deleted);
                                     this.all.splice(row, 1);
                                     this.rows.splice(row, 1);
-                                    if (item?.['children'].length) {
-                                        (parent ? parent['children'] : this.content).splice(position, 1, ...item['children']);
+                                    if (item?.[meta].parts.length) {
+                                        (parent ? parent[meta].parts : this.content).splice(position, 1, ...item[meta].parts);
                                     } else {
-                                        (parent ? parent['children'] : this.content).splice(position, 1);
+                                        (parent ? parent[meta].parts : this.content).splice(position, 1);
                                     }
                                     this.model.delete(item);
                                     this.update();
@@ -2989,8 +3019,8 @@ amending config files
                                         const current = this.all[row];
                                         this.all.splice(row + 1, 0, newItem);
                                         this.rows.splice(row + 1, 0, { size: 'max-content' });
-                                        current['children'] = current['children'] || [];
-                                        current['children'].unshift(newItem);
+                                        current[meta].parts = current[meta].parts || [];
+                                        current[meta].parts.unshift(newItem);
                                     }
                                     this.update();
                                 }
@@ -3044,7 +3074,7 @@ amending config files
                         });
                         row += 1;
                         if (this.model.get(node).getState() === 'expanded') {
-                            node['children']?.forEach((child) => addNode(child, level + 1));
+                            node[meta].parts?.forEach((child) => addNode(child, level + 1));
                         }
                     }
 
@@ -3058,6 +3088,25 @@ amending config files
                         cell.style.gridColumn = index + 1;
                         this.view.result.append(cell);
                     });
+                },
+                serialiseContent() {
+                    const nodes =  this.all.map((source) => ({
+                        data: source,
+                        parts: source[meta].parts?.map((part) => this.all.indexOf(part)),
+                    }));
+                    return nodes;
+                },
+                deserialiseContent(nodes) {
+                    nodes.forEach((node) => node.data[meta] = {});
+
+                    const all = nodes.map((source) => {
+                        const node = source.data;
+                        node[meta].parts = source.parts?.map((part) => nodes[part].data) || [];
+                        node[meta].parts.forEach((part) => part[meta].parent = node);
+                        return node;
+                    });
+                    const roots = all.filter((node) => node[meta].parent === undefined);
+                    return roots;
                 },
             },
             'make tree': {
@@ -3079,18 +3128,18 @@ amending config files
 
                     const lines = this.input.split(/\r?\n/g).map((line) => line.split(/\s*[,\t\|]\s*/g));
                     const headers = lines.shift();
-                    const items = lines.map((line) => line.resolve((item, value, index) => {
+                    const items = lines.map((line) => line.reduce((item, value, index) => {
                         item[headers[index]] = value;
                         return item;
-                    }, {}));
+                    }, { [meta]: {} }));
 
                     // Assume the first col contains id
-                    const sorted = items.sort((a, b) => b[headers[0]].length - a[headers[0].length]);
+                    const sorted = items.sort((a, b) => b[headers[0]].length - a[headers[0]].length);
                     sorted.forEach((item) => {
-                        item.parts = sorted.filter((other) => other.parent === undefined && other[headers[0]].startsWith(item[headers[0]]) && other !== item);
-                        item.parts.forEach((part) => part.parent = item);
+                        item[meta].parts = sorted.filter((other) => (other[meta].parent === undefined) && (other[headers[0]].length > item[headers[0]].length) && other[headers[0]].startsWith(item[headers[0]]));
+                        item[meta].parts.forEach((part) => part[meta].parent = item);
                     });
-                    const roots = sorted.filter((item) => item.parent === undefined);
+                    this.value = sorted.filter((item) => item[meta].parent === undefined);
                 }
             },
             'current cell': {
@@ -3394,7 +3443,23 @@ amending config files
             const cellTypeMatch = cellTypeNames.find((match) => command.startsWith(match));
             if (cellTypeMatch) {
                 Object.assign(cell, cellTypes[cellTypeMatch]);
-                cell.init(cell.raw);
+                const pattern = new RegExp(`^\\s*${cellTypeMatch}\\s*`);
+                const string = cell.raw.replace(pattern, '');
+
+                const args = getList(string);
+                const { cells, values } = args.reduce((results, value) => {
+                    const index = Number(value);
+                    if (app.namedCells[value] !== undefined) {
+                        results.cells.push(app.namedCells[value]);
+                    } else if (!isNaN(index) && index > -app.cells.length && index < app.cells.length) {
+                        results.cells.push(app.cells.at(index));
+                    } else {
+                        results.values.push(value);
+                    }
+                    return results;
+                }, { cells: [], values: [] });
+
+                cell.init(string, cells, values);
                 return cell;
             }
             if (named.all[command]) {
@@ -3961,4 +4026,5 @@ amending config files
 
     </script>
 </body>
+
 </html>
