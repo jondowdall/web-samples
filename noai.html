@@ -20,11 +20,15 @@ amending config files
     <meta name="viewport" content="width=device-width" />
     <title>js-notepad</title>
     <link href="styles/noia-workbench-1.3.css" rel="stylesheet" />
+
 </head>
 
 <body>
     <div id="header"></div>
     <div id="main">
+        <div id="workspace" contenteditable="plaintext-only">
+            <span class="line-number" contenteditable="false">1</span><span class="line" data-line="0"></span>
+        </div>
         <div id="results"></div>
         <div id="input-area">
             <span id="current-index">0</span><span>&gt; </span>
@@ -359,6 +363,56 @@ amending config files
         };
 
 
+
+        /**
+         * Utility function to support downloading generated content.
+         */
+        function downloadText(text, name = '') {
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+            link.setAttribute('download', name);
+
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+
+        /**
+         * Utility function to support downloading generated content.
+         */
+        function loadText(name = '', action) {
+            const link = document.createElement('input');
+            link.style.display = 'none';
+            link.type = 'file';
+            /*
+            link.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+            link.setAttribute('download', name);
+            */
+            document.body.appendChild(link);
+            link.click();
+            link.addEventListener('change', (event) => {
+                for (const file of link.files) {
+                    app.setStatus(`loading ${file.name}`);
+                    // Read the file
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        if (action) {
+                            action(reader.result, file.name);
+                        } else {
+                            console.log(reader.result);
+                        }
+                    };
+                    reader.onerror = () => {
+                        app.setStatus('Error reading the file. Please try again.');
+                    };
+                    reader.readAsText(file);
+                }
+                link.remove();
+            });
+        }
+
+
         /**
          * Custom Actions
          *
@@ -367,36 +421,35 @@ amending config files
             /**
              * Toggle fullscreen mode
              */
-            fullscreen(cell) {
+            fullscreen(input) {
                 if (!navigator.userActivation.isActive) {
-                    cell.value = 'fullscreen request ignored in script';
-                    return;
+                    return { message: 'fullscreen request ignored in script' };
                 }
                 if (document.body.webkitRequestFullscreen) {
-                    if (document.body.webkitIsFullScreen) {
-                        document.body.webkitCancelFullScreen();
-                        cell.value = 'exit fullscreen';
+                    if (document.webkitIsFullScreen) {
+                        document.webkitCancelFullScreen();
+                        return { message: 'exit fullscreen' };
                     } else {
                         document.body.webkitRequestFullscreen(document.body.ALLOW_KEYBOARD_INPUT);
-                        cell.value = 'enter fullscreen';
+                        return { message: 'enter fullscreen' };
                     }
                 }
                 if (document.body.requestFullscreen) {
                     if (document.fullscreenElement) {
                         document.exitFullscreen();
-                        cell.value = 'exit fullscreen';
+                        return { message: 'exit fullscreen' };
                     } else {
                         document.body.requestFullscreen();
-                        cell.value = 'enter fullscreen';
+                        return { message: 'enter fullscreen' };
                     }
                 }
-                cell.type = Status;
             },
 
             /**
              * Clear the screen
              */
-            cls(cell) {
+            cls(input) {
+                const cell = new Cell;
                 const results = document.getElementById('results');
                 results.innerHTML = 'clear cells';
                 cell.type = Status;
@@ -405,48 +458,44 @@ amending config files
             /**
              * Reload the page
              */
-            reload(cell) {
+            reload(input) {
                 if (!app.loaded) {
-                    cell.value = 'reload request ignored until app initialised';
-                    return;
+                    return { message: 'reload request ignored until app initialised' };
                 }
                 location.reload();
-                cell.toJSON = () => undefined;
+                return {};
             },
 
             /**
              * Change the theme
              */
-            theme(cell) {
-                const themeName = cell.raw.replace(/^\s*theme\s+/, '').trim();
+            theme(input) {
+                const themeName = input.replace(/^\s*theme\s+/, '').trim();
                 document.documentElement.setAttribute('data-theme', themeName);
-                cell.type = Status;
-                cell.value = `theme set to ${themeName}`;
+                const result = { message: `theme set to ${themeName}` };
                 if (!themes.includes(themeName)) {
-                    cell.value += ' (unknown theme)!';
+                    result.message += ' (unknown theme)!';
                 }
                 app.state.theme = themeName;
+                return result;
             },
 
             /**
              * List the themes
              */
-            themes(cell) {
+            themes(input) {
+                const cell = new Cell();
                 const themeName = document.documentElement.getAttribute('data-theme');
                 const themesNames = themes.map((name) => name === themeName ? name + ' *' : name);
-                cell.type = Status;
-                cell.value = themesNames.join('<br>');
-                if (!themes.includes(themeName)) {
-                    cell.value += ` ${themeName} unknown theme!`;
-                }
+                return { message: themesNames.join('<br>') };
             },
 
 
             /**
              * Show the command history
              */
-            history(cell) {
-                const toString = (cell, index) => `${index}: ${cell.raw}`
+            history(input) {
+                const cell = new Cell(input);
                 cell.value = app.history.join('<br>');
                 const cellMap = new Map();
                 cell.update = (time) => {
@@ -454,13 +503,15 @@ amending config files
                     cell.view.result.innerHTML = cell.value;
                 }
                 app.events.historyChange.add(cell);
+                return { cell };
             },
 
             /**
              * Show the list of cells
              */
-            cells(cell) {
-                const toString = (cell, index) => `${index}: ${cell.raw}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`;
+            cells(input) {
+                const cell = new Cell(input);
+                const toString = (cell, index) => `${index}: ${input}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`;
                 cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
                 cell.update = (time) => {
                     cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
@@ -469,7 +520,7 @@ amending config files
                     cell.view.result.style.gridTemplateColumns = `min-content min-content 1fr`;
                     app.cells.filter((cell) => cell.view.result).forEach((eachCell) => {
                         const indexNode = document.createElement('span');
-                        indexNode.innerHTML = `${app.cells.indexOf(eachCell)}:`;
+                        indexNode.innerHTML = `${eachCell.index}:`;
                         indexNode.classList.add('cells-list', 'cells-list-index');
                         cell.view.result.appendChild(indexNode);
                         indexNode.addEventListener('click', (event) => {
@@ -495,39 +546,38 @@ amending config files
                     });
                 };
                 app.events.historyChange.add(cell);
+                return { cell };
             },
 
             /**
              * perform a google search
              */
-            google(cell) {
-                const string = cell.raw.replace(/google\s+/, '');
+            google(input) {
+                const string = input.replace(/google\s+/, '');
                 const pattern = string.replace(/\s+/g, '+');
                 const url = `https://www.google.com/search?q=${pattern}`;
                 window.open(url, string, 'pop');
-                cell.value = `googling ${string}`;
-                cell.type = Status;
+                return { message: `googling ${string}` };
             },
 
             /**
              * Download a resource from the net
              */
-            wget(cell) {
-                const url = cell.raw.replace(/wget\s+/, '').replace(/\s+/g, '%20');
+            wget(input) {
+                const url = input.replace(/wget\s+/, '').replace(/\s+/g, '%20');
                 const name = url.split(/\//g).at(-1);
                 const link = document.createElement("a");
                 link.href = url;
                 link.download = name;
                 link.click();
-                cell.value = `fetching ${url}`;
-                cell.type = Status;
+                return { message: `fetching ${url}` };
             },
 
             /**
              * Set a cell size to its content
              */
-            fit(cell) {
-                const string = cell.raw.replace(/\s*fit\s*/, '');
+            fit(input) {
+                const string = input.replace(/\s*fit\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -556,15 +606,14 @@ amending config files
                     fit(cell);
                     result.push(`<${name}> now hidden`);
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * Set the 'hide' state for cells
              */
-            hide(cell) {
-                const string = cell.raw.replace(/\s*hide\s*/, '');
+            hide(input) {
+                const string = input.replace(/\s*hide\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -572,15 +621,14 @@ amending config files
                     cell.setMode('hidden');
                     result.push(`<${cell.name || cell.index}> now hidden`);
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * Toggle the 'hide' state for a cell
              */
-            unhide(cell) {
-                const string = cell.raw.replace(/\s*unhide\s*/, '');
+            unhide(input) {
+                const string = input.replace(/\s*unhide\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -588,15 +636,14 @@ amending config files
                     cell.clearMode('hidden');
                     result.push(`<${cell.name || cell.index}> now unhidden`);
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * Set the 'collapse' state for cell(s)
              */
-            collapse(cell) {
-                const string = cell.raw.replace(/\s*collapse\s*/, '');
+            collapse(input) {
+                const string = input.replace(/\s*collapse\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -609,15 +656,14 @@ amending config files
                     cell.view.cell.style.width = '';
                     cell.view.cell.style.height = '';
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * clear the 'collapse' state for cell(s)
              */
-            expand(cell) {
-                const string = cell.raw.replace(/\s*expand\s*/, '');
+            expand(input) {
+                const string = input.replace(/\s*expand\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -626,15 +672,14 @@ amending config files
                     const name = cell.name || cell.index;
                     result.push(`<${name}> now collapsed`);
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * Toggle the 'widget' state for a cell
              */
-            widget(cell) {
-                const string = cell.raw.replace(/\s*widget\s*/, '');
+            widget(input) {
+                const string = input.replace(/\s*widget\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -642,57 +687,58 @@ amending config files
                     const node = cell.view.result;
                     if (cell.view.cell.classList.contains('widget')) {
                         cell.lastState();
-                        result.push(`<${app.cells.indexOf(cell)}> no longer a widget`);
+                        result.push(`<${cell.index}> no longer a widget`);
                     } else {
                         cell.setState('widget');
-                        result.push(`<${app.cells.indexOf(cell)}> now a widget`);
+                        result.push(`<${cell.index}> now a widget`);
                     }
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                return { message: result.join('<br>') };
             },
 
             /**
              * display the cell in line with the other cells
              */
-            normal(cell) {
-                const string = cell.raw.replace(/\s*stick\s*/, '');
+            normal(input) {
+                const string = input.replace(/\s*stick\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
-                cells.forEach((cell) => cell.setState('normal'));
-                cell.value = result.join('<br>');
-                cell.type = Status;
+                cells.forEach((cell) => {
+                    cell.setState('normal');
+                    result.push(`<${cell.index}> put inline`);
+                });
                 app.layoutChange();
+                return { message: result.join('<br>') };
             },
 
             /**
              * Toggle the 'sticky' state for a cell
              */
-            stick(cell) {
-                const string = cell.raw.replace(/\s*stick\s*/, '');
+            stick(input) {
+                const string = input.replace(/\s*stick\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
                     if (cell.view.cell.classList.contains('sticky')) {
                         cell.lastState();
-                        result.push(`<${app.cells.indexOf(cell)}> now unstuck`);
+                        result.push(`<${cell.index}> now unstuck`);
                     } else {
                         cell.setState('sticky');
-                        result.push(`<${app.cells.indexOf(cell)}> now stuck`);
+                        result.push(`<${cell.index}> now stuck`);
                     }
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
                 app.layoutChange();
+                return { message: result.join('<br>') };
+
             },
 
             /**
              * Convert a cell to a window and set it's position
              */
-            window(cell) {
-                const string = cell.raw.replace(/\s*window\s*/, '');
+            window(input) {
+                const string = input.replace(/\s*window\s*/, '');
 
                 const args = getList(string);
                 const { cells, values } = args.reduce((results, value) => {
@@ -724,173 +770,93 @@ amending config files
                     }
                     result.push(`${cell.getName()} position fixed`);
                 });
-                cell.value = result.join('<br>');
-                cell.type = Status;
                 app.layoutChange();
+                return { message: result.join('<br>') };
             },
 
             /**
              * Set a background image
              */
-            background(cell) {
-                const string = cell.raw.replace(/\s*background\s*/, '');
+            background(input) {
+                const string = input.replace(/\s*background\s*/, '');
                 const url = string || 'https://taws.ch/Patterns/Boing.jpg';
                 if (url === 'none') {
                     document.body.style.backgroundImage = `none`;
                 } else {
                     document.body.style.backgroundImage = `url("${url}")`;
                 }
-                cell.type = Status;
-                cell.value = `background set to ${url}`;
                 app.state.background = url;
+                return { message: `background set to ${url}` };
             },
 
             /**
              * Log the content of the specified cell(s)
              */
-            log(cell) {
-                cell.type = Status;
-                if (!navigator.userActivation.isActive) {
-                    cell.value = 'delete ignored when reloading state';
-                    return;
-                }
-                if (!app.interactive) {
-                    cell.value = 'delete ignored in non-interactive mode';
-                    return;
-                }
-
-                const string = cell.raw.replace(/^\s*log\s*/, '');
+            log(input) {
+                const cell = new Cell();
+                const string = input.replace(/^\s*log\s*/, '');
                 const cells = getCells(string);
                 if (cells.length === 0) {
                     cell.value = `No cells logged!`;
                 } else if (cells.length === 1) {
-                    cell.value = `log cell ${app.cells.indexOf(cells[0])}`;
+                    cell.value = `log cell ${cells[0].index}`;
                 } else {
-                    cell.value = `log cells ${cells.map((cell) => app.cells.indexOf(cell)).join()}`;
+                    cell.value = `log cells ${cells.map((cell) => cell.index).join()}`;
                 }
                 app.cells = app.cells.filter((cell) => !cells.includes(cell));
                 cells.forEach((cell) => console.log(cell.content));
+                return { cell };
             },
 
             /**
              * Delete a cell
              */
-            delete(cell) {
-                cell.type = Status;
+            delete(input) {
                 if (!navigator.userActivation.isActive) {
-                    cell.value = 'delete ignored when reloading state';
-                    return;
+                    return { message: 'delete ignored when reloading state' };
                 }
                 if (!app.interactive) {
-                    cell.value = 'delete ignored in non-interactive mode';
-                    return;
+                    return { message: 'delete ignored in non-interactive mode' };
                 }
 
-                const string = cell.raw.replace(/^\s*delete\s*/, '');
+                const string = input.replace(/^\s*delete\s*/, '');
                 const len = app.cells.length;
                 const cells = getCells(string);
+
                 if (cells.length === 0) {
-                    cell.value = `No cells deleted!`;
-                } else if (cells.length === 1) {
-                    cell.value = `deleted cell ${app.cells.indexOf(cells[0])}`;
+                    return { message: `No cells deleted!` };
                 } else {
-                    cell.value = `deleted cells ${cells.map((cell) => app.cells.indexOf(cell)).join()}`;
+                    app.cells = app.cells.filter((cell) => !cells.includes(cell));
+                    cells.forEach((cell) => cell.remove());
+                    return { message: cells.map((cell) => `Deleted cell ${cell.index}` + cell.name ? ` (${cell.name})` : '') };
                 }
-                app.cells = app.cells.filter((cell) => !cells.includes(cell));
-                cells.forEach((cell) => cell.remove());
+                return { message: result.join('\n') };
             },
 
             /**
              * List the known commands
              */
-            actions(cell) {
-                cell.value = Object.keys(actions).map((action, index) => `${index}: ${action}`).join('<br>')
+            actions(input) {
+                const cell = new Cell();
+                cell.value = Object.keys(actions).map((action, index) => `${index}: ${action}`).join('<br>');
+                return { cell };
             },
 
             /**
              * List the known files
              */
-            files(cell) {
-                cell.value = Object.keys(named.files).map((file, index) => `${index}: ${file}`).join('<br>')
+            files(input) {
+                const cell = new Cell();
+                cell.value = Object.keys(named.files).map((file, index) => `${index}: ${file}`).join('<br>');
+                return { cell };
             },
 
             /**
              * Create a notes cell
              */
-            notes_old(cell) {
-                const string = cell.raw.replace(/^\s*(<[^>]+>:)?\s*/, '').replace(/^notes\s*/, '');
-                const index = app.cells.length;
-
-                const content = string ? getCells(string).map((cell) => cell.value).join('\n') : '';
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
-                }
-
-                const resolve = (str) => {
-                    return str.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            app.cells.at(getIndex(index)).value)
-                        .replace(/<([^>]+)>/g, (match, name) =>
-                            named.all[name] ?? match);
-                }
-
-                cell.view.result = document.createElement('pre');
-                cell.view.result.classList.add('notes');
-                cell.view.result.contentEditable = true;
-                cell.content = content;
-                cell.view.result.innerText = content || '<enter notes>';
-                cell.view.result.addEventListener('blur', (event) => {
-                    cell.content = cell.view.result.innerText;
-                    cell.view.result.innerText = resolve(cell.content) || `<enter note>`;
-                    cell.users.forEach((user) => user.update());
-                    saveState();
-                    inputNode.focus();
-                });
-                cell.view.result.addEventListener('focus', (event) => {
-                    if (cell.content) {
-                        cell.view.result.innerText = cell.content;
-                    } else {
-                        cell.view.result.innerText = '<enter note>';
-                        cell.view.result.selectionStart = 0;
-                        cell.view.result.selectionEnd = 12;
-                    }
-                });
-                cell.view.result.addEventListener('keydown', (event) => {
-                    if (event.key === 'Escape') {
-                        cell.view.result.blur();
-                    }
-                });
-                Object.defineProperties(cell, {
-                    value: {
-                        enumerable: true,
-                        get: () => resolve(cell.content),
-                    },
-                    content: {
-                        enumerable: true,
-                        get: () => cell.view.result.innerText,
-                        set: (value) => {
-                            cell.view.result.innerText = value;
-                            const users = Array.from(cell.users);
-                            users.forEach((user) => user.update());
-                        },
-                    },
-                });
-                cell.focus = cell.view.result;
-            },
-
-            /**
-             * Create a notes cell
-             */
-            html(cell) {
-                const string = cell.raw.replace(/^html\s*/, '');
+            html(input) {
+                const cell = new Cell(input);
+                const string = input.replace(/^html\s*/, '');
                 const index = app.cells.length;
 
                 const cells = getReferences(string, cell);
@@ -918,13 +884,15 @@ amending config files
                     cell.value = resolve(cell.content);
                     cell.view.result.innerHTML = cell.value;
                 };
+                return { cell };
             },
 
             /**
              * Create a mermaid diagram cell
              */
-            diagram(cell) {
-                const string = cell.raw.replace(/^diagram\s*/, '');
+            diagram(input) {
+                const cell = new Cell(input);
+                const string = input.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
                 const cells = getReferences(string, cell);
@@ -960,79 +928,15 @@ amending config files
                     },
                 });
                 //cell.update();
+                return { cell };
             },
 
             /**
              * Create a js cell
              */
-            js_old(cell) {
-                const string = cell.raw.replace(/^js\s*/, '');
-                const index = app.cells.length;
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
-                }
-
-                cell.view.result = document.createElement('div');
-                cell.view.result.classList.add('result');
-                const node = document.createElement('textarea');
-                node.placeholder = 'Enter code';
-                node.rows = 20;
-                node.value = string;
-                node.classList.add('code-area');
-                node.addEventListener('blur', (event) => {
-                    evaluate();
-                    cell.users.entries().filter((cell) => cell.update).forEach((cell) => cell.update);
-                    saveState();
-                    inputNode.focus();
-                });
-                node.addEventListener('keydown', (event) => {
-                    if (event.key === 'Escape') {
-                        node.blur();
-                    }
-                });
-                cell.view.result.appendChild(node);
-                const evaluate = () => {
-                    const expr = node.value.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`);
-                    try {
-                        const args = string.split(/[\s+]/);
-                        const func = new Function('app', ...args, `${expr}`);
-                        const result = func(app);
-                        app.setStatus(result);
-                        return result;
-                    } catch (error) {
-                        app.setStatus(error.message);
-                        return error.message;
-                    }
-                };
-                Object.defineProperties(cell, {
-                    value: {
-                        enumerable: true,
-                        get: evaluate,
-                    },
-                    content: {
-                        enumerable: true,
-                        get: () => node.value,
-                        set: (value) => node.value = value,
-                    },
-                });
-                cell.focus = node;
-            },
-
-            /**
-             * Create a js cell
-             */
-            js(cell) {
-                const string = cell.raw.replace(/^js\s*/, '');
+            js(input) {
+                const cell = new Cell(input);
+                const string = input.replace(/^js\s*/, '');
                 const index = app.cells.length;
 
                 const cells = getReferences(string, cell);
@@ -1063,98 +967,124 @@ amending config files
                     cell.view.result.innerText = cell.value;
                     cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
                 };
+                return { cell };
             },
 
 
             /**
              * Reset command history
              */
-            reset(cell) {
+            reset(input) {
+                const cell = new Cell(input);
                 cell.prompt = 'Reset all? (Y/n)';
                 cell.action = (input) => {
                     app.action = null;
                 };
+                return { cell };
             },
 
             /**
              * Add a date to the named items
              */
-            date(cell) {
-                const string = cell.raw.replace(/date\s*/, '');
+            date(input) {
+                const string = input.replace(/date\s*/, '');
                 const parts = string.split(/(\s+)/g);
                 const date = parts.pop();
                 const name = parts.join('').trim();
                 const [day, month, year] = date.split(/[-/_]/g).map((s) => parseInt(s));
-                named.dates[name] = named.dates[name] || [];
-                named.dates[name].push(new Date(year < 2000 ? year + 2000 : year, month - 1, day));
+                named.dates[name] = named.dates[name] || {
+                    eval(cell) {
+                        cell.value = this.value[0];
+                    },
+                    value: [],
+                };
+                named.dates[name].value.push(new Date(year < 2000 ? year + 2000 : year, month - 1, day));
                 addNamedItem(name);
-                cell.value = named.dates[name];
                 app.notifyListeners('dates', { action: 'add', value: { name: named.dates[name] } });
+                return { message: `Added date: ${name} (${named.dates[name].toDateString()})` };
             },
 
             /**
              * List dates
              */
-            dates(cell) {
+            dates(input) {
+                const cell = new Cell(input);
                 cell.value = Object.entries(named.dates)
                     .map(([name, date]) => `${name}: ${date.toDateString()}`)
                     .join('<br>');
+                return { cell };
             },
 
 
             /**
              * Add a site to the named items
              */
-            site(cell) {
-                const string = cell.raw.replace(/site\s*/, '');
+            site(input) {
+                const string = input.replace(/site\s*/, '');
                 const [name, addr] = string.split(/\s*http/);
                 const url = `http${addr}`;
-                this[name] = (cell) => {
-                    window.open(url, '_blank');
-                    cell.value = `<a href="url">${name}</a>`;
+                named.sites[name] = {
+                    eval(cell) {
+                        const windowReference = window.open(url, name, 'pop');
+                        named.sites[name] = url;
+                        if (windowReference) {
+                            windowReference.focus();
+                        }
+                        cell.type = Status;
+                        cell.value = `<a href="url">${name}</a>`;
+                    },
+                    url,
                 };
-                named.sites[name] = url;
                 addNamedItem(name);
-                cell.type = Status;
-                cell.value = `added shortcut ${name} -> ${url}`;
                 saveState();
+                return { message: `Added shortcut ${name} -> ${url}` };
             },
 
             /**
              * List sites
              */
-            sites(cell) {
+            sites(input) {
+                const cell = new Cell(input);
                 cell.value = Object.entries(named.sites)
                     .map(([name, item]) => `${name}: <a href="${item.url}">${item.url}</a>`)
                     .join('<br>');
+                return { cell };
             },
 
             /**
              * Add an abbreviation
              */
-            abbr(cell) {
-                const string = cell.raw.replace(/abbr\s*/, '');
+            abbr(input) {
+                const string = input.replace(/abbr\s*/, '');
                 const parts = string.split(/(\s+)/);
                 const name = parts.shift();
                 const expansion = parts.join('').trim();
-                named.abbreviations[name] = expansion;
+                named.abbreviations[name] = {
+                    eval(cell) {
+                        cell.value = expansion
+                    },
+                };
                 addNamedItem(name);
-                cell.value = `${name} -> ${expansion}`;
+                return { message: `Added abbreviation ${name} -> ${expansion}` };
             },
 
             /**
              * List abbreviations
              */
-            abbreviations(cell) {
+            abbreviations(input) {
+                const cell = new Cell(input);
                 cell.value = Object.entries(named.abbreviations)
                     .map(([name, expansion]) => `${name}: ${expansion}`)
                     .join('<br>');
+                return cell;
             },
 
             /**
              * Load a file using a handle in the database
              */
-            load(cell) {
+            load(input) {
+                const cell = new Cell(input);
+
                 if (!navigator.userActivation.isActive) {
                     cell.value = 'load request ignored in script';
                     return;
@@ -1174,26 +1104,27 @@ amending config files
                     }
                 };
 
-                const file = cell.raw.replace(/^\s*load\s*/, '');
+                const file = input.replace(/^\s*load\s*/, '');
                 if (file) {
                     load(cell, file, (contents) => cell.view.result.innerHTML = `<pre>${contents}</pre>`);
                 } else {
                     cell.value = `Select File...`;
                     chooseFile();
                 }
+                return { cell }
             },
 
             /**
              * Save the contents of the specified cells
              */
-            save(cell) {
-                const string = cell.raw.replace(/^\s*save\s*/, '');
+            save(input) {
+                const string = input.replace(/^\s*save\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
                 const cells = getReferences(string.replace(pattern, ''), cell);
 
                 let fileHandle;
-                cell.update = async () => {
+                const save = async () => {
                     if (fileHandle) {
                         const contents = cells.map((cell) => cell.value).join('\n');
                         // Create a FileSystemWritableFileStream to write to.
@@ -1209,7 +1140,7 @@ amending config files
                     fileHandle = await window.showSaveFilePicker(options);
                     const file = await fileHandle.getFile();
                     cell.contents = file.name;
-                    cell.raw += ` as ${file.name}`;
+                    input += ` as ${file.name}`;
                     saveFileHandles([{ name: file.name, handle: fileHandle }]);
                 }
 
@@ -1228,41 +1159,67 @@ amending config files
                     };
                     pickfile();
                 }
-                cell.update();
+                save();
+
+                return { messsage: `Saving ${cells.map((cell) => cell.index).join(', ')}` };
             },
 
             /**
              * Save the session
              */
-            'save session'(cell) {
-                const string = cell.raw.replace(/^\s*save session\s*/, '');
+            'save session'(input) {
+                const string = input.replace(/^\s*save session\s*/, '');
                 const pattern = /\s+as (\S+)/;
-                const filename = string.match(pattern)?.[1]
+                const filename = string.match(pattern)?.[1];
+                const content = JSON.stringify({ app, named }, null, 2);
+                downloadText(content, filename);
+                return { message: 'Session saved' };
+            },
 
-                cell.update = async () => {
-                    if (cell.fileHandle) {
+            /**
+             * Load a session
+             */
+            'load session'(input) {
+                const string = input.replace(/^\s*load session\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1];
+                loadText(filename);
+                return { message: 'Loading session' };
+            },
+
+            /**
+             * Save the session
+             */
+            'watch session'(input) {
+                const string = input.replace(/^\s*save session\s*/, '');
+                const pattern = /\s+as (\S+)/;
+                const filename = string.match(pattern)?.[1];
+                let fileHandle;
+
+                const save = async () => {
+                    if (fileHandle) {
                         const contents = JSON.stringify({ app, named });
                         // Create a FileSystemWritableFileStream to write to.
-                        const writable = await cell.fileHandle.createWritable();
+                        const writable = await fileHandle.createWritable();
                         // Write the contents of the file to the stream.
                         await writable.write(contents);
                         // Close the file and write the contents to disk.
                         await writable.close();
+                        app.setStatus(`Saved session to ${fileHandle.name}`);
                     }
                 }
 
                 const pickfile = async (options) => {
-                    cell.fileHandle = await window.showSaveFilePicker(options);
-                    const file = await cell.fileHandle.getFile();
-                    cell.contents = file.name;
-                    cell.raw += ` as ${file.name}`;
-                    saveFileHandles([{ name: file.name, handle: cell.fileHandle }]);
-                    cell.update();
+                    fileHandle = await window.showSaveFilePicker(options);
+                    const file = await fileHandle.getFile();
+                    raw += ` as ${file.name}`;
+                    saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                    update();
                 }
 
-                if (cell.filename && named.files[filename]) {
-                    cell.fileHandle = named.files[filename];
-                    cell.update();
+                if (filename && named.files[filename]) {
+                    fileHandle = named.files[filename];
+                    save();
                 } else {
                     const options = {
                         types: [
@@ -1276,17 +1233,18 @@ amending config files
                     };
                     pickfile(options);
                 }
+                save();
+                return { message: 'Session saved' };
             },
 
             /**
              * Show a status bar
              */
-            'status bar'(cell) {
-                const string = cell.raw.replace(/^\s*status bar\s*/, '');
+            'status bar'(input) {
+                const string = input.replace(/^\s*status bar\s*/, '');
 
                 let update;
 
-                cell.type = Status;
                 if (document.getElementById('status-bar')) {
                     document.getElementById('status-bar').remove();
                     update = false;
@@ -1300,6 +1258,11 @@ amending config files
                 }
 
                 const node = document.getElementById('status-bar');
+
+                const position = document.createElement('div');
+                position.classList.add('status-bar-position');
+                node.appendChild(position);
+
                 const network = document.createElement('div');
                 network.classList.add('status-bar-time');
                 node.appendChild(network);
@@ -1309,6 +1272,7 @@ amending config files
                 node.appendChild(time);
 
                 const refresh = () => {
+                    position.innerHTML = `Line: ${app.line} Char: ${app.char}`;
                     network.innerHTML = navigator.connection.type || '';
                     const now = new Date();
                     time.innerHTML = now.toLocaleTimeString();
@@ -1317,25 +1281,26 @@ amending config files
                     }
                 }
                 refresh();
+                return { message: 'Added status bar' };
             },
 
 
             /**
-             * Save the session
+             * Load a session
              */
-            'load session'(cell) {
-                const string = cell.raw.replace(/^\s*load session\s*/, '');
+            'read session'(input) {
+                const string = input.replace(/^\s*load session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
 
-                const update = async () => {
-                    if (cell.filename && named.files[cell.filename]) {
-                        const handle = named.files[cell.filename];
+                const load = async () => {
+                    if (filename && named.files[filename]) {
+                        const handle = named.files[filename];
                         if (await verifyPermission(handle)) {
                             const file = await handle.getFile();
-                            cell.contents = await file.text();
+                            const content = await file.text();
                             try {
-                                const state = JSON.parse(cell.contents);
+                                const state = JSON.parse(content);
                                 restoreState(state);
                             } catch (error) {
                                 app.setStatus(error.message);
@@ -1352,7 +1317,7 @@ amending config files
                         cell.filename = fileHandle.name;
                         named.files[cell.filename] = fileHandle;
                         const file = await fileHandle.getFile();
-                        cell.raw += ` ${cell.filename}`;
+                        input += ` ${cell.filename}`;
                         saveFileHandles([{ name: cell.filename, handle: fileHandle }]);
                         update();
                     }
@@ -1363,31 +1328,33 @@ amending config files
                 } else if ('showOpenFilePicker' in self) {
                     chooseFile();
                 }
+                return { message: 'Loading session' };
             },
 
-            saveSvg(cell) {
-                const string = cell.raw.replace(/^\s*saveSvg\s*/, '');
+            saveSvg(input) {
+                const string = input.replace(/^\s*saveSvg\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
                 const cells = getReferences(string.replace(pattern, ''), cell);
 
-                cell.update = () => {
+                const update = () => {
                     cells.filter((cell) => cell.svg).forEach((cell, index) =>
                         cells.length > 1 ? convertSVGtoImg(cell.svg, `${filename}_${index}.png`) : convertSVGtoImg(cell.svg, `${filename}.png`));
                 };
 
-                cell.update();
+                update();
+                return { message: 'Svg saved' };
             },
 
             /**
              * Load user specified data file
              */
-            loadData(cell) {
+            loadData(input) {
                 if (!navigator.userActivation.isActive) {
-                    cell.value = 'loadData request ignored in script';
-                    return;
+                    return { message: 'loadData request ignored in script' };
                 }
-                const file = cell.raw.replace(/^\s*loadData\s*/, '');
+                const cell = new Cell(input);
+                const file = input.replace(/^\s*loadData\s*/, '');
 
                 const process = (contents) => {
                     cell.value = contents;
@@ -1471,7 +1438,7 @@ amending config files
                     const [fileHandle] = await window.showOpenFilePicker();
                     if (fileHandle) {
                         const file = await fileHandle.getFile();
-                        cell.raw += ` ${file.name}`;
+                        input += ` ${file.name}`;
                         cell.content = file.name;
                         const contents = await file.text();
                         process(contents);
@@ -1487,6 +1454,7 @@ amending config files
                         chooseFile();
                     }
                 }
+                return { cell };
             },
         }
 
@@ -1542,6 +1510,7 @@ amending config files
 
 
         class Cell {
+            static id = 0;
             constructor(raw, content, expr, resolved, uses = []) {
                 this.raw = raw;
                 this.timestamp = new Date();
@@ -1553,13 +1522,16 @@ amending config files
                 this.users = new Set();
                 this.view = {};
                 this.modes = new Set();
+                this.index = Cell.id++;
             }
+            /*
             get index() {
-                return app.cells.indexOf(this);
+                return this.index;
             }
+                */
             getName() {
                 const name = [];
-                name.push(`${app.cells.indexOf(this)}:`);
+                name.push(`${this.index}:`);
                 if (this.name) {
                     name.push(this.name);
                 }
@@ -1581,7 +1553,7 @@ amending config files
                 this.view.index.classList.add('index');
                 this.view.cell.appendChild(this.view.index);
                 this.view.index.addEventListener('click', (event) => {
-                    const str = ` <${app.cells.indexOf(this)}>`;
+                    const str = ` <${this.index}>`;
                     const pos = inputNode.selectionStart;
                     inputNode.value = inputNode.value.slice(0, pos) + str + inputNode.value.slice(pos);
                     inputNode.focus();
@@ -3134,14 +3106,14 @@ amending config files
                 deserialiseContent(nodes) {
                     nodes.forEach((node) => {
                         if (!node.data) {
-                            node = {date: node, parts: []};
+                            node = { date: node, parts: [] };
                         }
                         node.data = node.data || {};
                         node.data[meta] = {};
                     });
 
                     const all = nodes.map((source) => {
-                        const node = source.data;
+                        const node = source.data || source;
                         node[meta].parts = source.parts?.map((part) => nodes[part].data) || [];
                         node[meta].parts.forEach((part) => part[meta].parent = node);
                         return node;
@@ -3218,7 +3190,7 @@ amending config files
                     }
                     windows.forEach((cell) => {
                         const box = cell.view.cell.getBoundingClientRect();
-                        this.view.result.appendChild(makeSpan(`${app.cells.indexOf(cell)}:`));
+                        this.view.result.appendChild(makeSpan(`${cell.index}:`));
                         this.view.result.appendChild(makeSpan(cell.name || ''));
                         this.view.result.appendChild(makeSpan(cell.command));
                         this.view.result.appendChild(makeSpan(box.x));
@@ -3310,9 +3282,13 @@ amending config files
             link.dispatchEvent(event);
         }
 
-
         const app = {
             loaded: false,
+            content: [''],
+            activeEditor: null,
+            editors: [],
+            line: 0,
+            char: 0,
             history: [],
             saveCommand(command) {
                 this.history.push(command);
@@ -3411,10 +3387,6 @@ amending config files
                 const statusNode = document.getElementById('status');
                 statusNode.innerHTML = this.status.join('<br>');
                 statusNode.classList.remove('fade');
-                /*
-                if (app.timeout) {
-                    clearTimeout(app.timeout);
-                }*/
                 const remove = () => {
                     const pos = this.status.indexOf(text);
                     this.status.splice(pos, 1);
@@ -3455,6 +3427,18 @@ amending config files
          * <name>[:#=] command parameters
          */
         function evaluate(raw) {
+            /*
+            {
+                const command = any(commands);
+                const name = repeat(any('abcdefghijklmnopqrtsuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ '));
+                const type = any(':#=}');
+                const named = sequence('<', name, '>', optional(type));
+                const args = sequence(name, repeat(sequence(', ', named)));
+                const commandLine = sequence(optional(named), command, args);
+            }
+            */
+            const result = {};
+
             const cell = new Cell(raw);
             const namePattern = /^\s*<([^>]+)>([:#=])\s*/;
             cell.name = raw.match(namePattern)?.[1];
@@ -3466,13 +3450,13 @@ amending config files
             }[raw.match(namePattern)?.[2]];
             cell.command = command;
 
-            if (actions[command] !== undefined) {
-                return actions[command](cell) ?? cell;
+            if (actions[command]) {
+                return actions[command](raw) ?? cell;
             } else {
                 const commands = Object.getOwnPropertyNames(actions).sort((a, b) => b.length - a.length);
                 const match = commands.find((match) => command.startsWith(match));
                 if (match) {
-                    return actions[match](cell) ?? cell;
+                    return actions[match](raw) ?? cell;
                 }
             }
 
@@ -3497,11 +3481,13 @@ amending config files
                 }, { cells: [], values: [] });
 
                 cell.init(string, cells, values);
-                return cell;
+                result.cell = cell;
+                return result;
             }
             if (named.all[command]) {
                 named.all[command].eval(cell);
-                return cell;
+                result.cell = cell;
+                return result;
             }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % app.cells.length;
             const link = (from, to) => {
@@ -3548,7 +3534,8 @@ amending config files
             }
             cell.update();
 
-            return cell;
+            result.cell = cell;
+            return result;
         }
 
         /**
@@ -3570,6 +3557,22 @@ amending config files
         }
 
         /**
+         * Add a cell to the session
+         */
+        function addCell(cell) {
+            showCell(cell, app.cells.length);
+            app.namedCells[cell.name] = cell;
+            app.cells.push(cell);
+            if (cell.update) {
+                cell.update();
+            }
+            app.setPrompt(cell.prompt);
+            if (cell.focus) {
+                cell.focus.focus();
+            }
+        }
+
+        /**
          * Process the input
          */
         function process(event) {
@@ -3578,16 +3581,15 @@ amending config files
             }
             const str = (app.cellIndex === app.cells.length && inputNode.value === '') ? app.cells.at(-1).raw : inputNode.value;
             app.interactive = true;
-            const cell = evaluate(str);
+            const result = evaluate(str);
             app.interactive = false;
 
-            if (cell.type === Status) {
-                app.setStatus(cell.value);
-            } else {
-                showCell(cell, app.cells.length);
+            if (result.message) {
+                app.setStatus(result.messgae);
             }
-            app.namedCells[cell.name] = cell;
-            app.cells.push(cell);
+            if (result.cell) {
+                addCell(result.cell);
+            }
 
             app.events.historyChange.forEach((cell) => cell.update());
 
@@ -3598,14 +3600,7 @@ amending config files
                 app.historyIndex = app.history.length;
                 inputNode.value = '';
             }
-            if (cell.update) {
-                cell.update();
-            }
-            app.setPrompt(cell.prompt);
             saveState();
-            if (cell.focus) {
-                cell.focus.focus();
-            }
             inputNode.removeAttribute('list');
         }
 
@@ -3755,40 +3750,43 @@ amending config files
         function restoreState(state) {
             state.app = state.app ?? state.context;
             state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
-                const cell = evaluate(storedCell.raw);
-                if (storedCell.content) {
-                    if (cell.setContent) {
-                        cell.setContent(storedCell.content);
-                    } else {
-                        cell.content = storedCell.content;
+                const result = evaluate(storedCell.raw);
+                const cell = result.cell;
+                if (cell) {
+                    if (storedCell.content) {
+                        if (cell.setContent) {
+                            cell.setContent(storedCell.content);
+                        } else {
+                            cell.content = storedCell.content;
+                        }
                     }
-                }
-                if (storedCell.settings) {
-                    cell.setSettings(storedCell.settings);
-                }
+                    if (storedCell.settings) {
+                        cell.setSettings(storedCell.settings);
+                    }
 
-                cell.timestamp = new Date(storedCell.timestamp);
-                if (cell.type === Status) {
-                    app.setStatus(cell.value);
-                } else {
-                    showCell(cell, app.cells.length);
-                    app.cells.push(cell);
-                    app.namedCells[cell.name] = cell;
-                    if (storedCell.view) {
-                        cell.setState(storedCell.view.state);
-                        if (storedCell.view.box) {
-                            cell.view.cell.style.left = `${storedCell.view.box.x}px`;
-                            cell.view.cell.style.top = `${storedCell.view.box.y}px`;
-                            cell.view.cell.style.width = `${Math.max(storedCell.view.box.width, 100)}px`;
-                            cell.view.cell.style.height = `${Math.max(storedCell.view.box.height, 100)}px`;
-                        }
-                        if (storedCell.view.modes) {
-                            storedCell.view.modes.forEach((mode) => cell.setMode(mode));
+                    cell.timestamp = new Date(storedCell.timestamp);
+                    if (cell.type === Status) {
+                        app.setStatus(cell.value);
+                    } else {
+                        showCell(cell, app.cells.length);
+                        app.cells.push(cell);
+                        app.namedCells[cell.name] = cell;
+                        if (storedCell.view) {
+                            cell.setState(storedCell.view.state);
+                            if (storedCell.view.box) {
+                                cell.view.cell.style.left = `${storedCell.view.box.x}px`;
+                                cell.view.cell.style.top = `${storedCell.view.box.y}px`;
+                                cell.view.cell.style.width = `${Math.max(storedCell.view.box.width, 100)}px`;
+                                cell.view.cell.style.height = `${Math.max(storedCell.view.box.height, 100)}px`;
+                            }
+                            if (storedCell.view.modes) {
+                                storedCell.view.modes.forEach((mode) => cell.setMode(mode));
+                            }
                         }
                     }
-                }
-                if (cell.update) {
-                    cell.update();
+                    if (cell.update) {
+                        cell.update();
+                    }
                 }
             });
             app.cellIndex = app.cells.length;
@@ -3803,7 +3801,7 @@ amending config files
                 document.body.style.backgroundImage = `url("${app.state.background}")`;
             }
             if (state.app.statusBar) {
-                actions['status bar']({ raw: '' });
+                actions['status bar']('');
             }
             app.history.push(...state.app.history);
             app.historyIndex = app.history.length;
@@ -4068,6 +4066,194 @@ amending config files
         });
         inputNode.focus();
 
+        const workspaceNode = document.getElementById('workspace');
+
+        document.addEventListener('selectionchange', (event) => {
+            let node = document.activeElement;
+            if (app.activeEditor) {
+                if (app.activeEditor.node.contains(document.activeElement)) {
+                    app.activeEditor.selectionChange(event);
+                    return;
+                } else {
+                    app.activeEditor.blur();
+                }
+            }
+            app.editors.forEach((editor) => {
+                if (editor.node.contains(document.activeElement)) {
+                    editor.selectionChange(event);
+                }
+            });
+        });
+
+        class Editor {
+            constructor(node, start = 0, end = -1) {
+                /**
+                 * Process a keypress in the workspace
+                 */
+                node.addEventListener('keydown', (event) => {
+                    const selection = document.getSelection();
+                    const line = selection.anchorNode.parentElement;
+
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        this.addLine();
+                    }
+
+                    const text = line.innerText;
+                    app.content[this.currentLine] = text;
+                    console.log(app.content);
+                });
+                this.node = node;
+                this.start = start;
+                this.end = end;
+                this.current = node.querySelector('.line');
+                this.currentLine = start;
+            }
+            selectionChange(event) {
+                const selection = document.getSelection();
+                const anchor = selection.anchorNode;
+                const line = (anchor instanceof Text) ? anchor.parentElement : anchor;
+                const lineNumber = parseInt(line.parentElement.dataset.line);
+                const char = selection.anchorOffset;
+                app.line = lineNumber;
+                app.char = char;
+                this.currentLine = lineNumber;
+                const current = document.querySelector('.current-line');
+                if (current) {
+                    current.classList.remove('current-line');
+                }
+                line.classList.add('current-line');
+            }
+            blur() {
+
+            }
+            get last() {
+                return app.content.length + this.end;
+            }
+            get content() {
+                return app.content.slice(this.start, this.end);
+            }
+
+            /**
+             * Add a line to the current node.
+             */
+            addLine() {
+                const lineNumber = document.createElement('span');
+                lineNumber.contentEditable = false;
+                lineNumber.classList.add('line-number');
+
+                const newLine = document.createElement('span');
+                newLine.classList.add('line');
+
+                if (this.currentLine === this.last) {
+                    lineNumber.innerHTML = this.last + 2;
+                    this.node.appendChild(lineNumber);
+
+                    newLine.dataset.line = this.last + 1;
+                    this.node.appendChild(newLine);
+                } else {
+                    this.node.insertBefore(newLine, line.nextSibling);
+
+                    lineNumber.innerHTML = lines.length + 1;
+                    this.node.insertBefore(lineNumber, line.nextSibling);
+
+                    let index = this.start;
+                    for (const line of node.querySelectorAll('.line-number')) {
+                        line.innerHTML = ++index;
+                    }
+                }
+                const selection = document.getSelection();
+            }
+        }
+        app.activeEditor = new Editor(workspaceNode);
+
+        
+        function getLineElement(node) {
+    while (node && !node.classList?.contains('line')) {
+        node = node.parentElement;
+    }
+    return node;
+}
+
+function getCurrentLine() {
+    const selection = document.getSelection();
+    if (selection.getRangeAt && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        return getLineElement(range.startContainer);
+    }
+}
+
+function breakAtCursor() {
+    const selection = document.getSelection();
+    if (selection.getRangeAt && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        const element = getLineElement(range.startContainer);
+        const lineNumber = document.createElement('span');
+        lineNumber.classList.add('line-number');
+        lineNumber.contentEditable = false;
+        const line = document.createElement('span');
+        line.classList.add('line');
+        line.innerHTML = range.endContainer.textContent.slice(range.endOffset);
+        range.startContainer.textContent = range.startContainer.textContent.slice(0, range.startOffset);
+        element.after(lineNumber, line);
+        selection.setPosition(line, 0);
+        updateLineNumbers();
+    }
+}
+
+function updateLineNumbers() {
+    let lineNumber = 0;
+    for (const node of document.querySelectorAll('.line-number')) {
+        node.innerText = ++lineNumber;
+    }
+    let index = 0;
+    for (const node of document.querySelectorAll('.line')) {
+        node.dataset.inex = index++;
+    }
+}
+
+let lineNode;
+document.addEventListener('selectionchange', (event) => {
+    const selection = document.getSelection();
+    if (selection.getRangeAt && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        const node = getLineElement(range.startContainer);
+        if (node) {
+            const newLineNode = node.previousSibling;
+            console.log(newLineNode.innerText);
+            if (newLineNode && newLineNode !== lineNode) {
+                if (lineNode) {
+                    lineNode.classList.remove('current-line');
+                }
+                newLineNode.classList.add('current-line');
+            }
+            lineNode = newLineNode;
+        }
+    }
+});
+
+const content = [];
+for (const node of document.querySelectorAll('.line')) {
+    content.push(node.innerText);
+}
+
+const mainNode = document.getElementById('main');
+mainNode.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        breakAtCursor();
+    }
+});
+mainNode.addEventListener('keyup', (event) => {
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+        updateLineNumbers();
+    }
+    const node = getCurrentLine();
+    content[parseInt(node.dataset.index)] = node.innerText;
+});
+        
+        
+        
     </script>
 </body>
 
