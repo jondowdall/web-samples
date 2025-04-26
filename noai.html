@@ -11,7 +11,6 @@ markdown
 better handling of file access when api not present
 web midi
 
-don't add named items to actions?
 amending config files
 -->
 
@@ -27,7 +26,7 @@ amending config files
     <div id="header"></div>
     <div id="main">
         <div id="workspace" contenteditable="plaintext-only">
-            <span class="line-number" contenteditable="false">1</span><span class="line" data-line="0"></span>
+            <span class="line-number" contenteditable="false">1</span><span class="line"></span>
         </div>
         <div id="results"></div>
         <div id="input-area">
@@ -418,6 +417,39 @@ amending config files
          *
          */
         const actions = {
+            /**
+             * List the available actions.
+             */
+            actions() {
+                if (!currentLine.output) {
+                    currentLine.output = currentLine.output || document.createElement('div');
+                    currentLine.output.classList.add('output');
+                    currentLine.output.contentEditable = false;
+                    const newLine = createLineNodes();
+                    nodes.push(newLine);
+                    currentLine.line.after(currentLine.output, newLine.lineNumber, newLine.line);
+                }
+                Object.keys(actions).forEach((action) => {
+                    const node = document.createElement('div');
+                    node.innerText = action;
+                    node.addEventListener('mousedown', (event) => {
+                        event.preventDefault();
+                        const range = document.getSelection().getRangeAt(0);
+                        if (range) {
+                            range.deleteContents();
+                            range.insertNode(document.createTextNode(action));
+                        }
+                    });
+                    currentLine.output.appendChild(node);
+                });
+                updateLineNumbers();
+                const next = nodes[currentLineNumber + 1];
+                if (next) {
+                    document.getSelection().setPosition(next.line, 0);
+                    next.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                }
+            },
+
             /**
              * Toggle fullscreen mode
              */
@@ -836,7 +868,7 @@ amending config files
             /**
              * List the known commands
              */
-            actions(input) {
+            actions_cell(input) {
                 const cell = new Cell();
                 cell.value = Object.keys(actions).map((action, index) => `${index}: ${action}`).join('<br>');
                 return { cell };
@@ -3752,8 +3784,10 @@ amending config files
             state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
                 const result = evaluate(storedCell.raw);
                 const cell = result.cell;
+                insertText(storedCell.raw, currentLine);
                 if (cell) {
                     if (storedCell.content) {
+                        insertText(storedCell.content, currentLine);
                         if (cell.setContent) {
                             cell.setContent(storedCell.content);
                         } else {
@@ -3806,6 +3840,12 @@ amending config files
             app.history.push(...state.app.history);
             app.historyIndex = app.history.length;
             app.historyChange();
+
+            updateLineNumbers();
+            currentLineNumber = nodes.length - 1;
+            currentLine = nodes[currentLineNumber];
+            document.getSelection().setPosition(currentLine.line, 0);
+            currentLine.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
         }
 
         /**
@@ -3987,7 +4027,7 @@ amending config files
                     cell.content = file.name;
                     cell.value = reader.result;
                     cell.view.result.innerHTML = `<pre>${reader.result}</pre>`;
-                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' })
+                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
                 });
                 reader.readAsText(file);
 
@@ -4067,193 +4107,282 @@ amending config files
         inputNode.focus();
 
         const workspaceNode = document.getElementById('workspace');
+        /*
+                document.addEventListener('selectionchange', (event) => {
+                    let node = document.activeElement;
+                    if (app.activeEditor) {
+                        if (app.activeEditor.node.contains(document.activeElement)) {
+                            app.activeEditor.selectionChange(event);
+                            return;
+                        } else {
+                            app.activeEditor.blur();
+                        }
+                    }
+                    app.editors.forEach((editor) => {
+                        if (editor.node.contains(document.activeElement)) {
+                            editor.selectionChange(event);
+                        }
+                    });
+                });
+                */
 
-        document.addEventListener('selectionchange', (event) => {
-            let node = document.activeElement;
-            if (app.activeEditor) {
-                if (app.activeEditor.node.contains(document.activeElement)) {
-                    app.activeEditor.selectionChange(event);
-                    return;
-                } else {
-                    app.activeEditor.blur();
+
+        /**
+         * Return the line element of the current line
+         */
+        function getCurrentLine() {
+            const selection = document.getSelection();
+            if (selection.getRangeAt && selection.rangeCount) {
+                const range = selection.getRangeAt(0);
+                const element = range.startContainer.closest ? range.startContainer : range.startContainer.parentElement;
+                return nodes.find((node) => node.line === element.closest('.line'));
+            }
+        }
+
+        /**
+         * Create line nodes
+         */
+        function createLineNodes() {
+            const lineNumber = document.createElement('span');
+            lineNumber.classList.add('line-number');
+            lineNumber.contentEditable = false;
+
+            const line = document.createElement('span');
+            line.classList.add('line');
+
+            return { lineNumber, line };
+        }
+
+        /**
+         * Insert a line break at the selection
+         */
+        function breakAtCursor() {
+            const selection = document.getSelection();
+            if (selection.getRangeAt && selection.rangeCount) {
+                const range = selection.getRangeAt(0);
+                if (!range.collapsed) {
+                    range.deleteContents();
+                }
+                const startLine = getCurrentLine();
+                if (startLine) {
+                    const indent = startLine.line.innerText.replace(/\S.*/, '');
+                    const range = selection.getRangeAt(0);
+                    const before = range.cloneRange();
+                    const after = range.cloneRange();
+                    before.setStart(startLine.line, 0);
+                    after.setEndAfter(startLine.line);
+
+                    const lineNumber = document.createElement('span');
+                    lineNumber.classList.add('line-number');
+                    lineNumber.contentEditable = false;
+
+                    if (indent.length) {
+                        after.insertNode(document.createTextNode(indent));
+                    }
+                    const last = startLine.output || startLine.line;
+                    last.after(lineNumber, after.extractContents());
+                    const line = lineNumber.nextElementSibling;
+                    const pos = nodes.indexOf(startLine);
+                    nodes.splice(pos + 1, 0, { lineNumber, line });
+                    updateLineNumbers();
+                    selection.setPosition(line, indent.length);
+                    line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
                 }
             }
-            app.editors.forEach((editor) => {
-                if (editor.node.contains(document.activeElement)) {
-                    editor.selectionChange(event);
-                }
+        }
+
+        /**
+         * Insert a block of text before the given reference
+         */
+        function insertText(text, reference) {
+            const container = reference ? reference.line.parentElement : document.getElementById('workspace');
+            const lines = Array.isArray(text) ? text : typeof text === 'string' ? text.split(/\r?\n/g) : Object.entries(text).map(([key, value]) => `${key}: ${value}`);
+            const inserted = [];
+            lines.forEach((text) => {
+                const node = createLineNodes();
+                inserted.push(node);
+                node.line.innerText = text;
+                container.insertBefore(node.lineNumber, reference.lineNumber);
+                container.insertBefore(node.line, reference.lineNumber);
             });
+            const pos = nodes.indexOf(reference);
+            nodes.splice(pos, 0, ...inserted);
+        }
+
+        function updateLineNumbers() {
+            let lineNumber = 0;
+            for (const node of document.querySelectorAll('.line-number')) {
+                node.innerText = ++lineNumber;
+            }
+            //updateNodeList();
+        }
+
+
+        /**
+         * Manage a line and its nodes
+         */
+        class Line {
+            constructor(lineNumber, line) {
+                this.lineNumber = lineNumber;
+                this.line = line;
+            }
+            get value() {
+                return this._value || this.line.innerText;
+            }
+            get index() {
+                nodes.indexOf(this);
+            }
+        }
+
+
+        const start = 0;
+        const content = [];
+        const nodes = [];
+        updateNodeList();
+        let currentLineNumber = 0;
+        let currentLine = nodes[currentLineNumber];
+
+        /**
+         * Upsate node lists
+         */
+        function updateNodeList(id = 'main') {
+            const lineNumbers = Array.from(document.getElementById(id).querySelectorAll('.line-number'));
+            const lines = Array.from(document.getElementById(id).querySelectorAll('.line'));
+            nodes.length = 0;
+            lines.forEach((line, index) => nodes.push({ lineNumber: lineNumbers[index], line }));
+        }
+
+        /**
+         * Update the current line and highlight it whenever the selection changes.
+         */
+        document.addEventListener('selectionchange', (event) => {
+            for (const highlighted of document.querySelectorAll('.highlight')) {
+                highlighted.classList.remove('highlight');
+            }
+            const newLine = getCurrentLine();
+            if (newLine) {
+                newLine.line.classList.add('highlight');
+                if (newLine) {
+                    currentLine.lineNumber.classList.remove('current-line');
+                    currentLine = newLine;
+                    currentLineNumber = nodes.indexOf(currentLine);
+                    currentLine.lineNumber.classList.add('current-line');
+                }
+            }
         });
 
-        class Editor {
-            constructor(node, start = 0, end = -1) {
-                /**
-                 * Process a keypress in the workspace
-                 */
-                node.addEventListener('keydown', (event) => {
-                    const selection = document.getSelection();
-                    const line = selection.anchorNode.parentElement;
+        for (const node of document.querySelectorAll('.line')) {
+            content.push(node.innerText);
+        }
 
-                    if (event.key === 'Enter') {
-                        event.preventDefault();
-                        this.addLine();
+        const mainNode = document.getElementById('main');
+        const contentNode = document.getElementById('content');
+
+        /**
+         * Process the preceeding block as javascript
+         */
+        function evaluateJs() {
+            const lines = [];
+            let index = currentLineNumber - 1;
+            while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].line.innerText))) {
+                lines.unshift(nodes[index].line.innerText);
+                index -= 1;
+            }
+            const text = lines.join('\n');
+            const func = new Function(text);
+            const result = func();
+            if (!currentLine.output) {
+                currentLine.output = currentLine.output || document.createElement('div');
+                currentLine.output.classList.add('output');
+                currentLine.output.contentEditable = false;
+                const newLine = createLineNodes();
+                nodes.push(newLine);
+                currentLine.line.after(currentLine.output, newLine.lineNumber, newLine.line);
+                document.getSelection().setPosition(newLine.line, 0);
+                newLine.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            }
+            currentLine.output.innerText = result;
+            updateLineNumbers();
+        }
+
+
+        mainNode.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                if (event.ctrlKey) {
+                    const action = currentLine.line.innerText;
+                    if (action === 'js') {
+                        evaluateJs(currentLine);
+                    } else if (actions[action]) {
+                        actions[action]();
                     }
-
-                    const text = line.innerText;
-                    app.content[this.currentLine] = text;
-                    console.log(app.content);
-                });
-                this.node = node;
-                this.start = start;
-                this.end = end;
-                this.current = node.querySelector('.line');
-                this.currentLine = start;
-            }
-            selectionChange(event) {
-                const selection = document.getSelection();
-                const anchor = selection.anchorNode;
-                const line = (anchor instanceof Text) ? anchor.parentElement : anchor;
-                const lineNumber = parseInt(line.parentElement.dataset.line);
-                const char = selection.anchorOffset;
-                app.line = lineNumber;
-                app.char = char;
-                this.currentLine = lineNumber;
-                const current = document.querySelector('.current-line');
-                if (current) {
-                    current.classList.remove('current-line');
-                }
-                line.classList.add('current-line');
-            }
-            blur() {
-
-            }
-            get last() {
-                return app.content.length + this.end;
-            }
-            get content() {
-                return app.content.slice(this.start, this.end);
-            }
-
-            /**
-             * Add a line to the current node.
-             */
-            addLine() {
-                const lineNumber = document.createElement('span');
-                lineNumber.contentEditable = false;
-                lineNumber.classList.add('line-number');
-
-                const newLine = document.createElement('span');
-                newLine.classList.add('line');
-
-                if (this.currentLine === this.last) {
-                    lineNumber.innerHTML = this.last + 2;
-                    this.node.appendChild(lineNumber);
-
-                    newLine.dataset.line = this.last + 1;
-                    this.node.appendChild(newLine);
                 } else {
-                    this.node.insertBefore(newLine, line.nextSibling);
+                    event.preventDefault();
+                    breakAtCursor();
+                }
+            }
+        });
+        mainNode.addEventListener('keyup', (event) => {
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+                updateLineNumbers();
+            }
+        });
 
-                    lineNumber.innerHTML = lines.length + 1;
-                    this.node.insertBefore(lineNumber, line.nextSibling);
+        /**
+         * Make a line number node
+         */
+        function makeLineNumberNode() {
+            lineNumber = document.createElement('span');
+            lineNumber.classList.add('line-number');
+            lineNumber.contentEditable = false;
+            return lineNumber;
+        }
 
-                    let index = this.start;
-                    for (const line of node.querySelectorAll('.line-number')) {
-                        line.innerHTML = ++index;
+        /**
+         * Log mutations to the workspace
+         */
+        function logChanges(records, observer) {
+            for (const record of records) {
+                for (const addedNode of record.addedNodes) {
+                    if (addedNode.nodeType === 1 && addedNode.closest('.line')) {
+                        const line = addedNode.closest('.line');
+                        const node = nodes.find((node) => node.line === line);
+                        if (!node.lineNumber) {
+                            node.lineNumber = makeLineNumberNode();
+                            line.before(node.lineNumber);
+                        }
+                        //app.setStatus(`Added: ${addedNode.textContent}`);
                     }
                 }
-                const selection = document.getSelection();
-            }
-        }
-        app.activeEditor = new Editor(workspaceNode);
-
-        
-        function getLineElement(node) {
-    while (node && !node.classList?.contains('line')) {
-        node = node.parentElement;
-    }
-    return node;
-}
-
-function getCurrentLine() {
-    const selection = document.getSelection();
-    if (selection.getRangeAt && selection.rangeCount) {
-        const range = selection.getRangeAt(0);
-        return getLineElement(range.startContainer);
-    }
-}
-
-function breakAtCursor() {
-    const selection = document.getSelection();
-    if (selection.getRangeAt && selection.rangeCount) {
-        const range = selection.getRangeAt(0);
-        const element = getLineElement(range.startContainer);
-        const lineNumber = document.createElement('span');
-        lineNumber.classList.add('line-number');
-        lineNumber.contentEditable = false;
-        const line = document.createElement('span');
-        line.classList.add('line');
-        line.innerHTML = range.endContainer.textContent.slice(range.endOffset);
-        range.startContainer.textContent = range.startContainer.textContent.slice(0, range.startOffset);
-        element.after(lineNumber, line);
-        selection.setPosition(line, 0);
-        updateLineNumbers();
-    }
-}
-
-function updateLineNumbers() {
-    let lineNumber = 0;
-    for (const node of document.querySelectorAll('.line-number')) {
-        node.innerText = ++lineNumber;
-    }
-    let index = 0;
-    for (const node of document.querySelectorAll('.line')) {
-        node.dataset.inex = index++;
-    }
-}
-
-let lineNode;
-document.addEventListener('selectionchange', (event) => {
-    const selection = document.getSelection();
-    if (selection.getRangeAt && selection.rangeCount) {
-        const range = selection.getRangeAt(0);
-        const node = getLineElement(range.startContainer);
-        if (node) {
-            const newLineNode = node.previousSibling;
-            console.log(newLineNode.innerText);
-            if (newLineNode && newLineNode !== lineNode) {
-                if (lineNode) {
-                    lineNode.classList.remove('current-line');
+                for (const removedNode of record.removedNodes) {
+                    if (removedNode.nodeType === 1 && (removedNode.closest('.line') || removedNode.closest('.line-number') || removedNode.closest('.output'))) {
+                        const output = removedNode.closest('.output');
+                        if (output) {
+                            const node = nodes.find((node) => node.output === output);
+                            node.output = null;
+                            app.setStatus(`removed output node`);
+                        }
+                        const line = removedNode.closest('.line');
+                        //const lineNumber = removedNode.closest('.line-number');
+                        if (line) {
+                            const pos = nodes.findIndex((node) => node.line === line);
+                            if (pos > -1) {
+                                nodes.splice(pos, 1);
+                                app.setStatus(`Removed: ${pos}`);
+                            }
+                        }
+                    }
                 }
-                newLineNode.classList.add('current-line');
             }
-            lineNode = newLineNode;
         }
-    }
-});
 
-const content = [];
-for (const node of document.querySelectorAll('.line')) {
-    content.push(node.innerText);
-}
+        const observerOptions = {
+            childList: true,
+            subtree: true,
+        };
 
-const mainNode = document.getElementById('main');
-mainNode.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-        event.preventDefault();
-        breakAtCursor();
-    }
-});
-mainNode.addEventListener('keyup', (event) => {
-    if (event.key === 'Delete' || event.key === 'Backspace') {
-        updateLineNumbers();
-    }
-    const node = getCurrentLine();
-    content[parseInt(node.dataset.index)] = node.innerText;
-});
-        
-        
-        
+        const observer = new MutationObserver(logChanges);
+        observer.observe(workspaceNode, observerOptions);
+
     </script>
 </body>
 
