@@ -413,6 +413,39 @@ amending config files
 
 
         /**
+         * Make a list of names that will be inserted at the cursor when clicked
+         */
+        function makeInsertionList(items, container) {
+            items.forEach((item) => {
+                const node = document.createElement('div');
+                node.innerText = item;
+                node.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    const range = document.getSelection().getRangeAt(0);
+                    if (range) {
+                        range.deleteContents();
+                        range.insertNode(document.createTextNode(item));
+                    }
+                });
+                container.appendChild(node);
+            });
+        }
+
+        /**
+         * Get the source data for this action from the preceding lines
+         */
+        function getSource(line) {
+            const lines = [];
+            let index = currentLineNumber - 1;
+            while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].line.innerText))) {
+                lines.unshift(nodes[index]);
+                index -= 1;
+            }
+            return lines;
+        }
+
+
+        /**
          * Custom Actions
          *
          */
@@ -421,14 +454,7 @@ amending config files
              * List the available actions.
              */
             actions() {
-                if (!currentLine.output) {
-                    currentLine.output = currentLine.output || document.createElement('div');
-                    currentLine.output.classList.add('output');
-                    currentLine.output.contentEditable = false;
-                    const newLine = createLineNodes();
-                    nodes.push(newLine);
-                    currentLine.line.after(currentLine.output, newLine.lineNumber, newLine.line);
-                }
+                const output = getOutput(currentLine);
                 Object.keys(actions).forEach((action) => {
                     const node = document.createElement('div');
                     node.innerText = action;
@@ -440,14 +466,8 @@ amending config files
                             range.insertNode(document.createTextNode(action));
                         }
                     });
-                    currentLine.output.appendChild(node);
+                    output.appendChild(node);
                 });
-                updateLineNumbers();
-                const next = nodes[currentLineNumber + 1];
-                if (next) {
-                    document.getSelection().setPosition(next.line, 0);
-                    next.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
-                }
             },
 
             /**
@@ -475,16 +495,15 @@ amending config files
                         return { message: 'enter fullscreen' };
                     }
                 }
+                currentLine.action = true;
             },
 
             /**
              * Clear the screen
              */
             cls(input) {
-                const cell = new Cell;
-                const results = document.getElementById('results');
-                results.innerHTML = 'clear cells';
-                cell.type = Status;
+
+                currentLine.action = true;
             },
 
             /**
@@ -509,6 +528,7 @@ amending config files
                     result.message += ' (unknown theme)!';
                 }
                 app.state.theme = themeName;
+                currentLine.action = true;
                 return result;
             },
 
@@ -516,26 +536,26 @@ amending config files
              * List the themes
              */
             themes(input) {
-                const cell = new Cell();
                 const themeName = document.documentElement.getAttribute('data-theme');
-                const themesNames = themes.map((name) => name === themeName ? name + ' *' : name);
-                return { message: themesNames.join('<br>') };
+                const themeNames = themes.map((name) => name === themeName ? name + ' *' : name);
+                const output = getOutput(currentLine);
+                makeInsertionList(themeNames, output);
+                currentLine.action = true;
             },
-
 
             /**
              * Show the command history
              */
             history(input) {
-                const cell = new Cell(input);
-                cell.value = app.history.join('<br>');
-                const cellMap = new Map();
-                cell.update = (time) => {
-                    cell.value = app.history.join('<br>');
-                    cell.view.result.innerHTML = cell.value;
+                currentLine.update = (time) => {
+                    const output = getOutput(currentLine);
+                    output.innerHTML = '';
+                    makeInsertionList(app.history, output);
                 }
-                app.events.historyChange.add(cell);
-                return { cell };
+                app.events.historyChange.add(currentLine);
+                const output = getOutput(currentLine);
+                makeInsertionList(app.history, output);
+                currentLine.action = true;
             },
 
             /**
@@ -589,7 +609,9 @@ amending config files
                 const pattern = string.replace(/\s+/g, '+');
                 const url = `https://www.google.com/search?q=${pattern}`;
                 window.open(url, string, 'pop');
-                return { message: `googling ${string}` };
+                const output = getOutput(currentLine);
+                output.innerHTML = `<a href="${url}">${url}</a>`;
+                currentLine.action = true;
             },
 
             /**
@@ -602,7 +624,7 @@ amending config files
                 link.href = url;
                 link.download = name;
                 link.click();
-                return { message: `fetching ${url}` };
+                currentLine.action = true;
             },
 
             /**
@@ -653,7 +675,7 @@ amending config files
                     cell.setMode('hidden');
                     result.push(`<${cell.name || cell.index}> now hidden`);
                 });
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -668,7 +690,7 @@ amending config files
                     cell.clearMode('hidden');
                     result.push(`<${cell.name || cell.index}> now unhidden`);
                 });
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -683,12 +705,11 @@ amending config files
                     if (cell.state === 'floating') {
                         cell.view.box = cell.view.cell.getBoundingClientRect();
                     }
-                    cell.setMode('collapsed');
-                    result.push(`<${cell.name || cell.index}> now collapsed`);
-                    cell.view.cell.style.width = '';
-                    cell.view.cell.style.height = '';
+                    cell.contols?.classList.add('hidden');
+                    cell.output?.classList.add('hidden');
+                    cell.collapsed = true;
                 });
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -700,11 +721,11 @@ amending config files
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
-                    cell.clearMode('collapsed');
-                    const name = cell.name || cell.index;
-                    result.push(`<${name}> now collapsed`);
+                    cell.contols?.classList.remove('hidden');
+                    cell.output?.classList.remove('hidden');
+                    cell.collapsed = false;
                 });
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -725,7 +746,7 @@ amending config files
                         result.push(`<${cell.index}> now a widget`);
                     }
                 });
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -741,7 +762,7 @@ amending config files
                     result.push(`<${cell.index}> put inline`);
                 });
                 app.layoutChange();
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -762,7 +783,7 @@ amending config files
                     }
                 });
                 app.layoutChange();
-                return { message: result.join('<br>') };
+                currentLine.action = true;
 
             },
 
@@ -803,7 +824,7 @@ amending config files
                     result.push(`${cell.getName()} position fixed`);
                 });
                 app.layoutChange();
-                return { message: result.join('<br>') };
+                currentLine.action = true;
             },
 
             /**
@@ -818,7 +839,7 @@ amending config files
                     document.body.style.backgroundImage = `url("${url}")`;
                 }
                 app.state.background = url;
-                return { message: `background set to ${url}` };
+                currentLine.action = true;
             },
 
             /**
@@ -837,7 +858,6 @@ amending config files
                 }
                 app.cells = app.cells.filter((cell) => !cells.includes(cell));
                 cells.forEach((cell) => console.log(cell.content));
-                return { cell };
             },
 
             /**
@@ -862,146 +882,92 @@ amending config files
                     cells.forEach((cell) => cell.remove());
                     return { message: cells.map((cell) => `Deleted cell ${cell.index}` + cell.name ? ` (${cell.name})` : '') };
                 }
-                return { message: result.join('\n') };
-            },
-
-            /**
-             * List the known commands
-             */
-            actions_cell(input) {
-                const cell = new Cell();
-                cell.value = Object.keys(actions).map((action, index) => `${index}: ${action}`).join('<br>');
-                return { cell };
+                currentLine.action = true;
             },
 
             /**
              * List the known files
              */
-            files(input) {
-                const cell = new Cell();
-                cell.value = Object.keys(named.files).map((file, index) => `${index}: ${file}`).join('<br>');
-                return { cell };
+            files(file) {
+                const output = getOutput(currentLine);
+                makeInsertionList(Object.keys(named.files), output);
+                currentLine.action = true;
             },
 
             /**
              * Create a notes cell
              */
             html(input) {
-                const cell = new Cell(input);
-                const string = input.replace(/^html\s*/, '');
-                const index = app.cells.length;
+                const output = getOutput(currentLine);
 
-                const cells = getReferences(string, cell);
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
+                currentLine.update = async (time) => {
+                    const lines = getSource(currentLine);
+                    currentLine.linked = lines;
+                    const source = lines.map((line) => line.line.innerText).join('\n');
+                    output.innerHTML = source;
                 }
 
-                const resolve = (str) => {
-                    return str.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`)
-                        .replace(/<([^>]+)>/g, (match, name) =>
-                            named.all[name] ?? match);
-                }
-                cell.update = (time) => {
-                    cell.content = cells.map((cell) => cell.value).join('\n');
-                    cell.value = resolve(cell.content);
-                    cell.view.result.innerHTML = cell.value;
-                };
-                return { cell };
+                currentLine.update();
             },
 
             /**
              * Create a mermaid diagram cell
              */
             diagram(input) {
-                const cell = new Cell(input);
+                const output = getOutput(currentLine);
                 const string = input.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
-                const cells = getReferences(string, cell);
+                output.classList.add('mermaid');
+                output.addEventListener('click', (event) => diagram.classList.toggle('focused'));
 
-                cell.content = string || '<-1>';
-
-                cell.view.result = document.createElement('div');
-                cell.view.result.classList.add('mermaid-cell');
-
-                const diagram = document.createElement('div');
-
-                diagram.classList.add('mermaid');
-                cell.view.result.appendChild(diagram);
-                diagram.addEventListener('click', (event) => diagram.classList.toggle('focused'));
-
-                cell.update = async (time) => {
-                    const source = cells.map((input) => input.value).join('\n');
+                currentLine.update = async (time) => {
+                    const lines = getSource(currentLine);
+                    currentLine.linked = lines;
+                    const source = lines.map((line) => line.line.innerText).join('\n');
                     try {
                         const { svg } = await mermaid.render(`graph_${index}`, source);
-                        diagram.innerHTML = svg;
-                        cell.svg = diagram.firstElementChild;
+                        output.innerHTML = svg;
+                        //cell.svg = diagram.firstElementChild;
                     } catch (error) {
-                        diagram.innerHTML = error.message;
-
+                        output.innerHTML = error.message;
                     }
-                    cell.users.forEach((user) => user.update());
+                    //currentLine.users.forEach((user) => user.update());
                 }
 
-                Object.defineProperties(cell, {
+                /*
+                Object.defineProperties(currentLine, {
                     value: {
                         enumerable: true,
                         get: () => diagram.innerHTML,
                     },
                 });
-                //cell.update();
-                return { cell };
+                */
+                currentLine.update();
             },
 
             /**
              * Create a js cell
              */
-            js(input) {
-                const cell = new Cell(input);
-                const string = input.replace(/^js\s*/, '');
-                const index = app.cells.length;
-
-                const cells = getReferences(string, cell);
-
-                const getIndex = (str) => {
-                    const i = parseInt(str);
-                    if (isNaN(i)) {
-                        return index - 1;
-                    }
-                    if (i < 0) {
-                        return index + (i % index);
-                    }
-                    return i % index;
-                };
-
-                cell.update = (time) => {
-                    cell.content = cells.map((cell) => cell.value).join('\n');
-                    const expr = cell.content.replace(/^\\/, '')
-                        .replace(/<(-?[0-9]*)>/g, (match, index) =>
-                            `app.cells.at(${getIndex(index)}).value`);
-                    try {
-                        const func = new Function('app', `${expr}`);
-                        cell.value = func(app);
-                    } catch (error) {
-                        cell.value = error.message;
-                    }
-                    app.setStatus(cell.value);
-                    cell.view.result.innerText = cell.value;
-                    cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
-                };
-                return { cell };
+            js() {
+                const lines = [];
+                let index = currentLineNumber - 1;
+                currentLine.linked = [];
+                while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].line.innerText))) {
+                    currentLine.linked.unshift(nodes[index]);
+                    lines.unshift(nodes[index].line.innerText);
+                    index -= 1;
+                }
+                const text = lines.join('\n');
+                const output = getOutput(currentLine);
+                try {
+                    const func = new Function('global', text);
+                    const result = func(global);
+                    output.innerText = result;
+                } catch (error) {
+                    output.innerText = error.message
+                }
             },
-
 
             /**
              * Reset command history
@@ -1012,7 +978,7 @@ amending config files
                 cell.action = (input) => {
                     app.action = null;
                 };
-                return { cell };
+                currentLine.action = true;
             },
 
             /**
@@ -1033,18 +999,16 @@ amending config files
                 named.dates[name].value.push(new Date(year < 2000 ? year + 2000 : year, month - 1, day));
                 addNamedItem(name);
                 app.notifyListeners('dates', { action: 'add', value: { name: named.dates[name] } });
-                return { message: `Added date: ${name} (${named.dates[name].toDateString()})` };
+                currentLine.action = true;
             },
 
             /**
              * List dates
              */
             dates(input) {
-                const cell = new Cell(input);
-                cell.value = Object.entries(named.dates)
-                    .map(([name, date]) => `${name}: ${date.toDateString()}`)
-                    .join('<br>');
-                return { cell };
+                const output = getOutput(currentLine);
+                const dates = Object.entries(named.dates).map(([name, date]) => `${name}: ${date.toDateString()}`)
+                makeInsertionList(dates, output);
             },
 
 
@@ -1069,18 +1033,16 @@ amending config files
                 };
                 addNamedItem(name);
                 saveState();
-                return { message: `Added shortcut ${name} -> ${url}` };
+                currentLine.action = true;
             },
 
             /**
              * List sites
              */
             sites(input) {
-                const cell = new Cell(input);
-                cell.value = Object.entries(named.sites)
-                    .map(([name, item]) => `${name}: <a href="${item.url}">${item.url}</a>`)
-                    .join('<br>');
-                return { cell };
+                const output = getOutput(currentLine);
+                const sites = Object.entries(named.sites).map(([name, item]) => `${name}: <a href="${item.url}">${item.url}</a>`);
+                makeInsertionList(sites, output);
             },
 
             /**
@@ -1097,53 +1059,54 @@ amending config files
                     },
                 };
                 addNamedItem(name);
-                return { message: `Added abbreviation ${name} -> ${expansion}` };
+                currentLine.action = true;
             },
 
             /**
              * List abbreviations
              */
             abbreviations(input) {
-                const cell = new Cell(input);
-                cell.value = Object.entries(named.abbreviations)
-                    .map(([name, expansion]) => `${name}: ${expansion}`)
-                    .join('<br>');
-                return cell;
+                const output = getOutput(currentLine);
+                const abbreviations = Object.entries(named.abbreviations).map(([name, expansion]) => `${name}: ${expansion}`);
+                makeInsertionList(abbreviations, output);
             },
 
             /**
              * Load a file using a handle in the database
              */
             load(input) {
-                const cell = new Cell(input);
+                const output = getOutput(currentLine);
 
                 if (!navigator.userActivation.isActive) {
-                    cell.value = 'load request ignored in script';
+                    app.setStatus('load request ignored in script');
                     return;
                 }
 
+                const ref = currentLine;
                 const chooseFile = async () => {
                     if ('showOpenFilePicker' in self) {
                         const [fileHandle] = await window.showOpenFilePicker();
                         if (fileHandle) {
-                            cell.view.result.innerHTML = `Loading...`;
+                            output.innerHTML = `Loading...`;
                             const file = await fileHandle.getFile();
-                            cell.content = file.name;
-                            cell.value = await file.text();
-                            cell.view.result.innerHTML = `<pre>${cell.value}</pre>`;
+                            const content = await file.text();
+                            insertAfter(content, ref, true);
+                            currentLine.content = file.name;
+                            output.innerHTML = `${file.name}:`;
                             saveFileHandles([{ name: file.name, handle: fileHandle }]);
+                            updateLineNumbers();
                         }
                     }
                 };
 
                 const file = input.replace(/^\s*load\s*/, '');
                 if (file) {
-                    load(cell, file, (contents) => cell.view.result.innerHTML = `<pre>${contents}</pre>`);
+                    load(cell, file, (contents) => output.innerHTML = `<pre>${contents}</pre>`);
                 } else {
-                    cell.value = `Select File...`;
+                    app.setStatus(`Select File...`);
                     chooseFile();
                 }
-                return { cell }
+                currentLine.action = true;
             },
 
             /**
@@ -1385,18 +1348,17 @@ amending config files
                 if (!navigator.userActivation.isActive) {
                     return { message: 'loadData request ignored in script' };
                 }
-                const cell = new Cell(input);
+                //const cell = new Cell(input);
                 const file = input.replace(/^\s*loadData\s*/, '');
-
-                const process = (contents) => {
-                    cell.value = contents;
-                    cell.view.result.innerHTML = `<pre>${cell.value}</pre>`;
+                const ref = currentLine;
+                const process = (content) => {
+                    insertAfter(content, ref);
 
                     let sectionName;
                     let current;
                     const section = /^[^\s]+[^:]*:\s*$/;
                     const data = {};
-                    cell.value.split(/\r?\n/g).forEach((line) => {
+                    content.split(/\r?\n/g).forEach((line) => {
                         if (section.test(line)) {
                             sectionName = line.replace(/:\s*$/, '');
                             data[sectionName] = named[sectionName] || {};
@@ -1463,7 +1425,8 @@ amending config files
                         });
                     }
                     app.notifyListeners('dates', { action: 'added', values: data.dates });
-                    cell.users.forEach((user) => user.update());
+                    //cell.users.forEach((user) => user.update());
+                    updateLineNumbers();
                 }
 
                 const chooseFile = async () => {
@@ -1471,7 +1434,7 @@ amending config files
                     if (fileHandle) {
                         const file = await fileHandle.getFile();
                         input += ` ${file.name}`;
-                        cell.content = file.name;
+                        currentLine.content = file.name;
                         const contents = await file.text();
                         process(contents);
                         saveFileHandles([{ name: file.name, handle: fileHandle }]);
@@ -1486,7 +1449,7 @@ amending config files
                         chooseFile();
                     }
                 }
-                return { cell };
+                
             },
         }
 
@@ -3146,6 +3109,7 @@ amending config files
 
                     const all = nodes.map((source) => {
                         const node = source.data || source;
+                        node[meta] = node[meta] || {};
                         node[meta].parts = source.parts?.map((part) => nodes[part].data) || [];
                         node[meta].parts.forEach((part) => part[meta].parent = node);
                         return node;
@@ -3784,10 +3748,10 @@ amending config files
             state.app.cells.filter((cell) => cell && cell.raw).forEach((storedCell) => {
                 const result = evaluate(storedCell.raw);
                 const cell = result.cell;
-                insertText(storedCell.raw, currentLine);
+                insertBefore(storedCell.raw, currentLine);
                 if (cell) {
                     if (storedCell.content) {
-                        insertText(storedCell.content, currentLine);
+                        insertBefore(storedCell.content, currentLine);
                         if (cell.setContent) {
                             cell.setContent(storedCell.content);
                         } else {
@@ -4142,10 +4106,13 @@ amending config files
         /**
          * Create line nodes
          */
-        function createLineNodes() {
+        function createLineNodes(index) {
             const lineNumber = document.createElement('span');
             lineNumber.classList.add('line-number');
             lineNumber.contentEditable = false;
+            if (index) {
+                lineNumber.innerText = index;
+            }
 
             const line = document.createElement('span');
             line.classList.add('line');
@@ -4194,16 +4161,32 @@ amending config files
         /**
          * Insert a block of text before the given reference
          */
-        function insertText(text, reference) {
-            const container = reference ? reference.line.parentElement : document.getElementById('workspace');
+         function insertBefore(text, reference) {
             const lines = Array.isArray(text) ? text : typeof text === 'string' ? text.split(/\r?\n/g) : Object.entries(text).map(([key, value]) => `${key}: ${value}`);
             const inserted = [];
             lines.forEach((text) => {
                 const node = createLineNodes();
                 inserted.push(node);
                 node.line.innerText = text;
-                container.insertBefore(node.lineNumber, reference.lineNumber);
-                container.insertBefore(node.line, reference.lineNumber);
+                reference.lineNumber.before(node.lineNumber, node.line);
+            });
+            const pos = nodes.indexOf(reference);
+            nodes.splice(pos, 0, ...inserted);
+        }
+
+        /**
+         * Insert a block of text before the given reference
+         */
+         function insertAfter(text, reference) {
+            const lines = Array.isArray(text) ? text : typeof text === 'string' ? text.split(/\r?\n/g) : Object.entries(text).map(([key, value]) => `${key}: ${value}`);
+            const inserted = [];
+            let ref = reference.output ?? reference.controls ?? reference.line;
+            lines.forEach((text) => {
+                const node = createLineNodes();
+                inserted.push(node);
+                node.line.innerText = text;
+                ref.after(node.lineNumber, node.line);
+                ref = node.line;
             });
             const pos = nodes.indexOf(reference);
             nodes.splice(pos, 0, ...inserted);
@@ -4238,9 +4221,42 @@ amending config files
         const start = 0;
         const content = [];
         const nodes = [];
+        const global = {};
         updateNodeList();
         let currentLineNumber = 0;
         let currentLine = nodes[currentLineNumber];
+
+
+        /**
+         * Add output node to the cell
+         */
+        function getOutput(cell) {
+            if (!cell.output) {
+                cell.output = cell.output || document.createElement('div');
+                cell.output.classList.add('output');
+                cell.output.contentEditable = false;
+                cell.line.after(cell.output);
+            }
+            return cell.output;
+        }
+
+        /**
+         * Go to the next cell, creating it if needed
+         */
+        function nextLine(cell) {
+            const index = nodes.indexOf(cell) + 1;
+            if (index >= nodes.length) {
+                const newCell = createLineNodes(index);
+                nodes.push(newCell);
+                const end = cell.output ?? cell.controls ?? cell.line;
+                end.after(newCell.lineNumber, newCell.line);
+            }
+            const next = nodes[index];
+            document.getSelection().setPosition(next.line, 0);
+            next.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+
+            return next;
+        }
 
         /**
          * Upsate node lists
@@ -4260,6 +4276,14 @@ amending config files
                 highlighted.classList.remove('highlight');
             }
             const newLine = getCurrentLine();
+            if (newLine !== currentLine) {
+                for (const highlighted of document.querySelectorAll('.linked')) {
+                    highlighted.classList.remove('linked');
+                }
+                if (newLine?.linked) {
+                    newLine.linked.forEach((line) => line.line.classList.add('linked'));
+                }
+            }
             if (newLine) {
                 newLine.line.classList.add('highlight');
                 if (newLine) {
@@ -4278,47 +4302,47 @@ amending config files
         const mainNode = document.getElementById('main');
         const contentNode = document.getElementById('content');
 
-        /**
-         * Process the preceeding block as javascript
-         */
-        function evaluateJs() {
-            const lines = [];
-            let index = currentLineNumber - 1;
-            while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].line.innerText))) {
-                lines.unshift(nodes[index].line.innerText);
-                index -= 1;
-            }
-            const text = lines.join('\n');
-            const func = new Function(text);
-            const result = func();
-            if (!currentLine.output) {
-                currentLine.output = currentLine.output || document.createElement('div');
-                currentLine.output.classList.add('output');
-                currentLine.output.contentEditable = false;
-                const newLine = createLineNodes();
-                nodes.push(newLine);
-                currentLine.line.after(currentLine.output, newLine.lineNumber, newLine.line);
-                document.getSelection().setPosition(newLine.line, 0);
-                newLine.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
-            }
-            currentLine.output.innerText = result;
-            updateLineNumbers();
-        }
-
-
         mainNode.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
+                event.preventDefault();
                 if (event.ctrlKey) {
-                    const action = currentLine.line.innerText;
-                    if (action === 'js') {
-                        evaluateJs(currentLine);
-                    } else if (actions[action]) {
-                        actions[action]();
+                    const selection = document.getSelection();
+                    if (!selection.isCollapsed) {
+                        for (let r = 0; r < selection.rangeCount; ++r) {
+                            const range = selection.getRangeAt(r);
+                            const text = range.toString();
+                            try {
+                                const func = new Function(`return ${text}`);
+                                const value = func();
+                                range.deleteContents();
+                                range.insertNode(document.createTextNode(value));
+                            } catch (e) {
+                                currentLine.line.title = e.message;
+                            }
+                        }
+                    } else {
+                        breakAtCursor();
                     }
                 } else {
-                    event.preventDefault();
-                    breakAtCursor();
+                    const action = currentLine.line.innerText;
+
+                    const commands = Object.getOwnPropertyNames(actions).sort((a, b) => b.length - a.length);
+                    const command = commands.find((match) => action.startsWith(match));
+
+                    if (actions[action]) {
+                        actions[action](action);
+                        nextLine(currentLine);
+                    } else if (command) {
+                        actions[command](action);
+                        nextLine(currentLine);
+                    } else if (named.all[action]) {
+                        nextLine(currentLine);
+                    } else {
+                        breakAtCursor();
+                    }
                 }
+                const content = nodes.map((line) => line.line.innerText);
+                localStorage.setItem('noia-lines', JSON.stringify(content));
             }
         });
         mainNode.addEventListener('keyup', (event) => {
