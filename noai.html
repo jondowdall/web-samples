@@ -24,10 +24,10 @@ amending config files
 
 <body>
     <div id="header"></div>
-        <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
-            <span class="line-number" contenteditable="false"><span id="prompt">&gt;</span></span>
-            <div class="line" tabindex="0"></div>
-        </div>
+    <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
+        <span class="line-number" contenteditable="false"><span id="prompt">&gt;</span></span>
+        <div class="line" tabindex="0"></div>
+    </div>
     <div id="widgets"></div>
     <div id="footer"></div>
     <div id="status" class="fade"></div>
@@ -729,14 +729,10 @@ amending config files
                 const cells = getCells(string);
                 const result = [];
                 cells.forEach((cell) => {
-                    const node = cell.view.result;
-                    if (cell.view.cell.classList.contains('widget')) {
-                        cell.lastState();
-                        result.push(`<${cell.index}> no longer a widget`);
-                    } else {
-                        cell.setState('widget');
-                        result.push(`<${cell.index}> now a widget`);
+                    if (cell.state === 'window') {
+                        cell.window.classList.add('hidden');
                     }
+                    cell.widget();
                 });
                 cell.action = true;
             },
@@ -753,8 +749,22 @@ amending config files
                     if (cell.window) {
                         cell.window.classList.add('hidden');
                     }
-                    (cell.controls || cell.line).after(cell.output);
-                    //cell.setState('in-line');
+                    cell.unstick();
+                    cell.inline();
+                });
+                const stuck = nodes.filter((cell) => cell.state === 'stick');
+                let y = 0;
+                stuck.forEach((cell) => {
+                    cell.line.style.top = `${y}px`;
+                    y += cell.line.getBoundingClientRect().height;
+                    if (cell.controls) {
+                        cell.controls.style.top = `${y}px`;
+                        y += cell.controls.getBoundingClientRect().height;
+                    }
+                    if (cell.output) {
+                        cell.output.style.top = `${y}px`;
+                        y += cell.output.getBoundingClientRect().height;
+                    }
                 });
                 app.layoutChange();
                 cell.action = true;
@@ -768,18 +778,9 @@ amending config files
 
                 const cells = getCells(string);
                 const result = [];
-                cells.forEach((cell) => {
-                    if (cell.view.cell.classList.contains('sticky')) {
-                        cell.lastState();
-                        result.push(`<${cell.index}> now unstuck`);
-                    } else {
-                        cell.setState('sticky');
-                        result.push(`<${cell.index}> now stuck`);
-                    }
-                });
+                cells.forEach((cell) => cell.stick());
                 app.layoutChange();
                 cell.action = true;
-
             },
 
             /**
@@ -1325,11 +1326,8 @@ amending config files
             /**
              * Load user specified data file
              */
-            loadData(cell) {
-                if (!navigator.userActivation.isActive) {
-                    return { message: 'loadData request ignored in script' };
-                }
-                const file = cell.line.innerText.replace(/^\s*loadData\s*/, '');
+            'load data'(cell) {
+                const file = cell.line.innerText.replace(/^\s*load data\s*/, '');
                 const process = (content) => {
                     insertAfter(content, cell);
 
@@ -1412,7 +1410,7 @@ amending config files
                     const [fileHandle] = await window.showOpenFilePicker();
                     if (fileHandle) {
                         const file = await fileHandle.getFile();
-                        input += ` ${file.name}`;
+                        cell.line.append(` ${file.name}`);
                         cell.content = file.name;
                         const contents = await file.text();
                         process(contents);
@@ -3955,7 +3953,6 @@ amending config files
             observer.observe(workspaceNode, observerOptions);
         }
 
-
         /**
          * Manage a line and its nodes
          */
@@ -4022,34 +4019,84 @@ amending config files
             get index() {
                 return nodes.indexOf(this);
             }
-            makeWindow(x, y) {
-                if (!this.window) {
-                    this.window = document.createElement('div');
-                    this.window.classList.add('window');
+            inline() {
+                if (this.controls) {
+                    this.line.after(this.controls, this.output);
+                } else {
+                    this.line.after(this.output);
                 }
-                this.window.classList.remove('hidden');
-                this.window.innerHTML = '';
-                this.title = document.createElement('div');
-                this.title.addEventListener('mousedown', (event) => {
-                    const mouseStart = { x: event.clientX, y: event.clientY };
-                    const start = this.window.getBoundingClientRect();
-                    action.move = (event) => {
-                        const x = start.x + event.clientX - mouseStart.x;
-                        const y = start.y + event.clientY - mouseStart.y;
-                        this.window.style.left = `${x}px`;
-                        this.window.style.top = `${y}px`;
+                this.state = 'in-line';
+            }
+            stick() {
+                if (!this.line.classList.contains('sticky')) {
+                    const stuck = Array.from(document.getElementById('workspace').querySelectorAll('.sticky'));
+                    const bottom = (node) => {
+                        const box = node.getBoundingClientRect();
+                        return box.y + box.height;
                     };
-                });
-                this.title.classList.add('window-title');
-                this.title.innerText = `${this.index + 1}: ${this.line.innerText}`;
-                if (x) {
-                    this.window.style.left = `${x}px`;
+                    let y = Math.max(0, ...stuck.map((node) => bottom(node)));
+                    this.line.classList.add('sticky');
+                    this.line.style.top = `${y}px`;
+                    y += this.line.getBoundingClientRect().height;
+                    if (this.controls) {
+                        this.controls.classList.add('sticky');
+                        this.controls.style.top = `${y}px`;
+                        y += this.controls.getBoundingClientRect().height;
+                    }
+                    if (this.output) {
+                        this.output.classList.add('sticky');
+                        this.output.style.top = `${y}px`;
+                    }
                 }
-                if (y) {
-                    this.window.style.top = `${y}px`;
+                this.state = 'stick';
+            }
+            unstick() {
+                this.line.classList.remove('sticky');
+                this.controls?.classList.remove('sticky');
+                this.output?.classList.remove('sticky');
+            }
+            makeWindow(x, y) {
+                if (this.controls || this.output) {
+                    if (!this.window) {
+                        this.window = document.createElement('div');
+                        this.window.classList.add('window');
+                    }
+                    this.window.classList.remove('hidden');
+                    this.window.innerHTML = '';
+                    this.title = document.createElement('div');
+                    this.title.addEventListener('mousedown', (event) => {
+                        const mouseStart = { x: event.clientX, y: event.clientY };
+                        const start = this.window.getBoundingClientRect();
+                        action.move = (event) => {
+                            const x = start.x + event.clientX - mouseStart.x;
+                            const y = start.y + event.clientY - mouseStart.y;
+                            this.window.style.left = `${x}px`;
+                            this.window.style.top = `${y}px`;
+                        };
+                    });
+                    this.title.classList.add('window-title');
+                    this.title.innerText = `${this.index + 1}: ${this.line.innerText}`;
+                    if (x) {
+                        this.window.style.left = `${x}px`;
+                    }
+                    if (y) {
+                        this.window.style.top = `${y}px`;
+                    }
+                    this.window.append(this.title, this.output);
+                    document.body.append(this.window);
+                    this.state = 'window';
                 }
-                this.window.append(this.title, this.output);
-                document.body.append(this.window);
+            }
+            widget() {
+                if (this.controls || this.output) {
+                    if (this.controls) {
+                        document.getElementById('widgets').append(this.controls);
+                    }
+                    if (this.output) {
+                        document.getElementById('widgets').append(this.output);
+                    }
+                    this.state = 'widget';
+                }
             }
             getControls(content) {
                 if (!this.controls) {
@@ -4240,6 +4287,9 @@ amending config files
 
                 cell.init(string, cells, values);
             } else if (named.all[action]) {
+                named.all[action].eval(cell);
+            } else if (action.trim().startsWith('#') && action.trim().endsWith('#')) {
+                cell.block = action.replace(/^\s*#\s*/, '').replace(/\s*#\s*$/, '');
             } else {
                 return true;
             }
