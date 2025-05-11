@@ -25,8 +25,6 @@ amending config files
 <body>
     <div id="header"></div>
     <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
-        <span class="line-number" contenteditable="false"><span id="prompt">&gt;</span></span>
-        <div class="line" tabindex="0"></div>
     </div>
     <div id="widgets"></div>
     <div id="footer"></div>
@@ -35,9 +33,869 @@ amending config files
     <script type="module">
         const themes = ['vt-220', 'workbench-1.3', 'workbench-4.1'];
 
+        const workspaceNode = document.getElementById('workspace');
+
 
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
         mermaid.initialize({ startOnLoad: false });
+
+
+        /**
+         * Manage a line and its nodes
+         */
+        class Cell {
+            makeLineNumber(index) {
+                const lineNumber = document.createElement('div');
+                lineNumber.contentEditable = false;
+                lineNumber.innerText = index ?? '';
+                lineNumber.classList.add('line-number');
+                return lineNumber;
+            }
+            makeLine(content) {
+                const line = document.createElement('div');
+                if (content) {
+                    line.append(content)
+                }
+                return line;
+            }
+            constructor(lineNumber, line) {
+                this.lineNumber = this.makeLineNumber(lineNumber);
+                this.content = this.makeLine(line);
+                this.state = 'in-line';
+                this.uses = new Set();
+                this.users = new Set();
+            }
+            remove() {
+                this.content?.remove();
+                this.lineNumber?.remove();
+                this.controls?.remove();
+                this.output?.remove();
+                this.uses.forEach((input) => {
+                    input.users = input.users.filter((cell) => cell !== this);
+                });
+                this.state = 'removed';
+            }
+            get input() {
+                return this.content.innerText;
+            }
+            get value() {
+                return this._value || this.content.innerText;
+            }
+            set value(value) {
+                this._value = value;
+            }
+            get index() {
+                return nodes.indexOf(this);
+            }
+            inline() {
+                if (this.controls) {
+                    this.content.after(this.controls, this.output);
+                } else {
+                    this.content.after(this.output);
+                }
+                this.state = 'in-line';
+            }
+            stick() {
+                if (!this.content.classList.contains('sticky')) {
+                    const stuck = Array.from(document.getElementById('workspace').querySelectorAll('.sticky'));
+                    const bottom = (node) => {
+                        const box = node.getBoundingClientRect();
+                        return box.y + box.height;
+                    };
+                    let y = Math.max(0, ...stuck.map((node) => bottom(node)));
+                    this.content.classList.add('sticky');
+                    this.content.style.top = `${y}px`;
+                    y += this.content.getBoundingClientRect().height;
+                    if (this.controls) {
+                        this.controls.classList.add('sticky');
+                        this.controls.style.top = `${y}px`;
+                        y += this.controls.getBoundingClientRect().height;
+                    }
+                    if (this.output) {
+                        this.output.classList.add('sticky');
+                        this.output.style.top = `${y}px`;
+                    }
+                }
+                this.state = 'stick';
+            }
+            unstick() {
+                this.content.classList.remove('sticky');
+                //this.controls?.classList.remove('sticky');
+                //this.output?.classList.remove('sticky');
+            }
+            widget() {
+                if (this.controls || this.output) {
+                    if (this.controls) {
+                        document.getElementById('widgets').append(this.controls);
+                    }
+                    if (this.output) {
+                        document.getElementById('widgets').append(this.output);
+                    }
+                    this.state = 'widget';
+                }
+            }
+            collapse() {
+                this.controls?.forEach((cell) => cell.hide());
+                this.output?.forEach((cell) => cell.hide());
+                this.collapsed = true;
+
+            }
+            expand() {
+                this.controls?.forEach((cell) => cell.show());
+                this.output?.forEach((cell) => cell.show());
+                this.collapsed = false;
+            }
+            hide() {
+                this.content.classList.add('hidden');
+                this.lineNumber.classList.add('hidden');
+            }
+            show() {
+                this.content.classList.remove('hidden');
+                this.lineNumber.classList.remove('hidden');
+            }
+            getControls(content) {
+                if (!this.controls) {
+                    this.controls = [new Control(this.index + 1, content)];
+                    this.controls.forEach((cell) => {
+                        cell.lineNumber.classList.add('control-line');
+                        cell.content.classList.remove('line');
+                        cell.content.classList.add('controls');
+                        cell.content.contentEditable = 'false';
+                    });
+                    this.after(...this.controls);
+                    /*
+                    this.controls = document.createElement('div');
+                    this.controls.contentEditable = false;
+                    this.controls.classList.add('controls');
+                    if (content) {
+                        this.controls.append(...content);
+                    }
+                    if (this.defaultState === 'widget') {
+                        document.getElementById('widgets').append(this.controls);
+                        this.state = 'widget';
+                    } else if (this.defaultState === 'window') {
+                    } else {
+                        this.content.after(this.controls);
+                    }
+                        */
+
+                }
+                return this.controls;
+            }
+            getOutput(content) {
+                if (!this.output || !this.output.parentElement) {
+                    if (this.controls) {
+                        this.output = [new Output(this.controls.at(-1).index + 1)];
+                        this.controls.at(-1).after(...this.output);
+                    } else {
+                        this.output = [new Output(this.index + 1)];
+                        if (this.defaultState === 'widget') {
+                            document.getElementById('widgets').append(...this.output.map((cell) => cell.content));
+                            this.state = 'widget';
+                        } else if (this.defaultState === 'window') {
+                        } else {
+                            this.after(...this.output);
+                        }
+                    }
+                    this.output.forEach((cell) => {
+                        cell.lineNumber.classList.add('output-line');
+                        cell.content.classList.remove('line');
+                        cell.content.classList.add('output');
+                        cell.content.contentEditable = false;
+                    });
+                    /*
+                    this.output = document.createElement('div');
+                    this.output.contentEditable = false;
+                    this.output.classList.add('output');
+                    if (content) {
+                        this.output.append(...content);
+                    }
+                    if (this.defaultState === 'widget') {
+                        document.getElementById('widgets').append(this.output);
+                        this.state = 'widget';
+                    } else if (this.defaultState === 'window') {
+                    } else {
+                        (this.controls || this.content).after(this.output);
+                    }
+                        */
+
+                }
+                return this.output;
+            }
+            scrollTo(options = { behavior: 'smooth', block: 'end', inline: 'start' }) {
+                this.content.scrollIntoView(options);
+            }
+            after(...cells) {
+                cells = cells.flatMap((cell) => cell);
+                const domNodes = cells.flatMap((cell) => [cell.lineNumber, cell.content]).filter((n) => n);
+
+                if (this.state === 'widget' || this.state === 'window') {
+                    this.content.after(...domNodes);
+                } else {
+                    this.content.after(...domNodes);
+                }
+                nodes.splice(this.index + 1, 0, ...cells);
+            }
+            /**
+             * Insert a block of text before the given reference
+             */
+            updateResults(text) {
+                if (this.results) {
+                    this.results.forEach((cell) => cell.remove());
+                    nodes = nodes.filter((cell) => cell.state !== 'removed');
+                }
+                this.results = insertAfter(text, this);
+                updateLineNumbers();
+            }
+        }
+
+        class Text extends (Cell) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
+                this.content.classList.add('line');
+            }
+        }
+
+        class Control extends (Cell) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
+                this.lineNumber.classList.add('control-line');
+                this.content.classList.add('control');
+                this.content.contentEditable = false;
+            }
+        }
+
+        class Output extends (Cell) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
+                this.lineNumber.classList.add('output-line');
+                this.content.classList.add('output');
+                this.content.contentEditable = false;
+                this.lineNumber.addEventListener('mousedown', (event) => {
+                    const mouseStart = { x: event.clientX, y: event.clientY };
+                    const start = this.content.getBoundingClientRect();
+                    action.move = (event) => {
+                        if (!this.window) {
+                            this.makeWindow(start.x, start.y);
+                        }
+                        const x = start.x + event.clientX - mouseStart.x;
+                        const y = start.y + event.clientY - mouseStart.y;
+                        this.window.style.left = `${x}px`;
+                        this.window.style.top = `${y}px`;
+                    };
+                });
+            }
+            makeWindow(x, y) {
+                if (!this.window) {
+                    this.window = document.createElement('div');
+                    this.window.classList.add('window');
+                }
+                this.window.classList.remove('hidden');
+                this.window.innerHTML = '';
+                this.title = document.createElement('div');
+                this.title.addEventListener('mousedown', (event) => {
+                    const mouseStart = { x: event.clientX, y: event.clientY };
+                    const start = this.window.getBoundingClientRect();
+                    action.move = (event) => {
+                        const x = start.x + event.clientX - mouseStart.x;
+                        const y = start.y + event.clientY - mouseStart.y;
+                        this.window.style.left = `${x}px`;
+                        this.window.style.top = `${y}px`;
+                    };
+                });
+                this.title.classList.add('window-title');
+                this.title.innerText = `${this.index + 1}: ${this.name || ''}`;
+                if (x) {
+                    this.window.style.left = `${x}px`;
+                }
+                if (y) {
+                    this.window.style.top = `${y}px`;
+                }
+                this.window.append(this.title, this.content);
+                document.body.append(this.window);
+                this.state = 'window';
+            }
+        }
+
+
+
+        class Table extends (Output) {
+            constructor(index, input) {
+                super(index);
+                this.content.classList.add('table');
+                const background = document.createElement('div');
+                background.classList.add('grid');
+                this.content.appendChild(background);
+
+                const getCell = () => {
+                    let cell = document.activeElement;
+                    while (!cell.classList.contains('table-cell') && cell.parentElement) {
+                        cell = cell.parentElement;
+                    }
+                    return cell;
+                }
+                this.content.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        //inputNode.focus();
+                    }
+                    const cell = getCell();
+                    const col = parseInt(cell.dataset.col);
+                    const row = parseInt(cell.dataset.row);
+                    if (event.ctrlKey) {
+                        if (event.key === 'Delete') {
+                            if (isNaN(col) && !isNaN(row)) {
+                                const deleted = {};
+                                deleted.rows = this.rows.splice(row, 1);
+                                deleted.content = this.data.splice(row, 1);
+                                this.deleted.push(deleted);
+                                this.update(true);
+                                if (row <= this.rows.length) {
+                                    this.view.result.querySelector(`.cell-0-${row}`).focus();
+                                } else if (this.rows.length > 1) {
+                                    this.view.result.querySelector(`.cell-0-${row - 1}`).focus();
+                                } else {
+                                    //inputNode.focus();
+                                }
+                            }
+                            if (!isNaN(col) && isNaN(row)) {
+                                const deleted = {};
+                                deleted.cols = this.cols.splice(col, 1);
+                                deleted.content = this.data.map((row) => row.splice(col, 1));
+                                this.deleted.push(deleted);
+                                this.update(true);
+                                if (col <= this.cols.length) {
+                                    this.view.result.querySelector(`.cell-${col}-0`).focus();
+                                } else if (this.cols.length > 1) {
+                                    this.view.result.querySelector(`.cell-${col - 1}-0`).focus();
+                                } else {
+                                    //inputNode.focus();
+                                }
+                            }
+                            event.preventDefault();
+                        }
+                    }
+                    if (event.altKey) {
+                        event.preventDefault();
+                        if (event.key === 'ArrowRight') {
+                            const newCol = col ?? 0;
+                            if (!isNaN(col) && !isNaN(row)) {
+                                this.data[row][col] = cell.innerText;
+                            }
+                            if (event.shiftKey) {
+                                this.cols.splice(newCol, 0, { size: 'max-content' });
+                                this.data.forEach((row) => row.splice(newCol, 0, ''));
+                                this.update(true);
+                            }
+                            if (isNaN(col)) {
+                                this.view.result.querySelector(`.cell-0-${row}`).focus();
+                            } else if (isNaN(row)) {
+                                this.view.result.querySelector(`.table-column-${(col + 1) % this.cols.length}`).focus();
+                            } else {
+                                this.view.result.querySelector(`.cell-${((isNaN(col) ? -1 : col) + 1) % this.cols.length}-${row}`).focus();
+                            }
+                            saveState();
+                        }
+                        if (event.key === 'ArrowLeft') {
+                            if (!isNaN(col) && !isNaN(row)) {
+                                this.data[row][col] = cell.innerText;
+                                if (event.shiftKey) {
+                                    this.cols.splice(col, 0, { size: 'max-content' });
+                                    this.data.forEach((row) => row.splice(col, 0, ''));
+                                    this.update(true);
+                                    this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                } else if (col === 0) {
+                                    this.view.result.querySelector(`.table-row-${row}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
+                                }
+                                saveState();
+                            } else if (isNaN(row)) {
+                                this.view.result.querySelector(`.table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
+                            } else {
+                                this.view.result.querySelector(`.cell-${this.cols.length - 1}-${row}`).focus();
+                            }
+                        }
+                        if (event.key === 'ArrowUp') {
+                            if (!isNaN(row) && !isNaN(col)) {
+                                this.data[row][col] = cell.innerText;
+                                if (event.shiftKey) {
+                                    this.rows.splice(row, 0, { size: 'max-content' });
+                                    this.data.splice(row, 0, []);
+                                    this.update(true);
+                                    this.view.result.querySelector(`.cell-${col}-${row}`).focus();
+                                } else if (row === 0) {
+                                    this.view.result.querySelector(`.table-column-${col}`).focus();
+                                } else {
+                                    this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
+                                }
+                                saveState();
+                            } else if (isNaN(col)) {
+                                this.view.result.querySelector(`.table-row-${(row > 0 ? row : this.data.length) - 1}`).focus();
+                            } else {
+                                this.view.result.querySelector(`.cell-${col}-${this.data.length - 1}`).focus();
+                            }
+                        }
+                        if (event.key === 'ArrowDown') {
+                            const newRow = row ?? 0;
+                            if (!isNaN(row) && !isNaN(col)) {
+                                this.data[row][col] = cell.innerText;
+                            }
+                            if (event.shiftKey) {
+                                this.rows.splice(row, 0, { size: 'max-content' });
+                                this.data.splice(row, 0, []);
+                                this.update(true);
+                            }
+                            if (isNaN(row)) {
+                                this.view.result.querySelector(`.cell-${col}-0`).focus();
+                            } else if (isNaN(col)) {
+                                this.view.result.querySelector(`.table-row-${(row + 1) % this.data.length}`).focus();
+                            } else {
+                                this.view.result.querySelector(`.cell-${col}-${((isNaN(row) ? -1 : row) + 1) % this.data.length}`).focus();
+                            }
+                            saveState();
+                        }
+                        event.preventDefault();
+                    }
+                });
+                this.setContent(input);
+                this.update();
+            }
+            setContent(data) {
+                let table = {};
+                if (data instanceof String) {
+                    data = data.split(/\r?\n/);
+                }
+
+                table.data = data.map((line) => line.split(/\s*,\s*/g));
+                table.cols = table.data.shift().map((value) => ({ name: value }));
+                table.rows = table.data.map((row) => ({ name: row[0] }));
+
+                const nRows = table.rows?.length || table.data?.length || 1;
+                const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 1;
+
+                this.data = Array.isArray(table.data) ? table.data : (table.data ? [[table.data]] : []);
+                this.cols = [];
+                this.rows = [];
+                this.deleted = [];
+
+                for (let x = 0; x < nCols; ++x) {
+                    const col = table.cols?.[x] || {};
+                    this.cols.push({ name: col.name, size: col.size || 'max-content' });
+                }
+                for (let y = 0; y < nRows; ++y) {
+                    const row = table.rows?.[y] || {};
+                    this.rows.push({ name: row.name, size: row.size || 'max-content' });
+                }
+                this.update();
+            }
+            update(clear) {
+                const makeTemplate = (definition) => `max-content ${definition.map((col) => col.size).join(' ')}`;
+                this.content.classList.add('table');
+
+                this.content.style.gridTemplateColumns = makeTemplate(this.cols);
+                this.content.style.gridTemplateRows = makeTemplate(this.rows);
+                if (!Array.isArray(this.data)) {
+                    this.data = this.data ? [[this.data]] : [];
+                }
+                if (clear) {
+                    for (const node of this.content.querySelectorAll('.table-cell')) {
+                        node.remove();
+                    }
+                }
+                const updateCell = (cell, x, y) => {
+                    const cls = `cell-${x}-${y}`;
+                    const node = this.content.querySelector(`.${cls}`) || editableSpan(
+                        () => this.data[y][x] || '',
+                        (node) => this.data[y][x] = node.innerText);
+
+                    if (!node.classList.contains(cls)) {
+                        node.style.gridColumn = x + 1; // Grid column is 1-based and allow column for row names
+                        node.style.gridRow = y + 2; // Grid row is 1-based and allow row for column names
+                        node.classList.add('table-cell', 'table-body-cell', cls);
+                        node.dataset.col = x;
+                        node.dataset.row = y;
+                        this.content.appendChild(node);
+                    }
+
+                    node.innerText = this.data[y]?.[x] ?? '';
+                    node.title = `cell[${this.rows?.[y].name || y}][${this.cols?.[x].name || x}]`;
+                    node.classList.add('table-data');
+                }
+
+                const cols = [{ name: '' }, ...this.cols];
+                const rows = [{ name: '' }, ...this.rows];
+
+                if (0 && this.name) {
+                    const titleNode = this.content.querySelector(`.title-cell`) || document.createElement('span');
+                    titleNode.title = `Table Name: ${this.name || "Unnamed"}`;
+                    titleNode.innerText = this.name;
+                    if (!titleNode.classList.contains('titleNode')) {
+                        titleNode.style.gridColumn = 1;
+                        titleNode.style.gridRow = 1;
+                        titleNode.classList.add('table-cell', 'table-header', 'table-name');
+                        this.content.appendChild(titleNode);
+                    }
+                }
+
+                this.data.forEach((row, rowIndex) =>
+                    row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
+
+                this.cols.forEach((column, index) => {
+                    const cls = `table-column-${index}`;
+                    const node = this.content.querySelector(`.${cls}`) || editableSpan(
+                        () => this.cols[index].name || '',
+                        (node) => {
+                            this.cols[index].name = node.innerText;
+                            node.innerText = node.innerText || index;
+                        });
+                    node.title = `Column: ${column.name || index}`;
+                    node.innerText = column.name || index;
+                    if (!node.classList.contains('titleNode')) {
+                        node.style.gridColumn = index + 1; // Grid column is 1-based and allow a column for row names
+                        node.style.gridRow = 1;
+                        node.dataset.col = index;
+                        node.classList.add('table-cell', 'table-header', 'table-column-header', cls);
+                        this.content.appendChild(node);
+                    }
+                });
+                /*
+                this.rows.forEach((row, index) => {
+                    const cls = `table-row-${index}`;
+                    const node = this.content.querySelector(`.${cls}`) || editableSpan(
+                        () => this.rows[index].name || '',
+                        (node) => {
+                            if (index < this.rows.length) {
+                                this.rows[index].name = node.innerText;
+                                node.innerText = node.innerText || index;
+                            }
+                        });
+                    node.title = `row: ${row.name || index}`;
+                    node.innerText = row.name || index;
+                    if (!node.classList.contains('titleNode')) {
+                        node.style.gridRow = index + 2; // Grid row is 1-based and allow a row for column names
+                        node.style.gridColumn = 1;
+                        node.dataset.row = index;
+                        node.classList.add('table-cell', 'table-header', 'table-row-header', cls);
+                        this.content.appendChild(node);
+                    }
+                });
+                */
+            }
+        }
+
+
+
+
+
+
+        class TreeTable extends (Output) {
+            constructor(index, tree) {
+                super(index);
+                this.deleted = [];
+                this.data = tree.content;
+                this.all = tree.all;
+                this.cols = tree.cols;
+                this.rows = tree.rows;
+                this.keys = tree.keys;
+                this.model = tree.model;
+
+                this.content.classList.add('table');
+                const background = document.createElement('div');
+                background.classList.add('grid');
+                this.content.appendChild(background);
+
+                const getCell = () => {
+                    let cell = document.activeElement;
+                    while (!(cell.classList.contains('tree-table-cell') || cell.classList.contains('tree-table-header')) && cell.parentElement) {
+                        cell = cell.parentElement;
+                    }
+                    return cell;
+                }
+                this.content.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        //inputNode.focus();
+                    }
+                    const cell = getCell();
+                    const col = parseInt(cell.dataset.col);
+                    const row = parseInt(cell.dataset.row);
+                    if (event.key === 'Tab' && col === 0 && row > 0) {
+                        const node = this.all[row];
+                        const parent = this.all.find((parent) => parent[meta].parts?.includes(node));
+                        if (event.shiftKey) { // move item up in level
+                            if (parent) {
+                                parent[meta].parts.splice(parent[meta].parts.indexOf(node), 1);
+                                const newParent = this.all.find((node) => node[meta].parts?.includes(parent));
+                                if (newParent) {
+                                    const position = newParent[meta].parts.indexOf(parent);
+                                    newParent[meta].parts.splice(position + 1, 0, node);
+                                } else {
+                                    const position = this.content.indexOf(parent) + 1;
+                                    this.content.splice(position, 0, node);
+                                }
+                            }
+                        } else {
+                            const container = parent ? parent[meta].parts : this.data;
+                            const position = container.indexOf(node);
+                            const previous = container[position - 1];
+                            if (previous) {
+                                container.splice(position, 1);
+                                previous[meta].parts.push(node)
+                            }
+                        }
+                        this.update();
+                        this.content.querySelector(`.cell-content-${col}-${row}`).focus();
+                        event.preventDefault();
+                        event.stopPropagation();
+                    }
+                    if (event.ctrlKey) {
+                        if (event.key === 'Delete') {
+                            if (isNaN(row) && this.keys.length > 1) {
+                                cell.blur();
+                                const key = this.keys[col];
+                                const deleted = { key };
+                                this.keys.splice(col, 1);
+                                this.update(true);
+                                if (col < this.keys.length) {
+                                    this.content.querySelector(`.tree-table-column-${col}`).focus();
+                                } else {
+                                    this.content.querySelector(`.tree-table-column-${col - 1}`).focus();
+                                }
+                            } else {
+                                const item = this.all[row];
+                                const parent = this.all.find((node) => node[meta].parts.includes(item));
+                                const position = (parent ? parent[meta].parts : this.data).indexOf(item);
+                                const deleted = { item, parent, position };
+                                this.deleted.push(deleted);
+                                this.all.splice(row, 1);
+                                this.rows.splice(row, 1);
+                                if (item?.[meta].parts.length) {
+                                    (parent ? parent[meta].parts : this.data).splice(position, 1, ...item[meta].parts);
+                                } else {
+                                    (parent ? parent[meta].parts : this.data).splice(position, 1);
+                                }
+                                this.model.delete(item);
+                                this.update();
+                                if (row < this.rows.length) {
+                                    this.content.querySelector(`.cell-content-${col}-${row}`).focus();
+                                } else if (this.rows.length > 0) {
+                                    this.content.querySelector(`.cell-content-${col}-${row - 1}`).focus();
+                                } else {
+                                    this.content.querySelector(`.tree-table-column-${col}`).focus();
+                                }
+                            }
+                            event.preventDefault();
+                        }
+                    }
+                    if (event.altKey) {
+                        event.preventDefault();
+                        if (event.key === 'ArrowRight') {
+                            if (event.shiftKey) {
+                                this.keys.splice(col + 1, 0, null);
+                                this.update();
+                                this.content.querySelector(`.tree-table-column-${(col + 1) % this.keys.length}`).focus();
+                            } else {
+                                if (isNaN(row)) {
+                                    this.content.querySelector(`.tree-table-column-${(col + 1) % this.cols.length}`).focus();
+                                } else {
+                                    this.content.querySelector(`.cell-content-${(col + 1) % this.cols.length}-${row}`).focus();
+                                }
+                            }
+                        }
+                        if (event.key === 'ArrowLeft') {
+                            if (event.shiftKey) {
+                                this.keys.splice(col + 1, 0, null);
+                                this.update();
+                                this.content.querySelector(`.tree-table-column-${col}`).focus();
+                            } else {
+                                if (isNaN(row)) {
+                                    this.content.querySelector(`.tree-table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
+                                } else {
+                                    this.content.querySelector(`.cell-content-${(col > 0 ? col : this.cols.length) - 1}-${row}`).focus();
+                                }
+                            }
+                        }
+                        if (event.key === 'ArrowUp') {
+                            if (event.shiftKey && !isNaN(row)) {
+                                // Add a new item before the current item
+                                const current = this.all[row];
+                                const newItem = {};
+                                this.model.set(newItem, this.modelNode(newItem));
+                                const parent = this.all.find((node) => node['childrent'].includes(current));
+                                if (parent) {
+                                    const position = node['childrent'].indexOf(current);
+                                    parent.splice(position, 0, newItem);
+                                } else {
+                                    const postion = this.data.indexOf(current);
+                                    this.data.splice(position, 0, newItem);
+                                }
+                                this.all.splice(row, 0, newItem);
+                                this.rows.splice(row, 0, { size: 'max-content' });
+
+                                this.update();
+                                this.content.querySelector(`.cell-content-${col}-${row}`).focus();
+
+                            } else if (row > 0) {
+                                this.content.querySelector(`.cell-content-${col}-${row - 1}`).focus();
+                            } else {
+                                this.content.querySelector(`.cell-content-${col}-${this.rows.length - 1}`).focus();
+                            }
+                        }
+                        if (event.key === 'ArrowDown') {
+                            if (event.shiftKey) {
+                                const newItem = {};
+                                this.model.set(newItem, this.modelNode(newItem));
+                                if (isNaN(row)) {
+                                    // Add a new item as the first child
+                                    this.data.unshift(newItem);
+                                    this.all.unshift(newItem);
+                                    this.rows.unshift({ size: 'max-content' });
+                                } else {
+                                    // Add a new item as a child of the item at the current row
+                                    const current = this.all[row];
+                                    this.all.splice(row + 1, 0, newItem);
+                                    this.rows.splice(row + 1, 0, { size: 'max-content' });
+                                    current[meta].parts = current[meta].parts || [];
+                                    current[meta].parts.unshift(newItem);
+                                }
+                                this.update();
+                            }
+
+                            if (isNaN(row)) {
+                                this.content.querySelector(`.cell-${col}-0`).focus();
+                            } else {
+                                this.content.querySelector(`.cell-content-${col}-${(row + 1) % this.all.length}`).focus();
+                            }
+                        }
+                        saveState();
+                        event.preventDefault();
+                    }
+                });
+                this.update();
+            }
+            clearUpdate() {
+                for (const node of this.content.querySelectorAll('.tree-table-cell')) {
+                    node.remove();
+                }
+                update();
+            }
+            setContent(tree) {
+                this.data = tree.content;
+                this.all = tree.all;
+                this.cols = tree.cols;
+                this.rows = tree.rows;
+                this.keys = tree.keys;
+                this.model = tree.model;
+                this.update();
+            }
+            update() {
+                this.content.innerHTML = '';
+                this.content.classList.add('table');
+
+                const makeTemplate = (definition) => `${definition.map((col) => col.size).join(' ')}`;
+                this.content.style.gridTemplateColumns = makeTemplate(this.cols);
+                this.content.style.gridTemplateRows = makeTemplate(this.rows);
+
+                let row = 2;
+                const addNode = (node, level = 0) => {
+                    this.keys.forEach((key, index) => {
+                        const cell = document.createElement('div');
+                        cell.classList.add('tree-table-cell', `cell-${index}-${row - 2}`);
+                        cell.style.gridRow = row;
+                        cell.style.gridCol = index + 1;
+                        cell.dataset.row = this.all.indexOf(node);
+                        cell.dataset.col = index;
+                        if (index === 0) {
+                            cell.innerHTML = '&nbsp;'.repeat(level * 2);
+                            const meta = this.model.get(node);
+                            const expand = expander(() => meta.getState(), (event) => { meta.expand(event); this.update(); }, (event) => { meta.collapse(event); this.update(); });
+                            cell.appendChild(expand);
+                            cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
+                            cell.classList.add('tree-table-header');
+                        } else {
+                            cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
+                        }
+                        cell.lastElementChild.classList.add(`cell-content-${index}-${row - 2}`)
+                        this.content.append(cell);
+                    });
+                    row += 1;
+                    if (this.model.get(node).getState() === 'expanded') {
+                        node[meta].parts?.forEach((child) => addNode(child, level + 1));
+                    }
+                }
+
+                this.data.forEach((node) => addNode(node));
+                this.keys.forEach((key, index) => {
+                    const cell = editableSpan(() => this.keys[index], (node) => this.keys[index] = node.innerText);
+                    cell.classList.add('tree-table-header', `tree-table-column-${index}`);
+                    cell.innerHTML = key || '<new key>';
+                    cell.dataset.col = index;
+                    cell.style.gridRow = 1;
+                    cell.style.gridColumn = index + 1;
+                    this.content.append(cell);
+                });
+            }
+            serialiseContent() {
+                const nodes = this.all.map((source) => ({
+                    data: source,
+                    parts: source[meta].parts?.map((part) => this.all.indexOf(part)),
+                }));
+                return nodes;
+            }
+            deserialiseContent(nodes) {
+                nodes.forEach((node) => {
+                    if (!node.data) {
+                        node = { date: node, parts: [] };
+                    }
+                    node.data = node.data || {};
+                    node.data[meta] = {};
+                });
+
+                const all = nodes.map((source) => {
+                    const node = source.data || source;
+                    node[meta] = node[meta] || {};
+                    node[meta].parts = source.parts?.map((part) => nodes[part].data) || [];
+                    node[meta].parts.forEach((part) => part[meta].parent = node);
+                    return node;
+                });
+                const roots = all.filter((node) => node[meta].parent === undefined);
+                return roots;
+            }
+        }
+
+
+        /**
+         * Make a window containing lines from the buffer
+         */
+        function makeWindow(x, y, content) {
+            if (!this.window) {
+                this.window = document.createElement('div');
+                this.window.classList.add('window');
+            }
+            this.window.classList.remove('hidden');
+            this.window.innerHTML = '';
+            this.title = document.createElement('div');
+            this.title.addEventListener('mousedown', (event) => {
+                const mouseStart = { x: event.clientX, y: event.clientY };
+                const start = this.window.getBoundingClientRect();
+                action.move = (event) => {
+                    const x = start.x + event.clientX - mouseStart.x;
+                    const y = start.y + event.clientY - mouseStart.y;
+                    this.window.style.left = `${x}px`;
+                    this.window.style.top = `${y}px`;
+                };
+            });
+            this.title.classList.add('window-title');
+            this.title.innerText = `${this.index + 1}: ${this.content.innerText}`;
+            if (x) {
+                this.window.style.left = `${x}px`;
+            }
+            if (y) {
+                this.window.style.top = `${y}px`;
+            }
+            this.window.append(this.title, this.content);
+            document.body.append(this.window);
+            this.state = 'window';
+        }
 
         /**
          * Utility functions
@@ -447,11 +1305,10 @@ amending config files
              * List the available actions.
              */
             actions(cell) {
-                const output = cell.getOutput();
-                Object.keys(actions).forEach((action) => {
-                    const node = document.createElement('div');
-                    node.innerText = action;
-                    node.addEventListener('mousedown', (event) => {
+                const output = Object.keys(actions).map((action) => {
+                    const output = new Output();
+                    output.content.innerText = action;
+                    output.content.addEventListener('mousedown', (event) => {
                         event.preventDefault();
                         const range = document.getSelection().getRangeAt(0);
                         if (range) {
@@ -459,8 +1316,9 @@ amending config files
                             range.insertNode(document.createTextNode(action));
                         }
                     });
-                    output.appendChild(node);
+                    return output;
                 });
+                cell.after(...output);
             },
 
             /**
@@ -551,47 +1409,16 @@ amending config files
 
             /**
              * Show the list of cells
-             *
-            cells(input) {
-                const cell = new Cell(input);
-                const toString = (cell, index) => `${index}: ${input}${cell?.users?.size ? ' (' + cell.users.size + ')' : ''}`;
-                cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
-                cell.update = (time) => {
-                    cell.value = app.cells.filter((cell) => cell.view.result).map(toString).join('<br>');
-                    cell.view.result.innerHTML = '';
-                    cell.view.result.classList.add('table');
-                    cell.view.result.style.gridTemplateColumns = `min-content min-content 1fr`;
-                    app.cells.filter((cell) => cell.view.result).forEach((eachCell) => {
-                        const indexNode = document.createElement('span');
-                        indexNode.innerHTML = `${eachCell.index}:`;
-                        indexNode.classList.add('cells-list', 'cells-list-index');
-                        cell.view.result.appendChild(indexNode);
-                        indexNode.addEventListener('click', (event) => {
-                            eachCell.view.result.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
-                        });
-
-                        const nameNode = document.createElement('span');
-                        nameNode.innerHTML = `${eachCell.name ?? ''}`;
-                        nameNode.classList.add('cells-list', 'cells-list-name');
-                        cell.view.result.appendChild(nameNode);
-
-                        const rawNode = document.createElement('span');
-                        rawNode.innerHTML = `${eachCell.command}${eachCell?.users?.size ? ' (' + eachCell.users.size + ')' : ''}`;
-                        rawNode.classList.add('cells-list', 'cells-list-raw');
-                        cell.view.result.appendChild(rawNode);
-                        rawNode.addEventListener('click', (event) => {
-                            const start = inputNode.selectionStart;
-                            const end = inputNode.selectionEnd;
-                            inputNode.value = inputNode.value.slice(0, start) + eachCell.raw + inputNode.value.slice(end);
-                            inputNode.selectionStart = start;
-                            inputNode.selectionEnd = start + eachCell.raw.length;
-                        });
-                    });
-                };
-                app.events.historyChange.add(cell);
-                return { cell };
+             */
+            cells2(cell) {
+                cell.output = new Output(cell.index + 1);
+                const update = () => {
+                    cell.output.content.innerText = nodes.map((cell) => cell.content.innerText).join('\n');
+                    requestAnimationFrame(update);
+                }
+                update();
+                cell.after(cell.output);
             },
-            */
 
             /**
              * perform a google search
@@ -692,15 +1519,7 @@ amending config files
                 const string = cell.input.replace(/\s*collapse\s*/, '');
 
                 const cells = getCells(string);
-                const result = [];
-                cells.forEach((cell) => {
-                    if (cell.state === 'floating') {
-                        cell.view.box = cell.view.cell.getBoundingClientRect();
-                    }
-                    cell.contols?.classList.add('hidden');
-                    cell.output?.classList.add('hidden');
-                    cell.collapsed = true;
-                });
+                cells.forEach((cell) => cell.collapse());
                 cell.action = true;
             },
 
@@ -712,11 +1531,7 @@ amending config files
 
                 const cells = getCells(string);
                 const result = [];
-                cells.forEach((cell) => {
-                    cell.contols?.classList.remove('hidden');
-                    cell.output?.classList.remove('hidden');
-                    cell.collapsed = false;
-                });
+                cells.forEach((cell) => cell.expand());
                 cell.action = true;
             },
 
@@ -755,8 +1570,8 @@ amending config files
                 const stuck = nodes.filter((cell) => cell.state === 'stick');
                 let y = 0;
                 stuck.forEach((cell) => {
-                    cell.line.style.top = `${y}px`;
-                    y += cell.line.getBoundingClientRect().height;
+                    cell.content.style.top = `${y}px`;
+                    y += cell.content.getBoundingClientRect().height;
                     if (cell.controls) {
                         cell.controls.style.top = `${y}px`;
                         y += cell.controls.getBoundingClientRect().height;
@@ -804,7 +1619,7 @@ amending config files
 
                 const pos = values.map((val) => Number(val));
                 const result = [];
-                cells.filter((cell) => cell.output).forEach((cell) => {
+                cells.filter((cell) => cell.makeWindow).forEach((cell) => {
                     cell.makeWindow();
                     if (!isNaN(pos[0])) {
                         cell.window.style.left = `${pos[0]}px`;
@@ -906,7 +1721,7 @@ amending config files
                 cell.update = async (time) => {
                     const cells = getSource(cell);
                     cells.forEach((input) => cell.uses.add(input));
-                    const source = cells.map((input) => input.line.innerText).join('\n');
+                    const source = cells.map((input) => input.content.innerText).join('\n');
                     output.innerHTML = source;
                 }
 
@@ -917,25 +1732,26 @@ amending config files
              * Create a mermaid diagram cell
              */
             diagram(cell) {
-                const output = cell.getOutput();
+                const output = new Output();
                 const string = cell.input.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
-                output.classList.add('mermaid');
-                output.addEventListener('click', (event) => diagram.classList.toggle('focused'));
+                output.content.classList.add('mermaid');
+                output.content.addEventListener('click', (event) => diagram.classList.toggle('focused'));
 
-                cell.update = async (time) => {
+                output.update = async (time) => {
                     const cells = getSource(cell);
                     cells.forEach((input) => cell.uses.add(input));
-                    const source = cells.map((input) => input.line.innerText).join('\n');
+                    const source = cells.map((input) => input.content.innerText).join('\n');
                     try {
                         const { svg } = await mermaid.render(`graph_${index}`, source);
-                        output.innerHTML = svg;
+                        output.content.innerHTML = svg;
                     } catch (error) {
-                        output.innerHTML = error.message;
+                        output.content.innerHTML = error.message;
                     }
                 }
-                cell.update();
+                output.update();
+                cell.after(output);
             },
 
             /**
@@ -944,8 +1760,8 @@ amending config files
             js(cell) {
                 const cells = getSource(cell);
                 cells.forEach((input) => cell.uses.add(input));
-                const text = cells.map((cell) => cell.line.innerText).join('\n');
-                const output = cell.getOutput();
+                const text = cells.map((cell) => cell.content.innerText).join('\n');
+                const output = cell.getOutput().at(-1).content;
                 try {
                     const func = new Function('global', text);
                     const result = func(global);
@@ -961,19 +1777,13 @@ amending config files
             js2(cell) {
                 const cells = getSource(cell);
                 cells.forEach((input) => cell.uses.add(input));
-                const text = cells.map((cell) => cell.line.innerText).join('\n');
-                //const output = Cell.make(cell.index + 1);
-                //cell.after(output);
+                const text = cells.map((cell) => cell.content.innerText).join('\n');
                 try {
                     const func = new Function('global', text);
                     const result = func(global);
                     cell.updateResult(result);
-                    //insertAfter(result, cell);
-                    //output.line.innerText = result;
                 } catch (error) {
                     cell.updateResult(error.message);
-                    //insertAfter(error.message, cell);
-                   // output.line.innerText = error.message;
                 }
             },
 
@@ -989,7 +1799,7 @@ amending config files
              * Add a date to the named items
              */
             date(cell) {
-                const string = cell.line.innerText.replace(/date\s*/, '');
+                const string = cell.content.innerText.replace(/date\s*/, '');
                 const parts = string.split(/(\s+)/g);
                 const date = parts.pop();
                 const name = parts.join('').trim();
@@ -1019,7 +1829,7 @@ amending config files
              * Add a site to the named items
              */
             site(cell) {
-                const string = cell.line.innerText.replace(/site\s*/, '');
+                const string = cell.content.innerText.replace(/site\s*/, '');
                 const [name, addr] = string.split(/\s*http/);
                 const url = `http${addr}`;
                 named.sites[name] = {
@@ -1052,7 +1862,7 @@ amending config files
              * Add an abbreviation
              */
             abbr(cell) {
-                const string = cell.line.innerText.replace(/abbr\s*/, '');
+                const string = cell.content.innerText.replace(/abbr\s*/, '');
                 const parts = string.split(/(\s+)/);
                 const name = parts.shift();
                 const expansion = parts.join('').trim();
@@ -1101,7 +1911,7 @@ amending config files
                     }
                 };
 
-                const file = cell.line.innerText.replace(/^\s*load\s*/, '');
+                const file = cell.content.innerText.replace(/^\s*load\s*/, '');
                 if (file) {
                     load(cell, file, (contents) => output.innerHTML = `<pre>${contents}</pre>`);
                 } else {
@@ -1115,7 +1925,7 @@ amending config files
              * Save the contents of the specified cells
              */
             save(cell) {
-                const string = cell.line.innerText.replace(/^\s*save\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*save\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
                 const cells = getReferences(string.replace(pattern, ''), cell);
@@ -1165,7 +1975,7 @@ amending config files
              * Save the session
              */
             'save session'(cell) {
-                const string = cell.line.innerText.replace(/^\s*save session\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*save session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1];
                 const content = JSON.stringify({ app, named }, null, 2);
@@ -1177,7 +1987,7 @@ amending config files
              * Load a session
              */
             'load session'(cell) {
-                const string = cell.line.innerText.replace(/^\s*load session\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*load session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1];
                 loadText(filename);
@@ -1188,7 +1998,7 @@ amending config files
              * Save the session
              */
             'watch session'(cell) {
-                const string = cell.line.innerText.replace(/^\s*save session\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*save session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1];
                 let fileHandle;
@@ -1238,7 +2048,7 @@ amending config files
              * Show a status bar
              */
             'status bar'(cell) {
-                const string = cell.line.innerText.replace(/^\s*status bar\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*status bar\s*/, '');
 
                 let update;
 
@@ -1269,7 +2079,7 @@ amending config files
                     node.appendChild(time);
 
                     const refresh = () => {
-                        position.innerHTML = `Line: ${app.line} / ${nodes.length}`;
+                        position.innerHTML = `Line: ${app.content} / ${nodes.length}`;
                         network.innerHTML = navigator.connection.type || '';
                         const now = new Date();
                         time.innerHTML = now.toLocaleTimeString();
@@ -1286,7 +2096,7 @@ amending config files
              * Load a session
              */
             'read session'(cell) {
-                const string = cell.line.innerText.replace(/^\s*load session\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*load session\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
 
@@ -1329,7 +2139,7 @@ amending config files
             },
 
             saveSvg(cell) {
-                const string = cell.line.innerText.replace(/^\s*saveSvg\s*/, '');
+                const string = cell.content.innerText.replace(/^\s*saveSvg\s*/, '');
                 const pattern = /\s+as (\S+)/;
                 const filename = string.match(pattern)?.[1]
                 const cells = getReferences(string.replace(pattern, ''), cell);
@@ -1347,7 +2157,7 @@ amending config files
              * Load user specified data file
              */
             'load data'(cell) {
-                const file = cell.line.innerText.replace(/^\s*load data\s*/, '');
+                const file = cell.content.innerText.replace(/^\s*load data\s*/, '');
                 const process = (content) => {
                     cell.updateResults(content);
 
@@ -1430,7 +2240,7 @@ amending config files
                     const [fileHandle] = await window.showOpenFilePicker();
                     if (fileHandle) {
                         const file = await fileHandle.getFile();
-                        cell.line.append(` ${file.name}`);
+                        cell.content.append(` ${file.name}`);
                         cell.content = file.name;
                         const contents = await file.text();
                         process(contents);
@@ -1527,7 +2337,7 @@ amending config files
                 if (this.name) {
                     name.push(this.name);
                 }
-                name.push(this.line.innerText);
+                name.push(this.content.innerText);
                 return name.join(' ');
             }
             getResultNode() {
@@ -1796,7 +2606,7 @@ amending config files
 
 
         /**
-         * Create and editable span.
+         * Create an editable span.
          */
         function editableSpan(get, set) {
             const node = document.createElement('span');
@@ -1821,7 +2631,7 @@ amending config files
         }
 
         /**
-         * Create and editable span.
+         * Create an expansion widget for trees.
          */
         function expander(getState, expand, collapse) {
             const node = document.createElement('span');
@@ -1925,6 +2735,84 @@ amending config files
             }).filter((node) => !node.parent);
         }
 
+
+        /**
+         * Return a div containing a calendar
+         */
+        function makeCalendar(cell, date) {
+            this.calendarDate = date;
+            const calendarWidget = document.createElement('div');
+            calendarWidget.classList.add('calendar');
+
+            const previousMonth = document.createElement('span');
+            previousMonth.innerHTML = '&lt;';
+            previousMonth.classList.add('calendar-day');
+            calendarWidget.appendChild(previousMonth);
+            previousMonth.addEventListener('click', (event) => {
+                this.calendarDate.setMonth(this.calendarDate.getMonth() - 1);
+                update()
+            });
+
+            const monthName = document.createElement('span');
+            monthName.classList.add('calendar-month-name');
+            calendarWidget.appendChild(monthName);
+
+            const nextMonth = document.createElement('span');
+            nextMonth.innerHTML = '&gt;';
+            nextMonth.classList.add('calendar-day');
+            calendarWidget.appendChild(nextMonth);
+            nextMonth.addEventListener('click', (event) => {
+                this.calendarDate.setMonth(this.calendarDate.getMonth() + 1);
+                update()
+            });
+
+            'SMTWTFS'.split('').forEach((c) => {
+                const day = document.createElement('span');
+                day.classList.add('calendar-day');
+                day.innerHTML = c;
+                calendarWidget.appendChild(day);
+            });
+            const days = [];
+            for (let i = 0; i < 42; ++i) {
+                const day = document.createElement('span');
+                day.classList.add('calendar-day');
+                calendarWidget.appendChild(day);
+                days.push(day);
+            }
+
+            const update = () => {
+                const today = new Date();
+                monthName.innerHTML = this.calendarDate.toLocaleDateString('en-AU', { month: 'long' });
+                const month = this.calendarDate.getMonth();
+                const year = this.calendarDate.getFullYear();
+                const date = new Date(year, month, 1);
+                date.setDate(date.getDate() - date.getDay());
+                const end = new Date(year, month + 1, 0);
+                end.setDate(end.getDate() + 7 - end.getDay());
+                days.forEach((day) => {
+                    if (sameDay(today, date)) {
+                        day.classList.add('calendar-day-today');
+                    } else {
+                        day.classList.remove('calendar-day-today');
+                    }
+                    if (date.getMonth() === month) {
+                        day.classList.remove('calendar-day-fade');
+                    } else {
+                        day.classList.add('calendar-day-fade');
+                    }
+                    if (date < end) {
+                        day.innerHTML = ('' + date.getDate()).padStart(2, '0');
+                    } else {
+                        day.innerHTML = '';
+                    }
+                    date.setDate(date.getDate() + 1);
+                });
+            }
+            update();
+            return calendarWidget;
+        }
+
+
         /**
          * Cell types applied to a cell after creation.
          */
@@ -1939,7 +2827,7 @@ amending config files
                         const canvas = document.createElement('canvas');
                         canvas.classList.add('clock');
                         this.context = canvas.getContext('2d');
-                        const output = this.getOutput();
+                        const output = this.getOutput().at(-1).content;
                         output.append(canvas);
                         this.update();
                     }
@@ -1947,8 +2835,8 @@ amending config files
                 update() {
                     //this.value = new Date();
 
-                    const width = this.context.width = this.output.firstElementChild.clientWidth;
-                    const height = this.context.height = this.output.firstElementChild.clientHeight;
+                    const width = this.context.width = this.context.canvas.clientWidth;
+                    const height = this.context.height = this.context.canvas.clientHeight;
                     const radius = Math.min(width, height) / 2;
 
                     const dayStart = new Date();
@@ -2085,7 +2973,7 @@ amending config files
                             });
                         }
                         update();
-                        this.getOutput().append(calendarWidget);
+                        this.getOutput().at(-1).content.append(calendarWidget);
                     }
                 }
             },
@@ -2138,9 +3026,9 @@ amending config files
                     } else {
                         const lines = [];
                         let index = nodes.indexOf(this) - 1;
-                        while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].line.innerText))) {
+                        while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].content.innerText))) {
                             this.uses.unshift(nodes[index]);
-                            lines.unshift(nodes[index].line.innerText);
+                            lines.unshift(nodes[index].content.innerText);
                             index -= 1;
                         }
                         this.input = lines.join('\n');
@@ -2215,25 +3103,25 @@ amending config files
                 defaultState: 'widget',
                 init(input) {
                     const string = input.replace(/^\s*todo\s*/, '');
-                    this.content = new ToDo(string);
+                    this.todo = new ToDo(string);
                     this.update();
                 },
                 update() {
                     const output = this.getOutput();
-                    output.innerHTML = `<span class="raised">${this.content.raised.toDateString()}</span><br><span class="details">${this.content.detail}</span>`;
-                    if (this.content.done) {
-                        output.innerHTML += `<br><span class="done">${this.content.done.toDateString()}</span>`;
+                    output.innerHTML = `<span class="raised">${this.todo.raised.toDateString()}</span><br><span class="details">${this.todo.detail}</span>`;
+                    if (this.todo.done) {
+                        output.innerHTML += `<br><span class="done">${this.todo.done.toDateString()}</span>`;
                     }
                     if (!this.checkbox) {
                         this.checkbox = document.createElement('input');
                         this.checkbox.type = 'checkbox';
                         this.checkbox.classList.add('top-right');
-                        this.checkbox.checked = this.content.done;
+                        this.checkbox.checked = this.todo.done;
                         this.checkbox.addEventListener('change', (event) => {
                             if (this.checkbox.checked) {
-                                this.content.complete();
+                                this.todo.complete();
                             } else {
-                                this.content.done = null;
+                                this.todo.done = null;
                                 app.notifyListeners('todos', { action: 'uncomplete', todo: this });
                             }
                             this.update();
@@ -2252,7 +3140,6 @@ amending config files
                 defaultState: 'floating',
                 init(input) {
                     const string = input.replace(/^\s*todo\s*/, '');
-                    this.content = string;
                     app.addListener('todos', this);
                     this.update();
                 },
@@ -2262,330 +3149,102 @@ amending config files
                 }
             },
             table: {
-                setContent(content) {
-                    this.content = content;
-                    this.rows = this.content.map((row) => ({ size: 'minmax(1em, max-content)' }));
-                    const cols = Math.max(0, ...this.content.map((row) => row.length));
-                    this.cols = [];
-                    for (let col = 0; col < cols; ++col) {
-                        this.cols.push({ size: 'minmax(2em, max-content)' });
-                    }
-                    //  this.update(true);
-                },
-                tableFromString(string) {
-                    const data = string.split(/\r?\n/g).map((row) => row.split(/\s*,\s*/g));
-                    const cols = data.shift().map((value) => ({ name: value }));
-                    const rows = data.map((row) => ({ name: row.shift() }));
-                    return { data, cols, rows };
-                },
                 init(input) {
-                    let table = {};
-                    if (table instanceof String) {
-                        table = this.tableFromString(table);
+                    const inputs = getSource(this);
+                    inputs.forEach((input) => this.uses.add(input));
+
+                    if (this.output) {
+                        this.output[0].setContent(inputs.map((cell) => cell.content.innerText));
                     } else {
-                        const inputs = getSource(this);
-                        inputs.forEach((input) => this.uses.add(input));
-                        table.data = inputs.map((input) => input.line.innerText.split(/\s*,\s*/g));
-                        table.cols = table.data.shift().map((value) => ({ name: value }));
-                        table.rows = table.data.map((row) => ({ name: row[0] }));
+                        this.output = [new Table(this.index + 1, inputs.map((cell) => cell.content.innerText))];
+                        this.after(...this.output);
                     }
-                    const nRows = table.rows?.length || table.data?.length || 1;
-                    const nCols = table.cols?.length || Math.max(0, ...(table.data?.map((row) => row.length) || [])) || 1;
-
-                    this.content = Array.isArray(table.data) ? table.data : (table.data ? [[table.data]] : []);
-                    this.cols = [];
-                    this.rows = [];
-                    this.deleted = [];
-
-                    for (let x = 0; x < nCols; ++x) {
-                        const col = table.cols?.[x] || {};
-                        this.cols.push({ name: col.name, size: col.size || 'max-content' });
-                    }
-                    for (let y = 0; y < nRows; ++y) {
-                        const row = table.rows?.[y] || {};
-                        this.rows.push({ name: row.name, size: row.size || 'max-content' });
-                    }
-
-                    const resultNode = this.getOutput();
-                    resultNode.classList.add('table');
-                    const background = document.createElement('div');
-                    background.classList.add('grid');
-                    resultNode.appendChild(background);
-
-                    const getCell = () => {
-                        let cell = document.activeElement;
-                        while (!cell.classList.contains('table-cell') && cell.parentElement) {
-                            cell = cell.parentElement;
-                        }
-                        return cell;
-                    }
-                    resultNode.addEventListener('keydown', (event) => {
-                        if (event.key === 'Escape') {
-                            //inputNode.focus();
-                        }
-                        const cell = getCell();
-                        const col = parseInt(cell.dataset.col);
-                        const row = parseInt(cell.dataset.row);
-                        if (event.ctrlKey) {
-                            if (event.key === 'Delete') {
-                                if (isNaN(col) && !isNaN(row)) {
-                                    const deleted = {};
-                                    deleted.rows = this.rows.splice(row, 1);
-                                    deleted.content = this.content.splice(row, 1);
-                                    this.deleted.push(deleted);
-                                    this.update(true);
-                                    if (row <= this.rows.length) {
-                                        this.view.result.querySelector(`.cell-0-${row}`).focus();
-                                    } else if (this.rows.length > 1) {
-                                        this.view.result.querySelector(`.cell-0-${row - 1}`).focus();
-                                    } else {
-                                        //inputNode.focus();
-                                    }
-                                }
-                                if (!isNaN(col) && isNaN(row)) {
-                                    const deleted = {};
-                                    deleted.cols = this.cols.splice(col, 1);
-                                    deleted.content = this.content.map((row) => row.splice(col, 1));
-                                    this.deleted.push(deleted);
-                                    this.update(true);
-                                    if (col <= this.cols.length) {
-                                        this.view.result.querySelector(`.cell-${col}-0`).focus();
-                                    } else if (this.cols.length > 1) {
-                                        this.view.result.querySelector(`.cell-${col - 1}-0`).focus();
-                                    } else {
-                                        //inputNode.focus();
-                                    }
-                                }
-                                event.preventDefault();
-                            }
-                        }
-                        if (event.altKey) {
-                            event.preventDefault();
-                            if (event.key === 'ArrowRight') {
-                                const newCol = col ?? 0;
-                                if (!isNaN(col) && !isNaN(row)) {
-                                    this.content[row][col] = cell.innerText;
-                                }
-                                if (event.shiftKey) {
-                                    this.cols.splice(newCol, 0, { size: 'max-content' });
-                                    this.content.forEach((row) => row.splice(newCol, 0, ''));
-                                    this.update(true);
-                                }
-                                if (isNaN(col)) {
-                                    this.view.result.querySelector(`.cell-0-${row}`).focus();
-                                } else if (isNaN(row)) {
-                                    this.view.result.querySelector(`.table-column-${(col + 1) % this.cols.length}`).focus();
-                                } else {
-                                    this.view.result.querySelector(`.cell-${((isNaN(col) ? -1 : col) + 1) % this.cols.length}-${row}`).focus();
-                                }
-                                saveState();
-                            }
-                            if (event.key === 'ArrowLeft') {
-                                if (!isNaN(col) && !isNaN(row)) {
-                                    this.content[row][col] = cell.innerText;
-                                    if (event.shiftKey) {
-                                        this.cols.splice(col, 0, { size: 'max-content' });
-                                        this.content.forEach((row) => row.splice(col, 0, ''));
-                                        this.update(true);
-                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
-                                    } else if (col === 0) {
-                                        this.view.result.querySelector(`.table-row-${row}`).focus();
-                                    } else {
-                                        this.view.result.querySelector(`.cell-${col - 1}-${row}`).focus();
-                                    }
-                                    saveState();
-                                } else if (isNaN(row)) {
-                                    this.view.result.querySelector(`.table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
-                                } else {
-                                    this.view.result.querySelector(`.cell-${this.cols.length - 1}-${row}`).focus();
-                                }
-                            }
-                            if (event.key === 'ArrowUp') {
-                                if (!isNaN(row) && !isNaN(col)) {
-                                    this.content[row][col] = cell.innerText;
-                                    if (event.shiftKey) {
-                                        this.rows.splice(row, 0, { size: 'max-content' });
-                                        this.content.splice(row, 0, []);
-                                        this.update(true);
-                                        this.view.result.querySelector(`.cell-${col}-${row}`).focus();
-                                    } else if (row === 0) {
-                                        this.view.result.querySelector(`.table-column-${col}`).focus();
-                                    } else {
-                                        this.view.result.querySelector(`.cell-${col}-${row - 1}`).focus();
-                                    }
-                                    saveState();
-                                } else if (isNaN(col)) {
-                                    this.view.result.querySelector(`.table-row-${(row > 0 ? row : this.content.length) - 1}`).focus();
-                                } else {
-                                    this.view.result.querySelector(`.cell-${col}-${this.content.length - 1}`).focus();
-                                }
-                            }
-                            if (event.key === 'ArrowDown') {
-                                const newRow = row ?? 0;
-                                if (!isNaN(row) && !isNaN(col)) {
-                                    this.content[row][col] = cell.innerText;
-                                }
-                                if (event.shiftKey) {
-                                    this.rows.splice(row, 0, { size: 'max-content' });
-                                    this.content.splice(row, 0, []);
-                                    this.update(true);
-                                }
-                                if (isNaN(row)) {
-                                    this.view.result.querySelector(`.cell-${col}-0`).focus();
-                                } else if (isNaN(col)) {
-                                    this.view.result.querySelector(`.table-row-${(row + 1) % this.content.length}`).focus();
-                                } else {
-                                    this.view.result.querySelector(`.cell-${col}-${((isNaN(row) ? -1 : row) + 1) % this.content.length}`).focus();
-                                }
-                                saveState();
-                            }
-                            event.preventDefault();
-                        }
-                    });
-                    this.update();
                 },
-                update(clear) {
-                    const makeTemplate = (definition) => `max-content ${definition.map((col) => col.size).join(' ')}`;
-                    const output = this.getOutput();
-                    output.style.gridTemplateColumns = makeTemplate(this.cols);
-                    output.style.gridTemplateRows = makeTemplate(this.rows);
-                    if (!Array.isArray(this.content)) {
-                        this.content = this.content ? [[this.content]] : [];
-                    }
-                    if (clear) {
-                        for (const node of output.querySelectorAll('.table-cell')) {
-                            node.remove();
-                        }
-                    }
-                    const updateCell = (cell, x, y) => {
-                        const cls = `cell-${x}-${y}`;
-                        const node = output.querySelector(`.${cls}`) || editableSpan(
-                            () => this.content[y][x] || '',
-                            (node) => this.content[y][x] = node.innerText);
-
-                        if (!node.classList.contains(cls)) {
-                            node.style.gridColumn = x + 1; // Grid column is 1-based and allow column for row names
-                            node.style.gridRow = y + 2; // Grid row is 1-based and allow row for column names
-                            node.classList.add('table-cell', 'table-body-cell', cls);
-                            node.dataset.col = x;
-                            node.dataset.row = y;
-                            output.appendChild(node);
-                        }
-
-                        node.innerText = this.content[y]?.[x] ?? '';
-                        node.title = `cell[${this.rows?.[y].name || y}][${this.cols?.[x].name || x}]`;
-                        node.classList.add('table-data');
-                    }
-
-                    const cols = [{ name: '' }, ...this.cols];
-                    const rows = [{ name: '' }, ...this.rows];
-
-                    if (0 && this.name) {
-                        const titleNode = output.querySelector(`.title-cell`) || document.createElement('span');
-                        titleNode.title = `Table Name: ${this.name || "Unnamed"}`;
-                        titleNode.innerText = this.name;
-                        if (!titleNode.classList.contains('titleNode')) {
-                            titleNode.style.gridColumn = 1;
-                            titleNode.style.gridRow = 1;
-                            titleNode.classList.add('table-cell', 'table-header', 'table-name');
-                            output.appendChild(titleNode);
-                        }
-                    }
-
-                    this.content.forEach((row, rowIndex) =>
-                        row.forEach((cell, columnIndex) => updateCell(cell, columnIndex, rowIndex)));
-
-                    this.cols.forEach((column, index) => {
-                        const cls = `table-column-${index}`;
-                        const node = output.querySelector(`.${cls}`) || editableSpan(
-                            () => this.cols[index].name || '',
-                            (node) => {
-                                this.cols[index].name = node.innerText;
-                                node.innerText = node.innerText || index;
-                            });
-                        node.title = `Column: ${column.name || index}`;
-                        node.innerText = column.name || index;
-                        if (!node.classList.contains('titleNode')) {
-                            node.style.gridColumn = index + 1; // Grid column is 1-based and allow a column for row names
-                            node.style.gridRow = 1;
-                            node.dataset.col = index;
-                            node.classList.add('table-cell', 'table-header', 'table-column-header', cls);
-                            output.appendChild(node);
-                        }
-                    });
-                    /*
-                    this.rows.forEach((row, index) => {
-                        const cls = `table-row-${index}`;
-                        const node = output.querySelector(`.${cls}`) || editableSpan(
-                            () => this.rows[index].name || '',
-                            (node) => {
-                                if (index < this.rows.length) {
-                                    this.rows[index].name = node.innerText;
-                                    node.innerText = node.innerText || index;
-                                }
-                            });
-                        node.title = `row: ${row.name || index}`;
-                        node.innerText = row.name || index;
-                        if (!node.classList.contains('titleNode')) {
-                            node.style.gridRow = index + 2; // Grid row is 1-based and allow a row for column names
-                            node.style.gridColumn = 1;
-                            node.dataset.row = index;
-                            node.classList.add('table-cell', 'table-header', 'table-row-header', cls);
-                            output.appendChild(node);
-                        }
-                    });
-                    */
+                update() {
                 },
             },
             'working days': {
                 init(input) {
-                    app.addListener('dates', this);
-                    this.content = { from: {}, to: {} };
-
                     const eventNames = Object.keys(named.dates);
                     eventNames.sort((a, b) => a.localeCompare(b));
                     if (!this.controls) {
-                        const container = this.getControls();
+                        const controls = new Control();
+                        //controls.content = { from: {}, to: {} };
+
+                        controls.update = function (event) {
+                            const eventNames = Object.keys(named.dates);
+                            eventNames.sort((a, b) => a.localeCompare(b));
+
+                            if (this.fromEvent.value === 'Custom Date') {
+                                this.from.disabled = false;
+                            } else if (this.fromEvent.value === 'Today' || named.dates[this.toEvent.value]) {
+                                this.from.disabled = true;
+                                const date = this.fromEvent.value === 'Today' ? new Date() : named.dates[this.toEvent.value].value;
+                                this.from.value = `${date.getFullYear()}-${(date.getMonth() + 1 + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')}`;
+                            }
+
+                            const fromEvent = this.fromEvent.value;
+                            this.fromEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
+                            this.fromEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
+                            this.fromEvent.value = fromEvent;
+
+                            if (this.toEvent.value === 'Custom Date') {
+                                this.to.disabled = false;
+                            } else if (this.toEvent.value === 'Today' || named.dates[this.toEvent.value]) {
+                                this.to.disabled = true;
+                                const date = this.toEvent.value === 'Today' ? new Date() : named.dates[this.toEvent.value].value;
+                                this.to.value = `${date.getFullYear()}-${(date.getMonth() + 1 + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')}`;
+                            }
+
+                            const toEvent = this.toEvent.value;
+                            this.toEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
+                            this.toEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
+                            this.toEvent.value = toEvent;
+
+                            if (this.from.value && this.to.value) {
+                                if (!this.output) {
+                                    this.output = [new Output(this.index + 1)];
+                                    this.after(this.output[0]);
+                                }
+                                this.output[0].content.innerHTML = calendar.workingDays(this.from.value, this.to.value);
+                            }
+                        }
+
+                        this.controls = [controls];
+                        const container = controls.content;
+                        app.addListener('dates', controls);
+
                         container.append('From: ')
-                        this.fromEvent = document.createElement('select');
-                        this.fromEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
-                        this.fromEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                        container.appendChild(this.fromEvent);
+                        controls.fromEvent = document.createElement('select');
+                        controls.fromEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
+                        controls.fromEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
+                        container.appendChild(controls.fromEvent);
 
-                        this.from = document.createElement('input');
-                        this.from.type = 'date';
-                        container.appendChild(this.from);
-                        this.from.addEventListener('change', (event) => {
-                            this.content.from.date = this.from.value;
-                            this.update();
-                        });
+                        controls.from = document.createElement('input');
+                        controls.from.type = 'date';
+                        container.appendChild(controls.from);
 
-                        this.fromEvent.addEventListener('change', (event) => {
-                            this.content.from.event = this.fromEvent.value;
-                            this.update();
-                        });
+                        controls.from.addEventListener('change', (event) => controls.update(event));
+                        controls.fromEvent.addEventListener('change', (event) => controls.update(event));
 
                         container.append('To: ')
-                        this.toEvent = document.createElement('select');
-                        this.toEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
-                        this.toEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                        container.appendChild(this.toEvent);
+                        controls.toEvent = document.createElement('select');
+                        controls.toEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
+                        controls.toEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
+                        container.appendChild(controls.toEvent);
 
-                        this.to = document.createElement('input');
-                        this.to.type = 'date';
-                        container.appendChild(this.to);
-                        this.to.addEventListener('change', (event) => {
-                            this.content.to.date = this.to.value;
-                            this.update();
-                        });
+                        controls.to = document.createElement('input');
+                        controls.to.type = 'date';
+                        container.appendChild(controls.to);
 
-                        this.toEvent.addEventListener('change', (event) => {
-                            this.content.to.event = this.toEvent.value;
-                            this.update();
-                        });
+                        controls.to.addEventListener('change', (event) => controls.update(event));
+                        controls.toEvent.addEventListener('change', (event) => controls.update(event));
+
+                        this.after(controls);
                     }
 
-                    this.days = this.getOutput();
+                    /*
+                    this.days = this.getOutput().at(-1).content;
 
                     if (this.content) {
                         if (this.content.from?.event) {
@@ -2599,45 +3258,9 @@ amending config files
                             this.to.value = this.content.to.date;
                         }
                     }
+                        */
                 },
-                update() {
-                    const eventNames = Object.keys(named.dates);
-                    eventNames.sort((a, b) => a.localeCompare(b));
 
-                    this.fromEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
-                    this.fromEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                    this.fromEvent.value = this.content.from.event ?? 'Custom Date';
-
-                    if (this.fromEvent.value === 'Custom Date') {
-                        this.from.disabled = false;
-                        if (this.content.from.date) {
-                            this.from.value = this.content.from.date;
-                        }
-                    } else if (this.fromEvent.value === 'Today' || named.dates[this.toEvent.value]) {
-                        this.from.disabled = true;
-                        const date = this.fromEvent.value === 'Today' ? new Date() : named.dates[this.toEvent.value].value;
-                        this.from.value = `${date.getFullYear()}-${(date.getMonth() + 1 + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')}`;
-                    }
-
-                    this.toEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
-                    this.toEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                    this.toEvent.value = this.content.to.event ?? 'Custom Date';
-
-                    if (this.toEvent.value === 'Custom Date') {
-                        this.to.disabled = false;
-                        if (this.content.to.date) {
-                            this.to.value = this.content.to.date;
-                        }
-                    } else if (this.toEvent.value === 'Today' || named.dates[this.toEvent.value]) {
-                        this.to.disabled = true;
-                        const date = this.toEvent.value === 'Today' ? new Date() : named.dates[this.toEvent.value].value;
-                        this.to.value = `${date.getFullYear()}-${(date.getMonth() + 1 + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')}`;
-                    }
-
-                    if (this.from.value && this.to.value) {
-                        this.days.innerHTML = calendar.workingDays(this.from.value, this.to.value);
-                    }
-                }
             },
             'tree table': {
                 modelNode(node) {
@@ -2651,7 +3274,106 @@ amending config files
                         expand(event) {
                             this.state = 'expanded';
                             if (event.ctrlKey && node[meta].parts) {
+                                node[meta].parts.forEach((child) => model.get(child).expand(event));
+                            }
+                        },
+                        collapse(event) {
+                            this.state = 'collapsed';
+                            if (event.ctrlKey && node[meta].parts) {
                                 node[meta].parts.forEach((child) => model.get(child).collapse(event));
+                            }
+                        },
+                        nodes: [],
+                    }
+                },
+                setData() {
+                    this.keys = [];
+                    this.all = this.data.flatMap((item) => Array.from(flatten(item)));
+                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !(this.keys.includes(key)))));
+                    this.rows = this.all.map((row) => ({ size: 'minmax(1em, max-content)' }));
+                    this.cols = this.keys.map((key) => ({ size: 'minmax(min-content, max-content)' }));
+                    this.model = new Map();
+                    const model = this.model;
+                    this.all.forEach((node) => this.model.set(node, this.modelNode(node)));
+                },
+                setContent(content) {
+                    this.data = this.deserialiseContent(content);
+                    this.setData();
+                },
+                linesToTree() {
+                    // Check for indented lines
+                    const lines = this.data.map((line) => line.split(/\s*[,\|;\t]\s*/g))
+                    const indents = lines.map((line) => line[0].length - line[0].trimStart().length);
+                    this.data = [];
+                    if (indents.some((indent) => indent !== indent[0])) {
+                        const stack = [];
+                        const indent = (line) => line[0].length - line[0].trimStart().length;
+                        lines.forEach((line) => {
+                            while (stack.length && indent(stack[0]) >= indent(line)) {
+                                stack.shift();
+                            }
+                            if (stack.length) {
+                                stack[0][meta].parts.push(line);
+                            } else {
+                                this.data.push(line);
+                            }
+                            line[meta] = { parts: [] };
+                            stack.unshift(line);
+                        });
+                        lines.forEach((line) => line[0] = line[0].trim());
+                    } else {
+                        // Assume line starts with 'path' string
+                        lines.sort((a, b) => b[0].length - a[0].length);
+                        lines.forEach((line) => {
+                            const parent = lines.findLast((parent) => parent[0] !== line[0] && line[0].startsWith(parent[0]));
+                            if (parent) {
+                                parent[meta] = parent[meta] || { parts: [] };
+                                parent[meta].parts.push(parent);
+                            } else {
+                                this.data.push(line);
+                            }
+                        });
+                        this.data.sort((a, b) => a[0].localeCompare(b[0]));
+                    }
+                },
+                init(string) {
+                    const inputs = getSource(this);
+                    inputs.forEach((input) => this.uses.add(input));
+                    this.data = inputs.map((input) => input.content.innerText);
+
+                    this.linesToTree();
+                    this.setData();
+                    this.deleted = [];
+
+                    const tree = {
+                        content: this.data,
+                        all: this.all,
+                        cols: this.cols,
+                        rows: this.rows,
+                        keys: this.keys,
+                        model: this.model,
+                    }
+                    if (this.output) {
+                        this.output[0].setContent(tree);
+                    } else {
+                        this.output = [new TreeTable(this.index + 1, tree)];
+                        this.after(...this.output);
+                    }
+                }
+            },
+            'tree table_1': {
+                modelNode(node) {
+                    return {
+                        getState() {
+                            if (node[meta].parts?.length) {
+                                return this.state;
+                            }
+                        },
+                        state: 'expanded',
+                        expand(event) {
+                            this.state = 'expanded';
+                            if (event.ctrlKey && node[meta].parts) {
+                                node[meta].parts.forEach((child) => model.get(child).expand(event));
                             }
                         },
                         collapse(event) {
@@ -2714,16 +3436,18 @@ amending config files
                     }
                 },
                 init(string) {
-
                     const inputs = getSource(this);
                     inputs.forEach((input) => this.uses.add(input));
-                    this.content = inputs.map((input) => input.line.innerText);
+                    this.content = inputs.map((input) => input.content.innerText);
 
                     this.linesToTree();
                     this.setData();
                     this.deleted = [];
 
-                    const resultNode = this.getOutput();
+                    this.output = new Output(this.index + 1);
+                    this.after(this.output);
+
+                    const resultNode = this.getOutput().at(-1).content;
                     resultNode.classList.add('table');
                     const background = document.createElement('div');
                     background.classList.add('grid');
@@ -2898,15 +3622,16 @@ amending config files
                     this.update();
                 },
                 clearUpdate() {
-                    const output = this.getOutput()
+                    const output = this.getOutput().at(-1).content;
                     for (const node of output.querySelectorAll('.tree-table-cell')) {
                         node.remove();
                     }
                     update();
                 },
                 update() {
-                    const output = this.getOutput();
+                    const output = this.getOutput().at(-1).content;
                     output.innerHTML = '';
+                    output.classList.add('table');
 
                     const makeTemplate = (definition) => `${definition.map((col) => col.size).join(' ')}`;
                     output.style.gridTemplateColumns = makeTemplate(this.cols);
@@ -3229,10 +3954,13 @@ amending config files
             state: {},
             mermaidCount: 0,
             setPrompt(prompt) {
-                const node = document.getElementById('prompt');
-                if (node) {
-                    node.innerHTML = prompt;
+                let node = document.getElementById('prompt');
+                if (!node) {
+                    currentLine = currentLine || nodes.at(-1);
+                    node = document.createElement('span');
+                    currentLine.lineNumber.appendChild(node);
                 }
+                node.innerHTML = prompt;
             },
             status: [],
             statusHistory: [],
@@ -3259,6 +3987,30 @@ amending config files
                 this.statusChange();
             }
         };
+
+        const start = 0;
+        const content = [];
+        let nodes = [new Text(1)];
+        workspaceNode.append(nodes[0].lineNumber, nodes[0].content);
+        const global = {};
+        let cellIndex = 0;
+        let currentLine = nodes[cellIndex];
+
+        app.setPrompt('Load previous state (Y/n)');
+        addMainEventListeners();
+        app.processKey = (event, line) => {
+            if (event.key !== 'n') {
+                loadState();
+            }
+            event.stopImmediatePropagation();
+            event.stopPropagation();
+            event.preventDefault();
+            app.processKey = null;
+            app.loaded = true;
+            app.setPrompt('');
+        };
+
+
 
         /**
          * Update dynamic cells of display
@@ -3599,15 +4351,15 @@ amending config files
             }
 
             if (nodes.length === 0) {
-                nodes.push(Cell.make());
+                nodes.push(new Text());
             }
 
             updateLineNumbers();
             workspaceNode.focus();
             cellIndex = nodes.length - 1;
             currentLine = nodes[cellIndex];
-            document.getSelection().setPosition(currentLine.line, 0);
-            currentLine.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            document.getSelection().setPosition(currentLine.content, 0);
+            currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
         }
 
         /**
@@ -3787,7 +4539,7 @@ amending config files
                 reader.addEventListener('load', (event) => {
                     insertBefore(file.name, currentLine);
                     insertBefore(reader.result, currentLine);
-                    currentLine.line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                    currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
                 });
                 reader.readAsText(file);
                 //saveState();
@@ -3836,7 +4588,6 @@ amending config files
             }
         }
 
-        const workspaceNode = document.getElementById('workspace');
 
         //const results = document.getElementById('results');
         workspaceNode.addEventListener('dragover', dragOverHandler);
@@ -3844,19 +4595,6 @@ amending config files
         //results.addEventListener('drop', dragOverHandler);
         //results.addEventListener('drop', dropHandler);
 
-        app.setPrompt('Load previous state (Y/n)');
-        addMainEventListeners();
-        app.processKey = (event, line) => {
-            if (event.key !== 'n') {
-                loadState();
-            }
-            event.stopImmediatePropagation();
-            event.stopPropagation();
-            event.preventDefault();
-            app.processKey = null;
-            app.loaded = true;
-            app.setPrompt('');
-        };
         workspaceNode.focus();
 
 
@@ -3889,7 +4627,7 @@ amending config files
         function getCurrentCell() {
             const line = getCurrentLine();
             if (line) {
-                return nodes.find((node) => node.line === line);
+                return nodes.find((node) => node.content === line);
             }
         }
 
@@ -3904,19 +4642,19 @@ amending config files
                     range.deleteContents();
                 }
                 if (currentLine) {
-                    const indent = currentLine.line.innerText.replace(/\S.*/, '');
+                    const indent = currentLine.content.innerText.replace(/\S.*/, '');
                     const range = selection.getRangeAt(0);
-                    range.setEndAfter(currentLine.line);
-                    const line = Cell.makeLine(indent + range.toString().trimEnd());
+                    range.setEndAfter(currentLine.content);
+                    const line = indent + range.toString().trimEnd();
                     range.deleteContents();
-                    const cell = new Cell(Cell.makeLineNumber(), line);
+                    const cell = new Text('--', line);
                     currentLine.after(cell);
                     const pos = nodes.indexOf(currentLine);
                     nodes.splice(pos + 1, 0, cell);
                     updateLineNumbers();
-                    selection.setPosition(cell.line);
-                    if (line.innerText === '') {
-                        line.appendChild(document.createElement('br'));
+                    selection.setPosition(cell.content);
+                    if (cell.content.innerText === '') {
+                        cell.content.appendChild(document.createElement('br'));
                     }
                     cell.scrollTo();
                 }
@@ -3930,9 +4668,9 @@ amending config files
             const lines = Array.isArray(text) ? text : typeof text === 'string' ? text.split(/\r?\n/g) : Object.entries(text).map(([key, value]) => `${key}: ${value}`);
             const inserted = [];
             lines.forEach((text) => {
-                const cell = Cell.make('--', text);
+                const cell = new Text('--', text);
                 inserted.push(cell);
-                reference.lineNumber.before(cell.lineNumber, cell.line);
+                reference.lineNumber.before(cell.lineNumber, cell.content);
             });
             const pos = nodes.indexOf(reference);
             nodes.splice(pos, 0, ...inserted);
@@ -3953,9 +4691,9 @@ amending config files
             }
             const lines = getLines(text);
             const pos = nodes.indexOf(reference);
-            const cells = lines.map((text, index) => Cell.make(pos + index + 1, text));
+            const cells = lines.map((text, index) => new Text(pos + index + 1, text));
             reference.after(cells);
-            nodes.splice(pos, 0, ...celld);
+            nodes.splice(pos, 0, ...cells);
             return cells;
         }
 
@@ -3968,227 +4706,6 @@ amending config files
             observer.observe(workspaceNode, observerOptions);
         }
 
-        /**
-         * Manage a line and its nodes
-         */
-        class Cell {
-            static makeLineNumber(index) {
-                const lineNumber = document.createElement('div');
-                lineNumber.contentEditable = false;
-                lineNumber.innerText = index ?? '';
-                lineNumber.classList.add('line-number');
-                return lineNumber;
-            }
-            static makeLine(content) {
-                const line = document.createElement('div');
-                if (content) {
-                    line.append(content)
-                }
-                line.tabIndex = 0;
-                line.classList.add('line');
-                return line;
-            }
-            static make(index, content) {
-                return new Cell(Cell.makeLineNumber(index), Cell.makeLine(content));
-            }
-            constructor(lineNumber, line) {
-                this.lineNumber = lineNumber;
-                this.line = line;
-                this.line.addEventListener('mousedown', (event) => {
-                    if (this.output) {
-                        const mouseStart = { x: event.clientX, y: event.clientY };
-                        const start = this.line.getBoundingClientRect();
-                        action.move = (event) => {
-                            if (!this.window) {
-                                this.makeWindow(start.x, start.y);
-                            }
-                            const x = start.x + event.clientX - mouseStart.x;
-                            const y = start.y + event.clientY - mouseStart.y;
-                            this.window.style.left = `${x}px`;
-                            this.window.style.top = `${y}px`;
-                        };
-                    }
-                });
-                this.state = 'in-line';
-                this.uses = new Set();
-                this.users = new Set();
-            }
-            remove() {
-                this.line?.remove();
-                this.lineNumber?.remove();
-                this.controls?.remove();
-                this.output?.remove();
-                this.uses.forEach((input) => {
-                    input.users = input.users.filter((cell) => cell !== this);
-                });
-                this.state = 'removed';
-            }
-            get input() {
-                return this.line.innerText;
-            }
-            get value() {
-                return this._value || this.line.innerText;
-            }
-            set value(value) {
-                this._value = value;
-            }
-            get index() {
-                return nodes.indexOf(this);
-            }
-            inline() {
-                if (this.controls) {
-                    this.line.after(this.controls, this.output);
-                } else {
-                    this.line.after(this.output);
-                }
-                this.state = 'in-line';
-            }
-            stick() {
-                if (!this.line.classList.contains('sticky')) {
-                    const stuck = Array.from(document.getElementById('workspace').querySelectorAll('.sticky'));
-                    const bottom = (node) => {
-                        const box = node.getBoundingClientRect();
-                        return box.y + box.height;
-                    };
-                    let y = Math.max(0, ...stuck.map((node) => bottom(node)));
-                    this.line.classList.add('sticky');
-                    this.line.style.top = `${y}px`;
-                    y += this.line.getBoundingClientRect().height;
-                    if (this.controls) {
-                        this.controls.classList.add('sticky');
-                        this.controls.style.top = `${y}px`;
-                        y += this.controls.getBoundingClientRect().height;
-                    }
-                    if (this.output) {
-                        this.output.classList.add('sticky');
-                        this.output.style.top = `${y}px`;
-                    }
-                }
-                this.state = 'stick';
-            }
-            unstick() {
-                this.line.classList.remove('sticky');
-                this.controls?.classList.remove('sticky');
-                this.output?.classList.remove('sticky');
-            }
-            makeWindow(x, y) {
-                if (this.controls || this.output) {
-                    if (!this.window) {
-                        this.window = document.createElement('div');
-                        this.window.classList.add('window');
-                    }
-                    this.window.classList.remove('hidden');
-                    this.window.innerHTML = '';
-                    this.title = document.createElement('div');
-                    this.title.addEventListener('mousedown', (event) => {
-                        const mouseStart = { x: event.clientX, y: event.clientY };
-                        const start = this.window.getBoundingClientRect();
-                        action.move = (event) => {
-                            const x = start.x + event.clientX - mouseStart.x;
-                            const y = start.y + event.clientY - mouseStart.y;
-                            this.window.style.left = `${x}px`;
-                            this.window.style.top = `${y}px`;
-                        };
-                    });
-                    this.title.classList.add('window-title');
-                    this.title.innerText = `${this.index + 1}: ${this.line.innerText}`;
-                    if (x) {
-                        this.window.style.left = `${x}px`;
-                    }
-                    if (y) {
-                        this.window.style.top = `${y}px`;
-                    }
-                    this.window.append(this.title, this.output);
-                    document.body.append(this.window);
-                    this.state = 'window';
-                }
-            }
-            widget() {
-                if (this.controls || this.output) {
-                    if (this.controls) {
-                        document.getElementById('widgets').append(this.controls);
-                    }
-                    if (this.output) {
-                        document.getElementById('widgets').append(this.output);
-                    }
-                    this.state = 'widget';
-                }
-            }
-            getControls(content) {
-                if (!this.controls) {
-                    this.controls = document.createElement('div');
-                    this.controls.contentEditable = false;
-                    this.controls.classList.add('controls');
-                    if (content) {
-                        this.controls.append(...content);
-                    }
-                    if (this.defaultState === 'widget') {
-                        document.getElementById('widgets').append(this.controls);
-                        this.state = 'widget';
-                    } else if (this.defaultState === 'window') {
-                    } else {
-                        this.line.after(this.controls);
-                    }
-
-                }
-                return this.controls;
-            }
-            getOutput(content) {
-                if (!this.output || !this.output.parentElement) {
-                    this.output = document.createElement('div');
-                    this.output.contentEditable = false;
-                    this.output.classList.add('output');
-                    if (content) {
-                        this.output.append(...content);
-                    }
-                    if (this.defaultState === 'widget') {
-                        document.getElementById('widgets').append(this.output);
-                        this.state = 'widget';
-                    } else if (this.defaultState === 'window') {
-                    } else {
-                        (this.controls || this.line).after(this.output);
-                    }
-
-                }
-                return this.output;
-            }
-            scrollTo(options = { behavior: 'smooth', block: 'end', inline: 'start' }) {
-                this.line.scrollIntoView(options);
-            }
-            after(...cells) {
-                if (!Array.isArray(cells)) {
-                    cells = [cells];
-                }
-                const nodes = cells.flatMap((cell) => [cell.lineNumber, cell.line, cell.controls, cell.output]).filter((n) => n);
-
-                if (this.state === 'widget' || this.state === 'window') {
-                    const reference = this.line;
-                    reference.after(...nodes);
-                } else {
-                    const reference = this.output ?? this.controls ?? this.line;
-                    reference.after(...nodes);
-                }
-            }
-            /**
-             * Insert a block of text before the given reference
-             */
-            updateResults(text) {
-                if (this.results) {
-                    this.results.forEach((cell) => cell.remove());
-                    nodes = nodes.filter((cell) => cell.state !== 'removed');
-                }
-                this.results = insertAfter(text, this);
-                updateLineNumbers();
-            }
-        }
-
-        const start = 0;
-        const content = [];
-        let nodes = [];
-        const global = {};
-        updateNodeList();
-        let cellIndex = 0;
-        let currentLine = nodes[cellIndex];
 
         /**
          * Return the name of the cell or it's index if it doesn't have a name
@@ -4203,29 +4720,19 @@ amending config files
          * Go to the next cell, creating it if needed
          */
         function nextLine(cell) {
-            let line = cell.line.nextElementSibling;
+            let line = cell.content.nextElementSibling;
             while (line && !line.classList.contains('line')) {
                 line = line.nextElementSibling;
             }
             if (!line) {
                 const index = nodes.indexOf(cell) + 1;
-                const newCell = Cell.make(index);
+                const newCell = new Text(index);
                 nodes.splice(index, 0, newCell);
                 cell.after(newCell);
-                line = newCell.line;
+                line = newCell.content;
             }
             document.getSelection().setPosition(line, 0);
             line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
-        }
-
-        /**
-         * Upsate node lists
-         */
-        function updateNodeList(id = 'workspace') {
-            const lineNumbers = Array.from(document.getElementById(id).querySelectorAll('.line-number'));
-            const lines = Array.from(document.getElementById(id).querySelectorAll('.line'));
-            nodes.length = 0;
-            lines.forEach((line, index) => nodes.push(new Cell(lineNumbers[index], line)));
         }
 
         /**
@@ -4247,15 +4754,15 @@ amending config files
                     if (prompt) {
                         newLine.lineNumber.appendChild(prompt);
                     }
-                    newLine.uses.forEach((cell) => cell.line.classList.add('uses'));
+                    newLine.uses.forEach((cell) => cell.content.classList.add('uses'));
 
-                    newLine.line.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                    newLine.content.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
 
-                    newLine.line.classList.add('highlight');
+                    newLine.content.classList.add('highlight');
 
                     currentLine = newLine;
                     cellIndex = nodes.indexOf(currentLine);
-                    app.line = cellIndex + 1;
+                    app.content = cellIndex + 1;
                 }
             }
         });
@@ -4268,8 +4775,8 @@ amending config files
         function parseLines(lines, reference = currentLine) {
             let lineNumber = nodes.indexOf(reference);
             lines.forEach((text) => {
-                const cell = Cell.make(lineNumber, text);
-                reference.lineNumber.before(cell.lineNumber, cell.line);
+                const cell = new Text(lineNumber, text);
+                reference.lineNumber.before(cell.lineNumber, cell.content);
                 nodes.splice(lineNumber, 0, cell);
                 if (text.trim() !== 'reload') {
                     // ToDo: fix code that assumes parsing only evver occurs for the current cell
@@ -4283,7 +4790,7 @@ amending config files
          * Parse the content of the cell.
          */
         function parseCell(cell) {
-            const action = cell.line.innerText;
+            const action = cell.content.innerText;
 
             const commands = Object.getOwnPropertyNames(actions).sort((a, b) => b.length - a.length);
             const command = commands.find((match) => action.startsWith(match));
@@ -4314,7 +4821,6 @@ amending config files
                     }
                     return results;
                 }, { cells: [], values: [] });
-
                 cell.init(string, cells, values);
             } else if (named.all[action]) {
                 named.all[action].eval(cell);
@@ -4361,7 +4867,7 @@ amending config files
                                 range.deleteContents();
                                 range.insertNode(document.createTextNode(value));
                             } catch (e) {
-                                currentLine.line.title = e.message;
+                                currentLine.content.title = e.message;
                             }
                         }
                     } else {
@@ -4376,7 +4882,7 @@ amending config files
                 }
                 // Remove empty lines at end of list
                 let hasContent = false;
-                const cells = nodes.toReversed().filter((cell) => hasContent = hasContent || cell.line.innerText.trim().length > 0);
+                const cells = nodes.toReversed().filter((cell) => hasContent = hasContent || cell.content.innerText.trim().length > 0);
                 cells.reverse();
 
                 const lines = Array.from(workspaceNode.querySelectorAll('.line'));
@@ -4423,7 +4929,7 @@ amending config files
                 for (const addedNode of record.addedNodes) {
                     if (addedNode.nodeType === 1 && addedNode.closest('.line')) {
                         const line = addedNode.closest('.line');
-                        const node = nodes.find((node) => node.line === line);
+                        const node = nodes.find((node) => node.content === line);
                         if (node && !node.lineNumber) {
                             node.lineNumber = makeLineNumberNode();
                             line.before(node.lineNumber);
@@ -4436,10 +4942,10 @@ amending config files
                 }
             }
             if (removedLines.length) {
-                nodes = nodes.filter((node) => !removedLines.includes(node.line));
+                nodes = nodes.filter((node) => !removedLines.includes(node.content));
                 // Clean up double line breaks
-                nodes.filter((node) => node.line.innerText.match(/\r?\n\r?\n/))
-                    .forEach((node) => node.line.innerText = node.line.innerText.replace(/(\r?\n)+/, '\n'));
+                nodes.filter((node) => node.content.innerText.match(/\r?\n\r?\n/))
+                    .forEach((node) => node.content.innerText = node.content.innerText.replace(/(\r?\n)+/, '\n'));
                 updateLineNumbers();
             }
         }
