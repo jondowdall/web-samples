@@ -88,11 +88,7 @@ amending config files
                 return nodes.indexOf(this);
             }
             inline() {
-                if (this.controls) {
-                    this.content.after(this.controls, this.output);
-                } else {
-                    this.content.after(this.output);
-                }
+                this.lineNumber.after(this.content);
                 this.state = 'in-line';
             }
             stick() {
@@ -120,8 +116,6 @@ amending config files
             }
             unstick() {
                 this.content.classList.remove('sticky');
-                //this.controls?.classList.remove('sticky');
-                //this.output?.classList.remove('sticky');
             }
             widget() {
                 if (this.controls || this.output) {
@@ -163,66 +157,26 @@ amending config files
                         cell.content.contentEditable = 'false';
                     });
                     this.after(...this.controls);
-                    /*
-                    this.controls = document.createElement('div');
-                    this.controls.contentEditable = false;
-                    this.controls.classList.add('controls');
-                    if (content) {
-                        this.controls.append(...content);
-                    }
-                    if (this.defaultState === 'widget') {
-                        document.getElementById('widgets').append(this.controls);
-                        this.state = 'widget';
-                    } else if (this.defaultState === 'window') {
-                    } else {
-                        this.content.after(this.controls);
-                    }
-                        */
-
                 }
                 return this.controls;
             }
-            getOutput(content) {
-                if (!this.output || !this.output.parentElement) {
-                    if (this.controls) {
-                        this.output = [new Output(this.controls.at(-1).index + 1)];
-                        this.controls.at(-1).after(...this.output);
-                    } else {
-                        this.output = [new Output(this.index + 1)];
-                        if (this.defaultState === 'widget') {
-                            document.getElementById('widgets').append(...this.output.map((cell) => cell.content));
-                            this.state = 'widget';
-                        } else if (this.defaultState === 'window') {
-                        } else {
-                            this.after(...this.output);
-                        }
-                    }
-                    this.output.forEach((cell) => {
-                        cell.lineNumber.classList.add('output-line');
-                        cell.content.classList.remove('line');
-                        cell.content.classList.add('output');
-                        cell.content.contentEditable = false;
-                    });
-                    /*
-                    this.output = document.createElement('div');
-                    this.output.contentEditable = false;
-                    this.output.classList.add('output');
-                    if (content) {
-                        this.output.append(...content);
-                    }
-                    if (this.defaultState === 'widget') {
-                        document.getElementById('widgets').append(this.output);
-                        this.state = 'widget';
-                    } else if (this.defaultState === 'window') {
-                    } else {
-                        (this.controls || this.content).after(this.output);
-                    }
-                        */
-
+            getOutput() {
+                if (this.output) {
+                    return this.output[0];
                 }
-                return this.output;
+                const output = new Output(this.index + 1);
+                this.output = [output];
+                if (this.defaultState === 'widget') {
+                    this.content.after(output.lineNumber);
+                    document.getElementById('widgets').append(output.content);
+                    this.output.state = 'widget';
+                } else {
+                    this.content.after(output.lineNumber, output.content);
+                }
+                nodes.splice(this.index + 1, 0, output);
+                return output;
             }
-            scrollTo(options = { behavior: 'smooth', block: 'end', inline: 'start' }) {
+            scrollTo(options = { behavior: 'smooth', block: 'center', inline: 'start' }) {
                 this.content.scrollIntoView(options);
             }
             after(...cells) {
@@ -244,8 +198,10 @@ amending config files
                     this.results.forEach((cell) => cell.remove());
                     nodes = nodes.filter((cell) => cell.state !== 'removed');
                 }
-                this.results = insertAfter(text, this);
-                updateLineNumbers();
+                const lines = getLines(text);
+                const pos = this.index;
+                const output = lines.map((line, index) => new TextOutput(pos + index + 1, line));
+                this.after(output);
             }
         }
 
@@ -256,20 +212,17 @@ amending config files
             }
         }
 
-        class Control extends (Cell) {
-            constructor(lineNumber, line) {
-                super(lineNumber, line);
-                this.lineNumber.classList.add('control-line');
-                this.content.classList.add('control');
-                this.content.contentEditable = false;
-            }
-        }
-
-        class Output extends (Cell) {
+        class TextOutput extends (Cell) {
             constructor(lineNumber, line) {
                 super(lineNumber, line);
                 this.lineNumber.classList.add('output-line');
                 this.content.classList.add('output');
+            }
+        }
+
+        class Widget extends (Cell) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
                 this.content.contentEditable = false;
                 this.lineNumber.addEventListener('mousedown', (event) => {
                     const mouseStart = { x: event.clientX, y: event.clientY };
@@ -317,7 +270,21 @@ amending config files
             }
         }
 
+        class Control extends (Widget) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
+                this.lineNumber.classList.add('control-line');
+                this.content.classList.add('control');
+            }
+        }
 
+        class Output extends (Widget) {
+            constructor(lineNumber, line) {
+                super(lineNumber, line);
+                this.lineNumber.classList.add('output-line');
+                this.content.classList.add('output');
+            }
+        }
 
         class Table extends (Output) {
             constructor(index, input) {
@@ -582,10 +549,6 @@ amending config files
                 */
             }
         }
-
-
-
-
 
 
         class TreeTable extends (Output) {
@@ -1305,8 +1268,9 @@ amending config files
              * List the available actions.
              */
             actions(cell) {
-                const output = Object.keys(actions).map((action) => {
-                    const output = new Output();
+                const output = Object.keys(actions).map((action, index) => {
+                    const output = new Output(cell.index + 1 + index);
+                    cell.after(output);
                     output.content.innerText = action;
                     output.content.addEventListener('mousedown', (event) => {
                         event.preventDefault();
@@ -1318,7 +1282,8 @@ amending config files
                     });
                     return output;
                 });
-                cell.after(...output);
+                nodes.splice(cell.index + 1, 0, output);
+                //cell.after(...output);
             },
 
             /**
@@ -1387,7 +1352,7 @@ amending config files
             themes(cell) {
                 const themeName = document.documentElement.getAttribute('data-theme');
                 const themeNames = themes.map((name) => name === themeName ? name + ' *' : name);
-                const output = cell.getOutput();
+                const output = [cell.getOutput()];
                 makeInsertionList(themeNames, output);
                 cell.action = true;
             },
@@ -1397,12 +1362,12 @@ amending config files
              */
             history(cell) {
                 cell.update = (time) => {
-                    const output = cell.getOutput();
+                    const output = [cell.getOutput()];
                     output.innerHTML = '';
                     makeInsertionList(app.history, output);
                 }
                 app.events.historyChange.add(cell);
-                const output = cell.getOutput();
+                const output = [cell.getOutput()];
                 makeInsertionList(app.history, output);
                 cell.action = true;
             },
@@ -1410,14 +1375,9 @@ amending config files
             /**
              * Show the list of cells
              */
-            cells2(cell) {
-                cell.output = new Output(cell.index + 1);
-                const update = () => {
-                    cell.output.content.innerText = nodes.map((cell) => cell.content.innerText).join('\n');
-                    requestAnimationFrame(update);
-                }
-                update();
-                cell.after(cell.output);
+            cells(cell) {
+                //cell.output = new Output(cell.index + 1);
+                console.log(nodes.map((cell, index) => `${index + 1}: ${cell.content.innerText}`));
             },
 
             /**
@@ -1560,13 +1520,15 @@ amending config files
 
                 const cells = getCells(string);
                 const result = [];
-                cells.filter((cell) => cell.output).forEach((cell) => {
+                cells.forEach((cell) => {
                     if (cell.window) {
                         cell.window.classList.add('hidden');
                     }
                     cell.unstick();
                     cell.inline();
                 });
+                cell.action = true;
+                return;
                 const stuck = nodes.filter((cell) => cell.state === 'stick');
                 let y = 0;
                 stuck.forEach((cell) => {
@@ -1669,11 +1631,11 @@ amending config files
                 const output = cell.getOutput();
                 const cells = getCells(string);
                 if (cells.length === 0) {
-                    output.innerHTML = `No cells logged!`;
+                    output.content.innerHTML = `No cells logged!`;
                 } else if (cells.length === 1) {
-                    output.innerHTML = `log cell ${cellName(cells[0])}`;
+                    output.content.innerHTML = `log cell ${cellName(cells[0])}`;
                 } else {
-                    output.innerHTML = `log cells ${cells.map((cell) => cellName(cell)).join()}`;
+                    output.content.innerHTML = `log cells ${cells.map((cell) => cellName(cell)).join()}`;
                 }
                 cells.forEach((cell) => console.log(cell));
             },
@@ -1722,7 +1684,7 @@ amending config files
                     const cells = getSource(cell);
                     cells.forEach((input) => cell.uses.add(input));
                     const source = cells.map((input) => input.content.innerText).join('\n');
-                    output.innerHTML = source;
+                    output.content.innerHTML = source;
                 }
 
                 cell.update();
@@ -1732,7 +1694,8 @@ amending config files
              * Create a mermaid diagram cell
              */
             diagram(cell) {
-                const output = new Output();
+                const output = new Output(cell.index + 1);
+                cell.after(output);
                 const string = cell.input.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
@@ -1751,6 +1714,7 @@ amending config files
                     }
                 }
                 output.update();
+                nodes.splice(cell.index + 1, 0, output);
                 cell.after(output);
             },
 
@@ -1761,13 +1725,13 @@ amending config files
                 const cells = getSource(cell);
                 cells.forEach((input) => cell.uses.add(input));
                 const text = cells.map((cell) => cell.content.innerText).join('\n');
-                const output = cell.getOutput().at(-1).content;
+                const output = cell.getOutput();
                 try {
                     const func = new Function('global', text);
                     const result = func(global);
-                    output.innerText = result;
+                    output.content.innerText = result;
                 } catch (error) {
-                    output.innerText = error.message
+                    output.content.innerText = error.message
                 }
             },
 
@@ -2574,7 +2538,7 @@ amending config files
                 states.forEach((possibleState) => possibleState === state ? classes.add(state) : classes.remove(possibleState));
 
                 if (state === 'normal') {
-                    this.view.cell.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                    this.view.cell.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                 }
             }
             setState(state) {
@@ -2827,8 +2791,8 @@ amending config files
                         const canvas = document.createElement('canvas');
                         canvas.classList.add('clock');
                         this.context = canvas.getContext('2d');
-                        const output = this.getOutput().at(-1).content;
-                        output.append(canvas);
+                        const output = this.getOutput();
+                        output.content.append(canvas);
                         this.update();
                     }
                 },
@@ -2973,7 +2937,7 @@ amending config files
                             });
                         }
                         update();
-                        this.getOutput().at(-1).content.append(calendarWidget);
+                        this.getOutput().content.append(calendarWidget);
                     }
                 }
             },
@@ -3242,23 +3206,6 @@ amending config files
 
                         this.after(controls);
                     }
-
-                    /*
-                    this.days = this.getOutput().at(-1).content;
-
-                    if (this.content) {
-                        if (this.content.from?.event) {
-                            this.fromEvent.value = this.content.from.event;
-                        } else if (this.content.from?.date) {
-                            this.from.value = this.content.from.date;
-                        }
-                        if (this.content.to?.event) {
-                            this.toEvent.value = this.content.to.event;
-                        } else if (this.content.to?.date) {
-                            this.to.value = this.content.to.date;
-                        }
-                    }
-                        */
                 },
 
             },
@@ -3360,348 +3307,6 @@ amending config files
                         this.after(...this.output);
                     }
                 }
-            },
-            'tree table_1': {
-                modelNode(node) {
-                    return {
-                        getState() {
-                            if (node[meta].parts?.length) {
-                                return this.state;
-                            }
-                        },
-                        state: 'expanded',
-                        expand(event) {
-                            this.state = 'expanded';
-                            if (event.ctrlKey && node[meta].parts) {
-                                node[meta].parts.forEach((child) => model.get(child).expand(event));
-                            }
-                        },
-                        collapse(event) {
-                            this.state = 'collapsed';
-                            if (event.ctrlKey && node[meta].parts) {
-                                node[meta].parts.forEach((child) => model.get(child).collapse(event));
-                            }
-                        },
-                        nodes: [],
-                    }
-                },
-                setData() {
-                    this.keys = [];
-                    this.all = this.content.flatMap((item) => Array.from(flatten(item)));
-                    this.all.forEach((node) => this.keys.push(...Object.keys(node).filter((key) => !(this.keys.includes(key)))));
-                    this.rows = this.all.map((row) => ({ size: 'minmax(1em, max-content)' }));
-                    this.cols = this.keys.map((key) => ({ size: 'minmax(min-content, max-content)' }));
-                    this.model = new Map();
-                    const model = this.model;
-                    this.all.forEach((node) => this.model.set(node, this.modelNode(node)));
-                },
-                setContent(content) {
-                    this.content = this.deserialiseContent(content);
-                    this.setData();
-                },
-                linesToTree() {
-                    // Check for indented lines
-                    const lines = this.content.map((line) => line.split(/\s*[,\|;\t]\s*/g))
-                    const indents = lines.map((line) => line[0].length - line[0].trimStart().length);
-                    this.content = [];
-                    if (indents.some((indent) => indent !== indent[0])) {
-                        const stack = [];
-                        const indent = (line) => line[0].length - line[0].trimStart().length;
-                        lines.forEach((line) => {
-                            while (stack.length && indent(stack[0]) >= indent(line)) {
-                                stack.shift();
-                            }
-                            if (stack.length) {
-                                stack[0][meta].parts.push(line);
-                            } else {
-                                this.content.push(line);
-                            }
-                            line[meta] = { parts: [] };
-                            stack.unshift(line);
-                        });
-                        lines.forEach((line) => line[0] = line[0].trim());
-                    } else {
-                        // Assume line starts with 'path' string
-                        lines.sort((a, b) => b[0].length - a[0].length);
-                        lines.forEach((line) => {
-                            const parent = lines.findLast((parent) => parent[0] !== line[0] && line[0].startsWith(parent[0]));
-                            if (parent) {
-                                parent[meta] = parent[meta] || { parts: [] };
-                                parent[meta].parts.push(parent);
-                            } else {
-                                this.content.push(line);
-                            }
-                        });
-                        this.content.sort((a, b) => a[0].localeCompare(b[0]));
-                    }
-                },
-                init(string) {
-                    const inputs = getSource(this);
-                    inputs.forEach((input) => this.uses.add(input));
-                    this.content = inputs.map((input) => input.content.innerText);
-
-                    this.linesToTree();
-                    this.setData();
-                    this.deleted = [];
-
-                    this.output = new Output(this.index + 1);
-                    this.after(this.output);
-
-                    const resultNode = this.getOutput().at(-1).content;
-                    resultNode.classList.add('table');
-                    const background = document.createElement('div');
-                    background.classList.add('grid');
-                    resultNode.appendChild(background);
-
-                    const getCell = () => {
-                        let cell = document.activeElement;
-                        while (!(cell.classList.contains('tree-table-cell') || cell.classList.contains('tree-table-header')) && cell.parentElement) {
-                            cell = cell.parentElement;
-                        }
-                        return cell;
-                    }
-                    resultNode.addEventListener('keydown', (event) => {
-                        if (event.key === 'Escape') {
-                            //inputNode.focus();
-                        }
-                        const cell = getCell();
-                        const col = parseInt(cell.dataset.col);
-                        const row = parseInt(cell.dataset.row);
-                        if (event.key === 'Tab' && col === 0 && row > 0) {
-                            const node = this.all[row];
-                            const parent = this.all.find((parent) => parent[meta].parts?.includes(node));
-                            if (event.shiftKey) { // move item up in level
-                                if (parent) {
-                                    parent[meta].parts.splice(parent[meta].parts.indexOf(node), 1);
-                                    const newParent = this.all.find((node) => node[meta].parts?.includes(parent));
-                                    if (newParent) {
-                                        const position = newParent[meta].parts.indexOf(parent);
-                                        newParent[meta].parts.splice(position + 1, 0, node);
-                                    } else {
-                                        const position = this.content.indexOf(parent) + 1;
-                                        this.content.splice(position, 0, node);
-                                    }
-                                }
-                            } else {
-                                const container = parent ? parent[meta].parts : this.content;
-                                const position = container.indexOf(node);
-                                const previous = container[position - 1];
-                                if (previous) {
-                                    container.splice(position, 1);
-                                    previous[meta].parts.push(node)
-                                }
-                            }
-                            this.update();
-                            resultNode.querySelector(`.cell-content-${col}-${row}`).focus();
-                            event.preventDefault();
-                            event.stopPropagation();
-                        }
-                        if (event.ctrlKey) {
-                            if (event.key === 'Delete') {
-                                if (isNaN(row) && this.keys.length > 1) {
-                                    cell.blur();
-                                    const key = this.keys[col];
-                                    const deleted = { key };
-                                    this.keys.splice(col, 1);
-                                    this.update(true);
-                                    if (col < this.keys.length) {
-                                        resultNode.querySelector(`.tree-table-column-${col}`).focus();
-                                    } else {
-                                        resultNode.querySelector(`.tree-table-column-${col - 1}`).focus();
-                                    }
-                                } else {
-                                    const item = this.all[row];
-                                    const parent = this.all.find((node) => node[meta].parts.includes(item));
-                                    const position = (parent ? parent[meta].parts : this.content).indexOf(item);
-                                    const deleted = { item, parent, position };
-                                    this.deleted.push(deleted);
-                                    this.all.splice(row, 1);
-                                    this.rows.splice(row, 1);
-                                    if (item?.[meta].parts.length) {
-                                        (parent ? parent[meta].parts : this.content).splice(position, 1, ...item[meta].parts);
-                                    } else {
-                                        (parent ? parent[meta].parts : this.content).splice(position, 1);
-                                    }
-                                    this.model.delete(item);
-                                    this.update();
-                                    if (row < this.rows.length) {
-                                        resultNode.querySelector(`.cell-content-${col}-${row}`).focus();
-                                    } else if (this.rows.length > 0) {
-                                        resultNode.querySelector(`.cell-content-${col}-${row - 1}`).focus();
-                                    } else {
-                                        resultNode.querySelector(`.tree-table-column-${col}`).focus();
-                                    }
-                                }
-                                event.preventDefault();
-                            }
-                        }
-                        if (event.altKey) {
-                            event.preventDefault();
-                            if (event.key === 'ArrowRight') {
-                                if (event.shiftKey) {
-                                    this.keys.splice(col + 1, 0, null);
-                                    this.update();
-                                    resultNode.querySelector(`.tree-table-column-${(col + 1) % this.keys.length}`).focus();
-                                } else {
-                                    if (isNaN(row)) {
-                                        resultNode.querySelector(`.tree-table-column-${(col + 1) % this.cols.length}`).focus();
-                                    } else {
-                                        resultNode.querySelector(`.cell-content-${(col + 1) % this.cols.length}-${row}`).focus();
-                                    }
-                                }
-                            }
-                            if (event.key === 'ArrowLeft') {
-                                if (event.shiftKey) {
-                                    this.keys.splice(col + 1, 0, null);
-                                    this.update();
-                                    resultNode.querySelector(`.tree-table-column-${col}`).focus();
-                                } else {
-                                    if (isNaN(row)) {
-                                        resultNode.querySelector(`.tree-table-column-${(col > 0 ? col : this.cols.length) - 1}`).focus();
-                                    } else {
-                                        resultNode.querySelector(`.cell-content-${(col > 0 ? col : this.cols.length) - 1}-${row}`).focus();
-                                    }
-                                }
-                            }
-                            if (event.key === 'ArrowUp') {
-                                if (event.shiftKey && !isNaN(row)) {
-                                    // Add a new item before the current item
-                                    const current = this.all[row];
-                                    const newItem = {};
-                                    this.model.set(newItem, this.modelNode(newItem));
-                                    const parent = this.all.find((node) => node['childrent'].includes(current));
-                                    if (parent) {
-                                        const position = node['childrent'].indexOf(current);
-                                        parent.splice(position, 0, newItem);
-                                    } else {
-                                        const postion = this.content.indexOf(current);
-                                        this.content.splice(position, 0, newItem);
-                                    }
-                                    this.all.splice(row, 0, newItem);
-                                    this.rows.splice(row, 0, { size: 'max-content' });
-
-                                    this.update();
-                                    resultNode.querySelector(`.cell-content-${col}-${row}`).focus();
-
-                                } else if (row > 0) {
-                                    resultNode.querySelector(`.cell-content-${col}-${row - 1}`).focus();
-                                } else {
-                                    resultNode.querySelector(`.cell-content-${col}-${this.rows.length - 1}`).focus();
-                                }
-                            }
-                            if (event.key === 'ArrowDown') {
-                                if (event.shiftKey) {
-                                    const newItem = {};
-                                    this.model.set(newItem, this.modelNode(newItem));
-                                    if (isNaN(row)) {
-                                        // Add a new item as the first child
-                                        this.content.unshift(newItem);
-                                        this.all.unshift(newItem);
-                                        this.rows.unshift({ size: 'max-content' });
-                                    } else {
-                                        // Add a new item as a child of the item at the current row
-                                        const current = this.all[row];
-                                        this.all.splice(row + 1, 0, newItem);
-                                        this.rows.splice(row + 1, 0, { size: 'max-content' });
-                                        current[meta].parts = current[meta].parts || [];
-                                        current[meta].parts.unshift(newItem);
-                                    }
-                                    this.update();
-                                }
-
-                                if (isNaN(row)) {
-                                    resultNode.querySelector(`.cell-${col}-0`).focus();
-                                } else {
-                                    resultNode.querySelector(`.cell-content-${col}-${(row + 1) % this.all.length}`).focus();
-                                }
-                            }
-                            saveState();
-                            event.preventDefault();
-                        }
-                    });
-                    this.update();
-                },
-                clearUpdate() {
-                    const output = this.getOutput().at(-1).content;
-                    for (const node of output.querySelectorAll('.tree-table-cell')) {
-                        node.remove();
-                    }
-                    update();
-                },
-                update() {
-                    const output = this.getOutput().at(-1).content;
-                    output.innerHTML = '';
-                    output.classList.add('table');
-
-                    const makeTemplate = (definition) => `${definition.map((col) => col.size).join(' ')}`;
-                    output.style.gridTemplateColumns = makeTemplate(this.cols);
-                    output.style.gridTemplateRows = makeTemplate(this.rows);
-
-                    let row = 2;
-                    const addNode = (node, level = 0) => {
-                        this.keys.forEach((key, index) => {
-                            const cell = document.createElement('div');
-                            cell.classList.add('tree-table-cell', `cell-${index}-${row - 2}`);
-                            cell.style.gridRow = row;
-                            cell.style.gridCol = index + 1;
-                            cell.dataset.row = this.all.indexOf(node);
-                            cell.dataset.col = index;
-                            if (index === 0) {
-                                cell.innerHTML = '&nbsp;'.repeat(level * 2);
-                                const meta = this.model.get(node);
-                                const expand = expander(() => meta.getState(), (event) => { meta.expand(event); this.update(); }, (event) => { meta.collapse(event); this.update(); });
-                                cell.appendChild(expand);
-                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
-                                cell.classList.add('tree-table-header');
-                            } else {
-                                cell.appendChild(editableSpan(() => node[key] ?? '', (span) => node[key] = span.innerText));
-                            }
-                            cell.lastElementChild.classList.add(`cell-content-${index}-${row - 2}`)
-                            output.append(cell);
-                        });
-                        row += 1;
-                        if (this.model.get(node).getState() === 'expanded') {
-                            node[meta].parts?.forEach((child) => addNode(child, level + 1));
-                        }
-                    }
-
-                    this.content.forEach((node) => addNode(node));
-                    this.keys.forEach((key, index) => {
-                        const cell = editableSpan(() => this.keys[index], (node) => this.keys[index] = node.innerText);
-                        cell.classList.add('tree-table-header', `tree-table-column-${index}`);
-                        cell.innerHTML = key || '<new key>';
-                        cell.dataset.col = index;
-                        cell.style.gridRow = 1;
-                        cell.style.gridColumn = index + 1;
-                        output.append(cell);
-                    });
-                },
-                serialiseContent() {
-                    const nodes = this.all.map((source) => ({
-                        data: source,
-                        parts: source[meta].parts?.map((part) => this.all.indexOf(part)),
-                    }));
-                    return nodes;
-                },
-                deserialiseContent(nodes) {
-                    nodes.forEach((node) => {
-                        if (!node.data) {
-                            node = { date: node, parts: [] };
-                        }
-                        node.data = node.data || {};
-                        node.data[meta] = {};
-                    });
-
-                    const all = nodes.map((source) => {
-                        const node = source.data || source;
-                        node[meta] = node[meta] || {};
-                        node[meta].parts = source.parts?.map((part) => nodes[part].data) || [];
-                        node[meta].parts.forEach((part) => part[meta].parent = node);
-                        return node;
-                    });
-                    const roots = all.filter((node) => node[meta].parent === undefined);
-                    return roots;
-                },
             },
             'make tree': {
                 init(string, cells = [], parameters) {
@@ -3958,6 +3563,7 @@ amending config files
                 if (!node) {
                     currentLine = currentLine || nodes.at(-1);
                     node = document.createElement('span');
+                    node.id = 'prompt';
                     currentLine.lineNumber.appendChild(node);
                 }
                 node.innerHTML = prompt;
@@ -4163,8 +3769,8 @@ amending config files
             if (cell.defaultState) {
                 cell.setState(cell.defaultState);
             }
-            cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
-            app.show = () => cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+            app.show = () => cell.view.result.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
         }
 
         /**
@@ -4351,15 +3957,16 @@ amending config files
             }
 
             if (nodes.length === 0) {
-                nodes.push(new Text());
+                nodes.push(new Text(1));
             }
 
             updateLineNumbers();
             workspaceNode.focus();
             cellIndex = nodes.length - 1;
             currentLine = nodes[cellIndex];
+            currentLine.show();
             document.getSelection().setPosition(currentLine.content, 0);
-            currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
         }
 
         /**
@@ -4539,7 +4146,7 @@ amending config files
                 reader.addEventListener('load', (event) => {
                     insertBefore(file.name, currentLine);
                     insertBefore(reader.result, currentLine);
-                    currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+                    currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                 });
                 reader.readAsText(file);
                 //saveState();
@@ -4662,46 +4269,70 @@ amending config files
         }
 
         /**
-         * Insert a block of text before the given reference
+         * Get representation of the input as an array of lines
          */
-        function insertBefore(text, reference) {
-            const lines = Array.isArray(text) ? text : typeof text === 'string' ? text.split(/\r?\n/g) : Object.entries(text).map(([key, value]) => `${key}: ${value}`);
-            const inserted = [];
-            lines.forEach((text) => {
-                const cell = new Text('--', text);
-                inserted.push(cell);
-                reference.lineNumber.before(cell.lineNumber, cell.content);
-            });
-            const pos = nodes.indexOf(reference);
-            nodes.splice(pos, 0, ...inserted);
+        function getLines(value) {
+            if (Array.isArray(value)) {
+                return value;
+            }
+            if (typeof value === 'string' || value instanceof String) {
+                return value.split(/\r?\n/g);
+            }
+            return Object.entries(value).map(([key, value]) => `${key}: ${value}`);
         }
+
 
         /**
          * Insert a block of text before the given reference
          */
-        function insertAfter(text, reference) {
-            const getLines = (text) => {
-                if (Array.isArray(text)) {
-                    return text;
-                }
-                if (typeof text === 'string') {
-                    return text.split(/\r?\n/g);
-                }
-                return Object.entries(text).map(([key, value]) => `${key}: ${value}`);
-            }
+        function insertBefore(text, reference) {
             const lines = getLines(text);
             const pos = nodes.indexOf(reference);
-            const cells = lines.map((text, index) => new Text(pos + index + 1, text));
-            reference.after(cells);
+            const cells = lines.map((text, index) => {
+                const cell = new Text(pos + index, text);
+                reference.lineNumber.before(cell.lineNumber, cell.content);
+                return cell;
+            });
             nodes.splice(pos, 0, ...cells);
             return cells;
         }
 
-        function updateLineNumbers() {
+        /**
+         * Insert a block of text after the given reference
+         */
+        function insertAfter(text, reference) {
+            const lines = getLines(text);
+            const pos = nodes.indexOf(reference);
+            const cells = lines.map((text, index) => new Text(pos + index + 1, text));
+            reference.after(cells);
+            return cells;
+        }
+
+        function updateLineNumbers(start) {
             observer.disconnect();
-            let lineNumber = 0;
-            for (const node of document.querySelectorAll('.line-number')) {
-                node.innerText = ++lineNumber;
+            if (start) {
+                const lines = document.querySelectorAll('.line-number');
+                for (let i = start; i < lines.length; ++i) {
+                    const node = lines[i];
+                    node.innerText = i + 1;
+                    node.style.gridRow = i;
+                    const cell = nodes.find((cell) => cell.lineNumber === node);
+                    if (cell) {
+                        cell.content.style.gridRow = i + 1;
+                    }
+
+                }
+
+            } else {
+                let lineNumber = 0;
+                for (const node of document.querySelectorAll('.line-number')) {
+                    node.innerText = ++lineNumber;
+                    node.style.gridRow = lineNumber;
+                    const cell = nodes.find((cell) => cell.lineNumber === node);
+                    if (cell) {
+                        cell.content.style.gridRow = lineNumber;
+                    }
+                }
             }
             observer.observe(workspaceNode, observerOptions);
         }
@@ -4727,12 +4358,11 @@ amending config files
             if (!line) {
                 const index = nodes.indexOf(cell) + 1;
                 const newCell = new Text(index);
-                nodes.splice(index, 0, newCell);
                 cell.after(newCell);
                 line = newCell.content;
             }
             document.getSelection().setPosition(line, 0);
-            line.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'start' });
+            line.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
         }
 
         /**
@@ -4756,7 +4386,7 @@ amending config files
                     }
                     newLine.uses.forEach((cell) => cell.content.classList.add('uses'));
 
-                    newLine.content.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+                    newLine.content.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
 
                     newLine.content.classList.add('highlight');
 
@@ -4773,7 +4403,10 @@ amending config files
          * Parse the content of the cell.
          */
         function parseLines(lines, reference = currentLine) {
-            let lineNumber = nodes.indexOf(reference);
+            const cells = insertBefore(lines, reference);
+            cells.forEach((cell) => parseCell(cell));
+            return;
+            let lineNumber = reference.index;
             lines.forEach((text) => {
                 const cell = new Text(lineNumber, text);
                 reference.lineNumber.before(cell.lineNumber, cell.content);
@@ -4782,7 +4415,7 @@ amending config files
                     // ToDo: fix code that assumes parsing only evver occurs for the current cell
                     parseCell(cell);
                 }
-                lineNumber += 1;
+                lineNumber += 1; // ToDo: ParseCell may have added lines so lineNumber may be wrong!
             });
         }
 
