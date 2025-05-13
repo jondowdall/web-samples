@@ -682,7 +682,7 @@ amending config files
                                 // Add a new item before the current item
                                 const current = this.all[row];
                                 const newItem = {};
-                                this.model.set(newItem, this.modelNode(newItem));
+                                this.model.set(newItem, modelNode(newItem));
                                 const parent = this.all.find((node) => node['childrent'].includes(current));
                                 if (parent) {
                                     const position = node['childrent'].indexOf(current);
@@ -706,7 +706,7 @@ amending config files
                         if (event.key === 'ArrowDown') {
                             if (event.shiftKey) {
                                 const newItem = {};
-                                this.model.set(newItem, this.modelNode(newItem));
+                                this.model.set(newItem, modelNode(newItem));
                                 if (isNaN(row)) {
                                     // Add a new item as the first child
                                     this.data.unshift(newItem);
@@ -1270,7 +1270,6 @@ amending config files
             actions(cell) {
                 const output = Object.keys(actions).map((action, index) => {
                     const output = new Output(cell.index + 1 + index);
-                    cell.after(output);
                     output.content.innerText = action;
                     output.content.addEventListener('mousedown', (event) => {
                         event.preventDefault();
@@ -1282,8 +1281,7 @@ amending config files
                     });
                     return output;
                 });
-                nodes.splice(cell.index + 1, 0, output);
-                //cell.after(...output);
+                cell.after(output);
             },
 
             /**
@@ -1370,6 +1368,49 @@ amending config files
                 const output = [cell.getOutput()];
                 makeInsertionList(app.history, output);
                 cell.action = true;
+            },
+
+            /**
+             * Show the details of a cell
+             */
+            cell(cell) {
+                const string = cell.content.innerText.replace(/\s*cell\s*/, '');
+
+                const args = getList(string);
+                const { cells, values } = args.reduce((results, value) => {
+                    const index = Number(value) - 1;
+                    if (app.namedCells[value] !== undefined) {
+                        results.cells.push(app.namedCells[value]);
+                    } else if (!isNaN(index) && index > -nodes.length && index < nodes.length) {
+                        results.cells.push(nodes.at(index));
+                    } else {
+                        results.values.push(value);
+                    }
+                    return results;
+                }, { cells: [], values: [] });
+
+                const output = Array.from(cell.output || []);
+                while (output.length > 0 && cells.length > 0) {
+                    const current = output.shift();
+                    const cell = cells.shift()
+                    current.content.innerText = cell.content.innerText;
+                }
+                while (output.length) {
+                    output.remove();
+                }
+
+                if (cells.length) {
+                    cell.output = cell.output || [];
+                    const ref = cell.output?.at(-1) || cell;
+                    const pos = ref.index;
+                    const remaining = cells.map((cell, index) => {
+                        const output = new Output(pos + 1 + index);
+                        output.content.innerText = cell.content.innerText;
+                        return output;
+                    });
+                    ref.after(remaining);
+                    cell.output.push(...remaining);
+                }
             },
 
             /**
@@ -1564,7 +1605,7 @@ amending config files
              * Convert a cell to a window and set it's position
              */
             window(cell) {
-                const string = cell.input.replace(/\s*window\s*/, '');
+                const string = cell.content.innerText.replace(/\s*window\s*/, '');
 
                 const args = getList(string);
                 const { cells, values } = args.reduce((results, value) => {
@@ -1714,8 +1755,8 @@ amending config files
                     }
                 }
                 output.update();
-                nodes.splice(cell.index + 1, 0, output);
-                cell.after(output);
+                //nodes.splice(cell.index + 1, 0, output);
+                //cell.after(output);
             },
 
             /**
@@ -2777,6 +2818,31 @@ amending config files
         }
 
 
+        function modelNode(node) {
+            return {
+                getState() {
+                    if (node[meta].parts?.length) {
+                        return this.state;
+                    }
+                },
+                state: 'expanded',
+                expand(event) {
+                    this.state = 'expanded';
+                    if (event.ctrlKey && node[meta].parts) {
+                        node[meta].parts.forEach((child) => model.get(child).expand(event));
+                    }
+                },
+                collapse(event) {
+                    this.state = 'collapsed';
+                    if (event.ctrlKey && node[meta].parts) {
+                        node[meta].parts.forEach((child) => model.get(child).collapse(event));
+                    }
+                },
+                nodes: [],
+            }
+        }
+
+
         /**
          * Cell types applied to a cell after creation.
          */
@@ -3132,7 +3198,10 @@ amending config files
                     const eventNames = Object.keys(named.dates);
                     eventNames.sort((a, b) => a.localeCompare(b));
                     if (!this.controls) {
-                        const controls = new Control();
+                        const from = new Control();
+                        const to = new Control();
+                        this.controls = [from, to];
+                        const controls = {};
                         //controls.content = { from: {}, to: {} };
 
                         controls.update = function (event) {
@@ -3167,72 +3236,47 @@ amending config files
 
                             if (this.from.value && this.to.value) {
                                 if (!this.output) {
-                                    this.output = [new Output(this.index + 1)];
-                                    this.after(this.output[0]);
+                                    this.output = [new Output(to.index + 1)];
+                                    to.after(this.output[0]);
                                 }
                                 this.output[0].content.innerHTML = calendar.workingDays(this.from.value, this.to.value);
                             }
                         }
 
-                        this.controls = [controls];
-                        const container = controls.content;
                         app.addListener('dates', controls);
 
-                        container.append('From: ')
+                        from.content.append('From: ')
                         controls.fromEvent = document.createElement('select');
                         controls.fromEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
                         controls.fromEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                        container.appendChild(controls.fromEvent);
+                        from.content.appendChild(controls.fromEvent);
 
                         controls.from = document.createElement('input');
                         controls.from.type = 'date';
-                        container.appendChild(controls.from);
+                        from.content.appendChild(controls.from);
 
                         controls.from.addEventListener('change', (event) => controls.update(event));
                         controls.fromEvent.addEventListener('change', (event) => controls.update(event));
 
-                        container.append('To: ')
+                        to.content.append('To: ')
                         controls.toEvent = document.createElement('select');
                         controls.toEvent.innerHTML = '<option>Custom Date</option><option>Today</option>';
                         controls.toEvent.innerHTML += eventNames.map((event) => `<option>${event}</option>`);
-                        container.appendChild(controls.toEvent);
+                        to.content.appendChild(controls.toEvent);
 
                         controls.to = document.createElement('input');
                         controls.to.type = 'date';
-                        container.appendChild(controls.to);
+                        to.content.appendChild(controls.to);
 
                         controls.to.addEventListener('change', (event) => controls.update(event));
                         controls.toEvent.addEventListener('change', (event) => controls.update(event));
 
-                        this.after(controls);
+                        this.after(this.controls);
                     }
                 },
 
             },
             'tree table': {
-                modelNode(node) {
-                    return {
-                        getState() {
-                            if (node[meta].parts?.length) {
-                                return this.state;
-                            }
-                        },
-                        state: 'expanded',
-                        expand(event) {
-                            this.state = 'expanded';
-                            if (event.ctrlKey && node[meta].parts) {
-                                node[meta].parts.forEach((child) => model.get(child).expand(event));
-                            }
-                        },
-                        collapse(event) {
-                            this.state = 'collapsed';
-                            if (event.ctrlKey && node[meta].parts) {
-                                node[meta].parts.forEach((child) => model.get(child).collapse(event));
-                            }
-                        },
-                        nodes: [],
-                    }
-                },
                 setData() {
                     this.keys = [];
                     this.all = this.data.flatMap((item) => Array.from(flatten(item)));
@@ -3241,7 +3285,7 @@ amending config files
                     this.cols = this.keys.map((key) => ({ size: 'minmax(min-content, max-content)' }));
                     this.model = new Map();
                     const model = this.model;
-                    this.all.forEach((node) => this.model.set(node, this.modelNode(node)));
+                    this.all.forEach((node) => this.model.set(node, modelNode(node)));
                 },
                 setContent(content) {
                     this.data = this.deserialiseContent(content);
@@ -4315,23 +4359,11 @@ amending config files
                 for (let i = start; i < lines.length; ++i) {
                     const node = lines[i];
                     node.innerText = i + 1;
-                    node.style.gridRow = i;
-                    const cell = nodes.find((cell) => cell.lineNumber === node);
-                    if (cell) {
-                        cell.content.style.gridRow = i + 1;
-                    }
-
                 }
-
             } else {
                 let lineNumber = 0;
                 for (const node of document.querySelectorAll('.line-number')) {
                     node.innerText = ++lineNumber;
-                    node.style.gridRow = lineNumber;
-                    const cell = nodes.find((cell) => cell.lineNumber === node);
-                    if (cell) {
-                        cell.content.style.gridRow = lineNumber;
-                    }
                 }
             }
             observer.observe(workspaceNode, observerOptions);
