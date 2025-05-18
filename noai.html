@@ -62,20 +62,22 @@ amending config files
                 this.lineNumber = this.makeLineNumber(lineNumber);
                 this.content = this.makeLine(line);
                 this.state = 'in-line';
-                this.uses = new Set();
-                this.users = new Set();
+                this.input = new Set();
+                this.output = new Set();
             }
             remove() {
                 this.content?.remove();
                 this.lineNumber?.remove();
-                this.controls?.remove();
-                this.output?.remove();
-                this.uses.forEach((input) => {
-                    input.users = input.users.filter((cell) => cell !== this);
-                });
+
+                this.input.forEach((input) => input.output.delete(this));
+                this.input.clear();
+
+                this.output.forEach((output) => output.input.delete(this));
+                this.output.clear();
+
                 this.state = 'removed';
             }
-            get input() {
+            get text() {
                 return this.content.innerText;
             }
             get value() {
@@ -86,6 +88,9 @@ amending config files
             }
             get index() {
                 return nodes.indexOf(this);
+            }
+            removeOutput(output) {
+                this.output = this.output.filter((cell) => cell !== output);
             }
             inline() {
                 this.lineNumber.after(this.content);
@@ -102,14 +107,10 @@ amending config files
                     this.content.classList.add('sticky');
                     this.content.style.top = `${y}px`;
                     y += this.content.getBoundingClientRect().height;
-                    if (this.controls) {
-                        this.controls.classList.add('sticky');
-                        this.controls.style.top = `${y}px`;
-                        y += this.controls.getBoundingClientRect().height;
-                    }
                     if (this.output) {
                         this.output.classList.add('sticky');
                         this.output.style.top = `${y}px`;
+                        y += this.output.getBoundingClientRect().height;
                     }
                 }
                 this.state = 'stick';
@@ -118,24 +119,17 @@ amending config files
                 this.content.classList.remove('sticky');
             }
             widget() {
-                if (this.controls || this.output) {
-                    if (this.controls) {
-                        document.getElementById('widgets').append(this.controls);
-                    }
-                    if (this.output) {
-                        document.getElementById('widgets').append(this.output);
-                    }
+                if (this.output) {
+                    document.getElementById('widgets').append(this.output);
                     this.state = 'widget';
                 }
             }
             collapse() {
-                this.controls?.forEach((cell) => cell.hide());
                 this.output?.forEach((cell) => cell.hide());
                 this.collapsed = true;
 
             }
             expand() {
-                this.controls?.forEach((cell) => cell.show());
                 this.output?.forEach((cell) => cell.show());
                 this.collapsed = false;
             }
@@ -146,19 +140,6 @@ amending config files
             show() {
                 this.content.classList.remove('hidden');
                 this.lineNumber.classList.remove('hidden');
-            }
-            getControls(content) {
-                if (!this.controls) {
-                    this.controls = [new Control(this.index + 1, content)];
-                    this.controls.forEach((cell) => {
-                        cell.lineNumber.classList.add('control-line');
-                        cell.content.classList.remove('line');
-                        cell.content.classList.add('controls');
-                        cell.content.contentEditable = 'false';
-                    });
-                    this.after(...this.controls);
-                }
-                return this.controls;
             }
             getOutput() {
                 if (this.output) {
@@ -191,17 +172,50 @@ amending config files
                 nodes.splice(this.index + 1, 0, ...cells);
             }
             /**
-             * Insert a block of text before the given reference
+             * Update the output for this lines with the provided text
              */
-            updateResults(text) {
-                if (this.results) {
-                    this.results.forEach((cell) => cell.remove());
-                    nodes = nodes.filter((cell) => cell.state !== 'removed');
-                }
+            updateTextOutput(text) {
                 const lines = getLines(text);
-                const pos = this.index;
-                const output = lines.map((line, index) => new TextOutput(pos + index + 1, line));
-                this.after(output);
+                const oldOutput = Array.from(this.output);
+                while (oldOutput.length > 0 && lines.length > 0) {
+                    oldOutput.shift().content.innerText = lines.shift();
+                }
+                while (oldOutput.length) {
+                    oldOutput.shift().remove();
+                }
+
+                if (lines.length) {
+                    const ref = oldOutput.at(-1) || this;
+                    const pos = ref.index + 1;
+                    const newOutput = lines.map((line, index) => new TextOutput(pos + index, line, this));
+                    ref.after(newOutput);
+                    newOutput.forEach((output) => this.output.add(output));
+                }
+            }
+            /**
+             * Update the output for this lines with the provided nodes
+             */
+            updateOutput(...nodes) {
+                const oldOutput = Array.from(this.output);
+                while (oldOutput.length > 0 && lines.length > 0) {
+                    oldOutput.shift().content.append(nodes.shift());
+                }
+                while (oldOutput.length) {
+                    oldOutput.shift().remove();
+                }
+
+                if (nodes.length) {
+                    const ref = oldOutput.at(-1) || this;
+                    const pos = ref.index + 1;
+                    const newOutput = nodes.map((node, index) => new Output(pos + index, node, this));
+                    if (this.state === 'widget') {
+                        document.getElementById('widgets').append(...nodes);
+                        nodes.splice(pos, newOutput);
+                    } else {
+                        ref.after(newOutput);
+                    }
+                    newOutput.forEach((output) => this.output.add(output));
+                }
             }
         }
 
@@ -213,8 +227,9 @@ amending config files
         }
 
         class TextOutput extends (Cell) {
-            constructor(lineNumber, line) {
+            constructor(lineNumber, line, ...input) {
                 super(lineNumber, line);
+                input.flatMap((input) => input).forEach((input) => this.input.add(input));
                 this.lineNumber.classList.add('output-line');
                 this.content.classList.add('output');
             }
@@ -286,9 +301,17 @@ amending config files
             }
         }
 
-        class Table extends (Output) {
-            constructor(index, input) {
-                super(index);
+
+        class Container {
+            constructor() {
+                this.content = document.createElement('div');
+            }
+        }
+
+
+        class Table extends (Container) {
+            constructor(input) {
+                super();
                 this.content.classList.add('table');
                 const background = document.createElement('div');
                 background.classList.add('grid');
@@ -525,35 +548,13 @@ amending config files
                         this.content.appendChild(node);
                     }
                 });
-                /*
-                this.rows.forEach((row, index) => {
-                    const cls = `table-row-${index}`;
-                    const node = this.content.querySelector(`.${cls}`) || editableSpan(
-                        () => this.rows[index].name || '',
-                        (node) => {
-                            if (index < this.rows.length) {
-                                this.rows[index].name = node.innerText;
-                                node.innerText = node.innerText || index;
-                            }
-                        });
-                    node.title = `row: ${row.name || index}`;
-                    node.innerText = row.name || index;
-                    if (!node.classList.contains('titleNode')) {
-                        node.style.gridRow = index + 2; // Grid row is 1-based and allow a row for column names
-                        node.style.gridColumn = 1;
-                        node.dataset.row = index;
-                        node.classList.add('table-cell', 'table-header', 'table-row-header', cls);
-                        this.content.appendChild(node);
-                    }
-                });
-                */
             }
         }
 
 
-        class TreeTable extends (Output) {
-            constructor(index, tree) {
-                super(index);
+        class TreeTable extends (Container) {
+            constructor(tree) {
+                super();
                 this.deleted = [];
                 this.data = tree.content;
                 this.all = tree.all;
@@ -990,15 +991,15 @@ amending config files
 
 
         /**
-         *  Helper function to get list of cells from input string and set up users / uses relationships
+         *  Helper function to get list of cells from input string and set up input / output relationships
          */
         function getReferences(string, cell) {
-            const cells = getCells(string);
-            cells.forEach((input) => {
-                input.users.add(cell);
-                cell.uses.add(input);
+            const inputs = getCells(string);
+            inputs.forEach((input) => {
+                input.outputs.add(cell);
+                cell.input.add(input);
             });
-            return cells;
+            return inputs;
         }
 
 
@@ -1248,7 +1249,7 @@ amending config files
         /**
          * Get the source data for this action from the preceding lines
          */
-        function getSource(cell, test = (cell) => !(cell.output || (cell.input.trim().startsWith('#') && cell.input.trim().endsWith('#')))) {
+        function getSource(cell, test = (cell) => !(cell.output.size || (cell.text.trim().startsWith('#') && cell.text.trim().endsWith('#')))) {
             const cells = [];
             let index = nodes.indexOf(cell) - 1;
             while (nodes[index] && test(nodes[index])) {
@@ -1334,7 +1335,7 @@ amending config files
              * Change the theme
              */
             theme(cell) {
-                const themeName = cell.input.replace(/^\s*theme\s+/, '').trim();
+                const themeName = cell.text.replace(/^\s*theme\s+/, '').trim();
                 document.documentElement.setAttribute('data-theme', themeName);
                 const result = { message: `theme set to ${themeName}` };
                 if (!themes.includes(themeName)) {
@@ -1402,9 +1403,9 @@ amending config files
                 if (cells.length) {
                     cell.output = cell.output || [];
                     const ref = cell.output?.at(-1) || cell;
-                    const pos = ref.index;
+                    const pos = ref.index + 1;
                     const remaining = cells.map((cell, index) => {
-                        const output = new Output(pos + 1 + index);
+                        const output = new Output(pos + index);
                         output.content.innerText = cell.content.innerText;
                         return output;
                     });
@@ -1425,7 +1426,7 @@ amending config files
              * perform a google search
              */
             google(cell) {
-                const string = cell.input.replace(/google\s+/, '');
+                const string = cell.text.replace(/google\s+/, '');
                 const pattern = string.replace(/\s+/g, '+');
                 const url = `https://www.google.com/search?q=${pattern}`;
                 window.open(url, string, 'pop');
@@ -1438,7 +1439,7 @@ amending config files
              * Download a resource from the net
              */
             wget(cell) {
-                const url = cell.input.replace(/wget\s+/, '').replace(/\s+/g, '%20');
+                const url = cell.text.replace(/wget\s+/, '').replace(/\s+/g, '%20');
                 const name = url.split(/\//g).at(-1);
                 const link = document.createElement("a");
                 link.href = url;
@@ -1451,7 +1452,7 @@ amending config files
              * Set a cell size to its content
              */
             fit(cell) {
-                const string = cell.input.replace(/\s*fit\s*/, '');
+                const string = cell.text.replace(/\s*fit\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1487,7 +1488,7 @@ amending config files
              * Set the 'hide' state for cells
              */
             hide(cell) {
-                const string = cell.input.replace(/\s*hide\s*/, '');
+                const string = cell.text.replace(/\s*hide\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1502,7 +1503,7 @@ amending config files
              * Toggle the 'hide' state for a cell
              */
             unhide(cell) {
-                const string = cell.input.replace(/\s*unhide\s*/, '');
+                const string = cell.text.replace(/\s*unhide\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1517,7 +1518,7 @@ amending config files
              * Set the 'collapse' state for cell(s)
              */
             collapse(cell) {
-                const string = cell.input.replace(/\s*collapse\s*/, '');
+                const string = cell.text.replace(/\s*collapse\s*/, '');
 
                 const cells = getCells(string);
                 cells.forEach((cell) => cell.collapse());
@@ -1540,7 +1541,7 @@ amending config files
              * Toggle the 'widget' state for a cell
              */
             widget(cell) {
-                const string = cell.input.replace(/\s*widget\s*/, '');
+                const string = cell.text.replace(/\s*widget\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1557,7 +1558,7 @@ amending config files
              * display the cell in line with the other cells
              */
             inline(cell) {
-                const string = cell.input.replace(/\s*inline\s*/, '');
+                const string = cell.text.replace(/\s*inline\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1569,30 +1570,13 @@ amending config files
                     cell.inline();
                 });
                 cell.action = true;
-                return;
-                const stuck = nodes.filter((cell) => cell.state === 'stick');
-                let y = 0;
-                stuck.forEach((cell) => {
-                    cell.content.style.top = `${y}px`;
-                    y += cell.content.getBoundingClientRect().height;
-                    if (cell.controls) {
-                        cell.controls.style.top = `${y}px`;
-                        y += cell.controls.getBoundingClientRect().height;
-                    }
-                    if (cell.output) {
-                        cell.output.style.top = `${y}px`;
-                        y += cell.output.getBoundingClientRect().height;
-                    }
-                });
-                app.layoutChange();
-                cell.action = true;
             },
 
             /**
              * Toggle the 'sticky' state for a cell
              */
             stick(cell) {
-                const string = cell.input.replace(/\s*stick\s*/, '');
+                const string = cell.text.replace(/\s*stick\s*/, '');
 
                 const cells = getCells(string);
                 const result = [];
@@ -1645,7 +1629,7 @@ amending config files
                     return s.color !== '';
                 }
 
-                const string = cell.input.replace(/\s*background\s*/, '');
+                const string = cell.text.replace(/\s*background\s*/, '');
                 if (isCSSColour(string)) {
                     document.body.style.backgroundColor = string;
                 } else if (string) {
@@ -1668,7 +1652,7 @@ amending config files
              * Log the content of the specified cell(s)
              */
             log(cell) {
-                const string = cell.input.replace(/^\s*log\s*/, '');
+                const string = cell.text.replace(/^\s*log\s*/, '');
                 const output = cell.getOutput();
                 const cells = getCells(string);
                 if (cells.length === 0) {
@@ -1692,7 +1676,7 @@ amending config files
                     return { message: 'delete ignored in non-interactive mode' };
                 }
 
-                const string = cell.input.replace(/^\s*delete\s*/, '');
+                const string = cell.text.replace(/^\s*delete\s*/, '');
                 const len = app.cells.length;
                 const cells = getCells(string);
 
@@ -1723,7 +1707,7 @@ amending config files
 
                 cell.update = async (time) => {
                     const cells = getSource(cell);
-                    cells.forEach((input) => cell.uses.add(input));
+                    cells.forEach((input) => cell.input.add(input));
                     const source = cells.map((input) => input.content.innerText).join('\n');
                     output.content.innerHTML = source;
                 }
@@ -1737,7 +1721,7 @@ amending config files
             diagram(cell) {
                 const output = new Output(cell.index + 1);
                 cell.after(output);
-                const string = cell.input.replace(/^diagram\s*/, '');
+                const string = cell.text.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
 
                 output.content.classList.add('mermaid');
@@ -1745,7 +1729,7 @@ amending config files
 
                 output.update = async (time) => {
                     const cells = getSource(cell);
-                    cells.forEach((input) => cell.uses.add(input));
+                    cells.forEach((input) => cell.input.add(input));
                     const source = cells.map((input) => input.content.innerText).join('\n');
                     try {
                         const { svg } = await mermaid.render(`graph_${index}`, source);
@@ -1755,8 +1739,6 @@ amending config files
                     }
                 }
                 output.update();
-                //nodes.splice(cell.index + 1, 0, output);
-                //cell.after(output);
             },
 
             /**
@@ -1764,15 +1746,14 @@ amending config files
              */
             js(cell) {
                 const cells = getSource(cell);
-                cells.forEach((input) => cell.uses.add(input));
+                cells.forEach((input) => cell.input.add(input));
                 const text = cells.map((cell) => cell.content.innerText).join('\n');
-                const output = cell.getOutput();
                 try {
-                    const func = new Function('global', text);
-                    const result = func(global);
-                    output.content.innerText = result;
+                    const func = new Function('store', text);
+                    const result = func(app.store);
+                    cell.updateTextOutput(result);
                 } catch (error) {
-                    output.content.innerText = error.message
+                    cell.updateTextOutput(error.message);
                 }
             },
 
@@ -1781,14 +1762,14 @@ amending config files
              */
             js2(cell) {
                 const cells = getSource(cell);
-                cells.forEach((input) => cell.uses.add(input));
+                cells.forEach((input) => cell.input.add(input));
                 const text = cells.map((cell) => cell.content.innerText).join('\n');
                 try {
-                    const func = new Function('global', text);
-                    const result = func(global);
-                    cell.updateResult(result);
+                    const func = new Function('store', text);
+                    const result = func(app.store);
+                    cell.updateTextOutput(result);
                 } catch (error) {
-                    cell.updateResult(error.message);
+                    cell.updateTextOutput(error.message);
                 }
             },
 
@@ -1907,7 +1888,7 @@ amending config files
                             output.innerHTML = `Loading...`;
                             const file = await fileHandle.getFile();
                             const content = await file.text();
-                            cell.updateResults(content);
+                            cell.updateTextOutput(content);
                             cell.content = file.name;
                             output.innerHTML = `${file.name}:`;
                             saveFileHandles([{ name: file.name, handle: fileHandle }]);
@@ -2164,7 +2145,7 @@ amending config files
             'load data'(cell) {
                 const file = cell.content.innerText.replace(/^\s*load data\s*/, '');
                 const process = (content) => {
-                    cell.updateResults(content);
+                    cell.updateTextOutput(content);
 
                     let sectionName;
                     let current;
@@ -2237,7 +2218,7 @@ amending config files
                         });
                     }
                     app.notifyListeners('dates', { action: 'added', values: data.dates });
-                    //cell.users.forEach((user) => user.update());
+                    //cell.output.forEach((output) => output.update());
                     updateLineNumbers();
                 }
 
@@ -2325,7 +2306,7 @@ amending config files
                 this.resolved = resolved ?? raw;
                 this.content = content;
                 this.value = content;
-                this.uses = new Set(uses);
+                this.input = new Set(uses);
                 this.users = new Set();
                 this.view = {};
                 this.modes = new Set();
@@ -2604,8 +2585,8 @@ amending config files
                 if (this.view.cell) {
                     this.view.cell.remove();
                 }
-                this.uses.forEach((input) => input.users.delete(this));
-                this.users.forEach((user) => user.uses.delete(this));
+                this.input.forEach((input) => input.users.delete(this));
+                this.users.forEach((user) => user.input.delete(this));
             }
         }
 
@@ -2851,14 +2832,13 @@ amending config files
              * Add a clock to the widget area
              */
             clock: {
-                defaultState: 'widget',
                 init(input) {
-                    if (!this.output) {
-                        const canvas = document.createElement('canvas');
-                        canvas.classList.add('clock');
-                        this.context = canvas.getContext('2d');
-                        const output = this.getOutput();
-                        output.content.append(canvas);
+                    if (!this.canvas) {
+                        this.state = 'widget';
+                        this.canvas = document.createElement('canvas');
+                        this.canvas.classList.add('clock');
+                        this.context = this.canvas.getContext('2d');
+                        this.updateOutput(this.canvas);
                         this.update();
                     }
                 },
@@ -2919,8 +2899,8 @@ amending config files
             },
 
             calendar: {
-                defaultState: 'widget',
                 init(input) {
+                    this.state = 'widget';
                     const parameters = input.replace(/\s*calendar\s*/, '');
                     const pattern = /((?<day>[0-9]{1,2})[-\/\._])?(?<month>[0-9]{1,2})[-\/\._](?<year>[0-9]{1,4})[-\/\._]/;
                     const match = parameters.match(pattern);
@@ -2934,7 +2914,7 @@ amending config files
                         this.calendarDate = now;
                     }
 
-                    if (!this.output) {
+                    if (this.output.size === 0) {
                         const calendarWidget = document.createElement('div');
                         calendarWidget.classList.add('calendar');
 
@@ -3003,7 +2983,7 @@ amending config files
                             });
                         }
                         update();
-                        this.getOutput().content.append(calendarWidget);
+                        this.updateOutput(calendarWidget);
                     }
                 }
             },
@@ -3029,12 +3009,12 @@ amending config files
                 }
             },
             replace: {
-                init(input) {
-                    const parameters = input.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^replace\s*/, '');
+                init() {
+                    const parameters = this.text.replace(/^\s*<[^>]+>[:#=]\s*/).replace(/^replace\s*/, '');
                     if (parameters) {
                         const link = (from, to) => {
-                            from.users.add(to);
-                            to.uses.add(from);
+                            from.output.add(to);
+                            to.input.add(from);
                         };
                         const args = getList(parameters);
                         const { cells, values } = args.reduce((results, value) => {
@@ -3053,24 +3033,10 @@ amending config files
                         this.cells = cells;
                         this.pattern = values[0];
                         this.replacement = values[1];
-                    } else {
-                        const lines = [];
-                        let index = nodes.indexOf(this) - 1;
-                        while (nodes[index] && !(nodes[index].output || /^\s*#/.test(nodes[index].content.innerText))) {
-                            this.uses.unshift(nodes[index]);
-                            lines.unshift(nodes[index].content.innerText);
-                            index -= 1;
-                        }
-                        this.input = lines.join('\n');
                     }
 
-                    const controlsNode = this.getControls();
-                    const container = this.getOutput();
-
-                    controlsNode.classList.add('controls');
-
                     const dynamicUpdate = (event) => {
-                        if (dynamicUpdateNode.checked) {
+                        if (this.dynamic.checked) {
                             this.update();
                         }
                     }
@@ -3078,41 +3044,50 @@ amending config files
                         this.update();
                     }
 
-                    controlsNode.append('Pattern:');
-                    this.patternNode = document.createElement('input');
-                    controlsNode.appendChild(this.patternNode);
-                    this.patternNode.placeholder = 'Search String';
-                    this.patternNode.value = this.pattern || '';
-                    this.patternNode.addEventListener('input', (event) => dynamicUpdate(event));
-                    this.patternNode.addEventListener('change', (event) => update(event));
 
-                    controlsNode.append('Replacement:');
-                    this.replacementNode = document.createElement('input');
-                    controlsNode.appendChild(this.replacementNode);
-                    this.replacementNode.placeholder = 'Replacement';
-                    this.replacementNode.value = this.replacement || '';
-                    this.replacementNode.addEventListener('input', (event) => dynamicUpdate(event));
-                    this.replacementNode.addEventListener('change', (event) => update(event));
+                    if (this.output.size === 0) {
+                        const pattern = new Control();
+                        this.pattern = document.createElement('input');
+                        this.pattern.type = 'text';
+                        pattern.content.append('Pattern: ', this.pattern);
+                        this.pattern.addEventListener('input', (event) => dynamicUpdate(event));
+                        this.pattern.addEventListener('change', (event) => this.update());
+                        this.output.add(pattern);
 
-                    controlsNode.append('Live:');
-                    const dynamicUpdateNode = document.createElement('input');
-                    dynamicUpdateNode.type = 'checkbox';
-                    dynamicUpdateNode.checked = this.live ?? true;
-                    controlsNode.appendChild(dynamicUpdateNode);
-                    dynamicUpdateNode.addEventListener('input', (event) => dynamicUpdate(event));
+                        const replacement = new Control();
+                        this.replacement = document.createElement('input');
+                        this.replacement.type = 'text';
+                        replacement.content.append('Replacement ', this.replacement);
+                        this.replacement.addEventListener('input', (event) => dynamicUpdate(event));
+                        this.replacement.addEventListener('change', (event) => this.update());
+                        this.output.add(replacement);
 
-                    this.outputNode = document.createElement('pre');
-                    this.outputNode.addEventListener('dblclick', (event) => this.outputNode.classList.toggle('shrink'));
-                    container.appendChild(this.outputNode);
+                        this.controls = new Control();
+                        this.dynamic = document.createElement('input');
+                        this.dynamic.type = 'checkbox';
+                        this.dynamic.checked = 'true';
+
+                        const update = document.createElement('button');
+                        update.innerText = 'Update';
+                        update.addEventListener('click', (event) => this.update());
+                        this.controls.content.append('Dynamic: ', this.dynamic, update);
+                        this.output.add(this.controls);
+
+                        this.after(pattern, replacement, this.controls);
+                    }
                 },
                 update() {
+                    const input = getSource(this);
+                    input.forEach((cell) => this.input.add(cell));
+                    const text = input.map((cell) => cell.text).join('\n');
+
                     try {
-                        const pattern = new RegExp(this.patternNode.value, 'g');
-                        const replacement = this.replacementNode.value;
-                        this._value = this.input.replace(pattern, replacement);
-                        this.outputNode.innerText = this._value;
+                        const pattern = new RegExp(this.pattern.value, 'g');
+                        const replacement = this.replacement.value;
+                        const result = text.replace(pattern, replacement);
+                        this.controls.updateTextOutput(result);
                     } catch (error) {
-                        app.setStatus(error.message);
+                        this.controls.updateTextOutput(error.message);
                     }
                     saveState();
                 },
@@ -3181,13 +3156,13 @@ amending config files
             table: {
                 init(input) {
                     const inputs = getSource(this);
-                    inputs.forEach((input) => this.uses.add(input));
+                    inputs.forEach((input) => this.input.add(input));
 
-                    if (this.output) {
-                        this.output[0].setContent(inputs.map((cell) => cell.content.innerText));
+                    if (this.table) {
+                        this.table.setContent(inputs.map((cell) => cell.content.innerText));
                     } else {
-                        this.output = [new Table(this.index + 1, inputs.map((cell) => cell.content.innerText))];
-                        this.after(...this.output);
+                        this.table = new Table(inputs.map((cell) => cell.content.innerText));
+                        this.updateOutput(this.table.content);
                     }
                 },
                 update() {
@@ -3197,12 +3172,12 @@ amending config files
                 init(input) {
                     const eventNames = Object.keys(named.dates);
                     eventNames.sort((a, b) => a.localeCompare(b));
-                    if (!this.controls) {
+                    if (this.output.size === 0) {
                         const from = new Control();
                         const to = new Control();
-                        this.controls = [from, to];
+                        this.output.add(from);
+                        this.output.add(to);
                         const controls = {};
-                        //controls.content = { from: {}, to: {} };
 
                         controls.update = function (event) {
                             const eventNames = Object.keys(named.dates);
@@ -3271,7 +3246,7 @@ amending config files
                         controls.to.addEventListener('change', (event) => controls.update(event));
                         controls.toEvent.addEventListener('change', (event) => controls.update(event));
 
-                        this.after(this.controls);
+                        this.after(from, to);
                     }
                 },
 
@@ -3329,7 +3304,7 @@ amending config files
                 },
                 init(string) {
                     const inputs = getSource(this);
-                    inputs.forEach((input) => this.uses.add(input));
+                    inputs.forEach((input) => this.input.add(input));
                     this.data = inputs.map((input) => input.content.innerText);
 
                     this.linesToTree();
@@ -3344,11 +3319,11 @@ amending config files
                         keys: this.keys,
                         model: this.model,
                     }
-                    if (this.output) {
-                        this.output[0].setContent(tree);
+                    if (this.tree) {
+                        this.tree.setContent(tree);
                     } else {
-                        this.output = [new TreeTable(this.index + 1, tree)];
-                        this.after(...this.output);
+                        this.tree = new TreeTable(tree);
+                        this.updateOutput(this.tree.content);
                     }
                 }
             },
@@ -3388,10 +3363,10 @@ amending config files
                     const lines = [];
                     lines.push(`${app.currentCell?.raw}`);
                     if (app.currentCell) {
-                        for (const input of app.currentCell.uses) {
+                        for (const input of app.currentCell.input) {
                             lines.push(`${input.index} ${input.name} --> ${app.currentCell.index} ${app.currentCell.name}`);
                         }
-                        for (const output of app.currentCell.users) {
+                        for (const output of app.currentCell.output) {
                             lines.push(`${app.currentCell.index} ${app.currentCell.name} --> ${output.index} ${output.name}`);
                         }
                     }
@@ -3515,6 +3490,8 @@ amending config files
         }
 
         const app = {
+            store: {},
+            context: {},
             loaded: false,
             content: [''],
             activeEditor: null,
@@ -3581,25 +3558,24 @@ amending config files
                     for (const cell of this.events.currentCellChange) {
                         cell.update();
                     }
-                    for (const node of document.querySelectorAll('.source')) {
+                    for (const node of document.querySelectorAll('.input')) {
                         node.classList.remove('source');
                     }
                     for (const node of document.querySelectorAll('.sink')) {
                         node.classList.remove('sink');
                     }
                     if (cell) {
-                        for (const input of cell.uses) {
-                            input.view.cell.classList.add('source');
+                        for (const input of cell.input) {
+                            input.content.classList.add('source');
                         }
-                        for (const output of cell.users) {
-                            output.view.cell.classList.add('sink');
+                        for (const output of cell.output) {
+                            output.content.classList.add('sink');
                         }
                         app.setStatus(`${cell.name || ''}: ${cell.raw}`);
                     }
 
                 }
             },
-            context: [{ process }],
             state: {},
             mermaidCount: 0,
             setPrompt(prompt) {
@@ -3674,9 +3650,18 @@ amending config files
          * Return the predefined functions passed to expressions
          */
         function getPredefined() {
-            const predefined = {};
-            Object.getOwnPropertyNames(Math).forEach((prop) => predefined[prop] = Math[prop]);
-            Object.getOwnPropertyNames(calendar).forEach((prop) => predefined[prop] = calendar[prop]);
+            const predefined = {
+                names: [],
+                values: [],
+            };
+            Object.getOwnPropertyNames(Math).forEach((prop) => {
+                predefined.names.push(prop);
+                predefined.values.push(Math[prop]);
+            });
+            Object.getOwnPropertyNames(calendar).forEach((prop) => {
+                predefined.names.push(prop);
+                predefined.values.push(calendar[prop]);
+            });
             return predefined;
         }
 
@@ -3752,8 +3737,8 @@ amending config files
             }
             const getIndex = (str) => isNaN(parseInt(str)) ? -1 : parseInt(str) % app.cells.length;
             const link = (from, to) => {
-                from.users.add(to);
-                to.uses.add(from);
+                from.output.add(to);
+                to.input.add(from);
             };
             const expr = command.replace(/^\\/, '')
                 .replace(/<(-?[^>]*)>/g, (match, name) => {
@@ -3771,21 +3756,19 @@ amending config files
             const references = [];
             const resolved = command.replace(/^\\/, '').replace(/<(-?[0-9]*)>/g, (match, index) => {
                 const referenced = app.cells.at(getIndex(index));
-                referenced.users.add(cell);
-                cell.uses.add(referenced);
+                referenced.output.add(cell);
+                cell.input.add(referenced);
                 return `${referenced.value}`;
             });
             cell.update = () => {
                 const predefined = getPredefined();
-                const args = Object.keys(predefined);
-                const parameters = Object.values(predefined);
                 try {
                     if (app.action) {
-                        const func = new Function('app', ...args, 'named', `return app.action(${expr})`);
+                        const func = new Function('app', ...predefined.names, 'named', `return app.action(${expr})`);
                     }
-                    const func = new Function('app', ...args, 'named', `return ${expr}`);
+                    const func = new Function('app', ...predefined.names, 'named', `return ${expr}`);
 
-                    cell.value = func(app, ...parameters, named.all);
+                    cell.value = func(app, ...predefined.values, named.all);
                 } catch (error) {
                     cell.value = error.message;
                 }
@@ -4268,7 +4251,7 @@ amending config files
             if (selection.getRangeAt && selection.rangeCount) {
                 const range = selection.getRangeAt(0);
                 const element = range.startContainer.closest ? range.startContainer : range.startContainer.parentElement;
-                return element.closest('.line');
+                return element.closest('.line,.control,.output');
             }
         }
 
@@ -4318,6 +4301,9 @@ amending config files
         function getLines(value) {
             if (Array.isArray(value)) {
                 return value;
+            }
+            if (typeof value === 'number') {
+                return [value];
             }
             if (typeof value === 'string' || value instanceof String) {
                 return value.split(/\r?\n/g);
@@ -4407,7 +4393,7 @@ amending config files
                     highlighted.classList.remove('highlight');
                 }
 
-                for (const sources of document.querySelectorAll('.uses')) {
+                for (const sources of document.querySelectorAll('.input')) {
                     sources.classList.remove('uses');
                 }
 
@@ -4416,7 +4402,7 @@ amending config files
                     if (prompt) {
                         newLine.lineNumber.appendChild(prompt);
                     }
-                    newLine.uses.forEach((cell) => cell.content.classList.add('uses'));
+                    newLine.input.forEach((cell) => cell.content.classList.add('uses'));
 
                     newLine.content.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
 
@@ -4452,10 +4438,25 @@ amending config files
         }
 
         /**
+         * Evaluate a string
+         */
+        function evaluateString(string) {
+            const predefined = getPredefined();
+
+            try {
+                const func = new Function('store', ...predefined.names, `return ${string}`);
+                return func(app.store, ...predefined.values);
+            } catch (error) {
+                app['last error'] = error.message;
+            }
+        }
+
+        /**
          * Parse the content of the cell.
          */
         function parseCell(cell) {
             const action = cell.content.innerText;
+            const value = Number(action);
 
             const commands = Object.getOwnPropertyNames(actions).sort((a, b) => b.length - a.length);
             const command = commands.find((match) => action.startsWith(match));
@@ -4491,6 +4492,13 @@ amending config files
                 named.all[action].eval(cell);
             } else if (action.trim().startsWith('#') && action.trim().endsWith('#')) {
                 cell.block = action.replace(/^\s*#\s*/, '').replace(/\s*#\s*$/, '');
+            } else if (isNaN(value) && currentLine.content.classList.contains('line')) {
+                const result = evaluateString(action);
+                if (result !== undefined) {
+                    cell.updateTextOutput(result);
+                } else {
+                    return true;
+                }
             } else {
                 return true;
             }
@@ -4586,10 +4594,12 @@ amending config files
         }
 
         /**
-         * Log mutations to the workspace
+         * Process lines edits of the workspace
          */
-        function logChanges(records, observer) {
-            const removedLines = [];
+        function processEdits(records, observer) {
+            const removedTextLines = [];
+            const removedControlLines = [];
+            const removedOutputLines = [];
             for (const record of records) {
                 for (const addedNode of record.addedNodes) {
                     if (addedNode.nodeType === 1 && addedNode.closest('.line')) {
@@ -4603,15 +4613,21 @@ amending config files
                 }
 
                 if (record.removedNodes.length > 0) {
-                    removedLines.push(...Array.from(record.removedNodes).filter((node) => node.classList?.contains('line')));
+                    removedTextLines.push(...Array.from(record.removedNodes).filter((node) => node.classList?.contains('line')));
+                    removedControlLines.push(...Array.from(record.removedNodes).filter((node) => node.classList?.contains('control')));
+                    removedOutputLines.push(...Array.from(record.removedNodes).filter((node) => node.classList?.contains('output')));
                 }
             }
-            if (removedLines.length) {
-                nodes = nodes.filter((node) => !removedLines.includes(node.content));
+            if (removedTextLines.length) {
+                nodes = nodes.filter((node) => !removedTextLines.includes(node.content));
                 // Clean up double line breaks
                 nodes.filter((node) => node.content.innerText.match(/\r?\n\r?\n/))
                     .forEach((node) => node.content.innerText = node.content.innerText.replace(/(\r?\n)+/, '\n'));
                 updateLineNumbers();
+            }
+            if (removedOutputLines.length) {
+                removedOutputLines.map((output) => nodes.find((cell) => cell.content === output))
+                    .forEach((output) => output.remove());
             }
         }
 
@@ -4620,7 +4636,7 @@ amending config files
             subtree: true,
         };
 
-        const observer = new MutationObserver(logChanges);
+        const observer = new MutationObserver(processEdits);
         observer.observe(workspaceNode, observerOptions);
 
     </script>
