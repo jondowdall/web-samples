@@ -25,6 +25,7 @@ amending config files
 <body>
     <div id="header"></div>
     <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
+        <div id="block-outline"></div>
     </div>
     <div id="widgets"></div>
     <div id="footer"></div>
@@ -76,6 +77,9 @@ amending config files
                 this.output.clear();
 
                 this.state = 'removed';
+                if (this.block) {
+                    this.block.content = this.block.content.filter((cell) => cell !== this);
+                }
             }
             get text() {
                 return this.content.innerText;
@@ -301,6 +305,18 @@ amending config files
             }
         }
 
+        class Block {
+            constructor(cell) {
+                this.title = cell.text.replace(/^\s*#\s*/, '').replace(/\s*#\s*$/, '');
+                this.content = [cell];
+            }
+            get body() {
+                return this.content.slice(1);
+            }
+            toJSON() {
+                return undefined;
+            }
+        }
 
         class Container {
             constructor() {
@@ -1248,13 +1264,14 @@ amending config files
         /**
          * Get the source data for this action from the preceding lines
          */
-        function getSource(cell, test = (cell) => !(cell.output.size || (cell.text.trim().startsWith('#') && cell.text.trim().endsWith('#')))) {
+        function getSource(cell, test = (cell) => !(cell.command || (cell.text.trim().startsWith('#') && cell.text.trim().endsWith('#')))) {
             const cells = [];
             let index = nodes.indexOf(cell) - 1;
             while (nodes[index] && test(nodes[index])) {
                 cells.unshift(nodes[index]);
                 index -= 1;
             }
+            cells.forEach((input) => input.output.add(cell));
             return cells;
         }
 
@@ -4278,6 +4295,10 @@ amending config files
                         cell.content.appendChild(document.createElement('br'));
                     }
                     cell.scrollTo();
+                    if (app.block) {
+                        cell.block = app.block;
+                        app.block.content.push(cell);
+                    }
                 }
             }
         }
@@ -4361,6 +4382,10 @@ amending config files
                 const index = nodes.indexOf(cell) + 1;
                 const newCell = new Text(index);
                 cell.after(newCell);
+                if (app.block) {
+                    newCell.block = app.block;
+                    app.block.content.push(newCell);
+                }
                 line = newCell.content;
             }
             document.getSelection().setPosition(line, 0);
@@ -4398,6 +4423,20 @@ amending config files
                     currentLine = newLine;
                     cellIndex = nodes.indexOf(currentLine);
                     app.content = cellIndex + 1;
+                    if (newLine.block) {
+                        
+                        const boxes = newLine.block.content.map((cell) => cell.lineNumber.getBoundingClientRect());
+                        const x = Math.min(...boxes.map((box) => box.x));
+                        const y = Math.min(...boxes.map((box) => box.y));
+                        const width = Math.max(...boxes.map((box) => box.x + box.width - x));
+                        const height = Math.max(...boxes.map((box) => box.y + box.height - y));
+
+                        const outline = document.getElementById('block-outline');
+                        outline.style.left = `${x}px`;
+                        outline.style.top = `${y}px`;
+                        outline.style.width = `${width}px`;
+                        outline.style.height = `${height}px`;
+                    }
                 }
             }
         });
@@ -4478,10 +4517,16 @@ amending config files
             } else if (named.all[action]) {
                 named.all[action].eval(cell);
             } else if (action.trim().startsWith('#') && action.trim().endsWith('#')) {
-                cell.block = action.replace(/^\s*#\s*/, '').replace(/\s*#\s*$/, '');
+                const block = new Block(cell);
+                cell.block = block;
+                app.block = block;
             } else {
                 observer.observe(workspaceNode, observerOptions);
-                return true;
+                if (cell.output.size > 0) {
+                    cell.output.forEach((cell) => parseCell(cell));
+                } else {
+                    return true;
+                }
             }
             observer.observe(workspaceNode, observerOptions);
         }
