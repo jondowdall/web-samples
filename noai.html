@@ -24,8 +24,10 @@ amending config files
 
 <body>
     <div id="header"></div>
-    <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
+    <div id="editor">
         <div id="block-outline"></div>
+    <div id="workspace" contenteditable="plaintext-only" autocorrect="off" autocapitalize="none">
+    </div>
     </div>
     <div id="widgets"></div>
     <div id="footer"></div>
@@ -34,7 +36,13 @@ amending config files
     <script type="module">
         const themes = ['vt-220', 'workbench-1.3', 'workbench-4.1'];
 
+        const editorNode = document.getElementById('editor');
         const workspaceNode = document.getElementById('workspace');
+
+        const start = 0;
+        const content = [];
+        const nodes = [];
+        const lineNumbers = [];
 
 
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
@@ -45,30 +53,18 @@ amending config files
          * Manage a line and its nodes
          */
         class Cell {
-            makeLineNumber(index) {
-                const lineNumber = document.createElement('div');
-                lineNumber.contentEditable = false;
-                lineNumber.innerText = index ?? '';
-                lineNumber.classList.add('line-number');
-                return lineNumber;
-            }
-            makeLine(content) {
-                const line = document.createElement('div');
+            constructor(content) {
+                this.content = document.createElement('div');
                 if (content) {
-                    line.append(content)
+                    this.content.append(content)
                 }
-                return line;
-            }
-            constructor(lineNumber, line) {
-                this.lineNumber = this.makeLineNumber(lineNumber);
-                this.content = this.makeLine(line);
                 this.state = 'in-line';
                 this.input = new Set();
                 this.output = new Set();
+                updateLineNumbers();
             }
             remove() {
                 this.content?.remove();
-                this.lineNumber?.remove();
 
                 this.input.forEach((input) => input.output.delete(this));
                 this.input.clear();
@@ -79,6 +75,10 @@ amending config files
                 this.state = 'removed';
                 if (this.block) {
                     this.block.content = this.block.content.filter((cell) => cell !== this);
+                }
+                const pos = this.index;
+                if (pos > -1) {
+                    nodes.splice(pos, 1);
                 }
             }
             get text() {
@@ -93,11 +93,13 @@ amending config files
             get index() {
                 return nodes.indexOf(this);
             }
+            get lineNumber() {
+                return lineNumbers[this.index];
+            }
             removeOutput(output) {
                 this.output = this.output.filter((cell) => cell !== output);
             }
             inline() {
-                this.lineNumber.after(this.content);
                 this.state = 'in-line';
             }
             stick() {
@@ -139,34 +141,18 @@ amending config files
             }
             hide() {
                 this.content.classList.add('hidden');
-                this.lineNumber.classList.add('hidden');
+                this.lineNumber?.classList.add('hidden');
             }
             show() {
                 this.content.classList.remove('hidden');
-                this.lineNumber.classList.remove('hidden');
-            }
-            getOutput() {
-                if (this.output) {
-                    return this.output[0];
-                }
-                const output = new Output(this.index + 1);
-                this.output = [output];
-                if (this.defaultState === 'widget') {
-                    this.content.after(output.lineNumber);
-                    document.getElementById('widgets').append(output.content);
-                    this.output.state = 'widget';
-                } else {
-                    this.content.after(output.lineNumber, output.content);
-                }
-                nodes.splice(this.index + 1, 0, output);
-                return output;
+                this.lineNumber?.classList.remove('hidden');
             }
             scrollTo(options = { behavior: 'smooth', block: 'center', inline: 'start' }) {
                 this.content.scrollIntoView(options);
             }
             after(...cells) {
                 cells = cells.flatMap((cell) => cell);
-                const domNodes = cells.flatMap((cell) => [cell.lineNumber, cell.content]).filter((n) => n);
+                const domNodes = cells.flatMap((cell) => [cell.content]).filter((n) => n);
 
                 if (this.state === 'widget' || this.state === 'window') {
                     this.content.after(...domNodes);
@@ -191,7 +177,28 @@ amending config files
                 if (lines.length) {
                     const ref = oldOutput.at(-1) || this;
                     const pos = ref.index + 1;
-                    const newOutput = lines.map((line, index) => new TextOutput(pos + index, line, this));
+                    const newOutput = lines.map((line, index) => new TextOutput(line, this));
+                    ref.after(newOutput);
+                    newOutput.forEach((output) => this.output.add(output));
+                }
+            }
+            /**
+             * Update the output for this lines with the provided text
+             */
+            updateHTMLOutput(html) {
+                const lines = getLines(html);
+                const oldOutput = Array.from(this.output);
+                while (oldOutput.length > 0 && lines.length > 0) {
+                    oldOutput.shift().content.innerText = lines.shift();
+                }
+                while (oldOutput.length) {
+                    oldOutput.shift().remove();
+                }
+
+                if (lines.length) {
+                    const ref = oldOutput.at(-1) || this;
+                    const pos = ref.index + 1;
+                    const newOutput = lines.map((line, index) => new TextOutput(line, this));
                     ref.after(newOutput);
                     newOutput.forEach((output) => this.output.add(output));
                 }
@@ -200,9 +207,10 @@ amending config files
              * Update the output for this lines with the provided nodes
              */
             updateOutput(...nodes) {
+                nodes = nodes.flatMap((node) => node);
                 const oldOutput = Array.from(this.output);
-                while (oldOutput.length > 0 && lines.length > 0) {
-                    oldOutput.shift().content.append(nodes.shift());
+                while (oldOutput.length > 0 && nodes.length > 0) {
+                    oldOutput.shift().content.replaceWith(nodes.shift());
                 }
                 while (oldOutput.length) {
                     oldOutput.shift().remove();
@@ -211,7 +219,7 @@ amending config files
                 if (nodes.length) {
                     const ref = oldOutput.at(-1) || this;
                     const pos = ref.index + 1;
-                    const newOutput = nodes.map((node, index) => new Output(pos + index, node, this));
+                    const newOutput = nodes.map((node, index) => new Output(node, this));
                     if (this.state === 'widget') {
                         document.getElementById('widgets').append(...nodes);
                         nodes.splice(pos, newOutput);
@@ -224,26 +232,25 @@ amending config files
         }
 
         class Text extends (Cell) {
-            constructor(lineNumber, line) {
-                super(lineNumber, line);
+            constructor(line) {
+                super(line);
                 this.content.classList.add('line');
             }
         }
 
         class TextOutput extends (Cell) {
-            constructor(lineNumber, line, ...input) {
-                super(lineNumber, line);
+            constructor(line, ...input) {
+                super(line);
                 input.flatMap((input) => input).forEach((input) => this.input.add(input));
-                this.lineNumber.classList.add('output-line');
                 this.content.classList.add('output');
             }
         }
 
         class Widget extends (Cell) {
-            constructor(lineNumber, line) {
-                super(lineNumber, line);
+            constructor(line) {
+                super(line);
                 this.content.contentEditable = false;
-                this.lineNumber.addEventListener('mousedown', (event) => {
+                this.lineNumber?.addEventListener('mousedown', (event) => {
                     const mouseStart = { x: event.clientX, y: event.clientY };
                     const start = this.content.getBoundingClientRect();
                     action.move = (event) => {
@@ -290,20 +297,26 @@ amending config files
         }
 
         class Control extends (Widget) {
-            constructor(lineNumber, line) {
-                super(lineNumber, line);
-                this.lineNumber.classList.add('control-line');
+            constructor(line) {
+                super(line);
+                this.lineNumber?.classList.add('control-line');
                 this.content.classList.add('control');
             }
         }
 
         class Output extends (Widget) {
-            constructor(lineNumber, line) {
-                super(lineNumber, line);
-                this.lineNumber.classList.add('output-line');
+            constructor(line) {
+                super(line);
+                this.lineNumber?.classList.add('output-line');
                 this.content.classList.add('output');
             }
         }
+
+        nodes.push(new Text());
+        workspaceNode.append(nodes[0].content);
+        const global = {};
+        let cellIndex = 0;
+        let currentLine = nodes[cellIndex];
 
         class Block {
             constructor(cell) {
@@ -1245,8 +1258,8 @@ amending config files
         /**
          * Make a list of names that will be inserted at the cursor when clicked
          */
-        function makeInsertionList(items, container) {
-            items.forEach((item) => {
+        function makeInsertionList(items, cell) {
+            const nodes = items.map((item) => {
                 const node = document.createElement('div');
                 node.innerText = item;
                 node.addEventListener('mousedown', (event) => {
@@ -1257,8 +1270,8 @@ amending config files
                         range.insertNode(document.createTextNode(item));
                     }
                 });
-                container.appendChild(node);
             });
+            cell.content.after(nodes);
         }
 
         /**
@@ -1266,7 +1279,7 @@ amending config files
          */
         function getSource(cell, test = (cell) => !(cell.command || (cell.text.trim().startsWith('#') && cell.text.trim().endsWith('#')))) {
             const cells = [];
-            let index = nodes.indexOf(cell) - 1;
+            let index = cell.index - 1;
             while (nodes[index] && test(nodes[index])) {
                 cells.unshift(nodes[index]);
                 index -= 1;
@@ -1286,7 +1299,7 @@ amending config files
              */
             actions(cell) {
                 const output = Object.keys(actions).map((action, index) => {
-                    const output = new Output(cell.index + 1 + index);
+                    const output = new Output();
                     output.content.innerText = action;
                     output.content.addEventListener('mousedown', (event) => {
                         event.preventDefault();
@@ -1367,8 +1380,7 @@ amending config files
             themes(cell) {
                 const themeName = document.documentElement.getAttribute('data-theme');
                 const themeNames = themes.map((name) => name === themeName ? name + ' *' : name);
-                const output = [cell.getOutput()];
-                makeInsertionList(themeNames, output);
+                makeInsertionList(themeNames, cell);
                 cell.action = true;
             },
 
@@ -1377,13 +1389,11 @@ amending config files
              */
             history(cell) {
                 cell.update = (time) => {
-                    const output = [cell.getOutput()];
                     output.innerHTML = '';
-                    makeInsertionList(app.history, output);
+                    makeInsertionList(app.history, cell);
                 }
                 app.events.historyChange.add(cell);
-                const output = [cell.getOutput()];
-                makeInsertionList(app.history, output);
+                makeInsertionList(app.history, cell);
                 cell.action = true;
             },
 
@@ -1405,37 +1415,13 @@ amending config files
                     }
                     return results;
                 }, { cells: [], values: [] });
-
-                /*
-                const output = Array.from(cell.output || []);
-                while (output.length > 0 && cells.length > 0) {
-                    const current = output.shift();
-                    const cell = cells.shift()
-                    current.content.innerText = cell.content.innerText;
-                }
-                while (output.length) {
-                    output.remove();
-                }
-
-                if (cells.length) {
-                    cell.output = cell.output || [];
-                    const ref = cell.output?.at(-1) || cell;
-                    const pos = ref.index + 1;
-                    const remaining = cells.map((cell, index) => {
-                        const output = new Output(pos + index);
-                        output.content.innerText = cell.content.innerText;
-                        return output;
-                    });
-                    ref.after(remaining);
-                    cell.output.push(...remaining);
-                }*/
             },
 
             /**
              * Show the list of cells
              */
             cells(cell) {
-                //cell.output = new Output(cell.index + 1);
+                //cell.output = new Output();
                 console.log(nodes.map((cell, index) => `${index + 1}: ${cell.content.innerText}`));
             },
 
@@ -1447,8 +1433,7 @@ amending config files
                 const pattern = string.replace(/\s+/g, '+');
                 const url = `https://www.google.com/search?q=${pattern}`;
                 window.open(url, string, 'pop');
-                const output = cell.getOutput();
-                output.innerHTML = `<a href="${url}">${url}</a>`;
+                const output = cell.updateHTMLOutput(`<a href="${url}">${url}</a>`);
                 cell.action = true;
             },
 
@@ -1670,14 +1655,13 @@ amending config files
              */
             log(cell) {
                 const string = cell.text.replace(/^\s*log\s*/, '');
-                const output = cell.getOutput();
                 const cells = getCells(string);
                 if (cells.length === 0) {
-                    output.content.innerHTML = `No cells logged!`;
+                    cell.updateOutput(`No cells logged!`);
                 } else if (cells.length === 1) {
-                    output.content.innerHTML = `log cell ${cellName(cells[0])}`;
+                    cell.updateOutput(`log cell ${cellName(cells[0])}`);
                 } else {
-                    output.content.innerHTML = `log cells ${cells.map((cell) => cellName(cell)).join()}`;
+                    cell.updateOutput(`log cells ${cells.map((cell) => cellName(cell)).join()}`);
                 }
                 cells.forEach((cell) => console.log(cell));
             },
@@ -1711,22 +1695,20 @@ amending config files
              * List the known files
              */
             files(cell) {
-                const output = cell.getOutput();
-                makeInsertionList(Object.keys(named.files), output);
+                makeInsertionList(Object.keys(named.files), cell);
                 cell.action = true;
             },
 
             /**
-             * Create a notes cell
+             * Create a html cells
              */
             html(cell) {
-                const output = cell.getOutput();
 
                 cell.update = async (time) => {
                     const cells = getSource(cell);
                     cells.forEach((input) => cell.input.add(input));
-                    const source = cells.map((input) => input.content.innerText).join('\n');
-                    output.content.innerHTML = source;
+                    const source = cells.map((input) => input.content.innerText);
+                    cell.updateHTMLOutput(source);
                 }
 
                 cell.update();
@@ -1736,7 +1718,7 @@ amending config files
              * Create a mermaid diagram cell
              */
             diagram(cell) {
-                const output = new Output(cell.index + 1);
+                const output = new Output();
                 cell.after(output);
                 const string = cell.text.replace(/^diagram\s*/, '');
                 const index = app.mermaidCount++;
@@ -1750,9 +1732,11 @@ amending config files
                     const source = cells.map((input) => input.content.innerText).join('\n');
                     try {
                         const { svg } = await mermaid.render(`graph_${index}`, source);
-                        output.content.innerHTML = svg;
+                        const container = document.createElement('div');
+                        container.innerHTML = svg;
+                        cell.updateOutput(container);
                     } catch (error) {
-                        output.content.innerHTML = error.message;
+                        cell.updateOutput(error.message);
                     }
                 }
                 output.update();
@@ -1823,9 +1807,8 @@ amending config files
              * List dates
              */
             dates(cell) {
-                const output = cell.getOutput();
                 const dates = Object.entries(named.dates).map(([name, date]) => `${name}: ${date.toDateString()}`)
-                makeInsertionList(dates, output);
+                makeInsertionList(dates, cell);
             },
 
             /**
@@ -1856,9 +1839,8 @@ amending config files
              * List sites
              */
             sites(cell) {
-                const output = cell.getOutput();
                 const sites = Object.entries(named.sites).map(([name, item]) => `${name}: <a href="${item.url}">${item.url}</a>`);
-                makeInsertionList(sites, output);
+                makeInsertionList(sites, cell);
             },
 
             /**
@@ -1882,16 +1864,14 @@ amending config files
              * List abbreviations
              */
             abbreviations(cell) {
-                const output = cell.getOutput();
                 const abbreviations = Object.entries(named.abbreviations).map(([name, expansion]) => `${name}: ${expansion}`);
-                makeInsertionList(abbreviations, output);
+                makeInsertionList(abbreviations, cell);
             },
 
             /**
              * Load a file using a handle in the database
              */
             load(cell) {
-                const output = cell.getOutput();
 
                 if (!navigator.userActivation.isActive) {
                     app.setStatus('load request ignored in script');
@@ -1902,12 +1882,11 @@ amending config files
                     if ('showOpenFilePicker' in self) {
                         const [fileHandle] = await window.showOpenFilePicker();
                         if (fileHandle) {
-                            output.innerHTML = `Loading...`;
+                            cell.updateOutput('Loading...');
                             const file = await fileHandle.getFile();
                             const content = await file.text();
-                            cell.updateTextOutput(content);
-                            cell.content = file.name;
-                            output.innerHTML = `${file.name}:`;
+                            cell.updateTextOutput(`${file.name}:\n${content}`);
+                            cell.value = file.name;
                             saveFileHandles([{ name: file.name, handle: fileHandle }]);
                             updateLineNumbers();
                         }
@@ -2312,301 +2291,6 @@ amending config files
                 }
             }, 10);
         });
-
-
-        class Cell_old {
-            static id = 0;
-            constructor(raw, content, expr, resolved, uses = []) {
-                input = raw;
-                this.timestamp = new Date();
-                this.expr = expr ?? raw;
-                this.resolved = resolved ?? raw;
-                this.content = content;
-                this.value = content;
-                this.input = new Set(uses);
-                this.users = new Set();
-                this.view = {};
-                this.modes = new Set();
-                this.index = Cell.id++;
-            }
-            /*
-            get index() {
-                return this.index;
-            }
-                */
-            getName() {
-                const name = [];
-                name.push(`${this.index}:`);
-                if (this.name) {
-                    name.push(this.name);
-                }
-                name.push(this.content.innerText);
-                return name.join(' ');
-            }
-            getResultNode() {
-                const node = document.createElement('div');
-                node.classList.add('result');
-                node.innerHTML = this.value ?? '';
-                return node;
-            }
-            makeView() {
-                this.view.cell = document.createElement('div');
-                this.view.cell.addEventListener('click', (event) => app.setCurrentCell(this));
-                this.view.cell.classList.add('cell');
-
-                this.view.index = document.createElement('span');
-                this.view.index.classList.add('index');
-                this.view.cell.appendChild(this.view.index);
-                this.view.index.addEventListener('click', (event) => {
-                    const str = ` <${this.index}>`;
-                    const pos = inputNode.selectionStart;
-                    inputNode.value = inputNode.value.slice(0, pos) + str + inputNode.value.slice(pos);
-                    inputNode.focus();
-                    inputNode.selectionStart = inputNode.selectionEnd = pos + str.length;
-                });
-
-                this.view.input = this.view.input || document.createElement('div');
-                this.view.input.classList.add('input');
-                this.view.cell.appendChild(this.view.input);
-
-                this.view.container = document.createElement('div');
-                this.view.container.classList.add('result-box');
-                this.view.cell.appendChild(this.view.container);
-
-                const references = {
-                    x: [],
-                    y: [],
-                };
-                const mousemove = (event) => {
-                    event.preventDefault();
-                    this.setState('floating');
-
-                    action.node.classList.add('dragging');
-
-                    const x = event.clientX - action.start.x + action.pos.x;
-                    const y = event.clientY - action.start.y + action.pos.y;
-                    if (!event.ctrlKey) {
-                        const x2 = references.x.reduce((x, rx) =>
-                            Math.abs(rx - x) < 10 ? rx : x, x);
-                        const y2 = references.y.reduce((y, ry) =>
-                            Math.abs(ry - y) < 10 ? ry : y, y);
-                        action.node.style.left = `${x2}px`
-                        action.node.style.top = `${y2}px`;
-                    } else {
-                        action.node.style.left = `${x}px`
-                        action.node.style.top = `${y}px`;
-                    }
-                    app.layoutChange();
-                };
-
-                this.view.input.addEventListener('mousedown', (event) => {
-                    references.x.length = 0;
-                    references.y.length = 0;
-                    for (const node of document.querySelectorAll('.floating .result-box')) {
-                        if (node !== this.view.result.parentElement) {
-                            const box = node.getBoundingClientRect();
-                            references.x.push(box.x, box.x + box.width, box.x - this.view.result.clientWidth);
-                            references.y.push(box.y, box.y + box.height, box.y - this.view.result.clientHeight);
-                        }
-                    }
-                    if (this.view.cell.classList.contains('sticky') ||
-                        this.view.cell.classList.contains('floating')) {
-                        action.node = this.view.cell;
-                        action.move = mousemove;
-                        action.start = { x: event.clientX, y: event.clientY };
-                        action.pos = action.node.getBoundingClientRect();
-                        document.body.classList.add('noselect');
-                        document.getElementById('results').appendChild(this.view.cell);
-                    }
-                });
-
-                this.view.raw = this.view.raw || document.createElement('span');
-                this.view.raw.classList.add('raw');
-                this.view.raw.innerText = input;
-                this.view.input.appendChild(this.view.raw);
-                this.view.raw.addEventListener('dblclick', (event) => {
-                    if (event.ctrlKey) {
-                        this.view.raw.contentEditable = true;
-                        this.view.raw.focus();
-                    } else {
-                        if (this.state === 'hidden') {
-                            this.setState('normal');
-                        } else {
-                            this.setState('hidden');
-                        }
-                        /*
-                        this.view.result.classList.toggle('hidden');
-                        this.view.input.classList.toggle('dim');
-                        */
-                    }
-                });
-                this.view.raw.addEventListener('blur', (event) => {
-                    this.view.raw.contentEditable = false;
-                    input = this.view.raw.innerText;
-                });
-
-                if (input !== this.resolved) {
-                    const arrow = document.createElement('span');
-                    arrow.innerHTML = ' &rarr; ';
-                    this.view.input.appendChild(arrow);
-
-                    this.view.resolved = this.view.resolved || document.createElement('span');
-                    this.view.resolved.classList.add('resolved');
-                    this.view.resolved.innerHTML = this.resolved;
-                    this.view.input.appendChild(resolvedNode);
-                }
-                this.view.result = this.view.result || this.getResultNode();
-                this.view.result.draggable = true;
-                this.view.result.addEventListener('dragstart', (event) => {
-                    event.dataTransfer.setData('text/plain', this.value);
-                    const box = this.view.result.getBoundingClientRect();
-                    const placeholder = document.getElementById('placeholder');
-                    placeholder.style.width = `${box.width}px`;
-                    placeholder.style.height = `${box.height}px`;
-                    app.dragging = this.view.result;
-                });
-                this.view.result.addEventListener('dragover', (event) => {
-                    if (event.dataTransfer.types.includes('Files')) {
-                    } else {
-                        const placeholder = document.getElementById('placeholder');
-                        placeholder.classList.remove('hidden');
-                        const parent = this.view.result.parentElement;
-                        //app.dragging.replaceWith(placeholder);
-                        const box = this.view.result.getBoundingClientRect();
-                        if (event.clientY < box.y + box.height / 2) {
-                            parent.insertBefore(app.dragging, this.view.result);
-                        } else {
-                            parent.insertBefore(app.dragging, this.view.result.nextSibling)
-                        }
-                    }
-                });
-                this.view.result.addEventListener('dragend', (event) => {
-                    placeholder.classList.add('hidden');
-                });
-                /*
-            this.view.result.addEventListener('dragover', (event) => {
-                event.preventDefault();
-            });
-            */
-                this.view.container.appendChild(this.view.result);
-            }
-            getSettings() {
-                return undefined;
-            }
-            serialiseContent() {
-                return this.content;
-            }
-            toJSON(key) {
-                if (this.type === Status) {
-                    return undefined;
-                }
-                const state = {};
-                const view = {};
-                if (this.view) {
-                    const box = this.view.cell.getBoundingClientRect();
-
-                    view.state = this.state;
-                    if (this.state === 'floating') {
-                        view.box = this.view.box || { x: box.x, y: box.y, width: box.width, height: box.height };
-                    }
-                    view.modes = Array.from(this.modes).filter((mode) => mode);
-                }
-
-                return {
-                    raw: input,
-                    timestamp: this.timestamp.getTime(),
-                    content: this.serialiseContent(),
-                    view,
-                    settings: this.getSettings(),
-                }
-            }
-            changeState(state) {
-                this.state = state;
-                const states = ['normal', 'sticky', 'floating', 'widget', 'collapsed', 'hidden'];
-
-                this.view.cell.style.top = '';
-                this.view.cell.style.left = '';
-                this.view.cell.style.bottom = '';
-
-                if (state === 'sticky') {
-                    const top = Math.max(0, ...Array.from(document.querySelectorAll('.sticky'))
-                        .map((node) => {
-                            const box = node.getBoundingClientRect();
-                            return box.y + box.height;
-                        })
-                    );
-                    this.view.cell.style.top = `${top}px`;
-                    this.view.cell.style.left = 0;
-                    this.view.cell.style.bottom = 0;
-                } else if (this.lastState === 'sticky') {
-                    const box = this.view.cell.getBoundingClientRect();
-                    this.view.cell.classList.remove('sticky');
-                    Array.from(document.querySelectorAll('.sticky'))
-                        .filter((node) => node.getBoundingClientRect().y > box.y)
-                        .forEach((node) => node.style.top = `${node.getBoundingClientRect().y - box.height}px`);
-                }
-
-                if ((state === 'floating' || state === 'widget') && !(this.lastState === 'floating' || this.lastState === 'widget')) {
-                    this.view.placeholder = this.view.placeholder || document.createElement('div');
-                    this.view.cell.replaceWith(this.view.placeholder);
-                } else if (!(state === 'floating' || state === 'widget') && (this.lastState === 'floating' || this.state === 'widget')) {
-                    this.view.placeholder.replaceWith(this.view.cell);
-                }
-
-                if (state === 'widget') {
-                    document.getElementById('widgets').appendChild(this.view.cell);
-                    this.view.cell.title = `${this.index}: ${input}`;
-                }
-
-                if (state === 'floating') {
-                    document.getElementById('results').appendChild(this.view.cell);
-                    if (this.view.box) {
-                        this.view.cell.style.top = `${this.view.box.top}px`;
-                        this.view.cell.style.left = `${this.view.box.left}px`;
-                        this.view.cell.style.width = `${this.view.box.width}px`;
-                        this.view.cell.style.height = `${this.view.box.height}px`;
-                    } else {
-                        this.view.cell.style.top = '20%';
-                        this.view.cell.style.left = '20%';
-                    }
-                } else if (this.lastState === 'floating') {
-                    this.view.box = this.view.cell.getBoundingClientRect();
-                }
-
-                const classes = this.view.cell.classList;
-                states.forEach((possibleState) => possibleState === state ? classes.add(state) : classes.remove(possibleState));
-
-                if (state === 'normal') {
-                    this.view.cell.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
-                }
-            }
-            setState(state) {
-                if (state !== this.state) {
-                    this.lastState = this.state;
-                    this.changeState(state);
-                }
-            }
-            lastState() {
-                const state = this.lastState || this.defaultState || 'normal';
-                this.changeState(state);
-            }
-            setMode(mode) {
-                this.modes.add(mode);
-                this.view.cell.classList.add(mode);
-            }
-            clearMode(mode) {
-                this.modes.delete(mode);
-                this.view.cell.classList.remove(mode);
-            }
-            remove() {
-                if (this.view.cell) {
-                    this.view.cell.remove();
-                }
-                this.input.forEach((input) => input.users.delete(this));
-                this.users.forEach((user) => user.input.delete(this));
-            }
-        }
-
 
         /**
          * Create an editable span.
@@ -3129,10 +2813,10 @@ amending config files
                     this.update();
                 },
                 update() {
-                    const output = this.getOutput();
-                    output.innerHTML = `<span class="raised">${this.todo.raised.toDateString()}</span><br><span class="details">${this.todo.detail}</span>`;
+                    const node = document.createElement('div');
+                    node.innerHTML = `<span class="raised">${this.todo.raised.toDateString()}</span><br><span class="details">${this.todo.detail}</span>`;
                     if (this.todo.done) {
-                        output.innerHTML += `<br><span class="done">${this.todo.done.toDateString()}</span>`;
+                        node.innerHTML += `<br><span class="done">${this.todo.done.toDateString()}</span>`;
                     }
                     if (!this.checkbox) {
                         this.checkbox = document.createElement('input');
@@ -3149,13 +2833,14 @@ amending config files
                             this.update();
                         });
                     }
-                    output.appendChild(this.checkbox);
-                    output.classList.add('todo');
+                    node.appendChild(this.checkbox);
+                    node.classList.add('todo');
                     if (this.checkbox.checked) {
-                        output.classList.add('done');
+                        node.classList.add('done');
                     } else {
-                        output.classList.remove('done');
+                        node.classList.remove('done');
                     }
+                    this.updateOutput(node);
                 }
             },
             todos: {
@@ -3167,7 +2852,7 @@ amending config files
                 },
                 update() {
                     const todos = app.types.get(ToDo) || [];
-                    this.getOutput().innerHTML = '<ul>' + todos.map((todo) => `<li>${todo.toShortHTML()}</li>`).join('') + '</ul>';
+                    makeInsertionList(todos.map((todo) => `${todo.toShortHTML()}`), cell);
                 }
             },
             table: {
@@ -3228,7 +2913,7 @@ amending config files
 
                             if (this.from.value && this.to.value) {
                                 if (!this.output) {
-                                    this.output = [new Output(to.index + 1)];
+                                    this.output = [new Output()];
                                     to.after(this.output[0]);
                                 }
                                 this.output[0].content.innerHTML = calendar.workingDays(this.from.value, this.to.value);
@@ -3387,8 +3072,7 @@ amending config files
                             lines.push(`${app.currentCell.index} ${app.currentCell.name} --> ${output.index} ${output.name}`);
                         }
                     }
-                    const output = this.getOutput();
-                    output.innerHTML = lines.join('<br>');
+                    this.updateTextOutput(lines);
                 }
             },
             windows: { // Display dynamic list of windows
@@ -3402,25 +3086,16 @@ amending config files
                     return resultNode;
                 },
                 update() {
-                    const output = this.getOutput();
-                    output.innerHTML = '';
-                    const windows = app.cells.filter((cell) => cell.view?.cell?.classList.contains('floating'));
-                    const makeSpan = (text) => {
-                        const node = document.createElement('span');
-                        node.innerText = text;
-                        node.classList.add('table-cell');
-                        return node;
-                    }
-                    windows.forEach((cell) => {
+                    const windows = app.cells.filter((cell) => cell.state === 'window');
+                    const text = windows.map((cell) => {
                         const box = cell.view.cell.getBoundingClientRect();
-                        output.appendChild(makeSpan(`${cell.index}:`));
-                        output.appendChild(makeSpan(cell.name || ''));
-                        output.appendChild(makeSpan(cell.command));
-                        output.appendChild(makeSpan(box.x));
-                        output.appendChild(makeSpan(box.y));
-                        output.appendChild(makeSpan(box.width));
-                        output.appendChild(makeSpan(box.height));
-                    });
+                        return `${cell.index}: ${cell.name || ''}
+    ${cell.command}
+    ${box.x}
+    ${box.y}
+    ${box.width}
+    ${box.height}`;});
+                    this.updateTextOutput(text);
                 },
             },
             messages: { // Display dynamic list of messages
@@ -3429,7 +3104,7 @@ amending config files
                     this.update();
                 },
                 update() {
-                    this.getOutput().innerHTML = app.statusHistory.join('<br>');
+                    this.updateOutput(app.statusHistory);
                 },
             }
         }
@@ -3601,7 +3276,7 @@ amending config files
                     currentLine = currentLine || nodes.at(-1);
                     node = document.createElement('span');
                     node.id = 'prompt';
-                    currentLine.lineNumber.appendChild(node);
+                    currentLine.content.prepend(node);
                 }
                 node.innerHTML = prompt;
             },
@@ -3630,14 +3305,6 @@ amending config files
                 this.statusChange();
             }
         };
-
-        const start = 0;
-        const content = [];
-        let nodes = [new Text(1)];
-        workspaceNode.append(nodes[0].lineNumber, nodes[0].content);
-        const global = {};
-        let cellIndex = 0;
-        let currentLine = nodes[cellIndex];
 
         app.setPrompt('Load previous state (Y/n)');
         addMainEventListeners();
@@ -3983,7 +3650,7 @@ amending config files
                 state.app = state.app ?? state.context;
                 app.cellIndex = app.cells.length;
                 const currentIndex = Array.from(document.querySelectorAll('.line-number')).at(-1);
-                currentIndex.innerHTML = app.cells.length;
+                //currentIndex.innerHTML = app.cells.length;
                 app.events.historyChange.forEach((cell) => cell.update());
                 Object.assign(app.state, state.app.state);
                 if (app.state.theme) {
@@ -4002,7 +3669,7 @@ amending config files
                 }
 
                 if (nodes.length === 0) {
-                    nodes.push(new Text(1));
+                    nodes.push(new Text());
                 }
 
                 updateLineNumbers();
@@ -4012,6 +3679,7 @@ amending config files
                 currentLine.show();
                 document.getSelection().setPosition(currentLine.content, 0);
                 currentLine.content.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+                updateLineNumbers();
             } catch (error) {
                 app.setStatus(error.message);
             }
@@ -4285,7 +3953,7 @@ amending config files
                     range.setEndAfter(currentLine.content);
                     const line = indent + range.toString().trimEnd();
                     range.deleteContents();
-                    const cell = new Text('--', line);
+                    const cell = new Text(line);
                     currentLine.after(cell);
                     const pos = nodes.indexOf(currentLine);
                     nodes.splice(pos + 1, 0, cell);
@@ -4327,8 +3995,8 @@ amending config files
             const lines = getLines(text);
             const pos = nodes.indexOf(reference);
             const cells = lines.map((text, index) => {
-                const cell = new Text(pos + index, text);
-                reference.lineNumber.before(cell.lineNumber, cell.content);
+                const cell = new Text(text);
+                reference.content.before(cell.content);
                 return cell;
             });
             nodes.splice(pos, 0, ...cells);
@@ -4341,26 +4009,9 @@ amending config files
         function insertAfter(text, reference) {
             const lines = getLines(text);
             const pos = nodes.indexOf(reference);
-            const cells = lines.map((text, index) => new Text(pos + index + 1, text));
+            const cells = lines.map((text, index) => new Text(text));
             reference.after(cells);
             return cells;
-        }
-
-        function updateLineNumbers(start) {
-            observer.disconnect();
-            if (start) {
-                const lines = document.querySelectorAll('.line-number');
-                for (let i = start; i < lines.length; ++i) {
-                    const node = lines[i];
-                    node.innerText = i + 1;
-                }
-            } else {
-                let lineNumber = 0;
-                for (const node of document.querySelectorAll('.line-number')) {
-                    node.innerText = ++lineNumber;
-                }
-            }
-            observer.observe(workspaceNode, observerOptions);
         }
 
         /**
@@ -4380,7 +4031,7 @@ amending config files
             }
             if (!line) {
                 const index = nodes.indexOf(cell) + 1;
-                const newCell = new Text(index);
+                const newCell = new Text();
                 cell.after(newCell);
                 if (app.block) {
                     newCell.block = app.block;
@@ -4398,20 +4049,23 @@ amending config files
         document.addEventListener('selectionchange', (event) => {
             const newLine = getCurrentCell();
             if (newLine !== currentLine) {
-                for (const highlighted of workspaceNode.querySelectorAll('.highlight')) {
+                if (currentLine.output.size > 0) {
+                    currentLine.output.forEach((cell) => parseCell(cell));
+                }
+                for (const highlighted of editorNode.querySelectorAll('.highlight')) {
                     highlighted.classList.remove('highlight');
                 }
-                for (const sources of workspaceNode.querySelectorAll('.current-input')) {
+                for (const sources of editorNode.querySelectorAll('.current-input')) {
                     sources.classList.remove('current-input');
                 }
-                for (const sources of workspaceNode.querySelectorAll('.current-output')) {
+                for (const sources of editorNode.querySelectorAll('.current-output')) {
                     sources.classList.remove('current-output');
                 }
 
                 if (newLine) {
                     const prompt = document.getElementById('prompt');
                     if (prompt) {
-                        newLine.lineNumber.appendChild(prompt);
+                        newLine.content.prepend(prompt);
                     }
                     newLine.input.forEach((cell) => cell.lineNumber.classList.add('current-input'));
                     newLine.output.forEach((cell) => cell.lineNumber.classList.add('current-output'));
@@ -4424,18 +4078,11 @@ amending config files
                     cellIndex = nodes.indexOf(currentLine);
                     app.content = cellIndex + 1;
                     if (newLine.block) {
-                        
-                        const boxes = newLine.block.content.map((cell) => cell.lineNumber.getBoundingClientRect());
-                        const x = Math.min(...boxes.map((box) => box.x));
-                        const y = Math.min(...boxes.map((box) => box.y));
-                        const width = Math.max(...boxes.map((box) => box.x + box.width - x));
-                        const height = Math.max(...boxes.map((box) => box.y + box.height - y));
+                        const boxes = newLine.block.content.map((cell) => cell);
+                        const start = Math.min(...boxes.map((box) => box.index));
+                        const end = Math.max(...boxes.map((box) => box.index + 1));
 
                         const outline = document.getElementById('block-outline');
-                        outline.style.left = `${x}px`;
-                        outline.style.top = `${y}px`;
-                        outline.style.width = `${width}px`;
-                        outline.style.height = `${height}px`;
                     }
                 }
             }
@@ -4448,18 +4095,12 @@ amending config files
          */
         function parseLines(lines, reference = currentLine) {
             const cells = insertBefore(lines, reference);
-            cells.forEach((cell) => parseCell(cell));
-            return;
-            let lineNumber = reference.index;
-            lines.forEach((text) => {
-                const cell = new Text(lineNumber, text);
-                reference.lineNumber.before(cell.lineNumber, cell.content);
-                nodes.splice(lineNumber, 0, cell);
-                if (text.trim() !== 'reload') {
-                    // ToDo: fix code that assumes parsing only evver occurs for the current cell
-                    parseCell(cell);
+            cells.forEach((cell) => {
+                parseCell(cell);
+                if (app.block) {
+                    cell.block = app.block;
+                    app.block.content.push(cell);
                 }
-                lineNumber += 1; // ToDo: ParseCell may have added lines so lineNumber may be wrong!
             });
         }
 
@@ -4522,11 +4163,7 @@ amending config files
                 app.block = block;
             } else {
                 observer.observe(workspaceNode, observerOptions);
-                if (cell.output.size > 0) {
-                    cell.output.forEach((cell) => parseCell(cell));
-                } else {
-                    return true;
-                }
+                return true;
             }
             observer.observe(workspaceNode, observerOptions);
         }
@@ -4618,13 +4255,35 @@ amending config files
         }
 
         /**
-         * Make a line number node
+         * Add a line number node
          */
-        function makeLineNumberNode() {
-            lineNumber = document.createElement('div');
+        function addLineNumber() {
+            const index = lineNumbers.length;
+            const lineNumber = document.createElement('div');
             lineNumber.classList.add('line-number');
-            lineNumber.contentEditable = false;
+            lineNumber.innerText = index;
+            lineNumber.style.gridColumn = 1;
+            lineNumber.style.gridRow = index + 1;
+            lineNumbers.push(lineNumber);
+            document.getElementById('editor').append(lineNumber);
             return lineNumber;
+        }
+
+        function updateLineNumbers() {
+            while ((nodes.length + 1) > lineNumbers.length) {
+                addLineNumber();
+            }
+            while (lineNumbers.length > nodes.length + 1) {
+                const node = lineNumbers.pop();
+                node.remove();
+            }
+            lineNumbers.forEach((lineNumber, index) => {
+                const cell = nodes[index];
+                if (cell) {
+                    lineNumber.classList.add(`${cell.constructor.name.toLowerCase()}-line`);
+                }
+            });
+            workspaceNode.style.gridRow = `1 / ${nodes.length + 1}`;
         }
 
         /**
@@ -4639,10 +4298,6 @@ amending config files
                     if (addedNode.nodeType === 1 && addedNode.closest('.line')) {
                         const line = addedNode.closest('.line');
                         const node = nodes.find((node) => node.content === line);
-                        if (node && !node.lineNumber) {
-                            node.lineNumber = makeLineNumberNode();
-                            line.before(node.lineNumber);
-                        }
                     }
                 }
 
@@ -4653,7 +4308,9 @@ amending config files
                 }
             }
             if (removedTextLines.length) {
-                nodes = nodes.filter((node) => !removedTextLines.includes(node.content));
+                nodes.filter((cell) => removedTextLines.includes(cell.content))
+                    .forEach((cell) =>
+                        cell.remove());
                 // Clean up double line breaks
                 nodes.filter((node) => node.content.innerText.match(/\r?\n\r?\n/))
                     .forEach((node) => node.content.innerText = node.content.innerText.replace(/(\r?\n)+/, '\n'));
