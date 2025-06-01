@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Instances</title>
+    <style>
+        html {
+            box-sizing: border-box;
+            font-family: sans-serif;
+            font-size: large;
+        }
+
+        *,
+        *:before,
+        *:after {
+            box-sizing: inherit;
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #main-canvas {
+            width: 100dvw;
+            height: 100dvh;
+        }
+
+        #projection-control {
+            position: absolute;
+            background-color: white;
+            display: grid;
+            grid-template-columns: repeat(2, max-content);
+            grid-template-rows: repeat(4, max-content);
+            left: 0;
+            top: 0;
+        }
+
+        #view-control {
+            position: absolute;
+            background-color: white;
+            display: grid;
+            grid-template-columns: repeat(3, max-content);
+            grid-template-rows: repeat(3, max-content);
+            right: 0;
+            top: 0;
+        }
+
+        .matrix-input {
+            width: 3em;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="main-canvas" tabindex="1">HTML canvas not supported!</canvas>
+
+    <div id="projection-control">
+        Field of View<input id="field-of-view" type="number" />
+        Aspect<input id="aspect" type="number" />
+        Near<input id="near" type="number" />
+        Far<input id="far" type="number" />
+    </div>
+    <div id="view-control"></div>
+
+    <script type="x-shader/x-vertex" id="vertex-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform mat4 projection;
+    uniform mat4 view;
+
+    in vec3 position;
+    in vec3 normal;
+    in mat4 model;
+    in vec3 ambientColour;
+    in vec3 diffuseColour;
+    in vec3 specularColour;
+
+    out vec4 v_normal;
+    out vec3 v_ambientColour;
+    out vec3 v_diffuseColour;
+    out vec3 v_specularColour;
+    out float v_transparency;
+
+    void main() {
+        gl_Position = projection * view * model * vec4(position, 1.0);
+        //gl_Position = projection * view * vec4(position, 1.0);
+        gl_PointSize = 50.0 * model[0][0];
+        v_normal = model * vec4(normal, 0.0);
+        v_ambientColour = ambientColour;
+        v_diffuseColour = diffuseColour;
+        v_specularColour = specularColour;
+        v_transparency = 1.0;
+    }
+  </script>
+    <script type="x-shader/x-fragment" id="fragment-shader">
+    #version 300 es
+    precision highp float;
+    uniform vec3 eyePosition;
+
+    in vec4 v_normal;
+    in vec3 v_ambientColour;
+    in vec3 v_diffuseColour;
+    in vec3 v_specularColour;
+    in float v_transparency;
+
+    out vec4 fragmentColour;
+
+    void main() {
+        vec4 lightDirection = normalize(vec4(5.0, -5.0, 5.0, 0.0));
+        float df = max(0.0, dot(lightDirection, v_normal));
+        float sf = 0.1;
+        vec3 colour = 0.2 * v_ambientColour + v_diffuseColour * df + v_specularColour * sf;
+        fragmentColour = vec4(colour, v_transparency);
+    }
+  </script>
+
+    <script>
+        /**
+         * Create matrix control.
+         */
+        function projectionControl() {
+            const fov = document.getElementById('field-of-view');
+            fov.value = 120;
+            const aspect = document.getElementById('aspect');
+            aspect.value = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            const near = document.getElementById('near');
+            near.value = 0;
+            const far = document.getElementById('far');
+            far.value = 10;
+
+            const update = () => {
+                app.projectionMatrix = perspective(
+                    fov.valueAsNumber,
+                    aspect.valueAsNumber,
+                    near.valueAsNumber,
+                    far.valueAsNumber);
+            }
+            fov.addEventListener('change', (event) => update());
+            aspect.addEventListener('change', (event) => update());
+            near.addEventListener('change', (event) => update());
+            far.addEventListener('change', (event) => update());
+            update();
+        }
+
+        /**
+         * Create matrix control.
+         */
+        function viewControl() {
+            const container = document.getElementById('view-control');
+
+            const update = () => {
+                app.viewMatrix = viewMatrix(eyePosition, lookAt, up);
+            }
+
+            const vectorControl = (vector) => {
+                vector.forEach((value, index) => {
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.value = value;
+                    input.classList.add('matrix-input');
+                    input.addEventListener('change', (event) => {
+                        vector[index] = input.valueAsNumber;
+                        update();
+                    });
+                    container.appendChild(input);
+                });
+            };
+            const eyePosition = [0, 0, 2];
+            const lookAt = [0, 0, 0];
+            const up = [0, 1, 0];
+            vectorControl(eyePosition)
+            vectorControl(lookAt);
+            vectorControl(up);
+            update();
+        }
+
+
+        /**
+         * This script manages a single gl context so intialise here for simplicity.
+         */
+        const canvas = document.getElementById('main-canvas');
+        const gl = canvas.getContext('webgl2');
+
+        /**
+         * Utility function to parse and report errors
+         */
+        function glErrors(context = '') {
+            const err = gl.getError();
+
+            if (err) {
+                const errors = [];
+                errors[gl.INVALID_ENUM] = `An unacceptable value has been specified for an enumerated argument. The command is ignored and the error flag is set.`;
+                errors[gl.INVALID_VALUE] = `A numeric argument is out of range. The command is ignored and the error flag is set.`;
+                errors[gl.INVALID_OPERATION] = 'The specified command is not allowed for the current state. The command is ignored and the error flag is set.';
+                errors[gl.INVALID_FRAMEBUFFER_OPERATION] = 'The currently bound framebuffer is not framebuffer complete when trying to render to or to read from it.';
+                errors[gl.OUT_OF_MEMORY] = 'Not enough memory is left to execute the command.';
+                errors[gl.CONTEXT_LOST_WEBGL] = 'If the WebGL context is lost, this error is returned on the first call to getError. Afterwards and until the context has been restored, it returns gl.NO_ERROR.';
+                console.trace();
+                console.log(context, errors[err]);
+            }
+        }
+
+        /**
+         * App object to minimise global namespace polution.
+         */
+        const app = {
+            projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            instanceCount: 5,
+        };
+        const shaderSource = {
+            vertex: document.querySelector("#vertex-shader").innerHTML,
+            fragment: document.querySelector("#fragment-shader").innerHTML,
+        }
+
+
+        /**
+         * Create and compile a shader of the specified type using the source provided.
+         */
+        function makeShader(type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source.trim());
+            gl.compileShader(shader);
+
+            // See if it compiled successfully
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return;
+            }
+            return shader;
+        }
+
+        /**
+         * Compile shaders into a program.
+         */
+        function makeProgram(source, attributes = [], uniforms = []) {
+            const vertex = makeShader(gl.VERTEX_SHADER, source.vertex);
+            const fragment = makeShader(gl.FRAGMENT_SHADER, source.fragment);
+
+            // Create a program instance for the shaders
+            if (vertex && fragment) {
+                const shader = {
+                    program: gl.createProgram(),
+                };
+                gl.attachShader(shader.program, vertex);
+                gl.attachShader(shader.program, fragment);
+                gl.linkProgram(shader.program);
+
+                // See if it linked successfully
+                if (!gl.getProgramParameter(shader.program, gl.LINK_STATUS)) {
+                    alert('Unable to initialise the shader program: ' + gl.getProgramInfoLog(shader.program));
+                    return null;
+                }
+
+                uniforms.forEach((uniform) => shader[uniform] = gl.getUniformLocation(shader.program, uniform));
+                attributes.forEach((attribute) => shader[attribute] = gl.getAttribLocation(shader.program, attribute));
+
+                return shader;
+            }
+        }
+
+        /**
+         * Generate the vertex data for a cube.
+         */
+        function makeCube() {
+            const positions = [
+                [-1, -1, -1,],
+                [1, -1, -1,],
+                [-1, 1, -1,],
+                [1, 1, -1,],
+                [-1, -1, 1,],
+                [1, -1, 1,],
+                [-1, 1, 1,],
+                [1, 1, 1,],
+            ].map(p => [p[0] / 2, p[1] / 2, p[2] / 2]);
+            const normals = [
+                [-1, 0, 0,],
+                [0, -1, 0,],
+                [0, 0, -1,],
+                [1, 0, 0,],
+                [0, 1, 0,],
+                [0, 0, 1,],
+            ];
+
+            /*
+            *       4 ------ 5
+            *      /|        | \
+            *    0 ------------ 1
+            *    |  |        |  |
+            *    |  |        |  |
+            *    |  |        |  |
+            *    |  6 ------ 7  |
+            *    | /          \ |
+            *    2 ------------ 3
+            */
+
+            const triangles = [
+                { p1: positions[0], p2: positions[1], p3: positions[2], n: normals[2] },
+                { p1: positions[1], p2: positions[3], p3: positions[2], n: normals[2] },
+
+                { p1: positions[0], p2: positions[4], p3: positions[5], n: normals[1] },
+                { p1: positions[5], p2: positions[1], p3: positions[0], n: normals[1] },
+
+                { p1: positions[4], p2: positions[6], p3: positions[7], n: normals[5] },
+                { p1: positions[5], p2: positions[4], p3: positions[7], n: normals[5] },
+
+                { p1: positions[6], p2: positions[2], p3: positions[3], n: normals[4] },
+                { p1: positions[7], p2: positions[6], p3: positions[3], n: normals[4] },
+
+                { p1: positions[3], p2: positions[1], p3: positions[5], n: normals[3] },
+                { p1: positions[5], p2: positions[7], p3: positions[3], n: normals[3] },
+
+                { p1: positions[6], p2: positions[4], p3: positions[0], n: normals[0] },
+                { p1: positions[6], p2: positions[0], p3: positions[2], n: normals[0] },
+            ];
+            return triangles.flatMap((t) => [...t.p1, ...t.n, ...t.p2, ...t.n, ...t.p3, ...t.n]);
+        }
+
+        /**
+         * Update the gl buffers used to define the base object used for instancing.
+         */
+        function updateObject() {
+
+        }
+
+
+        function multiply(a, b,) {
+            var result = Array(16);
+            result[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
+            result[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
+            result[2] = a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14];
+            result[3] = a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3] * b[15];
+
+            result[4] = a[4] * b[0] + a[5] * b[4] + a[6] * b[8] + a[7] * b[12];
+            result[5] = a[4] * b[1] + a[5] * b[5] + a[6] * b[9] + a[7] * b[13];
+            result[6] = a[4] * b[2] + a[5] * b[6] + a[6] * b[10] + a[7] * b[14];
+            result[7] = a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7] * b[15];
+
+            result[8] = a[8] * b[0] + a[9] * b[4] + a[10] * b[8] + a[11] * b[12];
+            result[9] = a[8] * b[1] + a[9] * b[5] + a[10] * b[9] + a[11] * b[13];
+            result[10] = a[8] * b[2] + a[9] * b[6] + a[10] * b[10] + a[11] * b[14];
+            result[11] = a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11] * b[15];
+
+            result[12] = a[12] * b[0] + a[13] * b[4] + a[14] * b[8] + a[15] * b[12];
+            result[13] = a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13];
+            result[14] = a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14];
+            result[15] = a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15];
+            return result;
+        }
+
+
+
+        /**
+         * Initialise Instances
+         */
+        function initialiseInstances() {
+            const matrices = [];
+            for (let i = 0; i < app.instanceCount; ++i) {
+                matrices.push(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+            }
+            app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
+            app.modelMatrices = [];
+            for (let i = 0; i < app.instanceCount; ++i) {
+                app.modelMatrices.push(new Float32Array(app.modelMatrix.buffer, i * 16 * 4, 16));
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+            gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.shader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 16, i * 16);
+                gl.vertexAttribDivisor(location, 1);
+                gl.enableVertexAttribArray(location);
+            }
+            // setup colors, one per instance
+            const colours = [
+                [1, 0, 0],  // red
+                [0, 1, 0],  // green
+                [0, 0, 1],  // blue
+                [1, 0, 1],  // magenta
+                [0, 1, 1],  // cyan
+            ];
+            const colourBuffer = [];
+            for (i = 0; i < app.instanceCount; ++i) {
+                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)]);
+                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)]);
+                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)]);
+            }
+            app.buffers.colour = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+            gl.bufferData(gl.ARRAY_BUFFER,
+                new Float32Array(colourBuffer),
+                gl.STATIC_DRAW);
+
+            gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * 3 * 3, 0);
+            gl.enableVertexAttribArray(app.shader.ambientColour);
+            gl.vertexAttribDivisor(app.shader.ambientColour, 1);
+
+            gl.vertexAttribPointer(app.shader.diffuseColour, 3, gl.FLOAT, false, 4 * 3 * 3, 12);
+            gl.enableVertexAttribArray(app.shader.diffuseColour);
+            gl.vertexAttribDivisor(app.shader.diffuseColour, 1);
+
+            gl.vertexAttribPointer(app.shader.specularColour, 3, gl.FLOAT, false, 4 * 3 * 3, 24);
+            gl.enableVertexAttribArray(app.shader.specularColour);
+            gl.vertexAttribDivisor(app.shader.specularColour, 1);
+
+            app.instancesChanged = true;
+            app.instances = [];
+            const normalised = ([x, y, z]) => {
+                const l = Math.hypot(x, y, z);
+                return [x / l, y / l, z / l];
+            };
+
+            for (i = 0; i < app.instanceCount; ++i) {
+                app.instances.push({
+                    position: [1 - 2 * Math.random(), 1 - 2 * Math.random(), 2 * Math.random()],
+                    size: [0.5 + 2 * Math.random(), 0.5 + 2 * Math.random(), 0.5 + 2 * Math.random()],
+                    axis: [0, 1, 0], //normalised([Math.random(), Math.random(), Math.random()]),
+                    rate: 1 - 2 * Math.random(),
+                    offset: 10 * Math.random(),
+                });
+            }
+        }
+
+        /**
+         * Add instance
+         */
+        function addInstance(size, position, rotation) {
+
+
+        }
+
+        /**
+         * Update the gl buffers used to define each instance of an object.
+         */
+        function updateInstances(time) {
+            app.modelMatrices.forEach((matrix, index) => {
+                const instance = app.instances[index];
+                const scale = Math.sin(instance.offset + instance.rate * time / 7500);
+                const angle = instance.rate * time / 2000;
+                const qw = Math.cos(angle / 2)
+                const qx = instance.axis[0] * Math.sin(angle / 2)
+                const qy = instance.axis[1] * Math.sin(angle / 2)
+                const qz = instance.axis[2] * Math.sin(angle / 2)
+
+                function multiply(a, b,) {
+                    matrix[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
+                    matrix[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
+                    matrix[2] = a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14];
+                    matrix[3] = a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3] * b[15];
+
+                    matrix[4] = a[4] * b[0] + a[5] * b[4] + a[6] * b[8] + a[7] * b[12];
+                    matrix[5] = a[4] * b[1] + a[5] * b[5] + a[6] * b[9] + a[7] * b[13];
+                    matrix[6] = a[4] * b[2] + a[5] * b[6] + a[6] * b[10] + a[7] * b[14];
+                    matrix[7] = a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7] * b[15];
+
+                    matrix[8] = a[8] * b[0] + a[9] * b[4] + a[10] * b[8] + a[11] * b[12];
+                    matrix[9] = a[8] * b[1] + a[9] * b[5] + a[10] * b[9] + a[11] * b[13];
+                    matrix[10] = a[8] * b[2] + a[9] * b[6] + a[10] * b[10] + a[11] * b[14];
+                    matrix[11] = a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11] * b[15];
+
+                    matrix[12] = a[12] * b[0] + a[13] * b[4] + a[14] * b[8] + a[15] * b[12];
+                    matrix[13] = a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13];
+                    matrix[14] = a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14];
+                    matrix[15] = a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15];
+                }
+
+                multiply([
+                    1 - 2 * qy * qy - 2 * qz * qz,
+                    2 * qx * qy - 2 * qz * qw,
+                    2 * qx * qz + 2 * qy * qw,
+                    0,
+
+                    2 * qx * qy + 2 * qz * qw,
+                    1 - 2 * qx * qx - 2 * qz * qz,
+                    2 * qy * qz - 2 * qx * qw,
+                    0,
+
+                    2 * qx * qz - 2 * qy * qw,
+                    2 * qy * qz + 2 * qx * qw,
+                    1 - 2 * qx * qx - 2 * qy * qy,
+                    0,
+
+                    instance.position[0],
+                    instance.position[1],
+                    instance.position[2],
+                    1
+                ], [
+                    scale * instance.size[0], 0, 0, 0,
+                    0, scale * instance.size[1], 0, 0,
+                    0, 0, scale * instance.size[2], 0,
+                    0, 0, 0, 1
+                ]);
+            });
+            // update the matrix data
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, app.modelMatrix);
+        }
+
+        /**
+         * Update the object definition and the instances if required.
+         */
+        function updateBuffers(time) {
+            if (app.objectChanged) {
+                updateObject(time);
+            }
+            if (app.instancesChanged) {
+                updateInstances(time);
+                app.instancesChanged = false;
+            }
+        }
+
+
+        /**
+         * Calculate a perspective matrix
+         */
+        function perspective(fieldOfView, aspect, zNear, zFar) {
+            const f = 1 / Math.tan(fieldOfView * Math.PI / 360);
+            return [
+                f / aspect, 0, 0, 0,
+                0, f, 0, 0,
+                0, 0, (zFar + zNear) / (zNear - zFar), -1,
+                0, 0, (2 * zFar * zNear) / (zNear - zFar), 1,
+            ];
+        }
+
+        /**
+         * Calculate a view matrix from eye position, focus point and up vecotrs.
+         */
+        function viewMatrix(eyePosition, lookAt, up) {
+            const normalised = ([x, y, z]) => {
+                const l = Math.hypot(x, y, z);
+                return [x / l, y / l, z / l];
+            };
+            const subtract = (v1, v2) => [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]];
+            const dot = (v1, v2) => v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+            const cross = (v1, v2) => [
+                v1[1] * v2[2] - v1[2] * v2[1],
+                v1[2] * v2[0] - v1[0] * v2[2],
+                v1[0] * v2[1] - v1[1] * v2[0],
+            ];
+            const negate = (v) => { v[0] = -v[0]; v[1] = -v[1]; v[2] = -v[2]; };
+            const zaxis = normalised(subtract(lookAt, eyePosition));
+            const xaxis = normalised(cross(zaxis, up));
+            const yaxis = cross(xaxis, zaxis);
+
+            negate(zaxis);
+
+            return [
+                xaxis[0], yaxis[0], zaxis[0], 0,
+                xaxis[1], yaxis[1], zaxis[1], 0,
+                xaxis[2], yaxis[2], zaxis[2], 0,
+                -dot(xaxis, eyePosition), -dot(yaxis, eyePosition), -dot(zaxis, eyePosition), 1
+            ];
+        }
+
+        /**
+         * Render loop function to update the display
+         */
+        let start;
+        function render(time) {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            if (start) {
+                updateBuffers(time);
+                gl.useProgram(app.shader.program);
+
+                gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
+                gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
+
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instanceCount);
+                //gl.drawArrays(gl.TRIANGLES, 0, app.vertexCount);
+                glErrors();
+            } else {
+                start = time;
+            }
+            requestAnimationFrame(render);
+        }
+
+        /**
+         * Perform all once off set-up (e.g. creating buffer etc.)
+         */
+        function initialise() {
+            projectionControl();
+            viewControl(document.getElementById('view-control'));
+
+            // Set clear color to black, fully opaque
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            // Should be update to track canvas size changes
+            gl.canvas.width = gl.canvas.clientWidth;
+            gl.canvas.height = gl.canvas.clientHeight;
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+            const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specular'];
+            app.shader = makeProgram(shaderSource, attributes, ['projection', 'view']);
+
+            app.buffers = {
+                vertex: gl.createBuffer(),
+                instances: gl.createBuffer(),
+            };
+            app.vertexCount = 36;
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
+            const shape = makeCube();
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+            // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride = 3 * 4 * 2,  offset = 0
+            gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(app.shader.position);
+
+            gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(app.shader.normal);
+
+            initialiseInstances();
+            //gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.FBACK);
+        }
+
+
+        /**
+         * Called once html has loaded.
+         * 
+         * Create the Webgl contect, set up the buffers and call the event loop.
+         */
+        function main(event) {
+            initialise();
+            requestAnimationFrame(render);
+        }
+
+        window.addEventListener('load', main);
+    </script>
+</body>
+
+</html>
