@@ -232,7 +232,9 @@
         const app = {
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            instanceCount: 10,
+            //instanceCount: 10,
+            instances: [],
+            scale: 1,
         };
         const shaderSource = {
             vertex: document.querySelector("#vertex-shader").innerHTML,
@@ -299,7 +301,7 @@
                 [1, -1, 1,],
                 [-1, 1, 1,],
                 [1, 1, 1,],
-            ].map(p => [p[0] / 2, p[1] / 2, p[2] / 2]);
+            ].map((v) => v.map((i) => i/2));
             const normals = [
                 [-1, 0, 0,],
                 [0, -1, 0,],
@@ -350,36 +352,10 @@
 
         }
 
-        /*
-                function multiply(a, b,) {
-                    var result = Array(16);
-                    result[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
-                    result[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
-                    result[2] = a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14];
-                    result[3] = a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3] * b[15];
-        
-                    result[4] = a[4] * b[0] + a[5] * b[4] + a[6] * b[8] + a[7] * b[12];
-                    result[5] = a[4] * b[1] + a[5] * b[5] + a[6] * b[9] + a[7] * b[13];
-                    result[6] = a[4] * b[2] + a[5] * b[6] + a[6] * b[10] + a[7] * b[14];
-                    result[7] = a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7] * b[15];
-        
-                    result[8] = a[8] * b[0] + a[9] * b[4] + a[10] * b[8] + a[11] * b[12];
-                    result[9] = a[8] * b[1] + a[9] * b[5] + a[10] * b[9] + a[11] * b[13];
-                    result[10] = a[8] * b[2] + a[9] * b[6] + a[10] * b[10] + a[11] * b[14];
-                    result[11] = a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11] * b[15];
-        
-                    result[12] = a[12] * b[0] + a[13] * b[4] + a[14] * b[8] + a[15] * b[12];
-                    result[13] = a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13];
-                    result[14] = a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14];
-                    result[15] = a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15];
-                    return result;
-                }
-                    */
-
         /**
          * Initialise Instances
          */
-        function initialiseInstances() {
+        function initialiseRandomInstances() {
             const matrices = [];
             for (let i = 0; i < app.instanceCount; ++i) {
                 matrices.push(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -452,9 +428,66 @@
                     axis: normalised([Math.random(), Math.random(), Math.random()]),
                     rate: 1 - 2 * Math.random(),
                     offset: 10 * Math.random(),
+                    matrix: new Float32Array(app.modelMatrix.buffer, i * 16 * 4, 16),
                 });
             }
         }
+
+        /**
+         * Initialise Instances
+         */
+        function initialiseInstances() {
+            const matrices = [];
+            app.instances.forEach((instance) => matrices.push(...instance.transform));
+
+            app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
+            app.instances.forEach((instance, index) =>
+                instance.matrix = new Float32Array(app.modelMatrix.buffer, index * 16 * 4, 16));
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+            gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.shader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 16, i * 16);
+                gl.vertexAttribDivisor(location, 1);
+                gl.enableVertexAttribArray(location);
+            }
+
+            const colourBuffer = [];
+            app.instances.forEach((instance, index) => {
+                colourBuffer.push(...instance.colour.map((v) => v * 0.3));
+                colourBuffer.push(...instance.colour.map((v) => v * 0.3));
+                colourBuffer.push(...instance.colour.map((v) => v * 1.0));
+                colourBuffer.push(instance.specular);
+            });
+            app.buffers.colour = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+            gl.bufferData(gl.ARRAY_BUFFER,
+                new Float32Array(colourBuffer),
+                gl.STATIC_DRAW);
+
+            gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 1), 0);
+            gl.enableVertexAttribArray(app.shader.ambientColour);
+            gl.vertexAttribDivisor(app.shader.ambientColour, 1);
+
+            gl.vertexAttribPointer(app.shader.diffuseColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 1), 12);
+            gl.enableVertexAttribArray(app.shader.diffuseColour);
+            gl.vertexAttribDivisor(app.shader.diffuseColour, 1);
+
+            gl.vertexAttribPointer(app.shader.specularColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 1), 0);
+            gl.enableVertexAttribArray(app.shader.specularColour);
+            gl.vertexAttribDivisor(app.shader.specularColour, 1);
+
+            gl.vertexAttribPointer(app.shader.specularIntensity, 1, gl.FLOAT, false, 4 * (3 * 3 + 1), 36);
+            gl.enableVertexAttribArray(app.shader.specularIntensity);
+            gl.vertexAttribDivisor(app.shader.specularIntensity, 1);
+
+            app.instancesChanged = true;
+        }
+
 
         /**
          * Add instance
@@ -468,6 +501,7 @@
          * Calculate the product of 2 4 x 4 matrices and store the result in the third.
          */
         function multiply(a, b, matrix) {
+            matrix = matrix || Array(16);
             matrix[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
             matrix[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
             matrix[2] = a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14];
@@ -487,16 +521,16 @@
             matrix[13] = a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13];
             matrix[14] = a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14];
             matrix[15] = a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15];
+            return matrix;
         }
-
-
 
         /**
          * Update the gl buffers used to define each instance of an object.
          */
         function updateInstances(time) {
-            app.modelMatrices.forEach((matrix, index) => {
-                const instance = app.instances[index];
+            /*
+            app.instances.forEach((instance, index) => {
+                const matrix = instance.matrix;
                 const scale = Math.sin(instance.offset + instance.rate * time / 3000);
                 const angle = instance.rate * time / 2000;
                 const qw = Math.cos(angle / 2)
@@ -553,6 +587,8 @@
                     0, 0, 0, 1
                 ]);
             });
+            */
+            app.instances.forEach((instance) => instance.transform.forEach((value, index) => instance.matrix[index] = value));
             // update the matrix data
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
             gl.bufferSubData(gl.ARRAY_BUFFER, 0, app.modelMatrix);
@@ -647,15 +683,24 @@
          */
         class Instance {
             constructor(parent, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], transparency = 1, specular = 10) {
+                const normalised = ([x, y, z]) => {
+                    const l = Math.hypot(x, y, z);
+                    return [x / l, y / l, z / l];
+                };
+
                 this.parent = parent;
                 this.position = position;
                 this.size = size;
-                this.angle = angle;
-                this.axis = axis;
+                this.angle = angle * Math.PI / 360;
+                this.axis = normalised(axis);
                 this.colour = colour;
                 this.transparency = transparency;
                 this.specular = specular;
                 this.origin = Array(16);
+                this.children = [];
+                this.rate = 0;
+                this.offset = 0;
+                this.setTransform();
             }
             /**
              * Set the transform of a shape based on its position, rotation and scale.
@@ -663,15 +708,20 @@
              * Calculate the origin for children of the shape
              */
             setTransform() {
-                const parent = this.parent || { scale: 1, origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1] };
-                const origin = this.parent.origin;
-                const angle = this.angle;
-                const qw = Math.cos(angle / 2)
-                const qx = this.axis[0] * Math.sin(angle / 2)
-                const qy = this.axis[1] * Math.sin(angle / 2)
-                const qz = this.axis[2] * Math.sin(angle / 2)
+                const parent = this.parent || { origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
+                const origin = parent.origin;
+                const qw = Math.cos(this.angle);
+                const qx = this.axis[0] * Math.sin(this.angle);
+                const qy = this.axis[1] * Math.sin(this.angle);
+                const qz = this.axis[2] * Math.sin(this.angle);
 
-                const rotationTranslate = [
+                const translation = [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    this.position[0], this.position[1], this.position[2], 1
+                ];
+                const rotation = [
                     1 - 2 * qy * qy - 2 * qz * qz,
                     2 * qx * qy - 2 * qz * qw,
                     2 * qx * qz + 2 * qy * qw,
@@ -687,22 +737,32 @@
                     1 - 2 * qx * qx - 2 * qy * qy,
                     0,
 
-                    this.position[0],
-                    this.position[1],
-                    this.position[2],
-                    1
+                    0, 0, 0, 1
                 ];
                 const scale = [
-                    parent.scale * this.size[0], 0, 0, 0,
-                    0, parent.scale * this.size[1], 0, 0,
-                    0, 0, parent.scale * this.size[2], 0,
+                    app.scale * this.size[0], 0, 0, 0,
+                    0, app.scale * this.size[1], 0, 0,
+                    0, 0, app.scale * this.size[2], 0,
                     0, 0, 0, 1
                 ];
 
-                const local = Array(16);
-                multiply(rotationTranslate, scale, local);
-                multiply(origin, local, this.matrix);
-                multiply(origin, rotationTranslate, this.origin);
+                const rotationTranslate = multiply(translation, rotation);
+                this.origin = multiply(rotationTranslate, origin);
+                this.transform = multiply(scale, this.origin);
+            }
+            addChild(position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, transparency, specular) {
+                const newInstance = new Instance(
+                    this,
+                    position,
+                    size,
+                    angle,
+                    axis,
+                    colour || this.colour,
+                    transparency || this.transparency,
+                    specular || this.specular);
+                this.children.push(newInstance);
+                app.instances.push(newInstance);
+                return newInstance;
             }
         }
 
@@ -711,30 +771,22 @@
          * Make a test graph.
          */
         function makeGraph() {
-            const root = {
-                position: [0, 0, 0],
-                size: [1, 1, 1],
-                angle: 0,
-                axis: [0, 1, 0],
-                colour: [1, 1, 0],
-                transparency: 1.0,
-                specular: 10.0,
-            };
-            const child1 = {
-                position: [0, 1, 0],
-                size: [0.2, 1, 0.5],
-                angle: 45 * Math.PI / 180,
-                axis: [0, 1, 0],
-                colour: [1, 0, 0],
-                transparency: 1.0,
-                specular: 10.0,
-                parent: root,
-            };
-            const instances = [root, child1];
-            app.instanceCount = instances.length;
+            const root = new Instance(
+                undefined,
+                [0, 0, 0],    // Position
+                [1, 1, 1],    // Size
+                0,            // Rotation
+                [0, 1, 0],    // Axis
+                [1, 1, 0],    // Colour
+                1.0,          // Transparency
+                10.0);        // Specular
+            app.instances.push(root);
+            const child = root.addChild([0, 0.75, 0], [0.5, 0.5, 0.5], 30);
+            const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
+            const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
+            const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
+            app.instanceCount = app.instances.length;
         }
-
-
 
 
         /**
@@ -772,7 +824,9 @@
             gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
             gl.enableVertexAttribArray(app.shader.normal);
 
+            makeGraph();
             initialiseInstances();
+            //initialiseRandomInstances();
             //gl.enable(gl.CULL_FACE);
             gl.cullFace(gl.BACK);
         }
