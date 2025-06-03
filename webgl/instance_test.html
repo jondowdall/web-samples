@@ -50,6 +50,20 @@
         .matrix-input {
             width: 3em;
         }
+
+        #projection-control>details {
+            grid-column: 1 / -1;
+        }
+
+        #structure {
+            display: grid;
+            grid-template-columns: repeat(8, max-content);
+            grid-gap: 3px;
+        }
+
+        #structure span {
+            text-align: center;
+        }
     </style>
 </head>
 
@@ -61,6 +75,19 @@
         Aspect<input id="aspect" type="number" />
         Near<input id="near" type="number" />
         Far<input id="far" type="number" />
+        <details>
+            <summary>Structure</summary>
+            <div id="structure">
+                <span>Name</span>
+                <span>Position</span>
+                <span>Size</span>
+                <span>Angle</span>
+                <span>Axis</span>
+                <span>Colour</span>
+                <span>Specular</span>
+                <span>Transparency</span>
+            </div>
+        </details>
     </div>
     <div id="view-control"></div>
 
@@ -235,6 +262,21 @@
             //instanceCount: 10,
             instances: [],
             scale: 1,
+            roots: [],
+            addRoot(position, size, rotation, axis, colour, transparency, specular) {
+                const root = new Instance(
+                    undefined,
+                    position,
+                    size,
+                    rotation,
+                    axis,
+                    colour,
+                    transparency,
+                    specular);
+                this.instances.push(root);
+                this.roots.push(root);
+                return root;
+            },
         };
         const shaderSource = {
             vertex: document.querySelector("#vertex-shader").innerHTML,
@@ -301,7 +343,7 @@
                 [1, -1, 1,],
                 [-1, 1, 1,],
                 [1, 1, 1,],
-            ].map((v) => v.map((i) => i/2));
+            ].map((v) => v.map((i) => i / 2));
             const normals = [
                 [-1, 0, 0,],
                 [0, -1, 0,],
@@ -392,7 +434,6 @@
                 colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 1.0));
                 colourBuffer.push(0.1 + 128 * Math.random());
             }
-            app.buffers.colour = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
             gl.bufferData(gl.ARRAY_BUFFER,
                 new Float32Array(colourBuffer),
@@ -607,7 +648,6 @@
             }
         }
 
-
         /**
          * Calculate a perspective matrix
          */
@@ -688,10 +728,11 @@
                     return [x / l, y / l, z / l];
                 };
 
+                this.name = 'Name';
                 this.parent = parent;
                 this.position = position;
                 this.size = size;
-                this.angle = angle * Math.PI / 360;
+                this.angle = angle;
                 this.axis = normalised(axis);
                 this.colour = colour;
                 this.transparency = transparency;
@@ -710,10 +751,11 @@
             setTransform() {
                 const parent = this.parent || { origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
                 const origin = parent.origin;
-                const qw = Math.cos(this.angle);
-                const qx = this.axis[0] * Math.sin(this.angle);
-                const qy = this.axis[1] * Math.sin(this.angle);
-                const qz = this.axis[2] * Math.sin(this.angle);
+                const angle = this.angle * Math.PI / 360;
+                const qw = Math.cos(angle);
+                const qx = this.axis[0] * Math.sin(angle);
+                const qy = this.axis[1] * Math.sin(angle);
+                const qz = this.axis[2] * Math.sin(angle);
 
                 const translation = [
                     1, 0, 0, 0,
@@ -750,6 +792,24 @@
                 this.origin = multiply(rotationTranslate, origin);
                 this.transform = multiply(scale, this.origin);
             }
+            update(child) {
+                this.setTransform();
+                this.children.forEach((child) => child.update(true));
+                app.instancesChanged = true;
+                if (!child) {
+                    const colourBuffer = [];
+                    app.instances.forEach((instance, index) => {
+                        colourBuffer.push(...instance.colour.map((v) => v * 0.3));
+                        colourBuffer.push(...instance.colour.map((v) => v * 0.3));
+                        colourBuffer.push(...instance.colour.map((v) => v * 1.0));
+                        colourBuffer.push(instance.specular);
+                    });
+                    gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+                    gl.bufferData(gl.ARRAY_BUFFER,
+                        new Float32Array(colourBuffer),
+                        gl.STATIC_DRAW);
+                }
+            }
             addChild(position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, transparency, specular) {
                 const newInstance = new Instance(
                     this,
@@ -768,11 +828,96 @@
 
 
         /**
+         * Show structure
+         */
+        function showStructure() {
+            const structure = document.getElementById('structure');
+            structure.innerHTML = `<span>Name</span>
+                <span>Position</span>
+                <span>Size</span>
+                <span>Angle</span>
+                <span>Axis</span>
+                <span>Colour</span>
+                <span>Specular</span>
+                <span>Transparency</span>`;
+
+            const addInstance = (instance, level = 0) => {
+                const addControls = (node, item, element) => {
+                    node.contentEditable = true;
+                    node.addEventListener('blur', (event) => {
+                        if (isNaN(Number(item[element]))) {
+                            node.innerHTML = item[element];
+                        } else {
+                            node.innerHTML = item[element].toFixed();
+                        }
+                    });
+                    node.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            if (isNaN(Number(item[element]))) {
+                                node.innerHTML = item[element];
+                            } else {
+                                node.innerHTML = item[element].toFixed();
+                            }
+                        }
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            if (event.shiftKey) {
+                                instance.addChild([0, 0, 0], [1, 1, 1]);
+                                initialiseInstances();
+                                showStructure();
+                            } else {
+                                if (isNaN(Number(node.innerText))) {
+                                    item[element] = node.innerText;
+                                } else {
+                                    item[element] = Number(node.innerText);
+                                }
+                                instance.update();
+                            }
+                        }
+                    });
+                }
+                const addSpan = (argument) => {
+                    const node = document.createElement('span');
+                    if (isNaN(Number(instance[argument]))) {
+                        node.innerHTML = instance[argument];
+                    } else {
+                        node.innerHTML = instance[argument].toFixed();
+                    }
+                    addControls(node, instance, argument);
+                    return node;
+                }
+                const addVec = (argument) => {
+                    const container = document.createElement('div');
+                    instance[argument].forEach((item, index) => {
+                        const node = document.createElement('span');
+                        node.innerHTML = item.toFixed(2);
+                        addControls(node, instance[argument], index);
+                        container.append(node, ', ');
+                    });
+                    return container;
+                }
+                const name = document.createElement('span');
+                name.style.whiteSpace = 'pre';
+                name.append(''.padStart(level * 2, ' '), addSpan('name'));
+                structure.append(name,
+                    addVec('position'),
+                    addVec('size'),
+                    addSpan('angle'),
+                    addVec('axis'),
+                    addVec('colour'),
+                    addSpan('specular'),
+                    addSpan('transparency'));
+                instance.children.forEach((child) => addInstance(child, level + 1));
+            }
+
+            app.roots.forEach((child) => addInstance(child));
+        }
+
+        /**
          * Make a test graph.
          */
         function makeGraph() {
-            const root = new Instance(
-                undefined,
+            const root = app.addRoot(
                 [0, 0, 0],    // Position
                 [1, 1, 1],    // Size
                 0,            // Rotation
@@ -780,12 +925,12 @@
                 [1, 1, 0],    // Colour
                 1.0,          // Transparency
                 10.0);        // Specular
-            app.instances.push(root);
             const child = root.addChild([0, 0.75, 0], [0.5, 0.5, 0.5], 30);
             const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
             const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
             const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
             app.instanceCount = app.instances.length;
+            showStructure();
         }
 
 
@@ -812,6 +957,7 @@
             app.buffers = {
                 vertex: gl.createBuffer(),
                 instances: gl.createBuffer(),
+                colours: gl.createBuffer(),
             };
             app.vertexCount = 36;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
