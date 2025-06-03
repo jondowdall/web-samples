@@ -57,7 +57,7 @@
 
         #structure {
             display: grid;
-            grid-template-columns: repeat(8, max-content);
+            grid-template-columns: 10em repeat(7, max-content);
             grid-gap: 3px;
         }
 
@@ -259,7 +259,6 @@
         const app = {
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            //instanceCount: 10,
             instances: [],
             scale: 1,
             roots: [],
@@ -397,14 +396,14 @@
         /**
          * Initialise Instances
          */
-        function initialiseRandomInstances() {
+        function initialiseRandomInstances(instanceCount=1) {
             const matrices = [];
-            for (let i = 0; i < app.instanceCount; ++i) {
+            for (let i = 0; i < instanceCount; ++i) {
                 matrices.push(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
             }
             app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
             app.modelMatrices = [];
-            for (let i = 0; i < app.instanceCount; ++i) {
+            for (let i = 0; i < instanceCount; ++i) {
                 app.modelMatrices.push(new Float32Array(app.modelMatrix.buffer, i * 16 * 4, 16));
             }
 
@@ -428,7 +427,7 @@
                 [0, 1, 1],  // cyan
             ];
             const colourBuffer = [];
-            for (i = 0; i < app.instanceCount; ++i) {
+            for (i = 0; i < instanceCount; ++i) {
                 colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 0.3));
                 colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 0.3));
                 colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 1.0));
@@ -462,7 +461,7 @@
                 return [x / l, y / l, z / l];
             };
 
-            for (i = 0; i < app.instanceCount; ++i) {
+            for (i = 0; i < instanceCount; ++i) {
                 app.instances.push({
                     position: [1 - 2 * Math.random(), 1 - 2 * Math.random(), 2 * Math.random()].map((v) => v * 3),
                     size: [0.5 + 2 * Math.random(), 0.5 + 2 * Math.random(), 0.5 + 2 * Math.random()],
@@ -708,7 +707,7 @@
                 gl.uniform3fv(app.shader.lightPosition2, [0.5, -0.5, 5]);
                 gl.uniform3fv(app.shader.lightPosition3, [1, 15, 1]);
 
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instanceCount);
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
                 //gl.drawArrays(gl.TRIANGLES, 0, app.vertexCount);
                 glErrors();
             } else {
@@ -749,13 +748,19 @@
              * Calculate the origin for children of the shape
              */
             setTransform() {
+                const normalised = ([x, y, z]) => {
+                    const l = Math.hypot(x, y, z);
+                    return [x / l, y / l, z / l];
+                };
+
                 const parent = this.parent || { origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
                 const origin = parent.origin;
                 const angle = this.angle * Math.PI / 360;
                 const qw = Math.cos(angle);
-                const qx = this.axis[0] * Math.sin(angle);
-                const qy = this.axis[1] * Math.sin(angle);
-                const qz = this.axis[2] * Math.sin(angle);
+                const axis = normalised(this.axis);
+                const qx = axis[0] * Math.sin(angle);
+                const qy = axis[1] * Math.sin(angle);
+                const qz = axis[2] * Math.sin(angle);
 
                 const translation = [
                     1, 0, 0, 0,
@@ -788,7 +793,7 @@
                     0, 0, 0, 1
                 ];
 
-                const rotationTranslate = multiply(translation, rotation);
+                const rotationTranslate = multiply(rotation, translation);
                 this.origin = multiply(rotationTranslate, origin);
                 this.transform = multiply(scale, this.origin);
             }
@@ -870,6 +875,9 @@
         }
 
 
+        const actions = {};
+        document.body.addEventListener('mousemove', (event) => actions.move?.(event));
+        document.body.addEventListener('mouseup', (event) => actions.move = null);
         /**
          * Show structure
          */
@@ -885,7 +893,7 @@
                 <span>Transparency</span>`;
 
             const addInstance = (instance, level = 0) => {
-                const addControls = (node, item, element) => {
+                const addControls = (node, item, element, scale) => {
                     node.contentEditable = true;
                     node.addEventListener('blur', (event) => {
                         if (isNaN(Number(item[element]))) {
@@ -936,23 +944,41 @@
                             }
                         }
                     });
+
+                    if (!isNaN(Number(item[element]))) {
+                        const places = Math.floor(Math.log10(1 / scale));
+                        node.addEventListener('mousedown', (event) => {
+                            actions.last = event.clientY;
+                            actions.move = (event) => {
+                                const delta = (event.clientY - actions.last) * scale;
+                                actions.last = event.clientY;
+                                item[element] += delta;
+                                node.innerText = item[element].toFixed(places);
+                                instance.update();
+                            };
+                        });
+                    }
                 }
-                const addSpan = (argument) => {
+                const addSpan = (argument, scale = 0.1) => {
+                    const places = Math.floor(Math.log10(1 / scale));
+
                     const node = document.createElement('span');
                     if (isNaN(Number(instance[argument]))) {
                         node.innerHTML = instance[argument];
                     } else {
                         node.innerHTML = instance[argument].toFixed();
                     }
-                    addControls(node, instance, argument);
+                    addControls(node, instance, argument, scale);
                     return node;
                 }
-                const addVec = (argument) => {
+                const addVec = (argument, scale = 0.1) => {
+                    const places = Math.floor(Math.log10(1 / scale));
+
                     const container = document.createElement('div');
                     instance[argument].forEach((item, index) => {
                         const node = document.createElement('span');
-                        node.innerHTML = item.toFixed(2);
-                        addControls(node, instance[argument], index);
+                        node.innerHTML = item.toFixed(places);
+                        addControls(node, instance[argument], index, scale);
                         container.append(node, ', ');
                     });
                     return container;
@@ -965,7 +991,7 @@
                     addVec('size'),
                     addSpan('angle'),
                     addVec('axis'),
-                    addVec('colour'),
+                    addVec('colour', 0.01),
                     addSpan('specular'),
                     addSpan('transparency'));
                 instance.children.forEach((child) => addInstance(child, level + 1));
@@ -990,7 +1016,6 @@
             const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
             const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
             const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
-            app.instanceCount = app.instances.length;
             showStructure();
         }
 
