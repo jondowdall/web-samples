@@ -285,6 +285,7 @@
             scale: 1,
             roots: [],
             wireframe: false,
+            cullFaces: true,
             addRoot(position, size, rotation, axis, colour, opacity, specular) {
                 const root = new Instance(
                     undefined,
@@ -551,7 +552,7 @@
                 colourBuffer.push(...instance.colour.map((v) => v * 0.3));
                 colourBuffer.push(...instance.colour.map((v) => v * 1.0));
                 colourBuffer.push(instance.specular);
-                colourBuffer.push(app.wireframe ? 0 : instance.children.length);
+                colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
             });
             app.buffers.colour = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
@@ -783,15 +784,26 @@
                     return [x / l, y / l, z / l];
                 };
 
-                this.name = `Instance ${app.instances.length + 1}`;
                 this.parent = parent;
-                this.position = position;
-                this.size = size;
-                this.angle = angle;
-                this.axis = normalised(axis);
-                this.colour = colour;
-                this.opacity = opacity;
-                this.specular = specular;
+                if (position.name) {
+                    this.name = position.name;
+                    this.position = position.position;
+                    this.size = position.size;
+                    this.angle = position.angle;
+                    this.axis = normalised(position.axis);
+                    this.colour = position.colour;
+                    this.opacity = position.opacity;
+                    this.specular = position.specular;
+                } else {
+                    this.name = `Instance ${app.instances.length + 1}`;
+                    this.position = position;
+                    this.size = size;
+                    this.angle = angle;
+                    this.axis = normalised(axis);
+                    this.colour = colour;
+                    this.opacity = opacity;
+                    this.specular = specular;
+                }
                 this.origin = Array(16);
                 this.children = [];
                 this.rate = 0;
@@ -864,7 +876,7 @@
                         colourBuffer.push(...instance.colour.map((v) => v * 0.3));
                         colourBuffer.push(...instance.colour.map((v) => v * 1.0));
                         colourBuffer.push(instance.specular);
-                        colourBuffer.push(app.wireframe ? 0 : instance.children.length);
+                        colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
                     });
                     gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
                     gl.bufferData(gl.ARRAY_BUFFER,
@@ -1064,7 +1076,7 @@
             const lines = text.split(/\r?\n/g);
             return lines.flatMap((line) => {
                 if (line.trim() !== '') {
-                    const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, children] = line.split(/\s*;\s*/);
+                    const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, instances] = line.split(/\s*;\s*/);
                     const indent = indentedName.replace(/\S.*/, '');
                     const name = indentedName.replace(/^\s+/, '');
                     let level = 0;
@@ -1075,15 +1087,15 @@
                             level += 1;
                         }
                     }
-                    const position = positionStr.split(',').map((str) => parseFloat(str));
-                    const size = sizeStr.split(',').map((str) => parseFloat(str));
-                    const angle = parseFloat(angleStr);
-                    const axis = axisStr.split(',').map((str) => parseFloat(str));
-                    const colour = colourStr.split(',').map((str) => parseFloat(str));
-                    const specular = parseFloat(specularStr);
-                    const opacity = parseFloat(opacityStr);
+                    const position = positionStr ? positionStr.split(',') : null;
+                    const size = sizeStr ? sizeStr.split(',') : null;
+                    const angle = angleStr ? angleStr : null;
+                    const axis = axisStr ? axisStr.split(',') : null;
+                    const colour = colourStr ? colourStr.split(',') : null;
+                    const specular = specularStr ? specularStr : null;
+                    const opacity = opacityStr ? opacityStr : null;
                     return {
-                        name, level, position, size, angle, axis, colour, specular, opacity, children: children ?? [],
+                        name, level, position, size, angle, axis, colour, specular, opacity, instances, children: [],
                     };
                 }
                 return [];
@@ -1096,7 +1108,16 @@
         function getTree(objs) {
             const roots = [];
             const stack = [];
+            const named = {};
             objs.forEach((obj) => {
+                named[obj.name] = obj;
+                const [name, type] = obj.name.split(/:/);
+                if (type && named[type]) {
+                    Object.getOwnPropertyNames(obj).forEach((property) => {
+                        obj[property] = obj[property] ?? named[type][property];
+                    });
+                    obj.children.push(...named[type].children.map((child) => Object.assign({}, child)));
+                }
                 while (stack.length && obj.level <= stack[0].level) {
                     stack.shift();
                 }
@@ -1104,7 +1125,9 @@
                     stack[0].children.push(obj);
                     obj.parent = stack[0];
                 } else {
-                    roots.push(obj);
+                    if (obj.position) {
+                        roots.push(obj);
+                    }
                 }
                 stack.unshift(obj);
             });
@@ -1149,13 +1172,14 @@
             const expand = (node, context = []) => {
                 const resolve = (value, context) => {
                     if (isNaN(Number(value))) {
-                        value = value.replace(/<([0-9]*)>/g, (match) => context[match ?? 0]);
+                        value = value.replace(/<([0-9]*)>/g, (match, level) => context[parseInt(level) || 0]);
                         const func = new Function(`return ${value};`);
                         return func();
                     }
                     return Number(value);
                 }
                 const makeInstance = (node, context) => ({
+                    name: node.name,
                     position: node.position.map((v) => resolve(v, context)),
                     size: node.size.map((v) => resolve(v, context)),
                     angle: resolve(node.angle, context),
@@ -1163,7 +1187,7 @@
                     colour: node.colour.map((v) => resolve(v, context)),
                     specular: resolve(node.specular, context),
                     opacity: resolve(node.opacity, context),
-                    children: node.children.map((child) => expand(child, context)),
+                    children: node.children.flatMap((child) => expand(child, context)),
                 });
 
                 if (node.instances) {
@@ -1180,21 +1204,35 @@
         /**
          * Make a test graph.
          */
-        function makeGraph() {
-            const root = app.addRoot(
-                [0, 0, 0],    // Position
-                [1, 1, 1],    // Size
-                0,            // Rotation
-                [0, 1, 0],    // Axis
-                [1, 1, 0],    // Colour
-                1.0,          // opacity
-                10.0);        // Specular
-            const child = root.addChild([0, 0.75, 0], [0.5, 0.5, 0.5], 30);
-            const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
-            const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
-            const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
-            showStructure();
-            console.log(expandGraph(app.roots));
+        function makeGraph(source) {
+            if (source) {
+                app.instances = [];
+                app.roots = [];
+                const addNode = (parent, node) => {
+                    const child = parent.addChild(node);
+                    node.children.forEach((node) => addNode(child, node));
+                }
+                source.forEach((node) => {
+                    const root = app.addRoot(node);
+                    node.children.forEach((child) => addNode(root, child));
+                });
+                initialiseInstances();
+                showStructure();
+            } else {
+                const root = app.addRoot(
+                    [0, 0, 0],    // Position
+                    [1, 1, 1],    // Size
+                    0,            // Rotation
+                    [0, 1, 0],    // Axis
+                    [1, 1, 0],    // Colour
+                    1.0,          // opacity
+                    10.0);        // Specular
+                const child = root.addChild([0, 0.75, 0], [0.5, 0.5, 0.5], 30);
+                const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
+                const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
+                const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
+                showStructure();
+            }
         }
 
         /**
@@ -1282,6 +1320,9 @@
                 if (event.key === 'w') {
                     app.wireframe = !app.wireframe;
                 }
+                if (event.key === 'i') {
+                    app.cullFaces = !app.cullFaces;
+                }
             });
             canvas.addEventListener('mousedown', (event) => {
                 action.lastX = event.clientX;
@@ -1329,6 +1370,7 @@
                         const tree = getTree(objs);
                         const graph = expandGraph(tree);
                         console.log(graph);
+                        makeGraph(graph);
                     });
                     reader.readAsText(file);
                 }
