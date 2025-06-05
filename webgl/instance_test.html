@@ -8,7 +8,6 @@
         html {
             box-sizing: border-box;
             font-family: sans-serif;
-            font-size: large;
         }
 
         *,
@@ -206,8 +205,7 @@
             const container = document.getElementById('view-control');
 
             const update = () => {
-                app.eyePosition = eyePosition;
-                app.viewMatrix = viewMatrix(eyePosition, lookAt, up);
+                app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
             }
 
             const vectorControl = (vector) => {
@@ -223,12 +221,12 @@
                     container.appendChild(input);
                 });
             };
-            const eyePosition = [0, 0, 2];
-            const lookAt = [0, 0, 0];
-            const up = [0, 1, 0];
-            vectorControl(eyePosition)
-            vectorControl(lookAt);
-            vectorControl(up);
+            app.eyePosition = [0, 0, 2];
+            app.lookAt = [0, 0, 0];
+            app.up = [0, 1, 0];
+            vectorControl(app.eyePosition)
+            vectorControl(app.lookAt);
+            vectorControl(app.up);
             update();
         }
 
@@ -267,6 +265,7 @@
             instances: [],
             scale: 1,
             roots: [],
+            wireframe: false,
             addRoot(position, size, rotation, axis, colour, opacity, specular) {
                 const root = new Instance(
                     undefined,
@@ -409,7 +408,7 @@
                 return [x / l, y / l, z / l];
             };
             return [...triangles.flatMap((t) => [...t.p1, ...t.n, ...t.p2, ...t.n, ...t.p3, ...t.n]),
-                ...lines.flatMap((p) => [...p, ...normalised(p)])];
+            ...lines.flatMap((p) => [...p, ...normalised(p)])];
         }
 
         /**
@@ -422,7 +421,7 @@
         /**
          * Initialise Instances
          */
-        function initialiseRandomInstances(instanceCount=1) {
+        function initialiseRandomInstances(instanceCount = 1) {
             const matrices = [];
             for (let i = 0; i < instanceCount; ++i) {
                 matrices.push(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -533,7 +532,7 @@
                 colourBuffer.push(...instance.colour.map((v) => v * 0.3));
                 colourBuffer.push(...instance.colour.map((v) => v * 1.0));
                 colourBuffer.push(instance.specular);
-                colourBuffer.push(instance.children.length);
+                colourBuffer.push(app.wireframe ? 0 : instance.children.length);
             });
             app.buffers.colour = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
@@ -743,7 +742,9 @@
                 gl.uniform3fv(app.shader.lightPosition2, [0.5, -0.5, 5]);
                 gl.uniform3fv(app.shader.lightPosition3, [1, 15, 1]);
 
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
+                if (!app.wireframe) {
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
+                }
                 gl.drawArraysInstanced(gl.LINES, 36, 24, app.instances.length);
                 glErrors();
             } else {
@@ -844,7 +845,7 @@
                         colourBuffer.push(...instance.colour.map((v) => v * 0.3));
                         colourBuffer.push(...instance.colour.map((v) => v * 1.0));
                         colourBuffer.push(instance.specular);
-                        colourBuffer.push(instance.children.length);
+                        colourBuffer.push(app.wireframe ? 0 : instance.children.length);
                     });
                     gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
                     gl.bufferData(gl.ARRAY_BUFFER,
@@ -911,10 +912,9 @@
             }
         }
 
-
-        const actions = {};
-        document.body.addEventListener('mousemove', (event) => actions.move?.(event));
-        document.body.addEventListener('mouseup', (event) => actions.move = null);
+        const action = {};
+        document.body.addEventListener('mousemove', (event) => action.move?.(event));
+        document.body.addEventListener('mouseup', (event) => action.move = null);
         /**
          * Show structure
          */
@@ -985,10 +985,10 @@
                     if (!isNaN(Number(item[element]))) {
                         const places = Math.floor(Math.log10(1 / scale));
                         node.addEventListener('mousedown', (event) => {
-                            actions.last = event.clientY;
-                            actions.move = (event) => {
-                                const delta = (event.clientY - actions.last) * scale;
-                                actions.last = event.clientY;
+                            action.last = event.clientY;
+                            action.move = (event) => {
+                                const delta = (event.clientY - action.last) * scale;
+                                action.last = event.clientY;
                                 item[element] += delta;
                                 node.innerText = item[element].toFixed(places);
                                 instance.update();
@@ -1038,6 +1038,71 @@
         }
 
         /**
+         * Convert a range specifier to a list.
+         */
+        function getList(definition) {
+            const rangePattern = /^(?<start>[0-9]+(\.[0-9]+)?)\s*\.\.\s*(?<end>[0-9]+(\.[0-9]+)?)(\s*:\s*(?<step>[0-9]+(\.[0-9]+)?))?/;
+            const count = Number(definition);
+            const list = [];
+            if (isNaN(count)) {
+                list.push(...definition.split(',').filter((item) => item).flatMap((item) => {
+                    const range = item.match(rangePattern);
+                    if (range) {
+                        const start = Number(range.groups.start);
+                        const end = Number(range.groups.end);
+                        const step = Number(range.groups.step || 1);
+                        const values = [];
+                        for (let i = start; i <= end; i += step) {
+                            values.push(i);
+                        }
+                        return values;
+                    }
+                    return Number(item.trim());
+                }));
+            } else {
+                for (let i = 1; i <= count; ++i) {
+                    list.push(i);
+                }
+            }
+            return list;
+        }
+
+        /**
+         * Expand a template graph to a full graph.
+         */
+        function expandGraph(templateGraph) {
+            const expand = (node, context = []) => {
+                const resolve = (value, context) => {
+                    if (isNaN(Number(value))) {
+                        value = value.replace(/<([0-9]*)>/g, (match) => context[match ?? 0]);
+                        const func = new Function(`return ${value};`);
+                        return func();
+                    }
+                    return Number(value);
+                }
+                const makeInstance = (node, context) => ({
+                    position: node.position.map((v) => resolve(v, context)),
+                    size: node.size.map((v) => resolve(v, context)),
+                    angle: resolve(node.angle, context),
+                    axis: node.axis.map((v) => resolve(v, context)),
+                    colour: node.colour.map((v) => resolve(v, context)),
+                    specular: resolve(node.specular, context),
+                    opacity: resolve(node.opacity, context),
+                    children: node.children.map((child) => expand(child, context)),
+                });
+
+                if (node.instances) {
+                    const instances = getList(node.instances);
+                    return instances.map((instance) => makeInstance(node, [instance, ...context]));
+                } else {
+                    return makeInstance(node, context);
+                }
+            }
+
+            return templateGraph.flatMap((node) => expand(node));
+        }
+
+        /**
          * Make a test graph.
          */
         function makeGraph() {
@@ -1054,8 +1119,103 @@
             const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
             const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
             showStructure();
+            console.log(expandGraph(app.roots));
         }
 
+        /**
+         * Return a normalised version of the given vector.
+         */
+        function normalised(vector) {
+            const l = Math.hypot(...vector);
+            return vector.map((i) => i / l);
+        }
+
+        /**
+         * Return vector A plus vector B
+         */
+        function add(a, b) {
+            return a.map((v, i) => v + b[i]);
+        }
+
+        /**
+         * Return vector A minus vector B
+         */
+        function subtract(a, b) {
+            return a.map((v, i) => v - b[i]);
+        }
+
+        /**
+         * Apply a transform by multiplying a vector by a matrix
+         */
+        function transform(v, matrix) {
+            return [
+                matrix[0] * v[0] + matrix[4] * v[1] + matrix[8] * v[2] + matrix[12],
+                matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2] + matrix[13],
+                matrix[2] * v[0] + matrix[6] * v[1] + matrix[10] * v[2] + matrix[14],
+            ];
+        }
+
+        /**
+         * Return the rotation matrix based on angle and axis.
+         */
+        function getRotation(angle, axis) {
+            angle = angle * Math.PI / 180;
+            const qw = Math.cos(angle);
+            axis = normalised(axis);
+            const qx = axis[0] * Math.sin(angle);
+            const qy = axis[1] * Math.sin(angle);
+            const qz = axis[2] * Math.sin(angle);
+
+            return [
+                1 - 2 * qy * qy - 2 * qz * qz,
+                2 * qx * qy - 2 * qz * qw,
+                2 * qx * qz + 2 * qy * qw,
+                0,
+
+                2 * qx * qy + 2 * qz * qw,
+                1 - 2 * qx * qx - 2 * qz * qz,
+                2 * qy * qz - 2 * qx * qw,
+                0,
+
+                2 * qx * qz - 2 * qy * qw,
+                2 * qy * qz + 2 * qx * qw,
+                1 - 2 * qx * qx - 2 * qy * qy,
+                0,
+
+                0, 0, 0, 1
+            ];
+        }
+
+
+        /**
+         * Add the event handlers for the canvas.
+         */
+        function addCanvasEvents(canvas) {
+            canvas.tabIndex = 0;
+            canvas.addEventListener('keydown', (event) => {
+                if (event.key === 'w') {
+                    app.wireframe = !app.wireframe;
+                }
+            });
+            canvas.addEventListener('mousedown', (event) => {
+                action.lastX = event.clientX;
+                action.lastY = event.clientY;
+                action.move = (event) => {
+                    const deltaX = event.clientX - action.lastX;
+                    const deltaY = event.clientY - action.lastY;
+                    action.lastX = event.clientX;
+                    action.lastY = event.clientY;
+
+                    const xRotation = getRotation(deltaY * Math.PI / 60, [1, 0, 0]);
+                    const yRotation = getRotation(deltaX * Math.PI / 60, [0, 1, 0]);
+                    const rotation = multiply(xRotation, yRotation);
+                    const sightLine = subtract(app.lookAt, app.eyePosition);
+                    app.eyePosition = subtract(app.lookAt, transform(sightLine, rotation));
+                    app.up = transform(app.up, rotation);
+                    app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
+                };
+            });
+        }
 
         /**
          * Perform all once off set-up (e.g. creating buffer etc.)
@@ -1063,6 +1223,7 @@
         function initialise() {
             projectionControl();
             viewControl(document.getElementById('view-control'));
+            addCanvasEvents(canvas);
 
             // Set clear color to black, fully opaque
             gl.clearColor(0.0, 0.0, 0.0, 1.0);
@@ -1099,7 +1260,6 @@
             //gl.enable(gl.CULL_FACE);
             gl.cullFace(gl.BACK);
         }
-
 
         /**
          * Called once html has loaded.
