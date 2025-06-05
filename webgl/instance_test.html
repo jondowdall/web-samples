@@ -47,7 +47,7 @@
         }
 
         .matrix-input {
-            width: 3em;
+            width: 5em;
         }
 
         #projection-control>details {
@@ -75,6 +75,10 @@
         Near<input id="near" type="number" />
         Far<input id="far" type="number" />
         <details>
+            <summary>Source</summary>
+            <textarea id="source"></textarea>
+        </details>
+        <details>
             <summary>Structure</summary>
             <div id="structure">
                 <span>Name</span>
@@ -87,6 +91,7 @@
                 <span>opacity</span>
             </div>
         </details>
+
     </div>
     <div id="view-control"></div>
 
@@ -208,11 +213,12 @@
                 app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
             }
 
-            const vectorControl = (vector) => {
+            const vectorControl = (vector, name) => {
                 vector.forEach((value, index) => {
                     const input = document.createElement('input');
                     input.type = 'number';
                     input.value = value;
+                    input.id = `${name}-${index}`;
                     input.classList.add('matrix-input');
                     input.addEventListener('change', (event) => {
                         vector[index] = input.valueAsNumber;
@@ -224,10 +230,23 @@
             app.eyePosition = [0, 0, 2];
             app.lookAt = [0, 0, 0];
             app.up = [0, 1, 0];
-            vectorControl(app.eyePosition)
-            vectorControl(app.lookAt);
-            vectorControl(app.up);
+            vectorControl(app.eyePosition, 'eye-position')
+            vectorControl(app.lookAt, 'look-at');
+            vectorControl(app.up, 'up');
             update();
+            app.updateViewControls = () => {
+                document.getElementById('eye-position-0').value = app.eyePosition[0].toFixed(1);
+                document.getElementById('eye-position-1').value = app.eyePosition[1].toFixed(1);
+                document.getElementById('eye-position-2').value = app.eyePosition[2].toFixed(1);
+
+                document.getElementById('look-at-0').value = app.lookAt[0].toFixed(1);
+                document.getElementById('look-at-1').value = app.lookAt[1].toFixed(1);
+                document.getElementById('look-at-2').value = app.lookAt[2].toFixed(1);
+
+                document.getElementById('up-0').value = app.up[0].toFixed(1);
+                document.getElementById('up-1').value = app.up[1].toFixed(1);
+                document.getElementById('up-2').value = app.up[2].toFixed(1);
+            }
         }
 
 
@@ -1037,6 +1056,62 @@
             app.roots.forEach((child) => addInstance(child));
         }
 
+
+        /**
+         * Convert text to objects
+         */
+        function getObjects(text) {
+            const lines = text.split(/\r?\n/g);
+            return lines.flatMap((line) => {
+                if (line.trim() !== '') {
+                    const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, children] = line.split(/\s*;\s*/);
+                    const indent = indentedName.replace(/\S.*/, '');
+                    const name = indentedName.replace(/^\s+/, '');
+                    let level = 0;
+                    for (let i = 0; i < indent.length; ++i) {
+                        if (indent[i] === '\t') {
+                            level += 4 - (level % 4);
+                        } else {
+                            level += 1;
+                        }
+                    }
+                    const position = positionStr.split(',').map((str) => parseFloat(str));
+                    const size = sizeStr.split(',').map((str) => parseFloat(str));
+                    const angle = parseFloat(angleStr);
+                    const axis = axisStr.split(',').map((str) => parseFloat(str));
+                    const colour = colourStr.split(',').map((str) => parseFloat(str));
+                    const specular = parseFloat(specularStr);
+                    const opacity = parseFloat(opacityStr);
+                    return {
+                        name, level, position, size, angle, axis, colour, specular, opacity, children: children ?? [],
+                    };
+                }
+                return [];
+            });
+        }
+
+        /**
+         * Convert a list of objects into a tree structure based on the level of the objects
+         */
+        function getTree(objs) {
+            const roots = [];
+            const stack = [];
+            objs.forEach((obj) => {
+                while (stack.length && obj.level <= stack[0].level) {
+                    stack.shift();
+                }
+                if (stack.length > 0) {
+                    stack[0].children.push(obj);
+                    obj.parent = stack[0];
+                } else {
+                    roots.push(obj);
+                }
+                stack.unshift(obj);
+            });
+            return roots;
+        }
+
+
         /**
          * Convert a range specifier to a list.
          */
@@ -1145,6 +1220,17 @@
         }
 
         /**
+         * Return the cross product of two vectors
+         */
+        function cross(v1, v2) {
+            return [
+                v1[1] * v2[2] - v1[2] * v2[1],
+                v1[2] * v2[0] - v1[0] * v2[2],
+                v1[0] * v2[1] - v1[1] * v2[0],
+            ];
+        }
+
+        /**
          * Apply a transform by multiplying a vector by a matrix
          */
         function transform(v, matrix) {
@@ -1205,16 +1291,71 @@
                     const deltaY = event.clientY - action.lastY;
                     action.lastX = event.clientX;
                     action.lastY = event.clientY;
-
-                    const xRotation = getRotation(deltaY * Math.PI / 60, [1, 0, 0]);
-                    const yRotation = getRotation(deltaX * Math.PI / 60, [0, 1, 0]);
-                    const rotation = multiply(xRotation, yRotation);
                     const sightLine = subtract(app.lookAt, app.eyePosition);
+                    const xAxis = cross(sightLine, app.up);
+
+                    const xRotation = getRotation(deltaY * Math.PI / 60, xAxis);
+                    const yRotation = getRotation(deltaX * Math.PI / 60, app.up);
+                    const rotation = multiply(xRotation, yRotation);
                     app.eyePosition = subtract(app.lookAt, transform(sightLine, rotation));
                     app.up = transform(app.up, rotation);
                     app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
+                    app.updateViewControls();
                 };
             });
+            canvas.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                const dist = Math.pow(2, event.deltaY / 100);
+                const sightLine = subtract(app.lookAt, app.eyePosition);
+                const move = sightLine.map((v) => v * dist);
+                app.eyePosition = subtract(app.lookAt, move);
+                app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
+                app.updateViewControls();
+            });
+
+
+
+            /**
+             * Process a dropped file
+             */
+            function dropHandler(event) {
+                event.preventDefault();
+
+                function loadFile(file) {
+                    const reader = new FileReader();
+                    reader.addEventListener('load', (event) => {
+                        app.filename = file.name;
+                        const objs = getObjects(reader.result);
+                        const tree = getTree(objs);
+                        const graph = expandGraph(tree);
+                        console.log(graph);
+                    });
+                    reader.readAsText(file);
+                }
+
+                if (event.dataTransfer.items) {
+                    [...event.dataTransfer.items].forEach((item, index) => {
+                        if (item.kind === 'file') {
+                            const file = item.getAsFile();
+                            loadFile(file);
+                            item.getAsFileSystemHandle().then((handle) => {
+                                //saveFileHandles([{ name: file.name, handle }]);
+                            });
+                        }
+                    });
+                } else {
+                    // Use DataTransfer interface to access the file(s)
+                    [...event.dataTransfer.files].forEach((file, i) => loadFile(file));
+                }
+            }
+
+            function dragOverHandler(event) {
+                // Prevent default behavior (Prevent file from being opened)
+                event.preventDefault();
+            }
+
+            canvas.addEventListener('dragover', dragOverHandler);
+            canvas.addEventListener('drop', dropHandler);
         }
 
         /**
