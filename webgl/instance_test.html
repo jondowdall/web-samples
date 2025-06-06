@@ -177,7 +177,7 @@
          */
         function projectionControl() {
             const fov = document.getElementById('field-of-view');
-            fov.value = 120;
+            fov.value = 90;
             const aspect = document.getElementById('aspect');
             aspect.value = gl.canvas.clientWidth / gl.canvas.clientHeight;
             const near = document.getElementById('near');
@@ -278,7 +278,7 @@
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             instances: [],
-            scale: 1,
+            scale: 0.001,
             roots: [],
             wireframe: false,
             cullFaces: true,
@@ -830,7 +830,7 @@
                     1, 0, 0, 0,
                     0, 1, 0, 0,
                     0, 0, 1, 0,
-                    this.position[0], this.position[1], this.position[2], 1
+                    app.scale * this.position[0], app.scale * this.position[1], app.scale * this.position[2], 1
                 ];
                 const rotation = [
                     1 - 2 * qy * qy - 2 * qz * qz,
@@ -1071,10 +1071,13 @@
         function getObjects(text) {
             const lines = text.split(/\r?\n/g);
             return lines.flatMap((line) => {
-                if (line.trim() !== '') {
+                if (line.trim() !== '' && !line.trim().startsWith('#')) {
                     const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, instances] = line.split(/\s*;\s*/);
                     const indent = indentedName.replace(/\S.*/, '');
-                    const name = indentedName.replace(/^\s+/, '');
+                    const rangeName = indentedName.replace(/^\s+/, '');
+                    const match = rangeName.match(/(\[(?<instances>[^\]]+)\]\s*)?(?<name>.*)/);
+                    const name = match.groups.name;
+
                     let level = 0;
                     for (let i = 0; i < indent.length; ++i) {
                         if (indent[i] === '\t') {
@@ -1091,7 +1094,7 @@
                     const specular = specularStr ? specularStr : null;
                     const opacity = opacityStr ? opacityStr : null;
                     return {
-                        name, level, position, size, angle, axis, colour, specular, opacity, instances, children: [],
+                        name, level, position, size, angle, axis, colour, specular, opacity, instances: instances ?? match.groups.instances, children: [],
                     };
                 }
                 return [];
@@ -1107,7 +1110,7 @@
             const named = {};
             objs.forEach((obj) => {
                 named[obj.name] = obj;
-                const [name, type] = obj.name.split(/:/);
+                const [name, type] = obj.name.split(/\s*:\s*/);
                 if (type && named[type]) {
                     Object.getOwnPropertyNames(obj).forEach((property) => {
                         obj[property] = obj[property] ?? named[type][property];
@@ -1121,9 +1124,7 @@
                     stack[0].children.push(obj);
                     obj.parent = stack[0];
                 } else {
-                    if (obj.position) {
-                        roots.push(obj);
-                    }
+                    roots.push(obj);
                 }
                 stack.unshift(obj);
             });
@@ -1188,10 +1189,15 @@
 
                 if (node.instances) {
                     const instances = getList(node.instances);
-                    return instances.map((instance) => makeInstance(node, [instance, ...context]));
-                } else {
+                    if (node.position) {
+                        return instances.flatMap((instance) => makeInstance(node, [instance, ...context]));
+                    } else {
+                        return instances.flatMap((instance, index) => node.children.flatMap((child) => expand(child, [instance, ...context])));
+                    }
+                } else if (node.position) {
                     return makeInstance(node, context);
                 }
+                return [];
             }
 
             return templateGraph.flatMap((node) => expand(node));
@@ -1200,10 +1206,12 @@
         /**
          * Make a test graph.
          */
-        function makeGraph(source) {
+        function makeGraph(source, replace) {
             if (source) {
-                app.instances = [];
-                app.roots = [];
+                if (replace) {
+                    app.instances = [];
+                    app.roots = [];
+                }
                 const addNode = (parent, node) => {
                     const child = parent.addChild(node);
                     node.children.forEach((node) => addNode(child, node));
@@ -1357,6 +1365,7 @@
              */
             function dropHandler(event) {
                 event.preventDefault();
+                const replace = event.shiftKey;
 
                 function loadFile(file) {
                     const reader = new FileReader();
@@ -1365,8 +1374,7 @@
                         const objs = getObjects(reader.result);
                         const tree = getTree(objs);
                         const graph = expandGraph(tree);
-                        console.log(graph);
-                        makeGraph(graph);
+                        makeGraph(graph, replace);
                     });
                     reader.readAsText(file);
                 }
