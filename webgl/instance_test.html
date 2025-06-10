@@ -59,10 +59,21 @@
             grid-template-columns: 10em repeat(7, max-content);
             grid-gap: 3px;
             overflow: auto;
+            max-height: 50vh;
         }
 
         #structure .value {
             text-align: center;
+        }
+
+        #state {
+            position: fixed;
+            bottom: 1em;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: white;
+            border-radius: 0.5em;
+            padding: 0.3em;
         }
     </style>
 </head>
@@ -91,6 +102,7 @@
 
     </div>
     <div id="view-control"></div>
+    <div id="state"></div>
 
     <script type="x-shader/x-vertex" id="vertex-shader">
     #version 300 es
@@ -118,6 +130,7 @@
 
     void main() {
         v_vertex = model * vec4(position, 1.0);
+        //vec4 world = view * v_vertex;
         gl_Position = projection * view * v_vertex;
         v_normal = model * vec4(normal, 0.0);
         v_ambientColour = ambientColour;
@@ -126,7 +139,7 @@
         v_opacity = opacity;
         v_specularIntensity = specularIntensity;
 
-        gl_PointSize = 50.0 * model[0][0];
+        gl_PointSize = 5.0;//50.0 * model[0][0];
     }
   </script>
     <script type="x-shader/x-fragment" id="fragment-shader">
@@ -170,9 +183,16 @@
         }
         fragmentColour = vec4(colour, 1.0);
     }
-  </script>
+    </script>
 
     <script>
+        /**
+         * Update report display.
+         */
+        function report(text) {
+            document.getElementById('state').innerText = text;
+        }
+
         /**
          * Create matrix control.
          */
@@ -182,16 +202,16 @@
             const aspect = document.getElementById('aspect');
             aspect.value = gl.canvas.clientWidth / gl.canvas.clientHeight;
             const near = document.getElementById('near');
-            near.value = 0;
+            near.value = 1;
             const far = document.getElementById('far');
-            far.value = 10;
+            far.value = 10000;
 
             const update = () => {
-                app.projectionMatrix = perspective(
-                    fov.valueAsNumber,
-                    aspect.valueAsNumber,
-                    near.valueAsNumber,
-                    far.valueAsNumber);
+                app.fov = fov.valueAsNumber;
+                app.aspect = aspect.valueAsNumber;
+                app.near = near.valueAsNumber;
+                app.far = far.valueAsNumber;
+                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             }
             fov.addEventListener('change', (event) => update());
             aspect.addEventListener('change', (event) => update());
@@ -224,7 +244,7 @@
                     container.appendChild(input);
                 });
             };
-            app.eyePosition = [0, 0, 2];
+            app.eyePosition = [0, 0, 3000];
             app.lookAt = [0, 0, 0];
             app.up = [0, 1, 0];
             vectorControl(app.eyePosition, 'eye-position')
@@ -279,11 +299,11 @@
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             instances: [],
-            scale: 0.001,
+            scale: 1, //0.001,
             roots: [],
             wireframe: false,
             cullFaces: true,
-            cornerOrigin: true,
+            cornerOrigin: false,
             addRoot(position, size, rotation, axis, colour, opacity, specular) {
                 const root = new Instance(
                     undefined,
@@ -303,7 +323,6 @@
             vertex: document.querySelector("#vertex-shader").innerHTML,
             fragment: document.querySelector("#fragment-shader").innerHTML,
         }
-
 
         /**
          * Create and compile a shader of the specified type using the source provided.
@@ -439,91 +458,6 @@
         /**
          * Initialise Instances
          */
-        function initialiseRandomInstances(instanceCount = 1) {
-            const matrices = [];
-            for (let i = 0; i < instanceCount; ++i) {
-                matrices.push(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-            }
-            app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
-            app.modelMatrices = [];
-            for (let i = 0; i < instanceCount; ++i) {
-                app.modelMatrices.push(new Float32Array(app.modelMatrix.buffer, i * 16 * 4, 16));
-            }
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
-            gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
-
-            // Matrices are passed as 4 vertex attributes
-            for (let i = 0; i < 4; ++i) {
-                const location = app.shader.model + i;
-                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
-                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 16, i * 16);
-                gl.vertexAttribDivisor(location, 1);
-                gl.enableVertexAttribArray(location);
-            }
-            // setup colors, one per instance
-            const colours = [
-                [1, 0, 0],  // red
-                [0, 1, 0],  // green
-                [0, 0, 1],  // blue
-                [1, 0, 1],  // magenta
-                [0, 1, 1],  // cyan
-            ];
-            const colourBuffer = [];
-            for (i = 0; i < instanceCount; ++i) {
-                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 0.3));
-                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 0.3));
-                colourBuffer.push(...colours[Math.floor(Math.random() * colours.length)].map((v) => v * 1.0));
-                colourBuffer.push(0.1 + 128 * Math.random());
-                colourBuffer.push(Math.random());
-            }
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
-            gl.bufferData(gl.ARRAY_BUFFER,
-                new Float32Array(colourBuffer),
-                gl.STATIC_DRAW);
-
-            gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
-            gl.enableVertexAttribArray(app.shader.ambientColour);
-            gl.vertexAttribDivisor(app.shader.ambientColour, 1);
-
-            gl.vertexAttribPointer(app.shader.diffuseColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 12);
-            gl.enableVertexAttribArray(app.shader.diffuseColour);
-            gl.vertexAttribDivisor(app.shader.diffuseColour, 1);
-
-            gl.vertexAttribPointer(app.shader.specularColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
-            gl.enableVertexAttribArray(app.shader.specularColour);
-            gl.vertexAttribDivisor(app.shader.specularColour, 1);
-
-            gl.vertexAttribPointer(app.shader.specularIntensity, 1, gl.FLOAT, false, 4 * (3 * 3 + 2), 36);
-            gl.enableVertexAttribArray(app.shader.specularIntensity);
-            gl.vertexAttribDivisor(app.shader.specularIntensity, 1);
-
-            gl.vertexAttribPointer(app.shader.opacity, 1, gl.FLOAT, false, 4 * (3 * 3 + 2), 40);
-            gl.enableVertexAttribArray(app.shader.opacity);
-            gl.vertexAttribDivisor(app.shader.opacity, 1);
-
-            app.instancesChanged = true;
-            app.instances = [];
-            const normalised = ([x, y, z]) => {
-                const l = Math.hypot(x, y, z);
-                return [x / l, y / l, z / l];
-            };
-
-            for (i = 0; i < instanceCount; ++i) {
-                app.instances.push({
-                    position: [1 - 2 * Math.random(), 1 - 2 * Math.random(), 2 * Math.random()].map((v) => v * 3),
-                    size: [0.5 + 2 * Math.random(), 0.5 + 2 * Math.random(), 0.5 + 2 * Math.random()],
-                    axis: normalised([Math.random(), Math.random(), Math.random()]),
-                    rate: 1 - 2 * Math.random(),
-                    offset: 10 * Math.random(),
-                    matrix: new Float32Array(app.modelMatrix.buffer, i * 16 * 4, 16),
-                });
-            }
-        }
-
-        /**
-         * Initialise Instances
-         */
         function initialiseInstances() {
             const matrices = [];
             app.instances.forEach((instance) => matrices.push(...instance.transform));
@@ -552,7 +486,6 @@
                 colourBuffer.push(instance.specular);
                 colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
             });
-            app.buffers.colour = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
             gl.bufferData(gl.ARRAY_BUFFER,
                 new Float32Array(colourBuffer),
@@ -581,6 +514,33 @@
             app.instancesChanged = true;
         }
 
+        /**
+         * Update the colour data from the instances.
+         */
+        function updateColours() {
+            const colourBuffer = [];
+            app.instances.forEach((instance, index) => {
+                const colour = instance.selected ? [1, 1, 1] : instance.colour;
+                colourBuffer.push(...colour.map((v) => v * 0.3));
+                colourBuffer.push(...colour.map((v) => v * 0.3));
+                colourBuffer.push(...colour.map((v) => v * 1.0));
+                colourBuffer.push(instance.specular);
+                colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
+            });
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+            gl.bufferData(gl.ARRAY_BUFFER,
+                new Float32Array(colourBuffer),
+                gl.STATIC_DRAW);
+        }
+
+        /**
+         * Update the colour data from the instances.
+         */
+        function updatePoints() {
+            const points = app.points.map((point) => [...point.position, ...point.colour]);
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.points);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(points), gl.DYNAMIC_DRAW);
+        }
 
         /**
          * Add instance
@@ -621,66 +581,6 @@
          * Update the gl buffers used to define each instance of an object.
          */
         function updateInstances(time) {
-            /*
-            app.instances.forEach((instance, index) => {
-                const matrix = instance.matrix;
-                const scale = Math.sin(instance.offset + instance.rate * time / 3000);
-                const angle = instance.rate * time / 2000;
-                const qw = Math.cos(angle / 2)
-                const qx = instance.axis[0] * Math.sin(angle / 2)
-                const qy = instance.axis[1] * Math.sin(angle / 2)
-                const qz = instance.axis[2] * Math.sin(angle / 2)
-
-                function multiply(a, b) {
-                    matrix[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
-                    matrix[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
-                    matrix[2] = a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14];
-                    matrix[3] = a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3] * b[15];
-
-                    matrix[4] = a[4] * b[0] + a[5] * b[4] + a[6] * b[8] + a[7] * b[12];
-                    matrix[5] = a[4] * b[1] + a[5] * b[5] + a[6] * b[9] + a[7] * b[13];
-                    matrix[6] = a[4] * b[2] + a[5] * b[6] + a[6] * b[10] + a[7] * b[14];
-                    matrix[7] = a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7] * b[15];
-
-                    matrix[8] = a[8] * b[0] + a[9] * b[4] + a[10] * b[8] + a[11] * b[12];
-                    matrix[9] = a[8] * b[1] + a[9] * b[5] + a[10] * b[9] + a[11] * b[13];
-                    matrix[10] = a[8] * b[2] + a[9] * b[6] + a[10] * b[10] + a[11] * b[14];
-                    matrix[11] = a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11] * b[15];
-
-                    matrix[12] = a[12] * b[0] + a[13] * b[4] + a[14] * b[8] + a[15] * b[12];
-                    matrix[13] = a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13];
-                    matrix[14] = a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14];
-                    matrix[15] = a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15];
-                }
-
-                multiply([
-                    1 - 2 * qy * qy - 2 * qz * qz,
-                    2 * qx * qy - 2 * qz * qw,
-                    2 * qx * qz + 2 * qy * qw,
-                    0,
-
-                    2 * qx * qy + 2 * qz * qw,
-                    1 - 2 * qx * qx - 2 * qz * qz,
-                    2 * qy * qz - 2 * qx * qw,
-                    0,
-
-                    2 * qx * qz - 2 * qy * qw,
-                    2 * qy * qz + 2 * qx * qw,
-                    1 - 2 * qx * qx - 2 * qy * qy,
-                    0,
-
-                    instance.position[0],
-                    instance.position[1],
-                    scale * instance.position[2],
-                    1
-                ], [
-                    1 * instance.size[0], 0, 0, 0,
-                    0, 1 * instance.size[1], 0, 0,
-                    0, 0, 1 * instance.size[2], 0,
-                    0, 0, 0, 1
-                ]);
-            });
-            */
             app.instances.forEach((instance) => instance.transform.forEach((value, index) => instance.matrix[index] = value));
             // update the matrix data
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
@@ -708,8 +608,8 @@
             return [
                 f / aspect, 0, 0, 0,
                 0, f, 0, 0,
-                0, 0, (zFar + zNear) / (zNear - zFar), -1,
-                0, 0, (2 * zFar * zNear) / (zNear - zFar), 1,
+                0, 0, (zNear + zFar) / (zNear - zFar), -1,
+                0, 0, 2 * (zFar * zNear) / (zNear - zFar), 0,
             ];
         }
 
@@ -717,18 +617,7 @@
          * Calculate a view matrix from eye position, focus point and up vecotrs.
          */
         function viewMatrix(eyePosition, lookAt, up) {
-            const normalised = ([x, y, z]) => {
-                const l = Math.hypot(x, y, z);
-                return [x / l, y / l, z / l];
-            };
-            const subtract = (v1, v2) => [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]];
-            const dot = (v1, v2) => v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
-            const cross = (v1, v2) => [
-                v1[1] * v2[2] - v1[2] * v2[1],
-                v1[2] * v2[0] - v1[0] * v2[2],
-                v1[0] * v2[1] - v1[1] * v2[0],
-            ];
-            const negate = (v) => { v[0] = -v[0]; v[1] = -v[1]; v[2] = -v[2]; };
+            const negate = (v) => { v[0] *= -1; v[1] *= -1; v[2] *= -1; };
             const zaxis = normalised(subtract(lookAt, eyePosition));
             const xaxis = normalised(cross(zaxis, up));
             const yaxis = cross(xaxis, zaxis);
@@ -739,7 +628,7 @@
                 xaxis[0], yaxis[0], zaxis[0], 0,
                 xaxis[1], yaxis[1], zaxis[1], 0,
                 xaxis[2], yaxis[2], zaxis[2], 0,
-                -dot(xaxis, eyePosition), -dot(yaxis, eyePosition), -dot(zaxis, eyePosition), 1
+                -dot(xaxis, eyePosition), -dot(yaxis, eyePosition), -dot(zaxis, eyePosition), 1,
             ];
         }
 
@@ -756,9 +645,9 @@
                 gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
                 gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
                 gl.uniform3fv(app.shader.eyePosition, app.eyePosition);
-                gl.uniform3fv(app.shader.lightPosition1, [5, 5, 5]);
-                gl.uniform3fv(app.shader.lightPosition2, [0.5, -0.5, 5]);
-                gl.uniform3fv(app.shader.lightPosition3, [1, 15, 1]);
+                gl.uniform3fv(app.shader.lightPosition1, [5000, 5000, 5000]);
+                gl.uniform3fv(app.shader.lightPosition2, [500, -500, 5000]);
+                gl.uniform3fv(app.shader.lightPosition3, [1000, 15000, 1000]);
 
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
@@ -771,6 +660,14 @@
             requestAnimationFrame(render);
         }
 
+        /**
+         * translate a touch event into a simplified mouse event.
+         */
+        function touch(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+        }
 
         /**
          * Manage an instance.
@@ -836,7 +733,7 @@
                     app.scale * this.position[1],
                     app.scale * this.position[2], 1
                 ];
-                const rotation = [
+                this.rotation = [
                     1 - 2 * qy * qy - 2 * qz * qz,
                     2 * qx * qy - 2 * qz * qw,
                     2 * qx * qz + 2 * qy * qw,
@@ -865,15 +762,15 @@
                     1, 0, 0, 0,
                     0, 1, 0, 0,
                     0, 0, 1, 0,
-                    0, 0, 0, 1
+                    0, 0, 0, 1,
                 ];
-                if (app.cornerOrigin) {
+                if (0 && app.cornerOrigin) {
                     offset[12] += app.scale * this.size[0] / 2;
                     offset[13] += app.scale * this.size[1] / 2;
                     offset[14] += app.scale * this.size[2] / 2;
                 };
 
-                const rotationTranslate = multiply(rotation, translation);
+                const rotationTranslate = multiply(this.rotation, translation);
                 this.origin = multiply(rotationTranslate, origin);
                 this.transform = multiply(scale, multiply(offset, this.origin));
             }
@@ -958,6 +855,9 @@
         const action = {};
         document.body.addEventListener('mousemove', (event) => action.move?.(event));
         document.body.addEventListener('mouseup', (event) => action.move = null);
+
+        document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
+        document.body.addEventListener('touchend', (event) => action.move = null);
         /**
          * Show structure
          */
@@ -1037,6 +937,17 @@
                                 instance.update();
                             };
                         });
+                        node.addEventListener('touchstart', (event) => {
+                            event = touch(event);
+                            action.last = event.clientY;
+                            action.move = (event) => {
+                                const delta = (event.clientY - action.last) * scale;
+                                action.last = event.clientY;
+                                item[element] += delta;
+                                node.innerText = item[element].toFixed(places);
+                                instance.update();
+                            };
+                        });
                     }
                 }
                 const addSpan = (argument, scale = 0.1) => {
@@ -1088,8 +999,12 @@
          */
         function getObjects(text) {
             const lines = text.split(/\r?\n/g);
+            let processLine = true;
             return lines.flatMap((line) => {
-                if (line.trim() !== '' && !line.trim().startsWith('#')) {
+                if (line === '!stop') {
+                    processLine = false;
+                }
+                if (processLine && line.trim() !== '' && !line.trim().startsWith('#')) {
                     const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, instances] = line.split(/\s*;\s*/);
                     const indent = indentedName.replace(/\S.*/, '');
                     const rangeName = indentedName.replace(/^\s+/, '');
@@ -1249,10 +1164,12 @@
                     [1, 1, 0],    // Colour
                     1.0,          // opacity
                     10.0);        // Specular
-                const child = root.addChild([0, 0.75, 0], [0.5, 0.5, 0.5], 30);
-                const grandchild = child.addChild([0.75, 0, 0], [1, 0.5, 0.5], 45, [1, 0, 0], [1, 0, 0]);
-                const grandchild2 = child.addChild([0, 0, 0.5], [0.5, 0.5, 0.5]);
-                const greatgrandchild = grandchild.addChild([0.25, 1.1, 0], [0.5, 1.5, 0.5]);
+                /*
+            const child = root.addChild([0, 750, 0], [500, 500, 500], 30);
+            const grandchild = child.addChild([750, 0, 0], [1000, 500, 500], 45, [1, 0, 0], [1, 0, 0]);
+            const grandchild2 = child.addChild([0, 0, 500], [500, 500, 500]);
+            const greatgrandchild = grandchild.addChild([250, 1100, 0], [500, 1500, 500]);
+            */
                 showStructure();
             }
         }
@@ -1266,18 +1183,38 @@
         }
 
         /**
-         * Return vector A plus vector B
+         * Return vector A scaled by s
          */
-        function add(a, b) {
-            return a.map((v, i) => v + b[i]);
+        function scale(a, s) {
+            return a.map((v) => v * s);
         }
 
+        /**
+         * Componentwise some of vectors
+         */
+        function add(...vectors) {
+            const length = Math.max(...vectors.map((v) => v.length));
+            const result = [];
+            for (let i = 0; i < length; ++i) {
+                result.push(vectors.reduce((s, v) => s + (v[i] ?? 0), 0));
+            }
+            return result;
+        }
         /**
          * Return vector A minus vector B
          */
         function subtract(a, b) {
             return a.map((v, i) => v - b[i]);
         }
+
+        /**
+         * Return the dot product of two vectors
+         */
+        function dot(v1, v2) {
+            return v1.reduce((s, v, i) => s + v * v2[i], 0);
+        }
+
+
 
         /**
          * Return the cross product of two vectors
@@ -1293,7 +1230,7 @@
         /**
          * Apply a transform by multiplying a vector by a matrix
          */
-        function transform(v, matrix) {
+        function applyTransform(v, matrix) {
             return [
                 matrix[0] * v[0] + matrix[4] * v[1] + matrix[8] * v[2] + matrix[12],
                 matrix[1] * v[0] + matrix[5] * v[1] + matrix[9] * v[2] + matrix[13],
@@ -1332,6 +1269,93 @@
             ];
         }
 
+        /**
+         * Get ray from screen position
+         */
+        function getRay(x, y) {
+            const f = 1 / Math.tan(app.fov * Math.PI / 360);
+
+            const w = canvas.clientWidth / 2;
+            const h = canvas.clientHeight / 2;
+
+            const zAxis = normalised(subtract(app.lookAt, app.eyePosition));
+            const yAxis = normalised(app.up);
+            const xAxis = cross(zAxis, yAxis);
+
+            const position = add(scale(xAxis, x - w), scale(yAxis, h - y), scale(zAxis, h * f));
+            const direction = normalised(position);
+
+            return { point: app.eyePosition, direction };
+        }
+
+        /**
+         * Get the point of intersection of a plane and line
+         */
+        function planeIntercept(line, plane) {
+            const v = subtract(plane.point, line.point);
+            const n = dot(plane.normal, v) / dot(plane.normal, line.direction);
+            return n;
+        }
+
+        /**
+         * Determine the intecept of a line and convex hull defined by a list of planes
+         */
+        function convexHullIntercept(line, planes) {
+            let start = -Infinity, end = Infinity;
+            line.direction = normalised(line.direction);
+            planes.forEach((plane) => {
+                const d = planeIntercept(line, plane);
+                if (d !== undefined) {
+                    const moveEnd = dot(line.direction, plane.normal) > 0;
+                    if (moveEnd) {
+                        end = Math.min(end, d);
+                    } else {
+                        start = Math.max(start, d);
+                    }
+                }
+            });
+            if (end < Infinity && end > start && start > -Infinity) {
+                return [start, end];
+            }
+        }
+
+
+        /**
+         * Find the intersection of a ray and objects
+         */
+        function getIntersection(line) {
+            // Check whether a line passes within the radius of the bounding sphere
+            const hits = app.instances.filter((instance) => {
+                const size = scale(instance.size, 0.5 * app.scale);
+                const origin = [0, 0, 0]; //app.cornerOrigin ? [0.5, 0.5, 0.5] : [0, 0, 0];
+                const centre = applyTransform(origin, instance.origin);
+                const radius = Math.hypot(...size);
+
+                const l = dot(line.direction, subtract(centre, line.point));
+                const n = l / line.direction.reduce((s, v) => s + v * v, 0);
+                const p = add(line.point, scale(line.direction, n));
+                const v = subtract(p, centre);
+                const dist = Math.hypot(...v);
+                if (dist < radius) {
+                    const corner1 = applyTransform(scale(size, -1), instance.origin);
+                    const corner2 = applyTransform(size, instance.origin);
+                    const planes = [
+                        { point: corner1, normal: applyTransform([-1, 0, 0], instance.rotation) },
+                        { point: corner1, normal: applyTransform([0, -1, 0], instance.rotation) },
+                        { point: corner1, normal: applyTransform([0, 0, -1], instance.rotation) },
+                        { point: corner2, normal: applyTransform([1, 0, 0], instance.rotation) },
+                        { point: corner2, normal: applyTransform([0, 1, 0], instance.rotation) },
+                        { point: corner2, normal: applyTransform([0, 0, 1], instance.rotation) },
+                    ];
+                    return convexHullIntercept(line, planes);
+                }
+            });
+            if (hits.length) {
+                app.instances.forEach((instance) => instance.selected = hits.includes(instance));
+                updateColours();
+            }
+        }
+
 
         /**
          * Add the event handlers for the canvas.
@@ -1346,9 +1370,13 @@
                     app.cullFaces = !app.cullFaces;
                 }
             });
-            canvas.addEventListener('mousedown', (event) => {
+
+            const mouseDown = (event) => {
                 action.lastX = event.clientX;
                 action.lastY = event.clientY;
+                const mouseLine = getRay(event.clientX, event.clientY);
+                report(`point: ${mouseLine.point.map((v) => v.toFixed(3))}, direction: ${mouseLine.direction.map((v) => v.toFixed(3))}`);
+                getIntersection(mouseLine);
                 action.move = (event) => {
                     const deltaX = event.clientX - action.lastX;
                     const deltaY = event.clientY - action.lastY;
@@ -1360,12 +1388,14 @@
                     const xRotation = getRotation(deltaY * Math.PI / 60, xAxis);
                     const yRotation = getRotation(deltaX * Math.PI / 60, app.up);
                     const rotation = multiply(xRotation, yRotation);
-                    app.eyePosition = subtract(app.lookAt, transform(sightLine, rotation));
-                    app.up = transform(app.up, rotation);
+                    app.eyePosition = subtract(app.lookAt, applyTransform(sightLine, rotation));
+                    app.up = applyTransform(app.up, rotation);
                     app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
                     app.updateViewControls();
                 };
-            });
+            };
+            canvas.addEventListener('mousedown', (event) => mouseDown(event));
+            canvas.addEventListener('touchstart', (event) => mouseDown(touch(event)));
             canvas.addEventListener('wheel', (event) => {
                 event.preventDefault();
                 const dist = Math.pow(2, event.deltaY / 100);
@@ -1375,8 +1405,6 @@
                 app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
                 app.updateViewControls();
             });
-
-
 
             /**
              * Process a dropped file
@@ -1446,11 +1474,11 @@
             app.buffers = {
                 vertex: gl.createBuffer(),
                 instances: gl.createBuffer(),
-                colours: gl.createBuffer(),
+                colour: gl.createBuffer(),
             };
             app.vertexCount = 36;
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             const shape = makeCube();
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
             // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride = 3 * 4 * 2,  offset = 0
             gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
@@ -1461,14 +1489,11 @@
 
             makeGraph();
             initialiseInstances();
-            //initialiseRandomInstances();
-            //gl.enable(gl.CULL_FACE);
-            gl.cullFace(gl.BACK);
         }
 
         /**
          * Called once html has loaded.
-         * 
+         *
          * Create the Webgl contect, set up the buffers and call the event loop.
          */
         function main(event) {
