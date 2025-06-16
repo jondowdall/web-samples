@@ -88,6 +88,10 @@
             border-radius: 0.5em;
             padding: 0.3em;
         }
+
+        #load-file {
+            display: none;
+        }
     </style>
 </head>
 
@@ -115,6 +119,7 @@
 
     </div>
     <div id="controls">
+        <input type="file" id="load-file" multiple />
         <div id="view-vectors"></div>
         <div id="movement">
             <button id="anti-clockwise">&#8634;</button>
@@ -305,6 +310,77 @@
         }
 
         /**
+         * Add a new block
+         */
+        function newBlock(offset) {
+            const selected = app.instances.filter((instance) => instance.selected);
+            if (selected.length) {
+
+            } else {
+                const newInstance = app.addRoot();
+            }
+            initialiseInstances()
+            updateColours();
+            showStructure();
+        }
+
+        /**
+         * Add a block next to the current block
+         */
+        function addBlocks(offset) {
+            const selected = app.instances.filter((instance) => instance.selected);
+            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+            selected.forEach((selected) => {
+                offset = applyTransform(offset, selected.rotation);
+                const position = add(selected.position, product(selected.size, offset));
+                const attributes = [
+                    position,
+                    selected.size,
+                    selected.angle,
+                    selected.axis,
+                    selected.colour,
+                    selected.opacity,
+                    selected.specular
+                ];
+                if (selected.parent) {
+                    const newInstance = selected.parent.addChild(...attributes);
+                    newInstance.selected = true;
+                } else {
+                    const newInstance = app.addRoot(...attributes);
+                    newInstance.selected = true;
+                }
+                selected.selected = false;
+            });
+            initialiseInstances()
+            updateColours();
+            showStructure();
+        }
+
+        /**
+         * Add a block next to the current block
+         */
+        function deleteBlocks(offset) {
+            const selected = app.instances.filter((instance) => instance.selected);
+            selected.forEach((selected) => {
+                selected.delete();
+            });
+            app.instances = app.instances.filter((instance) => !selected.includes(instance));
+            initialiseInstances()
+            updateColours();
+            showStructure();
+        }
+
+        /**
+         * Reset the view and clear teh points
+         */
+        function reset() {
+            app.eyePosition = [0, 0, 15];
+            app.lookAt = [0, 0, 0];
+            app.up = [0, 1, 0];
+            app.points = [];
+        }
+
+        /**
          * Add actions for the movement controls
          */
         function addMovementControls() {
@@ -313,7 +389,7 @@
             document.getElementById('clockwise').addEventListener('click', (event) => clockwise());
 
             document.getElementById('move-left').addEventListener('click', (event) => right(-1));
-            document.getElementById('clear').addEventListener('click', (event) => clear());
+            document.getElementById('clear').addEventListener('click', (event) => reset());
             document.getElementById('move-right').addEventListener('click', (event) => right());
 
             document.getElementById('move-forward').addEventListener('click', (event) => forward());
@@ -328,6 +404,8 @@
             const container = document.getElementById('view-vectors');
 
             const update = () => {
+                const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+                app.up = yAxis; // Ensure 'up' is perpendicular to look direction
                 app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
             }
 
@@ -426,6 +504,7 @@
                 return root;
             },
         };
+
         const shaderSource = {
             vertex: document.querySelector("#vertex-shader").innerHTML,
             fragment: document.querySelector("#fragment-shader").innerHTML,
@@ -596,7 +675,7 @@
         function updateColours() {
             const colourBuffer = [];
             app.instances.forEach((instance, index) => {
-                const colour = instance.selected ? [1, 1, 1] : instance.colour;
+                const colour = instance.selected ? [1, 1, 1] : instance.statusColour ?? instance.colour;
                 colourBuffer.push(...colour.map((v) => v * 0.3));
                 colourBuffer.push(...colour.map((v) => v * 0.3));
                 colourBuffer.push(...colour.map((v) => v * 1.0));
@@ -878,6 +957,20 @@
                 this.offset = 0;
                 this.setTransform();
             }
+            asString() {
+                const getVector = (vector, places = 2) => vector.map((v) => v.toFixed(places)).join(', ');
+                const attributes = [
+                    this.name,
+                    getVector(this.position),
+                    getVector(this.size),
+                    this.angle,
+                    getVector(this.axis),
+                    getVector(this.colour),
+                    this.specular,
+                    this.opacity,
+                ];
+                return attributes.join('; ');
+            }
             /**
              * Set the transform of a shape based on its position, rotation and scale.
              * 
@@ -968,6 +1061,41 @@
                 app.instances.push(newInstance);
                 return newInstance;
             }
+            delete() {
+                const children = [...this.children];
+                children.forEach((child) => child.delete);
+                if (this.parent) {
+                    const position = this.parent.children.indexOf(this);
+                    this.parent.children.splice(position, 1);
+                } else {
+                    const position = app.roots.indexOf(this);
+                    app.roots.splice(position, 1);
+                }
+            }
+            get siblings() {
+                const list = this.parent ? this.parent.children : app.roots;
+                return list.filter((child) => child !== this)
+            }
+            overlap(other) {
+                return ((this.requestedPosition[0] + this.size[0]) > other.position[0])
+                    && (this.requestedPosition[0] < (other.position[0] + other.size[0]))
+                    && ((this.requestedPosition[1] + this.size[1]) > other.position[1])
+                    && (this.requestedPosition[1] < (other.position[1] + other.size[1]))
+                    && ((this.requestedPosition[2] + this.size[2]) > other.position[2])
+                    && (this.requestedPosition[2] < (other.position[2] + other.size[2]));
+            }
+            move(vector) {
+                this.requestedPosition = add(this.start, vector);
+                if (!this.siblings.some((sibling) => this.overlap(sibling))) {
+                    this.position = this.requestedPosition;
+                }
+                this.siblings.forEach((sibling) => {
+                    if (this.overlap(sibling)) {
+                        sibling.statusColour = [1, 0, 0];
+                    }
+                });
+                updateColours();
+            }
             promote() {
                 if (this.parent) {
                     const siblings = this.parent.children;
@@ -1015,7 +1143,10 @@
 
         const action = {};
         document.body.addEventListener('mousemove', (event) => action.move?.(event));
-        document.body.addEventListener('mouseup', (event) => action.move = null);
+        document.body.addEventListener('mouseup', (event) => {
+            action.move = null;
+            showStructure();
+        });
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
         document.body.addEventListener('touchend', (event) => action.move = null);
@@ -1036,6 +1167,11 @@
             const addInstance = (instance, level = 0) => {
                 const addControls = (node, item, element, scaled) => {
                     node.contentEditable = true;
+                    node.addEventListener('focus', (event) => {
+                        instance.selected = true;
+                        updateColours();
+                    });
+
                     node.addEventListener('blur', (event) => {
                         if (isNaN(Number(item[element]))) {
                             item[element] = node.innerText;
@@ -1161,7 +1297,6 @@
                 app.lookAt = value.split(/,/g).map((v) => parseFloat(v));
             }
         }
-
 
         /**
          * Convert text to objects
@@ -1378,11 +1513,11 @@
          */
         function scaleMatrix(matrix, scale) {
             const ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            return matrix.map((v, i) => v + (ident[i] - v) * scale); 
+            return matrix.map((v, i) => v + (ident[i] - v) * scale);
         }
 
         /**
-         * Componentwise some of vectors
+         * Componentwise sum of vectors
          */
         function add(...vectors) {
             const length = Math.max(...vectors.map((v) => v.length));
@@ -1392,12 +1527,21 @@
             }
             return result;
         }
+
         /**
          * Return vector A minus vector B
          */
         function subtract(a, b) {
             return a.map((v, i) => v - b[i]);
         }
+
+        /**
+         * Componentwise product of vectors
+         */
+        function product(v1, v2) {
+            return v1.map((v, i) => v * v2[i]);
+        }
+
 
         /**
          * Return the dot product of two vectors
@@ -1551,13 +1695,56 @@
                 // Find the closest to the view position that isn't a parent
                 const hit = hits.filter((hit) => hit.children.filter((child) => hits.includes(child)).length === 0);
                 hit.sort((a, b) => dist(app.eyePosition, a.points[0]) - dist(app.eyePosition, b.points[0]));
-                app.instances.forEach((instance) => instance.selected = instance === hit[0]);
+                if (event.shiftKey) {
+                    if (event.ctrlKey) {
+                        hit.forEach((instance) => instance.selected = true);
+                    } else {
+                        hit[0].selected = true;
+                    }
+                } else {
+                    app.instances.forEach((instance) => instance.selected = instance === hit[0]);
+                }
                 report(hit[0].name);
                 updateColours();
                 updatePoints();
                 return hits;
+            } else {
+                app.instances.forEach((instance) => instance.selected = false);
             }
         }
+
+        /**
+         * Utility function to support downloading generated content.
+         */
+        function downloadText(text, name = '') {
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+            link.setAttribute('download', name);
+
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+
+        /**
+         * Save the current state
+         */
+        function save() {
+            const lines = [];
+            lines.push(`>eye position = ${app.eyePosition.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`>look at = ${app.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`>up = ${app.up.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push('');
+
+            const addInstance = (instance, level = 0) => {
+                lines.push(`${''.padStart(level * 2, ' ')}${instance.asString()}`);
+                instance.children.forEach((child) => child.addInstance(child, level + 1));
+            };
+            app.roots.forEach((root) => addInstance(root));
+            downloadText(lines.join('\n'));
+        }
+
 
         /**
          * Add the event handlers for the canvas.
@@ -1565,32 +1752,67 @@
         function addCanvasEvents(canvas) {
             canvas.tabIndex = 0;
             canvas.addEventListener('keydown', (event) => {
-                if (event.key === 'w') {
-                    app.wireframe = !app.wireframe;
-                }
-                if (event.key === 'i') {
-                    app.cullFaces = !app.cullFaces;
-                    updateColours();
-                }
-                if (event.key === 'c') {
-                    app.points = [];
-                    updatePoints();
-                }
+                report(event.key);
+                /*
+                                if (event.key === 'w') {
+                                    app.wireframe = !app.wireframe;
+                                }
+                                if (event.key === 'i') {
+                                    app.cullFaces = !app.cullFaces;
+                                    updateColours();
+                                }
+                                if (event.key === 'c') {
+                                    app.points = [];
+                                    updatePoints();
+                                }
+                                    */
                 const shiftMapping = {
                     ArrowUp: (event) => up(),
                     ArrowDown: (event) => up(-1),
                     ArrowLeft: (event) => right(-1),
                     ArrowRight: (event) => right(),
+                    '+': (event) => newBlock(),
+                    r: (event) => reset(),
+                }
+                const ctrlMapping = {
+                    ArrowUp: (event) => addBlocks([0, -1, 0]),
+                    ArrowDown: (event) => addBlocks([0, 1, 0]),
+                    ArrowLeft: (event) => addBlocks([1, 0, 0]),
+                    ArrowRight: (event) => addBlocks([-1, 0, 0]),
+                    l: (event) => document.getElementById('load-file').click(),
+                }
+                const altMapping = {
+                    ArrowUp: (event) => addBlocks([0, 0, -1]),
+                    ArrowDown: (event) => addBlocks([0, 0, 1]),
+                    ArrowLeft: (event) => addBlocks([1, 0, 0]),
+                    ArrowRight: (event) => addBlocks([-1, 0, 0]),
                 }
                 const mapping = {
                     ArrowUp: (event) => forward(),
                     ArrowDown: (event) => forward(-1),
                     ArrowLeft: (event) => rotateRight(-1),
                     ArrowRight: (event) => rotateRight(),
+                    Delete: (event) => deleteBlocks(event),
+                    b: (event) => { app.eyePosition = [0, 0, -15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    c: (event) => { app.points = []; updatePoints(); },
+                    f: (event) => { app.eyePosition = [0, 0, 15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    i: (event) => { app.cullFaces = !app.cullFaces; updateColours(); },
+                    l: (event) => { app.eyePosition = [-15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    r: (event) => { app.eyePosition = [15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    s: (event) => save(),
+                    t: (event) => { app.eyePosition = [0, 15, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 0, 1]; },
+                    w: (event) => app.wireframe = !app.wireframe,
                 }
 
                 if (event.shiftKey) {
                     shiftMapping[event.key]?.(event);
+                } else if (event.ctrlKey && ctrlMapping[event.key]) {
+                    event.preventDefault();
+                    ctrlMapping[event.key](event);
+                } else if (event.altKey && altMapping[event.key]) {
+                    event.preventDefault();
+                    altMapping[event.key](event);
+
                 } else {
                     mapping[event.key]?.(event);
                 }
@@ -1611,15 +1833,20 @@
                     } else {
                         action.plane.normal = [0, 1, 0];
                     }
+                    const selected = app.instances.filter((instance) => instance.selected);
+                    selected.forEach((instance) => instance.start = [...instance.position]);
                     action.move = (event) => {
                         const mouseLine = getRay(event.clientX, event.clientY);
                         const n = planeIntercept(mouseLine, action.plane);
                         const point = add(mouseLine.point, scale(mouseLine.direction, n));
                         const delta = subtract(point, action.plane.point);
 
-                        action.plane.point = point;
-                        action.selected.position = add(action.selected.position, delta);
-                        action.selected.update();
+                        ///action.plane.point = point;
+                        selected.forEach((selected) => selected.statusColour = null);
+                        selected.forEach((selected) => {
+                            selected.move(delta);
+                            selected.update();
+                        });
                     };
                 } else {
                     // Rotate the view
@@ -1633,7 +1860,7 @@
                         const yAxis = cross(sightLine, xAxis);
                         if (event.shiftKey) {
                             const dist = Math.hypot(...sightLine) / -1000;
-                            const movement = add(scale(normalised(xAxis), deltaX * dist),   scale(normalised(yAxis), deltaY * dist));
+                            const movement = add(scale(normalised(xAxis), deltaX * dist), scale(normalised(yAxis), deltaY * dist));
                             app.eyePosition = add(app.eyePosition, movement);
                             app.lookAt = add(app.lookAt, movement);
                         } else {
@@ -1740,6 +1967,24 @@
 
             makeGraph();
             initialiseInstances();
+
+            const fileSelection = document.getElementById('load-file');
+            fileSelection.addEventListener('change', (event) => {
+                function loadFile(file) {
+                    const reader = new FileReader();
+                    reader.addEventListener('load', (event) => {
+                        app.filename = file.name;
+                        const objs = getObjects(reader.result);
+                        const tree = getTree(objs);
+                        const graph = expandGraph(tree);
+                        makeGraph(graph, true);
+                    });
+                    reader.readAsText(file);
+                }
+                for (const file of fileSelection.files) {
+                    loadFile(file);
+                }
+            });
         }
 
         /**
