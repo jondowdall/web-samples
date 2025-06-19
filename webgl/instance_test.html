@@ -174,7 +174,7 @@
 
         gl_PointSize = 5.0;//50.0 * model[0][0];
     }
-  </script>
+    </script>
     <script type="x-shader/x-fragment" id="fragment-shader">
     #version 300 es
     precision highp float;
@@ -215,6 +215,57 @@
             return;
         }
         fragmentColour = vec4(colour, 1.0);
+    }
+    </script>
+    <script type="x-shader/x-fragment" id="text-vertex-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform mat4 projection;
+    uniform mat4 view;
+
+    in vec3 position;
+    in mat4 model;
+
+    in vec2 offset;
+    in vec2 size;
+    in vec2 textureSize;
+    in vec2 textureOrigin;
+
+    in vec4 colour;
+
+    out vec4 v_colour;
+    out vec2 v_textureCoordinate;
+
+    void main() {
+        gl_Position = projection * view * model * vec4(position, 1.0);
+        gl_Position = vec4(gl_Position.xy + offset * size, gl_Position.z, 1.0);
+        v_textureCoordinate = textureOrigin + offset * textureSize;
+gl_Position = vec4(offset.xy, 0.5, 1.0);
+        v_colour = colour;
+                gl_PointSize = 50.0;// * model[0][0];
+
+    }
+    </script>
+    <script type="x-shader/x-fragment" id="text-fragment-shader">
+    #version 300 es
+    precision highp float;
+    uniform sampler2D source;
+
+    in vec2 v_textureCoordinate;
+    in vec4 v_colour;
+
+    out vec4 fragmentColour;
+
+    void main() {
+        fragmentColour = v_colour * texture(source, v_textureCoordinate);
+                
+        fragmentColour = vec4(1.0, 0.0, 1.0, 1.0);
+return;
+        if (fragmentColour.a < -0.1) {
+            discard;
+            return;
+        }
     }
     </script>
 
@@ -483,6 +534,7 @@
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             instances: [],
             points: [],
+            text: [],
             scale: 1, //0.001,
             roots: [],
             wireframe: false,
@@ -509,6 +561,10 @@
         const shaderSource = {
             vertex: document.querySelector("#vertex-shader").innerHTML,
             fragment: document.querySelector("#fragment-shader").innerHTML,
+        }
+        const textShaderSource = {
+            vertex: document.querySelector("#text-vertex-shader").innerHTML,
+            fragment: document.querySelector("#text-fragment-shader").innerHTML,
         }
 
         /**
@@ -636,6 +692,13 @@
         }
 
         /**
+         * Generate the vertex data for a cube.
+         */
+        function makeBanner() {
+            return [-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1];
+        }
+
+        /**
          * Update the gl buffers used to define the base object used for instancing.
          */
         function updateObject() {
@@ -695,6 +758,34 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.points);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(points), gl.DYNAMIC_DRAW);
         }
+
+        /**
+         * Initialise the text data
+         */
+        function initialiseText() {
+            const shape = makeBanner();
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textInstance);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+        }
+
+
+        /**
+         * Update text data
+         */
+        function updateText() {
+            const data = [];
+            app.text.forEach((text) => {
+                data.push(...text.position);
+                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight);
+                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight);
+                data.push(text.textureOffset[0] / gl.canvas.clientWidth, text.textureOffset[1] / gl.canvas.clientHeight);
+                data.push(...text.colour);
+                data.push(...text.transform);
+            });
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+        }
+
 
         /**
          * Add instance
@@ -830,6 +921,7 @@
             gl.vertexAttribPointer(app.shader.opacity, 1, gl.FLOAT, false, 4 * (3 * 3 + 2), 40);
             gl.enableVertexAttribArray(app.shader.opacity);
             gl.vertexAttribDivisor(app.shader.opacity, 1);
+
         }
 
         /**
@@ -871,6 +963,74 @@
         }
 
         /**
+         * Render Text
+         */
+        function renderText(time) {
+            gl.useProgram(app.textShader.program);
+
+            gl.vertexAttribDivisor(app.shader.ambientColour, 0);
+            gl.vertexAttribDivisor(app.shader.diffuseColour, 0);
+            gl.vertexAttribDivisor(app.shader.specularColour, 0);
+            gl.vertexAttribDivisor(app.shader.specularIntensity, 0);
+            gl.vertexAttribDivisor(app.shader.opacity, 0);
+
+            gl.uniformMatrix4fv(app.textShader.projection, false, app.projectionMatrix);
+            gl.uniformMatrix4fv(app.textShader.view, false, app.viewMatrix);
+            gl.uniform1i(app.textShader.texture, gl.TEXTURE0);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textInstance);
+            gl.vertexAttribPointer(app.textShader.offset, 2, gl.FLOAT, false, 4 * 2, 0);
+            gl.enableVertexAttribArray(app.textShader.offset);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
+            const stride = 4 * (3 + 2 + 2 + 2 + 4 + 16);
+
+            gl.vertexAttribPointer(app.textShader.position, 3, gl.FLOAT, false, stride, 0);
+            gl.enableVertexAttribArray(app.textShader.position);
+            gl.vertexAttribDivisor(app.textShader.position, 1);
+
+            gl.vertexAttribPointer(app.textShader.size, 2, gl.FLOAT, false, stride, 4 * 3);
+            gl.enableVertexAttribArray(app.textShader.size);
+            gl.vertexAttribDivisor(app.textShader.size, 1);
+
+            gl.vertexAttribPointer(app.textShader.textureSize, 2, gl.FLOAT, false, stride, 4 * (3 + 2));
+            gl.enableVertexAttribArray(app.textShader.textureSize);
+            gl.vertexAttribDivisor(app.textShader.textureSize, 1);
+
+            gl.vertexAttribPointer(app.textShader.textureOrigin, 2, gl.FLOAT, false, stride, 4 * (3 + 2));
+            gl.enableVertexAttribArray(app.textShader.textureOrigin);
+            gl.vertexAttribDivisor(app.textShader.textureOrigin, 1);
+
+            gl.vertexAttribPointer(app.textShader.colour, 4, gl.FLOAT, false, stride, 4 * (3 + 2 + 2 + 2));
+            gl.enableVertexAttribArray(app.textShader.colour);
+            gl.vertexAttribDivisor(app.textShader.colour, 1);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.textShader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, stride, 4 * (3 + 2 + 2 + 2 + i * 4));
+                gl.enableVertexAttribArray(location);
+                gl.vertexAttribDivisor(location, 1);
+            }
+
+            //gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.text.length);
+            gl.drawArraysInstanced(gl.POINTS, 100, 6, app.text.length);
+
+            gl.vertexAttribDivisor(app.textShader.position, 0);
+            gl.vertexAttribDivisor(app.textShader.size, 0);
+            gl.vertexAttribDivisor(app.textShader.textureSize, 0);
+            gl.vertexAttribDivisor(app.textShader.textureOrigin, 0);
+            gl.vertexAttribDivisor(app.textShader.colour, 0);
+            for (let i = 0; i < 4; ++i) {
+                gl.vertexAttribDivisor(app.textShader.model + i, 0);
+            }
+        }
+
+        /**
          * Render loop function to update the display
          */
         let start;
@@ -905,6 +1065,10 @@
                 if (app.points.length > 0) {
                     setPointAttributes();
                     gl.drawArrays(gl.POINTS, 0, app.points.length);
+                }
+
+                if (app.text.length > 0) {
+                    renderText();
                 }
                 glErrors();
             } else {
@@ -1975,15 +2139,20 @@
 
             const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specularIntensity', 'opacity'];
             app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'eyePosition']);
+            app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
+                ['projection', 'view', 'texture']);
 
             app.buffers = {
                 vertex: gl.createBuffer(),
                 instances: gl.createBuffer(),
                 colour: gl.createBuffer(),
                 points: gl.createBuffer(),
-                text: gl.createBuffer(),
+                textInstance: gl.createBuffer(),
+                textItems: gl.createBuffer(),
             };
+            app.textTexture = gl.createTexture();
             app.vertexCount = 36;
+            initialiseText();
             const shape = makeCube();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
@@ -2008,6 +2177,16 @@
                     loadFile(file);
                 }
             });
+
+            app.text.push({
+                position: [0, 1, 0],
+                size: [100, 20],
+                textureOffset: [0, 0],
+                colour: [1, 1, 1, 1],
+                transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            });
+
+            updateText();
         }
 
         /**
