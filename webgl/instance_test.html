@@ -92,6 +92,18 @@
         #load-file {
             display: none;
         }
+
+        .texture-canvas {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 400px;
+            z-index: 1000;
+        }
+
+        .selected {
+            font-weight: bold;
+        }
     </style>
 </head>
 
@@ -163,7 +175,6 @@
 
     void main() {
         v_vertex = model * vec4(position, 1.0);
-        //vec4 world = view * v_vertex;
         gl_Position = projection * view * v_vertex;
         v_normal = model * vec4(normal, 0.0);
         v_ambientColour = ambientColour;
@@ -239,11 +250,14 @@
 
     void main() {
         gl_Position = projection * view * model * vec4(position, 1.0);
-        gl_Position = vec4(gl_Position.xy + offset * size, gl_Position.z, 1.0);
-        v_textureCoordinate = textureOrigin + offset * textureSize;
-gl_Position = vec4(offset.xy, 0.5, 1.0);
+        gl_Position = vec4(gl_Position.xy + offset * size * gl_Position.w, gl_Position.zw);
+        v_colour = vec4(gl_Position.z, (1.0 + gl_Position.x) * 3.0, gl_Position.y, 1.0);
+
+        vec2 textureOffset = (offset + vec2(1.0, -1.0)) / vec2(2.0, -2.0);
+        v_textureCoordinate = textureOrigin + textureOffset * textureSize;
+
         v_colour = colour;
-                gl_PointSize = 50.0;// * model[0][0];
+        gl_PointSize = 10.0;// * model[0][0];
 
     }
     </script>
@@ -260,9 +274,7 @@ gl_Position = vec4(offset.xy, 0.5, 1.0);
     void main() {
         fragmentColour = v_colour * texture(source, v_textureCoordinate);
                 
-        fragmentColour = vec4(1.0, 0.0, 1.0, 1.0);
-return;
-        if (fragmentColour.a < -0.1) {
+        if (fragmentColour.r < 0.1) {
             discard;
             return;
         }
@@ -404,6 +416,7 @@ return;
             });
             initialiseInstances()
             updateColours();
+            updateText();
             showStructure();
         }
 
@@ -763,29 +776,127 @@ return;
          * Initialise the text data
          */
         function initialiseText() {
+            gl.useProgram(app.textShader.program);
+            app.textVertexArray = gl.createVertexArray();
+            gl.bindVertexArray(app.textVertexArray);
+
             const shape = makeBanner();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textInstance);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+
+            gl.vertexAttribPointer(app.textShader.offset, 2, gl.FLOAT, false, 4 * 2, 0);
+            gl.enableVertexAttribArray(app.textShader.offset);
+
+            const stride = 4 * (3 + 2 + 2 + 2 + 4 + 16);
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
+
+            gl.vertexAttribPointer(app.textShader.position, 3, gl.FLOAT, false, stride, 0);
+            gl.enableVertexAttribArray(app.textShader.position);
+            gl.vertexAttribDivisor(app.textShader.position, 1);
+
+            gl.vertexAttribPointer(app.textShader.size, 2, gl.FLOAT, false, stride, 4 * 3);
+            gl.enableVertexAttribArray(app.textShader.size);
+            gl.vertexAttribDivisor(app.textShader.size, 1);
+
+            gl.vertexAttribPointer(app.textShader.textureSize, 2, gl.FLOAT, false, stride, 4 * (3 + 2));
+            gl.enableVertexAttribArray(app.textShader.textureSize);
+            gl.vertexAttribDivisor(app.textShader.textureSize, 1);
+
+            gl.vertexAttribPointer(app.textShader.textureOrigin, 2, gl.FLOAT, false, stride, 4 * (3 + 2 + 2));
+            gl.enableVertexAttribArray(app.textShader.textureOrigin);
+            gl.vertexAttribDivisor(app.textShader.textureOrigin, 1);
+
+            gl.vertexAttribPointer(app.textShader.colour, 4, gl.FLOAT, false, stride, 4 * (3 + 2 + 2 + 2));
+            gl.enableVertexAttribArray(app.textShader.colour);
+            gl.vertexAttribDivisor(app.textShader.colour, 1);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.textShader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, stride, 4 * (3 + 2 + 2 + 2 + 4 + i * 4));
+                gl.enableVertexAttribArray(location);
+                gl.vertexAttribDivisor(location, 1);
+            }
         }
 
+        /**
+         * Initialise a texture and copy an image from the specified canvas.
+         */
+        function copyTexture(canvas) {
+            app.textTexture = app.textTexture ?? gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
+
+            // target, level, internalFormat, srcFormat, srcType, source
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+
+            gl.generateMipmap(gl.TEXTURE_2D);
+            glErrors(gl, 'Load Texture');
+        }
 
         /**
          * Update text data
          */
         function updateText() {
-            const data = [];
-            app.text.forEach((text) => {
-                data.push(...text.position);
-                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight);
-                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight);
-                data.push(text.textureOffset[0] / gl.canvas.clientWidth, text.textureOffset[1] / gl.canvas.clientHeight);
-                data.push(...text.colour);
-                data.push(...text.transform);
+            if (!app.textureCanvas) {
+                app.textureCanvas = document.createElement('canvas');
+                app.textureCanvas.classList.add('texture-canvas');
+                document.body.appendChild(app.textureCanvas);
+            }
+            const context = app.textureCanvas.getContext('2d');
+            context.width = app.textureCanvas.width = 500;
+            context.height = app.textureCanvas.height = app.instances.length * 30;
+            let nextLine = 0;
+
+            context.clearRect(0, 0, app.textureCanvas.width, app.textureCanvas.height);
+
+            context.fillStyle = 'black';
+            context.fillRect(0, 0, app.textureCanvas.width / 2, app.textureCanvas.height);
+
+            context.fillStyle = 'white';
+            context.font = '24px sans-serif';
+            context.textBaseline = 'hanging';
+            context.fillText(0, nextLine, 'Text');
+
+            app.text = app.instances.map((instance) => {
+                context.fillText(instance.name, 0, nextLine);
+                const metrics = context.measureText(instance.name);
+                let fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+                let actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+                nextLine += fontHeight;
+                const scale = instance.labelScale ?? 1;
+                return {
+                    position: instance.labelPosition ?? [0.0, 0.0, 0.0],
+                    size: [scale * metrics.width, scale * fontHeight],
+                    textureOrigin: [0, nextLine],
+                    colour: instance.labelColour ?? [1, 1, 1, 1],
+                    instance,
+                    canvas: app.textureCanvas,
+                }
             });
+
+            copyTexture(app.textureCanvas);
+            updateTextBuffer();
+        }
+
+        /**
+         * Update the buffer containing the text instance data.
+         */
+        function updateTextBuffer() {
+            const data = [];
+            const selected = app.showNames ? app.text : app.text.filter((item) => item.instance.selected);
+            selected.forEach((text) => {
+                data.push(...text.position);
+                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight); // image size
+                data.push(text.size[0] / text.canvas.width, text.size[1] / text.canvas.height);  // Texture Size
+                data.push(text.textureOrigin[0] / text.canvas.width, (text.textureOrigin[1] - text.size[1]) / text.canvas.height); // Texture origin
+                data.push(...text.colour);
+                data.push(...text.instance.transform);
+            });
+            app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
         }
-
 
         /**
          * Add instance
@@ -880,6 +991,9 @@ return;
          * Set Attribute pointers for drawing boxes.
          */
         function setBoxAttributes() {
+            app.boxVertexArray = gl.createVertexArray();
+            gl.bindVertexArray(app.boxVertexArray);
+
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride = 3 * 4 * 2,  offset = 0
             gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
@@ -887,7 +1001,6 @@ return;
 
             gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
             gl.enableVertexAttribArray(app.shader.normal);
-
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
 
@@ -928,6 +1041,9 @@ return;
          * Set Attribute pointers for drawing points.
          */
         function setPointAttributes() {
+            app.pointVertexArray = gl.createVertexArray();
+            gl.bindVertexArray(app.pointVertexArray);
+
             gl.disableVertexAttribArray(app.shader.normal);
             gl.vertexAttrib3f(app.shader.normal, 0.0, 0.0, 1.0);
 
@@ -965,28 +1081,17 @@ return;
         /**
          * Render Text
          */
-        function renderText(time) {
+        function renderText() {
             gl.useProgram(app.textShader.program);
-
-            gl.vertexAttribDivisor(app.shader.ambientColour, 0);
-            gl.vertexAttribDivisor(app.shader.diffuseColour, 0);
-            gl.vertexAttribDivisor(app.shader.specularColour, 0);
-            gl.vertexAttribDivisor(app.shader.specularIntensity, 0);
-            gl.vertexAttribDivisor(app.shader.opacity, 0);
-
-            gl.uniformMatrix4fv(app.textShader.projection, false, app.projectionMatrix);
-            gl.uniformMatrix4fv(app.textShader.view, false, app.viewMatrix);
-            gl.uniform1i(app.textShader.texture, gl.TEXTURE0);
-
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
+            app.textVertexArray = gl.createVertexArray();
+            gl.bindVertexArray(app.textVertexArray);
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textInstance);
             gl.vertexAttribPointer(app.textShader.offset, 2, gl.FLOAT, false, 4 * 2, 0);
             gl.enableVertexAttribArray(app.textShader.offset);
 
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
             const stride = 4 * (3 + 2 + 2 + 2 + 4 + 16);
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
 
             gl.vertexAttribPointer(app.textShader.position, 3, gl.FLOAT, false, stride, 0);
             gl.enableVertexAttribArray(app.textShader.position);
@@ -1016,18 +1121,6 @@ return;
                 gl.enableVertexAttribArray(location);
                 gl.vertexAttribDivisor(location, 1);
             }
-
-            //gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.text.length);
-            gl.drawArraysInstanced(gl.POINTS, 100, 6, app.text.length);
-
-            gl.vertexAttribDivisor(app.textShader.position, 0);
-            gl.vertexAttribDivisor(app.textShader.size, 0);
-            gl.vertexAttribDivisor(app.textShader.textureSize, 0);
-            gl.vertexAttribDivisor(app.textShader.textureOrigin, 0);
-            gl.vertexAttribDivisor(app.textShader.colour, 0);
-            for (let i = 0; i < 4; ++i) {
-                gl.vertexAttribDivisor(app.textShader.model + i, 0);
-            }
         }
 
         /**
@@ -1047,7 +1140,9 @@ return;
                 app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
                 app.velocity = scale(app.velocity, 0.9);
                 updateBuffers(time);
+
                 gl.useProgram(app.shader.program);
+                gl.bindVertexArray(app.boxVertexArray);
 
                 gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
                 gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
@@ -1056,7 +1151,6 @@ return;
                 gl.uniform3fv(app.shader.lightPosition2, [500, -500, 5000]);
                 gl.uniform3fv(app.shader.lightPosition3, [1000, 15000, 1000]);
 
-                setBoxAttributes();
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
                 }
@@ -1064,11 +1158,31 @@ return;
 
                 if (app.points.length > 0) {
                     setPointAttributes();
+                    gl.bindVertexArray(app.pointVertexArray);
                     gl.drawArrays(gl.POINTS, 0, app.points.length);
                 }
 
-                if (app.text.length > 0) {
-                    renderText();
+                if (app.textItemCount > 0) {
+                    gl.disable(gl.DEPTH_TEST);
+                    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+                    gl.colorMask(true, true, true, false);
+
+                    gl.useProgram(app.textShader.program);
+                    gl.bindVertexArray(app.textVertexArray);
+
+                    gl.uniformMatrix4fv(app.textShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.textShader.view, false, app.viewMatrix);
+                    gl.uniform1i(app.textShader.texture, gl.TEXTURE0);
+
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
+
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.textItemCount);
+
+                    gl.enable(gl.DEPTH_TEST);
+                    gl.colorMask(true, true, true, true);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
                 }
                 glErrors();
             } else {
@@ -1210,6 +1324,7 @@ return;
                     gl.bufferData(gl.ARRAY_BUFFER,
                         new Float32Array(colourBuffer),
                         gl.STATIC_DRAW);
+                    updateTextBuffer();
                 }
             }
             addChild(position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
@@ -1242,12 +1357,12 @@ return;
                 return list.filter((child) => child !== this)
             }
             overlap(position, other) {
-                return ((position[0] + this.size[0]) > other.position[0])
-                    && (position[0] < (other.position[0] + other.size[0]))
-                    && ((position[1] + this.size[1]) > other.position[1])
-                    && (position[1] < (other.position[1] + other.size[1]))
-                    && ((position[2] + this.size[2]) > other.position[2])
-                    && (position[2] < (other.position[2] + other.size[2]));
+                return ((position[0] + this.size[0]) >= other.position[0])
+                    && (position[0] <= (other.position[0] + other.size[0]))
+                    && ((position[1] + this.size[1]) >= other.position[1])
+                    && (position[1] <= (other.position[1] + other.size[1]))
+                    && ((position[2] + this.size[2]) >= other.position[2])
+                    && (position[2] <= (other.position[2] + other.size[2]));
             }
             move(vector) {
                 this.siblings.forEach((sibling) => {
@@ -1351,7 +1466,9 @@ return;
                 <span class="value">Specular</span>
                 <span class="value">opacity</span>`;
 
+            app.nodeMap = new Map();
             const addInstance = (instance, level = 0) => {
+                const nodes = [];
                 const addControls = (node, item, element, scaled) => {
                     node.contentEditable = true;
                     node.addEventListener('focus', (event) => {
@@ -1438,6 +1555,7 @@ return;
                     const places = Math.floor(Math.log10(1 / scaled));
 
                     const node = document.createElement('span');
+                    nodes.push(node);
                     if (isNaN(Number(instance[argument]))) {
                         node.innerHTML = instance[argument];
                     } else {
@@ -1453,6 +1571,7 @@ return;
                     const container = document.createElement('div');
                     instance[argument].forEach((item, index) => {
                         const node = document.createElement('span');
+                        nodes.push(node);
                         node.classList.add('value');
                         node.innerHTML = item.toFixed(places);
                         addControls(node, instance[argument], index, scaled);
@@ -1463,6 +1582,7 @@ return;
                 const name = document.createElement('span');
                 name.style.whiteSpace = 'pre';
                 name.append(''.padStart(level * 2, ' '), addSpan('name'));
+                app.nodeMap.set(instance, nodes);
                 structure.append(name,
                     addVec('position'),
                     addVec('size'),
@@ -1482,6 +1602,25 @@ return;
             },
             'look at'(value) {
                 app.lookAt = value.split(/,/g).map((v) => parseFloat(v));
+            },
+            up(value) {
+                app.up = value.split(/,/g).map((v) => parseFloat(v));
+            },
+            fov(value) {
+                app.fov = parseFloat(value);
+            },
+            aspect(value) {
+                app.aspect = parseFloat(value);
+            },
+            near(value) {
+                app.near = parseFloat(value);
+            },
+            far(value) {
+                app.far = parseFloat(value);
+            },
+            background(value) {
+                const colour = value.split(/,/g).map((v) => parseFloat(v));
+                gl.clearColor(...colour, 1.0);
             }
         }
 
@@ -1660,7 +1799,6 @@ return;
                     node.children.forEach((child) => addNode(root, child));
                 });
                 initialiseInstances();
-                showStructure();
             } else {
                 const root = app.addRoot(
                     [0, 0, 0],    // Position
@@ -1676,8 +1814,10 @@ return;
             const grandchild2 = child.addChild([0, 0, 500], [500, 500, 500]);
             const greatgrandchild = grandchild.addChild([250, 1100, 0], [500, 1500, 500]);
             */
-                showStructure();
             }
+
+            showStructure();
+            updateText();
         }
 
         /**
@@ -1893,6 +2033,7 @@ return;
                 }
                 report(hit[0].name);
                 updateColours();
+                updateTextBuffer();
                 updatePoints();
                 return hits;
             } else {
@@ -1980,6 +2121,7 @@ return;
                     ArrowLeft: (event) => rotateRight(-1),
                     ArrowRight: (event) => rotateRight(),
                     Delete: (event) => deleteBlocks(event),
+                    a: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
                     b: (event) => { app.eyePosition = [0, 0, -15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
                     c: (event) => { app.points = []; updatePoints(); },
                     f: (event) => { app.eyePosition = [0, 0, 15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
@@ -2010,7 +2152,11 @@ return;
                 action.lastY = event.clientY;
                 const mouseLine = getRay(event.clientX, event.clientY);
                 const hits = getIntersection(mouseLine);
+                for (const node of document.body.querySelectorAll('.selected')) {
+                    node.classList.remove('selected');
+                }
                 if (hits) {
+                    hits.forEach((instance) => app.nodeMap.get(instance).forEach((node) => node.classList.add('selected')));
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, scaled } = viewVectors();
                     action.selected = hits[0];
@@ -2142,6 +2288,9 @@ return;
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
 
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
             app.buffers = {
                 vertex: gl.createBuffer(),
                 instances: gl.createBuffer(),
@@ -2156,6 +2305,7 @@ return;
             const shape = makeCube();
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+            setBoxAttributes();
 
             makeGraph();
             initialiseInstances();
@@ -2177,16 +2327,6 @@ return;
                     loadFile(file);
                 }
             });
-
-            app.text.push({
-                position: [0, 1, 0],
-                size: [100, 20],
-                textureOffset: [0, 0],
-                colour: [1, 1, 1, 1],
-                transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            });
-
-            updateText();
         }
 
         /**
