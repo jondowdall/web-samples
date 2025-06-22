@@ -220,12 +220,14 @@
         sf = pow(sf, v_specularIntensity);
 
         vec3 colour = v_ambientColour + v_diffuseColour * df + v_specularColour * sf;
-        //fragmentColour = vec4(colour, v_opacity);
+        fragmentColour = vec4(colour, v_opacity);
+        /*
         if (v_opacity > 0.0 && dot(normal, toEye) > -0.1) {
             discard;
             return;
         }
         fragmentColour = vec4(colour, 1.0);
+        */
     }
     </script>
     <script type="x-shader/x-fragment" id="text-vertex-shader">
@@ -251,7 +253,6 @@
     void main() {
         gl_Position = projection * view * model * vec4(position, 1.0);
         gl_Position = vec4(gl_Position.xy + offset * size * gl_Position.w, gl_Position.zw);
-        v_colour = vec4(gl_Position.z, (1.0 + gl_Position.x) * 3.0, gl_Position.y, 1.0);
 
         vec2 textureOffset = (offset + vec2(1.0, -1.0)) / vec2(2.0, -2.0);
         v_textureCoordinate = textureOrigin + textureOffset * textureSize;
@@ -723,25 +724,17 @@
          */
         function initialiseInstances() {
             const matrices = [];
-            app.instances.forEach((instance) => matrices.push(...instance.transform));
+            const reversed = app.instances.toReversed();
+            reversed.forEach((instance) => matrices.push(...instance.transform));
 
             app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
-            app.instances.forEach((instance, index) =>
+            reversed.forEach((instance, index) =>
                 instance.matrix = new Float32Array(app.modelMatrix.buffer, index * 16 * 4, 16));
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
             gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
 
-            const colourBuffer = [];
-            app.instances.forEach((instance, index) => {
-                colourBuffer.push(...instance.colour.map((v) => v * 0.3));
-                colourBuffer.push(...instance.colour.map((v) => v * 0.3));
-                colourBuffer.push(...instance.colour.map((v) => v * 1.0));
-                colourBuffer.push(instance.specular);
-                colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
-            });
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colourBuffer), gl.STATIC_DRAW);
+            updateColours();
 
             app.instancesChanged = true;
         }
@@ -751,13 +744,15 @@
          */
         function updateColours() {
             const colourBuffer = [];
-            app.instances.forEach((instance, index) => {
-                const colour = instance.selected ? [1, 1, 1] : instance.statusColour ?? instance.colour;
+            app.instances.toReversed().forEach((instance, index) => {
+                const colour = instance.selected ? [1, 1, 1] : (instance.statusColour ?? instance.colour);
                 colourBuffer.push(...colour.map((v) => v * 0.3));
                 colourBuffer.push(...colour.map((v) => v * 0.3));
                 colourBuffer.push(...colour.map((v) => v * 1.0));
                 colourBuffer.push(instance.specular);
-                colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
+                const opacity = app.solid ? 1 : app.wireframe ? 0.1 : instance.children.length > 0 ? 0.5 : 1;
+                //colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
+                colourBuffer.push(opacity);
             });
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colourBuffer), gl.STATIC_DRAW);
@@ -830,7 +825,14 @@
             // target, level, internalFormat, srcFormat, srcType, source
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
 
-            gl.generateMipmap(gl.TEXTURE_2D);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            /*
+                        gl.texParameterf(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+                        gl.generateMipmap(gl.TEXTURE_2D);
+                        */
             glErrors(gl, 'Load Texture');
         }
 
@@ -838,37 +840,67 @@
          * Update text data
          */
         function updateText() {
+            const width = 500;
             if (!app.textureCanvas) {
                 app.textureCanvas = document.createElement('canvas');
                 app.textureCanvas.classList.add('texture-canvas');
                 document.body.appendChild(app.textureCanvas);
             }
             const context = app.textureCanvas.getContext('2d');
-            context.width = app.textureCanvas.width = 500;
+            context.width = app.textureCanvas.width = width;
             context.height = app.textureCanvas.height = app.instances.length * 30;
-            let nextLine = 0;
 
             context.clearRect(0, 0, app.textureCanvas.width, app.textureCanvas.height);
-
-            context.fillStyle = 'black';
-            context.fillRect(0, 0, app.textureCanvas.width / 2, app.textureCanvas.height);
 
             context.fillStyle = 'white';
             context.font = '24px sans-serif';
             context.textBaseline = 'hanging';
-            context.fillText(0, nextLine, 'Text');
 
+            let x = y = 0;
+            let lineHeight = 0;
             app.text = app.instances.map((instance) => {
-                context.fillText(instance.name, 0, nextLine);
                 const metrics = context.measureText(instance.name);
-                let fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
-                let actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-                nextLine += fontHeight;
+                const fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+                if (x + metrics.width > width) {
+                    x = 0;
+                    y += lineHeight;
+                    lineHeight = 0;
+                }
+                x += metrics.width;
+                lineHeight = Math.max(lineHeight, fontHeight);
+            });
+
+            if (y + lineHeight > context.height) {
+                context.height = app.textureCanvas.height = y + lineHeight;
+                context.clearRect(0, 0, app.textureCanvas.width, app.textureCanvas.height);
+
+                context.fillStyle = 'white';
+                context.font = '24px sans-serif';
+                context.textBaseline = 'hanging';
+            }
+
+            lineHeight = x = y = 0;
+            app.text = app.instances.map((instance) => {
+                const metrics = context.measureText(instance.name);
+
+                const fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+                const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+
+                if (x + metrics.width > width) {
+                    x = 0;
+                    y += lineHeight;
+                    lineHeight = 0;
+                }
+                const textureOrigin = [x, y];
+                context.fillText(instance.name, x, y);
+                x += metrics.width;
+
+                lineHeight = Math.max(lineHeight, fontHeight);
                 const scale = instance.labelScale ?? 1;
                 return {
                     position: instance.labelPosition ?? [0.0, 0.0, 0.0],
                     size: [scale * metrics.width, scale * fontHeight],
-                    textureOrigin: [0, nextLine],
+                    textureOrigin,
                     colour: instance.labelColour ?? [1, 1, 1, 1],
                     instance,
                     canvas: app.textureCanvas,
@@ -889,7 +921,7 @@
                 data.push(...text.position);
                 data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight); // image size
                 data.push(text.size[0] / text.canvas.width, text.size[1] / text.canvas.height);  // Texture Size
-                data.push(text.textureOrigin[0] / text.canvas.width, (text.textureOrigin[1] - text.size[1]) / text.canvas.height); // Texture origin
+                data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
                 data.push(...text.colour);
                 data.push(...text.instance.transform);
             });
@@ -1312,18 +1344,7 @@
                 this.children.forEach((child) => child.update(true));
                 app.instancesChanged = true;
                 if (!child) {
-                    const colourBuffer = [];
-                    app.instances.forEach((instance, index) => {
-                        colourBuffer.push(...instance.colour.map((v) => v * 0.3));
-                        colourBuffer.push(...instance.colour.map((v) => v * 0.3));
-                        colourBuffer.push(...instance.colour.map((v) => v * 1.0));
-                        colourBuffer.push(instance.specular);
-                        colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
-                    });
-                    gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
-                    gl.bufferData(gl.ARRAY_BUFFER,
-                        new Float32Array(colourBuffer),
-                        gl.STATIC_DRAW);
+                    updateColours();
                     updateTextBuffer();
                 }
             }
@@ -1447,7 +1468,7 @@
         document.body.addEventListener('mousemove', (event) => action.move?.(event));
         document.body.addEventListener('mouseup', (event) => {
             action.move = null;
-            showStructure();
+            //showStructure();
         });
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
@@ -1608,15 +1629,19 @@
             },
             fov(value) {
                 app.fov = parseFloat(value);
+                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             aspect(value) {
                 app.aspect = parseFloat(value);
+                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             near(value) {
                 app.near = parseFloat(value);
+                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             far(value) {
                 app.far = parseFloat(value);
+                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             background(value) {
                 const colour = value.split(/,/g).map((v) => parseFloat(v));
@@ -1646,7 +1671,8 @@
                     const indent = indentedName.replace(/\S.*/, '');
                     const rangeName = indentedName.replace(/^\s+/, '');
                     const match = rangeName.match(/(\[(?<instances>[^\]]+)\]\s*)?(?<name>.*)/);
-                    const name = match.groups.name;
+                    const qualifiedName = match.groups.name;
+                    const [name, ...types] = qualifiedName.split(/\s*:\s*/);
 
                     let level = 0;
                     for (let i = 0; i < indent.length; ++i) {
@@ -1663,9 +1689,20 @@
                     const colour = colourStr ? colourStr.split(',') : null;
                     const specular = specularStr ? specularStr : null;
                     const opacity = opacityStr ? opacityStr : null;
-                    return {
-                        name, level, position, size, angle, axis, colour, specular, opacity, instances: instances ?? match.groups.instances, children: [],
-                    };
+                    const obj = {
+                        name,
+                        types,
+                        level,
+                        position,
+                        size,
+                        angle,
+                        axis,
+                        colour,
+                        specular,
+                        opacity,
+                        instances: instances ?? match.groups.instances, children: [],
+                    }
+                    return obj;
                 }
                 return [];
             });
@@ -1680,12 +1717,20 @@
             const named = {};
             objs.forEach((obj) => {
                 named[obj.name] = obj;
-                const [name, type] = obj.name.split(/\s*:\s*/);
-                if (type && named[type]) {
-                    Object.getOwnPropertyNames(obj).forEach((property) => {
-                        obj[property] = obj[property] ?? named[type][property];
-                    });
-                    obj.children.push(...named[type].children.map((child) => Object.assign({}, child)));
+                obj.types = obj.types.map((type) => named[type]);
+
+                if (obj.types.length) {
+                    Object.getOwnPropertyNames(obj).filter((property) => obj[property] === null)
+                        .forEach((property) => {
+                            const stack = [...obj.types];
+                            while (obj[property] === null && stack.length) {
+                                const type = stack.shift();
+                                stack.push(...type.types);
+                                obj[property] = type[property];
+                            }
+                        });
+                    obj.types.forEach((type) =>
+                        obj.children.push(...type.children.map((child) => Object.assign({}, child))));
                 }
                 while (stack.length && obj.level <= stack[0].level) {
                     stack.shift();
@@ -1738,14 +1783,16 @@
             const expand = (node, context = []) => {
                 const resolve = (value, context) => {
                     if (isNaN(Number(value))) {
-                        value = value.replace(/<([0-9]*)>/g, (match, level) => context[parseInt(level) || 0]);
+                        value = value.replace(/<([0-9]*)>/g, (match, level) => (context[parseInt(level) || 0].instance) ?? 0)
+                            .replace(/<n([0-9]*)>/g, (match, level) => (context[parseInt(level) || 0].idx) ?? 0)
+                            .replace(/<i([0-9]*)>/g, (match, level) => (context[parseInt(level) || 0].index) ?? 0);
                         const func = new Function(`return ${value};`);
                         return func();
                     }
                     return Number(value);
                 }
                 const makeInstance = (node, context) => ({
-                    name: node.name.replace(/<([0-9]*)>/g, (match, level) => context[parseInt(level) || 0]),
+                    name: node.name.replace(/<([0-9]*)>/g, (match, level) => context[parseInt(level) || 0].instance),
                     position: node.position.map((v) => resolve(v, context)),
                     size: node.size.map((v) => resolve(v, context)),
                     angle: resolve(node.angle, context),
@@ -1753,15 +1800,20 @@
                     colour: node.colour.map((v) => resolve(v, context)),
                     specular: resolve(node.specular, context),
                     opacity: resolve(node.opacity, context),
-                    children: node.children.flatMap((child) => expand(child, context)),
+                    children: node.children.flatMap((child, index) => expand(child, [{ index }, ...context])),
                 });
 
                 if (node.instances) {
                     const instances = getList(node.instances);
                     if (node.position) {
-                        return instances.flatMap((instance) => makeInstance(node, [instance, ...context]));
+                        return instances.flatMap((instance, idx) => {
+                            context[0].instance = instance;
+                            context[0].idx = idx;
+                            return makeInstance(node, [{ instance, idx }, ...context]);
+                        });
                     } else {
-                        return instances.flatMap((instance, index) => node.children.flatMap((child) => expand(child, [instance, ...context])));
+                        return instances.flatMap((instance, idx) =>
+                            node.children.flatMap((child, index) => expand(child, [{ instance, index, idx }, ...context])));
                     }
                 } else if (node.position) {
                     return makeInstance(node, context);
@@ -1769,7 +1821,7 @@
                 return [];
             }
 
-            return templateGraph.flatMap((node) => expand(node));
+            return templateGraph.flatMap((node, index) => expand(node, [{ index }]));
         }
 
         /**
@@ -2031,11 +2083,10 @@
                 } else {
                     app.instances.forEach((instance) => instance.selected = instance === hit[0]);
                 }
-                report(hit[0].name);
                 updateColours();
                 updateTextBuffer();
                 updatePoints();
-                return hits;
+                return hit;
             } else {
                 app.instances.forEach((instance) => instance.selected = false);
             }
@@ -2071,6 +2122,16 @@
             };
             app.roots.forEach((root) => addInstance(root));
             downloadText(lines.join('\n'));
+        }
+
+        /**
+         * Clear Selection
+         */
+        function clearSelection() {
+            app.selected = null;
+            app.instances.forEach((instance) => instance.selected = false);
+            updateTextBuffer();
+            updateColours();
         }
 
 
@@ -2120,12 +2181,13 @@
                     ArrowDown: (event) => forward(-1),
                     ArrowLeft: (event) => rotateRight(-1),
                     ArrowRight: (event) => rotateRight(),
+                    Escape: (event) => clearSelection(),
                     Delete: (event) => deleteBlocks(event),
                     a: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
                     b: (event) => { app.eyePosition = [0, 0, -15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
                     c: (event) => { app.points = []; updatePoints(); },
                     f: (event) => { app.eyePosition = [0, 0, 15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
-                    i: (event) => { app.cullFaces = !app.cullFaces; updateColours(); },
+                    i: (event) => { app.solid = !app.solid; updateColours(); },
                     l: (event) => { app.eyePosition = [-15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
                     r: (event) => { app.eyePosition = [15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
                     s: (event) => save(),
@@ -2156,10 +2218,11 @@
                     node.classList.remove('selected');
                 }
                 if (hits) {
-                    hits.forEach((instance) => app.nodeMap.get(instance).forEach((node) => node.classList.add('selected')));
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, scaled } = viewVectors();
                     action.selected = hits[0];
+                    report(action.selected.name);
+                    app.nodeMap.get(action.selected).forEach((node) => node.classList.add('selected'));
                     action.plane = { point: action.selected.points[0] };
                     if (Math.abs(dot(app.up, [0, 1, 0])) > 0.9) {
                         action.plane.normal = zAxis;
@@ -2174,9 +2237,8 @@
                         const point = add(mouseLine.point, scale(mouseLine.direction, n));
                         const delta = subtract(point, action.plane.point);
 
-                        ///action.plane.point = point;
-                        selected.forEach((selected) => selected.statusColour = null);
                         selected.forEach((selected) => {
+                            selected.statusColour = null;
                             selected.move(delta);
                             selected.update();
                         });
