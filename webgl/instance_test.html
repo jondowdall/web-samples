@@ -356,7 +356,7 @@
          */
         function clockwise(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const rotation = getRotation(amount * -2, zAxis);
+            const rotation = getRotation(-amount, zAxis);
             app.camera.up = applyTransform(yAxis, rotation);
             app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
             app.camera.updateViewControls();
@@ -367,7 +367,7 @@
          */
         function rotateRight(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const rotation = getRotation(amount * -0.5, yAxis);
+            const rotation = getRotation(-amount, yAxis);
             app.rotation = multiply(app.rotation, rotation);
         }
 
@@ -438,40 +438,64 @@
          * Move the camera to a new position
          */
         function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
-            // Get the current directions ad distance to view point.
-            const { xAxis, yAxis, zAxis, distance } = viewVectors();
-
             // Use the initial position to determine the desired distance from viewpoint
+            const lookAt = app.initial.lookAt;
             const viewVector = subtract(app.initial.lookAt, app.initial.position);
             const dist = Math.hypot(...viewVector);
             const offset = scale(direction, dist);
-            const lookAt = app.initial.lookAt;
-            const endUp = up;
+            const position = add(lookAt, offset);
+
+            moveCamera(position, lookAt, up);
+        }
+
+        /**
+         * Move the camera based on the updated position, lookAt and 'up' vectors
+         */
+        function moveCamera(position, lookAt, up) {
+            // Get the current directions ad distance to view point.
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+
+            const direction = subtract(lookAt, position);
+            const endDistance = Math.hypot(...direction);
+            app.movement = {
+                state: 'start',
+                duration: 1000,
+                lookAt: {
+                    start: app.camera.lookAt,
+                    delta: subtract(lookAt, app.camera.lookAt),
+                },
+                distance: {
+                    start: distance,
+                    delta: endDistance - distance,
+                },
+                direction: scale(zAxis, -1),
+            };
 
             // Calculate the axis and angle from the cross product of the view directions
-            const axis = cross(zAxis, direction);
+            const axis = cross(zAxis, normalised(direction));
             const angle = 180 * Math.asin(Math.hypot(...axis)) / Math.PI;
             // Check for 180 degree rotation
-            if (angle === 0) {
-
+            if (Math.abs(angle) < 0.1 && dot(zAxis, direction) < 0) {
+                app.movement.rotation = {
+                    angle: 180,
+                    axis: up,
+                };
             } else {
-                app.movement = {
-                    state: 'start',
-                    duration: 1000,
-                    lookAt: {
-                        start: app.camera.lookAt,
-                        delta: subtract(lookAt, app.camera.lookAt),
-                    },
-                    distance: {
-                        start: distance,
-                        delta: dist - distance,
-                    },
-                    direction: zAxis,
-                    rotation: {
-                        angle,
-                        axis,
-                    }
-                }
+                app.movement.rotation = { angle, axis, };
+            }
+            // Calculate the axis and angle from the cross product of the view directions
+            const rollAxis = cross(yAxis, up);
+            const rollAngle = 180 * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
+            // Check for 180 degree rotation
+            if (Math.abs(angle) < 0.1 && dot(zAxis, direction) < 0) {
+                app.movement.roll = {
+                    angle: 180,
+                    axis: zAxis,
+                };
+            } else {
+                app.movement.roll = {
+                    angle: rollAngle,
+                    axis: rollAxis, };
             }
         }
 
@@ -1192,6 +1216,11 @@
                     const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
                     const offset = applyTransform(view, rotation);
                     app.camera.position = add(app.camera.lookAt, offset);
+
+                    const roll = getRotation(app.movement.roll.angle * progress, app.movement.roll.axis);
+                    app.camera.up = applyTransform(app.camera.up, rotation);
+                    //app.camera.up = applyTransform(app.camera.up, roll);
+
 
                     if (progress >= 1.0) {
                         app.movement.state = 'complete';
@@ -1997,7 +2026,7 @@
          * Return the rotation matrix based on angle and axis.
          */
         function getRotation(angle, axis) {
-            angle = angle * Math.PI / 180;
+            angle = angle * Math.PI / 360;
             const qw = Math.cos(angle);
             axis = normalised(axis);
             const qx = axis[0] * Math.sin(angle);
@@ -2301,8 +2330,8 @@
                             app.camera.position = add(app.camera.position, movement);
                             app.camera.lookAt = add(app.camera.lookAt, movement);
                         } else {
-                            const xRotation = getRotation(deltaY * Math.PI / 60, xAxis);
-                            const yRotation = getRotation(deltaX * Math.PI / 60, app.camera.up);
+                            const xRotation = getRotation(deltaY * Math.PI / 30, xAxis);
+                            const yRotation = getRotation(deltaX * Math.PI / 30, app.camera.up);
                             const rotation = multiply(xRotation, yRotation);
                             app.camera.position = subtract(app.camera.lookAt, applyTransform(sightLine, rotation));
                             app.camera.up = applyTransform(app.camera.up, rotation);
