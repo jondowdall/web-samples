@@ -94,7 +94,7 @@
         }
 
         .texture-canvas {
-           /* display: none;*/
+            display: none;
             position: fixed;
             top: 200px;
             left: 0;
@@ -192,7 +192,7 @@
     uniform vec3 lightPosition1;
     uniform vec3 lightPosition2;
     uniform vec3 lightPosition3;
-    uniform vec3 eyePosition;
+    uniform vec3 cameraPosition;
 
     in vec4 v_vertex;
     in vec4 v_normal;
@@ -215,7 +215,7 @@
         vec3 reflection1 = normalize(2.0 * dot(normal, toLight1) * normal - toLight1);
         vec3 reflection2 = normalize(2.0 * dot(normal, toLight2) * normal - toLight2);
         vec3 reflection3 = normalize(2.0 * dot(normal, toLight3) * normal - toLight3);
-        vec3 toEye = normalize(eyePosition - v_vertex.xyz);
+        vec3 toEye = normalize(cameraPosition - v_vertex.xyz);
         float sf = clamp(dot(reflection1, toEye), 0.0, 1.0) + 0.2 * clamp(dot(reflection2, toEye), 0.0, 1.0) + 0.1 * clamp(dot(reflection3, toEye), 0.0, 1.0);
         sf = pow(sf, v_specularIntensity);
 
@@ -272,8 +272,8 @@
 
     void main() {
         fragmentColour = v_colour * texture(source, v_textureCoordinate);
-return;
-        if (fragmentColour.r < 0.1) {
+
+        if (fragmentColour.a < 0.001) {
             discard;
             return;
         }
@@ -293,13 +293,13 @@ return;
          */
         function projectionControl() {
             const fov = document.getElementById('field-of-view');
-            fov.value = 30;
+            fov.value = app.initial.fov;
             const aspect = document.getElementById('aspect');
-            aspect.value = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            aspect.value = app.initial.aspect;
             const near = document.getElementById('near');
-            near.value = 1;
+            near.value = app.initial.near;
             const far = document.getElementById('far');
-            far.value = 10000;
+            far.value = app.initial.far;
 
             const update = () => {
                 app.fov = fov.valueAsNumber;
@@ -319,54 +319,54 @@ return;
          * Get view vectors
          */
         function viewVectors() {
-            const viewVector = subtract(app.lookAt, app.eyePosition);
-            const scaled = Math.hypot(...viewVector) / 1000;
+            const viewVector = subtract(app.camera.lookAt, app.camera.position);
+            const distance = Math.hypot(...viewVector);
             const zAxis = normalised(viewVector);
-            const xAxis = normalised(cross(zAxis, app.up));
+            const xAxis = normalised(cross(zAxis, app.camera.up));
             const yAxis = normalised(cross(xAxis, zAxis));
-            return { xAxis, yAxis, zAxis, scaled };
+            return { xAxis, yAxis, zAxis, distance };
         }
 
         /**
          * Move Forward.
          */
         function forward(amount = 1) {
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
-            app.velocity = add(app.velocity, scale(zAxis, amount * scaled));
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            app.velocity = add(app.velocity, scale(zAxis, amount * distance / 1000));
         }
 
         /**
          * Move right.
          */
         function right(amount = 1) {
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
-            app.velocity = add(app.velocity, scale(xAxis, amount * scaled));
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            app.velocity = add(app.velocity, scale(xAxis, amount * distance / 1000));
         }
 
         /**
          * Move up.
          */
         function up(amount = 1) {
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
-            app.velocity = add(app.velocity, scale(yAxis, -amount * scaled));
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            app.velocity = add(app.velocity, scale(yAxis, -amount * distance / 1000));
         }
 
         /**
          * Move up.
          */
         function clockwise(amount = 1) {
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const rotation = getRotation(amount * -2, zAxis);
-            app.up = applyTransform(yAxis, rotation);
-            app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
-            app.updateViewControls();
+            app.camera.up = applyTransform(yAxis, rotation);
+            app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
+            app.camera.updateViewControls();
         }
 
         /**
          * Rotate right
          */
         function rotateRight(amount = 1) {
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const rotation = getRotation(amount * -0.5, yAxis);
             app.rotation = multiply(app.rotation, rotation);
         }
@@ -391,7 +391,7 @@ return;
          */
         function addBlocks(offset) {
             const selected = app.instances.filter((instance) => instance.selected);
-            const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
                 const position = add(selected.position, product(selected.size, offset));
@@ -433,13 +433,61 @@ return;
             showStructure();
         }
 
+
+        /**
+         * Move the camera to a new position
+         */
+        function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
+            // Get the current directions ad distance to view point.
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+
+            // Use the initial position to determine the desired distance from viewpoint
+            const viewVector = subtract(app.initial.lookAt, app.initial.position);
+            const dist = Math.hypot(...viewVector);
+            const offset = scale(direction, dist);
+            const lookAt = app.initial.lookAt;
+            const endUp = up;
+
+            // Calculate the axis and angle from the cross product of the view directions
+            const axis = cross(zAxis, direction);
+            const angle = 180 * Math.asin(Math.hypot(...axis)) / Math.PI;
+            // Check for 180 degree rotation
+            if (angle === 0) {
+
+            } else {
+                app.movement = {
+                    state: 'start',
+                    duration: 1000,
+                    lookAt: {
+                        start: app.camera.lookAt,
+                        delta: subtract(lookAt, app.camera.lookAt),
+                    },
+                    distance: {
+                        start: distance,
+                        delta: dist - distance,
+                    },
+                    direction: zAxis,
+                    rotation: {
+                        angle,
+                        axis,
+                    }
+                }
+            }
+        }
+
         /**
          * Reset the view and clear teh points
          */
         function reset() {
-            app.eyePosition = [0, 0, 15];
-            app.lookAt = [0, 0, 0];
-            app.up = [0, 1, 0];
+            app.camera.position = [...app.initial.position];
+            app.camera.lookAt = [...app.initial.lookAt];
+            app.camera.up = [...app.initial.up];
+
+            app.fov = app.initial.fov;
+            app.near = app.initial.near;
+            app.far = app.initial.far;
+            app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+
             app.points = [];
         }
 
@@ -467,20 +515,20 @@ return;
             const container = document.getElementById('view-vectors');
 
             const update = () => {
-                const { xAxis, yAxis, zAxis, scaled } = viewVectors();
-                app.up = yAxis; // Ensure 'up' is perpendicular to look direction
-                app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
+                const { xAxis, yAxis, zAxis, distance } = viewVectors();
+                app.camera.up = yAxis; // Ensure 'up' is perpendicular to look direction
+                app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
             }
 
             const vectorControl = (attribute, name) => {
-                app[attribute].forEach((value, index) => {
+                app.camera[attribute].forEach((value, index) => {
                     const input = document.createElement('input');
                     input.type = 'number';
                     input.value = value;
                     input.id = `${name}-${index}`;
                     input.classList.add('matrix-input');
                     input.addEventListener('input', (event) => {
-                        app[attribute][index] = input.valueAsNumber;
+                        app.camera[attribute][index] = input.valueAsNumber;
                         update();
                     });
                     input.addEventListener('focus', (event) => app.editingViewControls = true);
@@ -488,27 +536,27 @@ return;
                     container.appendChild(input);
                 });
             };
-            app.eyePosition = [0, 0, 15];
-            app.lookAt = [0, 0, 0];
-            app.up = [0, 1, 0];
+            app.camera.position = [0, 0, 15];
+            app.camera.lookAt = [0, 0, 0];
+            app.camera.up = [0, 1, 0];
             viewVectors();
-            vectorControl('eyePosition', 'eye-position')
+            vectorControl('position', 'camera-position')
             vectorControl('lookAt', 'look-at');
             vectorControl('up', 'up');
             update();
-            app.updateViewControls = () => {
+            app.camera.updateViewControls = () => {
                 if (!app.editingViewControls) {
-                    document.getElementById('eye-position-0').value = app.eyePosition[0].toFixed(1);
-                    document.getElementById('eye-position-1').value = app.eyePosition[1].toFixed(1);
-                    document.getElementById('eye-position-2').value = app.eyePosition[2].toFixed(1);
+                    document.getElementById('camera-position-0').value = app.camera.position[0].toFixed(1);
+                    document.getElementById('camera-position-1').value = app.camera.position[1].toFixed(1);
+                    document.getElementById('camera-position-2').value = app.camera.position[2].toFixed(1);
 
-                    document.getElementById('look-at-0').value = app.lookAt[0].toFixed(1);
-                    document.getElementById('look-at-1').value = app.lookAt[1].toFixed(1);
-                    document.getElementById('look-at-2').value = app.lookAt[2].toFixed(1);
+                    document.getElementById('look-at-0').value = app.camera.lookAt[0].toFixed(1);
+                    document.getElementById('look-at-1').value = app.camera.lookAt[1].toFixed(1);
+                    document.getElementById('look-at-2').value = app.camera.lookAt[2].toFixed(1);
 
-                    document.getElementById('up-0').value = app.up[0].toFixed(1);
-                    document.getElementById('up-1').value = app.up[1].toFixed(1);
-                    document.getElementById('up-2').value = app.up[2].toFixed(1);
+                    document.getElementById('up-0').value = app.camera.up[0].toFixed(1);
+                    document.getElementById('up-1').value = app.camera.up[1].toFixed(1);
+                    document.getElementById('up-2').value = app.camera.up[2].toFixed(1);
                 }
             }
         }
@@ -542,6 +590,21 @@ return;
          * App object to minimise global namespace polution.
          */
         const app = {
+            camera: {
+                position: [0, 0, 15],
+                lookAt: [0, 0, 0],
+                up: [0, 1, 0],
+            },
+            initial: {
+                position: [0, 0, 15],
+                lookAt: [0, 0, 0],
+                up: [0, 1, 0],
+                fov: 30,
+                aspect: gl.canvas.clientWidth / gl.canvas.clientHeight,
+                near: 1,
+                far: 10000,
+            },
+            movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             instances: [],
@@ -834,7 +897,7 @@ return;
          * Update text data
          */
         function updateText() {
-            const width = 512;
+            const width = 1024;
             if (!app.textureCanvas) {
                 app.textureCanvas = document.createElement('canvas');
                 app.textureCanvas.classList.add('texture-canvas');
@@ -842,11 +905,10 @@ return;
             }
             const context = app.textureCanvas.getContext('2d');
             app.textureCanvas.width = width;
-            app.textureCanvas.height = 64;
+            app.textureCanvas.height = 1024;
 
             context.fillStyle = 'white';
-            context.font = '48px sans-serif';
-            context.font = '48px monospace';
+            context.font = '24px sans-serif';
             context.textBaseline = 'hanging';
 
             let x = y = 0;
@@ -870,7 +932,6 @@ return;
 
                 context.fillStyle = 'white';
                 context.font = '24px sans-serif';
-                context.font = '48px monospace';
 
                 context.textBaseline = 'hanging';
             }
@@ -999,11 +1060,11 @@ return;
         }
 
         /**
-         * Calculate a view matrix from eye position, focus point and up vecotrs.
+         * Calculate a view matrix from camera position, focus point and up vecotrs.
          */
-        function viewMatrix(eyePosition, lookAt, up) {
+        function viewMatrix(cameraPosition, lookAt, up) {
             const negate = (v) => { v[0] *= -1; v[1] *= -1; v[2] *= -1; };
-            const zaxis = normalised(subtract(lookAt, eyePosition));
+            const zaxis = normalised(subtract(lookAt, cameraPosition));
             const xaxis = normalised(cross(zaxis, up));
             const yaxis = cross(xaxis, zaxis);
 
@@ -1013,7 +1074,7 @@ return;
                 xaxis[0], yaxis[0], zaxis[0], 0,
                 xaxis[1], yaxis[1], zaxis[1], 0,
                 xaxis[2], yaxis[2], zaxis[2], 0,
-                -dot(xaxis, eyePosition), -dot(yaxis, eyePosition), -dot(zaxis, eyePosition), 1,
+                -dot(xaxis, cameraPosition), -dot(yaxis, cameraPosition), -dot(zaxis, cameraPosition), 1,
             ];
         }
 
@@ -1113,16 +1174,37 @@ return;
          */
         let start;
         function render(time) {
+            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+            app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
+
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             if (start) {
+                if (app.movement.state === 'start') {
+                    app.movement.start = time;
+                    app.movement.state = 'running';
+                }
+                if (app.movement.state === 'running') {
+                    const progress = (time - app.movement.start) / app.movement.duration;
+                    app.camera.lookAt = add(app.movement.lookAt.start, scale(app.movement.lookAt.delta, progress));
+                    const dist = app.movement.distance.start + progress * app.movement.distance.delta;
+                    const view = scale(app.movement.direction, dist);
+                    const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
+                    const offset = applyTransform(view, rotation);
+                    app.camera.position = add(app.camera.lookAt, offset);
+
+                    if (progress >= 1.0) {
+                        app.movement.state = 'complete';
+                    }
+                }
                 const delta = time - start;
-                app.eyePosition = add(app.eyePosition, scale(app.velocity, delta / 1000));
-                app.lookAt = add(app.lookAt, scale(app.velocity, delta / 1000));
-                const direction = applyTransform(subtract(app.lookAt, app.eyePosition), app.rotation);
+                app.camera.position = add(app.camera.position, scale(app.velocity, delta / 1000));
+                app.camera.lookAt = add(app.camera.lookAt, scale(app.velocity, delta / 1000));
+                const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
                 app.rotation = scaleMatrix(app.rotation, 0.1);
-                app.lookAt = add(app.eyePosition, direction);
-                app.updateViewControls();
-                app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
+                app.camera.lookAt = add(app.camera.position, direction);
+                app.camera.updateViewControls();
+                app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
                 app.velocity = scale(app.velocity, 0.9);
                 updateBuffers(time);
 
@@ -1131,7 +1213,7 @@ return;
 
                 gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
                 gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                gl.uniform3fv(app.shader.eyePosition, app.eyePosition);
+                gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
                 gl.uniform3fv(app.shader.lightPosition1, [5000, 5000, 5000]);
                 gl.uniform3fv(app.shader.lightPosition2, [500, -500, 5000]);
                 gl.uniform3fv(app.shader.lightPosition3, [1000, 15000, 1000]);
@@ -1149,7 +1231,7 @@ return;
 
                 if (app.textItemCount > 0) {
                     gl.disable(gl.DEPTH_TEST);
-                    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
                     gl.colorMask(true, true, true, false);
 
                     gl.useProgram(app.textShader.program);
@@ -1162,7 +1244,7 @@ return;
                     gl.activeTexture(gl.TEXTURE0);
                     gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
 
-                    gl.disable(gl.BLEND);
+                    //gl.disable(gl.BLEND);
 
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.textItemCount);
 
@@ -1572,29 +1654,36 @@ return;
         }
 
         const commands = {
-            'eye position'(value) {
-                app.eyePosition = value.split(/,/g).map((v) => parseFloat(v));
+            'camera position'(value) {
+                app.initial.position = value.split(/,/g).map((v) => parseFloat(v));
+                app.camera.position = [...app.initial.position];
             },
             'look at'(value) {
-                app.lookAt = value.split(/,/g).map((v) => parseFloat(v));
+                app.initial.lookAt = value.split(/,/g).map((v) => parseFloat(v));
+                app.camera.lookAt = [...app.initial.lookAt];
             },
             up(value) {
-                app.up = value.split(/,/g).map((v) => parseFloat(v));
+                app.initial.up = value.split(/,/g).map((v) => parseFloat(v));
+                app.camera.up = [...app.initial.up];
             },
             fov(value) {
-                app.fov = parseFloat(value);
+                app.initial.fov = parseFloat(value);
+                app.fov = app.initial.fov;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             aspect(value) {
-                app.aspect = parseFloat(value);
+                app.initial.aspect = parseFloat(value);
+                app.aspect = app.initial.aspect;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             near(value) {
-                app.near = parseFloat(value);
+                app.initial.near = parseFloat(value);
+                app.near = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             far(value) {
-                app.far = parseFloat(value);
+                app.initial.far = parseFloat(value);
+                app.far = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
             background(value) {
@@ -1875,7 +1964,6 @@ return;
             return v1.map((v, i) => v * v2[i]);
         }
 
-
         /**
          * Return the dot product of two vectors
          */
@@ -1945,14 +2033,14 @@ return;
             const w = canvas.clientWidth / 2;
             const h = canvas.clientHeight / 2;
 
-            const zAxis = normalised(subtract(app.lookAt, app.eyePosition));
-            const yAxis = normalised(app.up);
+            const zAxis = normalised(subtract(app.camera.lookAt, app.camera.position));
+            const yAxis = normalised(app.camera.up);
             const xAxis = cross(zAxis, yAxis);
 
             const position = add(scale(xAxis, x - w), scale(yAxis, h - y), scale(zAxis, h * f));
             const direction = normalised(position);
 
-            return { point: app.eyePosition, direction };
+            return { point: app.camera.position, direction };
         }
 
         /**
@@ -2027,7 +2115,7 @@ return;
                 const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                 // Find the closest to the view position that isn't a parent
                 const hit = hits.filter((hit) => hit.children.filter((child) => hits.includes(child)).length === 0);
-                hit.sort((a, b) => dist(app.eyePosition, a.points[0]) - dist(app.eyePosition, b.points[0]));
+                hit.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                 if (event.shiftKey) {
                     if (event.ctrlKey) {
                         hit.forEach((instance) => instance.selected = true);
@@ -2065,9 +2153,9 @@ return;
          */
         function save() {
             const lines = [];
-            lines.push(`>eye position = ${app.eyePosition.map((v) => v.toFixed(2)).join(', ')}`);
-            lines.push(`>look at = ${app.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
-            lines.push(`>up = ${app.up.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`>eye position = ${app.camera.position.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`>look at = ${app.camera.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`>up = ${app.camera.up.map((v) => v.toFixed(2)).join(', ')}`);
             lines.push('');
 
             const addInstance = (instance, level = 0) => {
@@ -2138,14 +2226,14 @@ return;
                     Escape: (event) => clearSelection(),
                     Delete: (event) => deleteBlocks(event),
                     a: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
-                    b: (event) => { app.eyePosition = [0, 0, -15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    b: (event) => setView([0, -1, 0], [0, 0, -1]),
                     c: (event) => { app.points = []; updatePoints(); },
-                    f: (event) => { app.eyePosition = [0, 0, 15]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    f: (event) => setView([0, 0, 1]),
                     i: (event) => { app.solid = !app.solid; updateColours(); },
-                    l: (event) => { app.eyePosition = [-15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
-                    r: (event) => { app.eyePosition = [15, 0, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 1, 0]; },
+                    l: (event) => setView([-1, 0, 0]),
+                    r: (event) => setView([1, 0, 0]),
                     s: (event) => save(),
-                    t: (event) => { app.eyePosition = [0, 15, 0]; app.lookAt = [0, 0, 0]; app.up = [0, 0, 1]; },
+                    t: (event) => setView([0, 1, 0], [0, 0, 1]),
                     w: (event) => app.wireframe = !app.wireframe,
                 }
 
@@ -2173,12 +2261,12 @@ return;
                 }
                 if (hits) {
                     // Move the clicked object
-                    const { xAxis, yAxis, zAxis, scaled } = viewVectors();
+                    const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     action.selected = hits[0];
                     report(action.selected.name);
                     app.nodeMap.get(action.selected).forEach((node) => node.classList.add('selected'));
                     action.plane = { point: action.selected.points[0] };
-                    if (Math.abs(dot(app.up, [0, 1, 0])) > 0.9) {
+                    if (Math.abs(dot(app.camera.up, [0, 1, 0])) > 0.9) {
                         action.plane.normal = zAxis;
                     } else {
                         action.plane.normal = [0, 1, 0];
@@ -2204,23 +2292,23 @@ return;
                         const deltaY = event.clientY - action.lastY;
                         action.lastX = event.clientX;
                         action.lastY = event.clientY;
-                        const sightLine = subtract(app.lookAt, app.eyePosition);
-                        const xAxis = cross(sightLine, app.up);
+                        const sightLine = subtract(app.camera.lookAt, app.camera.position);
+                        const xAxis = cross(sightLine, app.camera.up);
                         const yAxis = cross(sightLine, xAxis);
                         if (event.shiftKey) {
                             const dist = Math.hypot(...sightLine) / -1000;
                             const movement = add(scale(normalised(xAxis), deltaX * dist), scale(normalised(yAxis), deltaY * dist));
-                            app.eyePosition = add(app.eyePosition, movement);
-                            app.lookAt = add(app.lookAt, movement);
+                            app.camera.position = add(app.camera.position, movement);
+                            app.camera.lookAt = add(app.camera.lookAt, movement);
                         } else {
                             const xRotation = getRotation(deltaY * Math.PI / 60, xAxis);
-                            const yRotation = getRotation(deltaX * Math.PI / 60, app.up);
+                            const yRotation = getRotation(deltaX * Math.PI / 60, app.camera.up);
                             const rotation = multiply(xRotation, yRotation);
-                            app.eyePosition = subtract(app.lookAt, applyTransform(sightLine, rotation));
-                            app.up = applyTransform(app.up, rotation);
+                            app.camera.position = subtract(app.camera.lookAt, applyTransform(sightLine, rotation));
+                            app.camera.up = applyTransform(app.camera.up, rotation);
                         }
-                        app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
-                        app.updateViewControls();
+                        app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
+                        app.camera.updateViewControls();
                     };
                 }
             };
@@ -2229,11 +2317,11 @@ return;
             canvas.addEventListener('wheel', (event) => {
                 event.preventDefault();
                 const dist = Math.pow(2, event.deltaY / 100);
-                const sightLine = subtract(app.lookAt, app.eyePosition);
+                const sightLine = subtract(app.camera.lookAt, app.camera.position);
                 const move = sightLine.map((v) => v * dist);
-                app.eyePosition = subtract(app.lookAt, move);
-                app.viewMatrix = viewMatrix(app.eyePosition, app.lookAt, app.up);
-                app.updateViewControls();
+                app.camera.position = subtract(app.camera.lookAt, move);
+                app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
+                app.camera.updateViewControls();
             });
 
             /**
@@ -2300,7 +2388,7 @@ return;
             gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
             const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specularIntensity', 'opacity'];
-            app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'eyePosition']);
+            app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
 
