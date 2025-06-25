@@ -490,8 +490,10 @@
             } else {
                 app.movement.rotation = { angle, axis, };
             }
+            const rotation = getRotation(angle, axis);
+            const endUp = applyTransform(yAxis, up);
             // Calculate the axis and angle from the cross product of the view directions
-            const rollAxis = cross(yAxis, up);
+            const rollAxis = cross(endUp, up);
             const roll = 180 * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
             // Check for 180 degree rotation
             if (Math.abs(roll) < 0.1 && dot(zAxis, direction) < 0) {
@@ -1534,16 +1536,32 @@
         const action = {};
         const history = [];
         let historyPosition;
-        document.body.addEventListener('mousemove', (event) => action.move?.(event));
-        document.body.addEventListener('mouseup', (event) => {
-            history.push({instance: action.selected, start: [...action.selected.start]});
+
+        /**
+         * End a mouse movement and store change in history.
+         */
+        function endMove() {
+            const start = [...action.selected.start];
+            const end = [...action.selected.position];
+            history.push({
+                undo: () => {
+                    action.selected.position = start;
+                    action.selected.update();
+                },
+                redo: () => {
+                    action.selected.position = end;
+                    action.selected.update();
+                },
+            });
             action.move = null;
             historyPosition = null;
-            //showStructure();
-        });
+        }
+
+        document.body.addEventListener('mousemove', (event) => action.move?.(event));
+        document.body.addEventListener('mouseup', (event) => action?.end());
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
-        document.body.addEventListener('touchend', (event) => action.move = null);
+        document.body.addEventListener('touchend', (event) => action?.end());
         /**
          * Show structure
          */
@@ -1629,6 +1647,21 @@
                                 node.innerText = item[element].toFixed(places);
                                 instance.update();
                             };
+                            const initial = item[element];
+                            action.end = () => {
+                                action.move = null;
+                                const end = item[element];
+                                history.push({
+                                    undo: () => {
+                                        item[element] = initial;
+                                        instance.update();
+                                    },
+                                    redo: () => {
+                                        item[element] = initial;
+                                        instance.update();
+                                    },
+                                });
+                            };
                         });
                         node.addEventListener('touchstart', (event) => {
                             event = touch(event);
@@ -1639,6 +1672,21 @@
                                 item[element] += delta;
                                 node.innerText = item[element].toFixed(places);
                                 instance.update();
+                            };
+                            const initial = item[element];
+                            action.end = () => {
+                                action.move = null;
+                                const end = item[element];
+                                history.push({
+                                    undo: () => {
+                                        item[element] = initial;
+                                        instance.update();
+                                    },
+                                    redo: () => {
+                                        item[element] = initial;
+                                        instance.update();
+                                    },
+                                });
                             };
                         });
                     }
@@ -1821,7 +1869,7 @@
                 }
                 Object.getOwnPropertyNames(obj).filter((property) => obj[property] === null)
                     .forEach((property) => obj[property] = [defaults[property]].flatMap((v) => v));
-                            
+
                 while (stack.length && obj.level <= stack[0].level) {
                     stack.shift();
                 }
@@ -2235,12 +2283,19 @@
                 historyPosition -= 1;
             }
             if (history[historyPosition]) {
-                const action = history[historyPosition];
-                action.instance.position = action.start;
-                action.instance.update();
+                history[historyPosition].undo();
             }
         }
 
+        /**
+         * Re do an action
+         */
+        function redo() {
+            if (history[historyPosition]) {
+                history[historyPosition].redo();
+                historyPosition += 1;
+            }
+        }
         /**
          * Add the event handlers for the canvas.
          */
@@ -2275,6 +2330,8 @@
                     ArrowLeft: (event) => addBlocks([-1, 0, 0]),
                     ArrowRight: (event) => addBlocks([1, 0, 0]),
                     l: (event) => document.getElementById('load-file').click(),
+                    z: (event) => undo(),
+                    Z: (event) => redo(),
                 }
                 const altMapping = {
                     ArrowUp: (event) => addBlocks([0, 0, -1]),
@@ -2298,19 +2355,17 @@
                     r: (event) => setView([1, 0, 0]),
                     s: (event) => save(),
                     t: (event) => setView([0, 1, 0], [0, 0, 1]),
-                    u: (event) => undo(),
                     w: (event) => app.wireframe = !app.wireframe,
                 }
 
-                if (event.shiftKey) {
-                    shiftMapping[event.key]?.(event);
-                } else if (event.ctrlKey && ctrlMapping[event.key]) {
+                if (event.ctrlKey && ctrlMapping[event.key]) {
                     event.preventDefault();
                     ctrlMapping[event.key](event);
+                } else if (event.shiftKey) {
+                    shiftMapping[event.key]?.(event);
                 } else if (event.altKey && altMapping[event.key]) {
                     event.preventDefault();
                     altMapping[event.key](event);
-
                 } else {
                     mapping[event.key]?.(event);
                 }
@@ -2350,6 +2405,7 @@
                             selected.update();
                         });
                     };
+                    action.end = endMove;
                 } else {
                     // Rotate the view
                     action.move = (event) => {
@@ -2375,6 +2431,23 @@
                         app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
                         app.camera.updateViewControls();
                     };
+                    const start = {
+                        position: [...app.camera.position],
+                        lookAt: [...app.camera.lookAt],
+                        up: [...app.camera.up],
+                    };
+                    action.end = () => {
+                        action.move = null;
+                        const end = {
+                            position: [...app.camera.position],
+                            lookAt: [...app.camera.lookAt],
+                            up: [...app.camera.up],
+                        };
+                        history.push({
+                            undo: () => moveCamera(start.position, start.lookAt, start.up),
+                            redo: () => moveCamera(end.position, end.lookAt, end.up),
+                        });
+                    }
                 }
             };
             canvas.addEventListener('mousedown', (event) => mouseDown(event));
