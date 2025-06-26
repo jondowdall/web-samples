@@ -289,6 +289,27 @@
         }
 
         /**
+         * Get the hex value of the input number
+         */
+        function toHex(number, chars) {
+            const result = [];
+            const sign = number < 0 ? '-' : '';
+            number = Math.floor(Math.abs(number));
+            const digit = number & 0xf;
+            result.push('0123456789ABCDEF'.charAt(digit));
+            number >>= 4;
+            while (number) {
+                const digit = number & 0xf;
+                result.unshift('0123456789ABCDEF'.charAt(digit));
+                number >>= 4;
+            }
+            if (chars) {
+                return `${sign}${result.join('')}`.padStart(chars, '0');
+            }
+            return sign + result.join('');
+        }
+
+        /**
          * Create matrix control.
          */
         function projectionControl() {
@@ -490,17 +511,19 @@
             } else {
                 app.movement.rotation = { angle, axis, };
             }
-            const rotation = getRotation(angle, axis);
-            const endUp = applyTransform(yAxis, up);
+            const rotation = getRotation(app.movement.rotation.angle, app.movement.rotation.axis);
+            const endUp = applyTransform(yAxis, rotation);
             // Calculate the axis and angle from the cross product of the view directions
-            const rollAxis = cross(endUp, up);
-            const roll = 180 * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
+            const rollAxis = cross(up, endUp);
+            const roll = -180 * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
             // Check for 180 degree rotation
-            if (Math.abs(roll) < 0.1 && dot(zAxis, direction) < 0) {
+            if (Math.abs(roll) < 0.1 && dot(endUp, up) < 0) {
                 app.movement.roll = 180;
             } else {
                 app.movement.roll = roll;
             }
+            app.movement.up = yAxis;
+            app.movement.timing = (input) => 0.5 - 0.5 * Math.cos(input * Math.PI);
         }
 
         /**
@@ -1213,7 +1236,10 @@
                     app.movement.state = 'running';
                 }
                 if (app.movement.state === 'running') {
-                    const progress = (time - app.movement.start) / app.movement.duration;
+                    const timing = app.movement.timing ?? ((i) => i);
+                    const linear = (time - app.movement.start) / app.movement.duration;
+                    const progress = timing(linear);
+
                     app.camera.lookAt = add(app.movement.lookAt.start, scale(app.movement.lookAt.delta, progress));
                     const dist = app.movement.distance.start + progress * app.movement.distance.delta;
                     const view = scale(app.movement.direction, dist);
@@ -1221,12 +1247,12 @@
                     const offset = applyTransform(view, rotation);
                     app.camera.position = add(app.camera.lookAt, offset);
 
-                    const rollAxis = normalised(subtract(app.camera.lookAt, app.camera.position));
+                    const rollAxis = normalised(offset);
                     const roll = getRotation(app.movement.roll * progress, rollAxis);
-                    app.camera.up = applyTransform(app.camera.up, rotation);
-                    //app.camera.up = applyTransform(app.camera.up, roll);
+                    app.camera.up = applyTransform(app.movement.up, rotation);
+                    app.camera.up = applyTransform(app.camera.up, roll);
 
-                    if (progress >= 1.0) {
+                    if (linear >= 1.0) {
                         app.movement.state = 'complete';
                     }
                 }
@@ -1254,7 +1280,9 @@
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instances.length);
                 }
-                gl.drawArraysInstanced(gl.LINES, 36, 24, app.instances.length);
+                if (app.wireframe || !app.solid) {
+                    gl.drawArraysInstanced(gl.LINES, 36, 24, app.instances.length);
+                }
 
                 if (app.points.length > 0) {
                     setPointAttributes();
@@ -1543,25 +1571,32 @@
         function endMove() {
             const start = [...action.selected.start];
             const end = [...action.selected.position];
+            const instance = action.selected;
             history.push({
                 undo: () => {
-                    action.selected.position = start;
-                    action.selected.update();
+                    instance.position = start;
+                    instance.update();
                 },
                 redo: () => {
-                    action.selected.position = end;
-                    action.selected.update();
+                    instance.position = end;
+                    instance.update();
                 },
             });
             action.move = null;
             historyPosition = null;
         }
 
+        const completeAction = (event) => {
+            if (action.end) {
+                action.end(event);
+                action.end = null;
+            }
+        }
         document.body.addEventListener('mousemove', (event) => action.move?.(event));
-        document.body.addEventListener('mouseup', (event) => action?.end());
+        document.body.addEventListener('mouseup', completeAction);
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
-        document.body.addEventListener('touchend', (event) => action?.end());
+        document.body.addEventListener('touchend', completeAction);
         /**
          * Show structure
          */
@@ -1705,6 +1740,22 @@
                     addControls(node, instance, argument, scaled);
                     return node;
                 }
+                const addColour = (argument, scaled = 0.1) => {
+                    const node = document.createElement('input');
+                    nodes.push(node);
+                    node.type = 'color';
+                    const value = instance[argument];
+                    const string = `#${toHex(value[0] * 255, 2)}${toHex(value[1] * 255, 2)}${toHex(value[2] * 255, 2)}`;
+                    node.value = string;
+
+                    node.addEventListener('change', (event) => {
+                        const string = node.value;
+                        const value = [parseInt(string.slice(0, 2), 16) / 255, parseInt(string.slice(2, 4), 16) / 255, parseInt(string.slice(4), 16) / 255];
+                        instance[argument] = value;
+                        updateColours();
+                    });
+                    return node;
+                }
                 const addVec = (argument, scaled = 0.1) => {
                     const places = Math.floor(Math.log10(1 / scaled));
 
@@ -1728,7 +1779,7 @@
                     addVec('size'),
                     addSpan('angle'),
                     addVec('axis'),
-                    addVec('colour', 0.01),
+                    addColour('colour'),
                     addSpan('specular'),
                     addSpan('opacity'));
                 instance.children.forEach((child) => addInstance(child, level + 1));
@@ -1839,7 +1890,7 @@
          */
         function getTree(objs) {
             const defaults = {
-                position: [0, 0, 0],
+                //position: [], //[0, 0, 0],
                 size: [0, 0, 0],
                 angle: 0,
                 axis: [0, 1, 0],
@@ -1867,7 +1918,7 @@
                     obj.types.forEach((type) =>
                         obj.children.push(...type.children.map((child) => Object.assign({}, child))));
                 }
-                Object.getOwnPropertyNames(obj).filter((property) => obj[property] === null)
+                Object.getOwnPropertyNames(defaults).filter((property) => obj[property] === null)
                     .forEach((property) => obj[property] = [defaults[property]].flatMap((v) => v));
 
                 while (stack.length && obj.level <= stack[0].level) {
@@ -2227,9 +2278,12 @@
                 updateTextBuffer();
                 updatePoints();
                 return hit;
-            } else {
-                app.instances.forEach((instance) => instance.selected = false);
             }
+
+            app.instances.forEach((instance) => instance.selected = false);
+            updateColours();
+            updateTextBuffer();
+            updatePoints();
         }
 
         /**
@@ -2323,10 +2377,12 @@
                     ArrowRight: (event) => right(),
                     '+': (event) => newBlock(),
                     R: (event) => reset(),
+                    W: (event) => app.solid = !app.solid,
+
                 }
                 const ctrlMapping = {
-                    ArrowUp: (event) => addBlocks([0, -1, 0]),
-                    ArrowDown: (event) => addBlocks([0, 1, 0]),
+                    ArrowUp: (event) => addBlocks([0, 1, 0]),
+                    ArrowDown: (event) => addBlocks([0, -1, 0]),
                     ArrowLeft: (event) => addBlocks([-1, 0, 0]),
                     ArrowRight: (event) => addBlocks([1, 0, 0]),
                     l: (event) => document.getElementById('load-file').click(),
@@ -2354,7 +2410,7 @@
                     l: (event) => setView([-1, 0, 0]),
                     r: (event) => setView([1, 0, 0]),
                     s: (event) => save(),
-                    t: (event) => setView([0, 1, 0], [0, 0, 1]),
+                    t: (event) => setView([0, 1, 0], [0, 0, -1]),
                     w: (event) => app.wireframe = !app.wireframe,
                 }
 
@@ -2379,6 +2435,7 @@
                 for (const node of document.body.querySelectorAll('.selected')) {
                     node.classList.remove('selected');
                 }
+                action.selected = null;
                 if (hits) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
