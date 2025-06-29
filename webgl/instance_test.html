@@ -161,7 +161,7 @@
                 <span class="three-columns">Axis</span>
                 <span class="two-rows">Colour</span>
                 <span class="two-rows">Specular</span>
-                <span class="two-rows">opacity</span>
+                <span class="two-rows">Opacity</span>
 
                 <span>x</span>
                 <span>y</span>
@@ -716,6 +716,8 @@
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             instances: [],
+            stock: {},
+            nodes: [],
             points: [],
             text: [],
             scale: 1, //0.001,
@@ -1517,6 +1519,10 @@
                 const scaleMatrix = getScale(scale(this.size, app.scale));
                 return multiply(scaleMatrix, this.origin);
             }
+            apply(action) {
+                action(this);
+                this.children.forEach((child) => child.apply(action));
+            }
             update(child) {
                 for (let i = 0; i < 16; ++i) {
                     this.matrix[i] = this.transform[i];
@@ -1530,7 +1536,9 @@
                 }
             }
             updateNodes() {
-                const { translation, scale, angle, axis } = decompose(this.transform);
+                const local = this.parent ? invert(this.parent.origin) : identityMatrix();
+                const transform = matrixMultiply(this.transform, local);
+                const { translation, scale, angle, axis } = decompose(transform);
                 const nodes = this.nodes;
                 nodes[0].innerHTML = this.name;
                 nodes[2].innerHTML = translation[0].toFixed(2);
@@ -1559,12 +1567,9 @@
                 const translationBack = getTranslation(scale(offset, -1));
                 const transform = matrixMultiply(translationBack, matrixMultiply(rotation, translation));
 
-                const apply = (instance) => {
-                    instance.origin = matrixMultiply(instance.origin, transform);
-                    instance.children.forEach((child) => apply(child));
-                }
-                apply(this);
-                                
+                this.apply((instance) =>
+                    instance.origin = matrixMultiply(instance.origin, transform));
+
                 this.update();
                 this.updateNodes();
                 app.instancesChanged = true;
@@ -1643,9 +1648,12 @@
                     }
                 });
                 // update position
-                this.origin[12] = this.start[0] + vector[0];
-                this.origin[13] = this.start[1] + vector[1];
-                this.origin[14] = this.start[2] + vector[2];
+                this.apply((instance) => {
+                    instance.origin[12] = instance.start[0] + vector[0];
+                    instance.origin[13] = instance.start[1] + vector[1];
+                    instance.origin[14] = instance.start[2] + vector[2];
+                });
+
                 this.update();
                 updateColours();
             }
@@ -1702,23 +1710,34 @@
          * End a mouse movement and store change in history.
          */
         function endMove() {
-            const start = [...action.selected.start];
-            const end = extractTranslation(action.selected.origin);
-            const instance = action.selected;
-            history.push({
-                undo: () => {
-                    instance.origin[12] = start[0];
-                    instance.origin[13] = start[1];
-                    instance.origin[14] = start[2];
-                    instance.update();
-                },
-                redo: () => {
-                    instance.origin[12] = end[0];
-                    instance.origin[13] = end[1];
-                    instance.origin[14] = end[2];
-                    instance.update();
-                },
-            });
+            if (action.moved) {
+                const instances = new Set();
+                app.instances.filter((instance) => instance.selected)
+                    .forEach((instance) => instance.apply((instance) => instances.add(instance)));
+                const undo = Array.from(instances).map((instance) => ({
+                    instance, start: [...instance.start],
+                }));
+                const redo = Array.from(instances).map((instance) => ({
+                    instance, end: extractTranslation(action.selected.origin),
+                }));
+                const start = [...action.selected.start];
+                const end = extractTranslation(action.selected.origin);
+                history.push({
+                    undo: () =>
+                        undo.forEach((action) => {
+                            action.instance.origin[12] = action.start[0];
+                            action.instance.origin[13] = action.start[1];
+                            action.instance.origin[14] = action.start[2];
+                            action.instance.update();
+                        }),
+                    redo: () => redo.forEach((action) => {
+                        action.instance.origin[12] = action.end[0];
+                        action.instance.origin[13] = action.end[1];
+                        action.instance.origin[14] = action.end[2];
+                        action.instance.update();
+                    }),
+                });
+            }
             action.move = null;
             historyPosition = null;
             app.instances.forEach((instance) => instance.state = null);
@@ -1748,7 +1767,7 @@
                 <span class="value three-columns">Axis</span>
                 <span class="value two-rows">Colour</span>
                 <span class="value two-rows">Specular</span>
-                <span class="value two-rows">opacity</span>
+                <span class="value two-rows">Opacity</span>
 
                 <span class="value">x</span>
                 <span class="value">y</span>
@@ -1829,33 +1848,42 @@
                         const places = Math.floor(Math.log10(1 / scaled));
                         node.addEventListener('mousedown', (event) => {
                             action.last = event.clientY;
+                            action.moved = false;
                             action.move = (event) => {
+                                action.moved = true;
                                 const delta = (event.clientY - action.last) * scaled;
                                 action.last = event.clientY;
                                 item[element] += delta;
                                 node.innerText = item[element].toFixed(places);
+                                instance.setTransform();
                                 instance.update();
                             };
                             const initial = item[element];
                             action.end = () => {
                                 action.move = null;
-                                const end = item[element];
-                                history.push({
-                                    undo: () => {
-                                        item[element] = initial;
-                                        instance.update();
-                                    },
-                                    redo: () => {
-                                        item[element] = initial;
-                                        instance.update();
-                                    },
-                                });
+                                if (action.moved) {
+                                    const end = item[element];
+                                    history.push({
+                                        undo: () => {
+                                            item[element] = initial;
+                                            instance.setTransform();
+                                            instance.update();
+                                        },
+                                        redo: () => {
+                                            item[element] = initial;
+                                            instance.setTransform();
+                                            instance.update();
+                                        },
+                                    });
+                                }
                             };
                         });
                         node.addEventListener('touchstart', (event) => {
                             event = touch(event);
                             action.last = event.clientY;
+                            action.moved = false;
                             action.move = (event) => {
+                                action.moved = true;
                                 const delta = (event.clientY - action.last) * scaled;
                                 action.last = event.clientY;
                                 item[element] += delta;
@@ -1865,17 +1893,19 @@
                             const initial = item[element];
                             action.end = () => {
                                 action.move = null;
-                                const end = item[element];
-                                history.push({
-                                    undo: () => {
-                                        item[element] = initial;
-                                        instance.update();
-                                    },
-                                    redo: () => {
-                                        item[element] = initial;
-                                        instance.update();
-                                    },
-                                });
+                                if (action.moved) {
+                                    const end = item[element];
+                                    history.push({
+                                        undo: () => {
+                                            item[element] = initial;
+                                            instance.update();
+                                        },
+                                        redo: () => {
+                                            item[element] = initial;
+                                            instance.update();
+                                        },
+                                    });
+                                }
                             };
                         });
                     }
@@ -2033,7 +2063,7 @@
                 if (line === '!stop') {
                     processLine = false;
                 }
-                if (processLine && line.trim() !== '' && !line.trim().startsWith('#')) {
+                if (processLine && line.trim() !== '' && !line.trim().startsWith('`')) {
                     if (line.startsWith('>')) {
                         const [command, value] = line.replace(/^>\s*/, '').split('=').map((v) => v.trim());
                         if (commands[command]) {
@@ -2090,7 +2120,6 @@
          */
         function getTree(objs) {
             const defaults = {
-                //position: [], //[0, 0, 0],
                 size: [0, 0, 0],
                 angle: 0,
                 axis: [0, 1, 0],
@@ -2174,6 +2203,9 @@
          */
         function expandGraph(templateGraph) {
             const expand = (node, context = [], positioned) => {
+                if (node.name.startsWith('~')) {
+                    return [node];
+                }
                 const resolve = (value, context) => {
                     if (isNaN(Number(value))) {
                         value = value.replace(/<([0-9]*)>/g, (match, level) => (context[parseInt(level) || 0].instance) ?? 0)
@@ -2212,6 +2244,8 @@
                     return makeInstance(node, context);
                 } else if (positioned) {
                     return node.children.flatMap((child, index) => expand(child, [{ index }, ...context]), true);
+                } else {
+                    app.nodes.push(node);
                 }
                 return [];
             }
@@ -2227,19 +2261,40 @@
                 if (replace) {
                     app.instances = [];
                     app.roots = [];
+                    app.stock = {};
                 }
+                app.nodes.forEach((node) => {
+                    const items = node.children.filter((child) => child.name.startsWith('#'));
+                    if (items.length) {
+                        app.stock[node.name] = app.stock[node.name] || new Map();
+
+                        items.forEach((item) => {
+                            const [name, loc] = item.name.replace(/^#\s*/, '').split(/\s*->\s*/);
+                            if (app.stock[node.name].has(name) && loc !== app.stock[node.name].get(name)) {
+                                report(`Warning part ${name} in two locations (${app.stock[node.name].get(name)} and ${loc})!`);
+                            } else {
+                                app.stock[node.name].set(name, loc);
+                            }
+                        });
+                    }
+                })
                 const adjustOrigin = (node, offset = [0, 0, 0]) => {
                     if (app.cornerOrigin) {
                         node.position = add(node.position, scale(node.size, 0.5), offset);
-                        node.children.forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
+                        node.children.filter((child) => child.position).forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
                     }
                 }
 
                 source.forEach((node) => adjustOrigin(node));
 
                 const addNode = (parent, node) => {
-                    const child = parent.addChild(node);
-                    node.children.forEach((node) => addNode(child, node));
+                    if (node.name.startsWith('~')) {
+                        parent.parts = parent.parts || [];
+                        parent.parts.push(node.name.replace(/^~\s/, ''));
+                    } else {
+                        const child = parent.addChild(node);
+                        node.children.forEach((node) => addNode(child, node));
+                    }
                 }
                 source.forEach((node) => {
                     const root = app.addRoot(node);
@@ -2710,7 +2765,6 @@
          * Clear Selection
          */
         function clearSelection() {
-            app.selected = null;
             app.instances.forEach((instance) => instance.selected = false);
             updateTextBuffer();
             updateColours();
@@ -2790,6 +2844,12 @@
             canvas.tabIndex = 0;
             canvas.addEventListener('keydown', (event) => {
                 report(event.key);
+                const altShiftMapping = {
+                    X: (event) => rotateSelected(-45, [1, 0, 0], true),
+                    Y: (event) => rotateSelected(-45, [0, 1, 0], true),
+                    Z: (event) => rotateSelected(-45, [0, 0, 1], true),
+                }
+
                 const shiftMapping = {
                     ArrowUp: (event) => up(),
                     ArrowDown: (event) => up(-1),
@@ -2798,7 +2858,9 @@
                     '+': (event) => newBlock(),
                     R: (event) => reset(),
                     W: (event) => app.solid = !app.solid,
-
+                    X: (event) => rotateSelected(-45, [1, 0, 0]),
+                    Y: (event) => rotateSelected(-45, [0, 1, 0]),
+                    Z: (event) => rotateSelected(-45, [0, 0, 1]),
                 }
                 const ctrlMapping = {
                     ArrowUp: (event) => addBlocks([0, 1, 0]),
@@ -2845,8 +2907,10 @@
                 if (event.ctrlKey && ctrlMapping[event.key]) {
                     event.preventDefault();
                     ctrlMapping[event.key](event);
-                } else if (event.shiftKey) {
-                    shiftMapping[event.key]?.(event);
+                } else if (event.shiftKey && event.altKey && altShiftMapping[event.key]) {
+                    altShiftMapping[event.key](event);
+                } else if (event.shiftKey && shiftMapping[event.key]) {
+                    shiftMapping[event.key](event);
                 } else if (event.altKey && altMapping[event.key]) {
                     event.preventDefault();
                     altMapping[event.key](event);
@@ -2864,10 +2928,12 @@
                     node.classList.remove('selected');
                 }
                 action.selected = null;
+                action.moved = false;
                 if (hits) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     action.selected = hits[0];
+                    action.selected.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                     app.instances.forEach((instance) => instance.state = 'ghost');
                     action.selected.siblings.forEach((instance) => instance.state = 'constraint');
                     action.selected.state = 'selected';
@@ -2880,9 +2946,15 @@
                     } else {
                         action.plane.normal = [0, 1, 0];
                     }
+                    const apply = (instance, action) => {
+                        action(instance);
+                        instance.children.forEach((child) => apply(child, action));
+                    }
                     const selected = app.instances.filter((instance) => instance.selected);
-                    selected.forEach((instance) => instance.start = extractTranslation(instance.origin));
+                    selected.forEach((instance) =>
+                        instance.apply((instance) => instance.start = extractTranslation(instance.origin)));
                     action.move = (event) => {
+                        action.moved = true;
                         const mouseLine = getRay(event.clientX, event.clientY);
                         const n = planeIntercept(mouseLine, action.plane);
                         const point = add(mouseLine.point, scale(mouseLine.direction, n));
@@ -2899,6 +2971,7 @@
                 } else {
                     // Rotate the view
                     action.move = (event) => {
+                        action.moved = true;
                         const deltaX = event.clientX - action.lastX;
                         const deltaY = event.clientY - action.lastY;
                         action.lastX = event.clientX;
@@ -2933,10 +3006,12 @@
                             lookAt: [...app.camera.lookAt],
                             up: [...app.camera.up],
                         };
-                        history.push({
-                            undo: () => moveCamera(start.position, start.lookAt, start.up),
-                            redo: () => moveCamera(end.position, end.lookAt, end.up),
-                        });
+                        if (action.moved) {
+                            history.push({
+                                undo: () => moveCamera(start.position, start.lookAt, start.up),
+                                redo: () => moveCamera(end.position, end.lookAt, end.up),
+                            });
+                        }
                     }
                 }
             };
