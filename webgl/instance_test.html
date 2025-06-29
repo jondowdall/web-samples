@@ -337,6 +337,13 @@
         }
 
         /**
+         * Return an identity matrix
+         */
+        function identityMatrix() {
+            return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        }
+
+        /**
          * Get the hex value of the input number
          */
         function toHex(number, chars) {
@@ -908,7 +915,7 @@
         function updateColours() {
             const colourBuffer = [];
             app.instances.filter((instance) => !instance.hidden).toReversed().forEach((instance, index) => {
-                if (instance.state === 'ghosted') {
+                if (instance.state === 'ghost') {
                     colourBuffer.push(0.3, 0.3, 0.3);
                     colourBuffer.push(0.3, 0.3, 0.3);
                     colourBuffer.push(0.1, 0.1, 0.1);
@@ -1104,7 +1111,7 @@
                 data.push(text.size[0] / text.canvas.width, text.size[1] / text.canvas.height);  // Texture Size
                 data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
                 data.push(...text.colour);
-                data.push(...text.instance.transform);
+                data.push(...text.instance.origin);
             });
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
@@ -1149,7 +1156,7 @@
          * Update the gl buffers used to define each instance of an object.
          */
         function updateInstances(time) {
-            app.instances.forEach((instance) => instance.transform.forEach((value, index) => instance.matrix[index] = value));
+            //app.instances.forEach((instance) => instance.transform.forEach((value, index) => instance.matrix[index] = value));
             // update the matrix data
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
             gl.bufferSubData(gl.ARRAY_BUFFER, 0, app.modelMatrix);
@@ -1440,12 +1447,16 @@
             }
             asString() {
                 const getVector = (vector, places = 2) => vector.map((v) => v.toFixed(places)).join(', ');
+                const local = this.parent ? invert(this.parent.transform) : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+                const parentScale = getScale(extractScale(local).map((v) => 1 / v));
+                const transform = matrixMultiply(this.transform, matrixMultiply(local, parentScale));
+                const { translation, scale, angle, axis } = decompose(transform);
                 const attributes = [
                     this.name,
-                    getVector(this.position),
-                    getVector(this.size),
-                    this.angle,
-                    getVector(this.axis),
+                    getVector(translation),
+                    getVector(scale),
+                    angle,
+                    getVector(axis),
                     getVector(this.colour),
                     this.specular,
                     this.opacity,
@@ -1498,29 +1509,65 @@
 
                     0, 0, 0, 1
                 ];
-                const scale = [
-                    app.scale * this.size[0], 0, 0, 0,
-                    0, app.scale * this.size[1], 0, 0,
-                    0, 0, app.scale * this.size[2], 0,
-                    0, 0, 0, 1
-                ];
 
                 const rotationTranslate = multiply(this.rotation, translation);
                 this.origin = multiply(rotationTranslate, origin);
-                this.transform = multiply(scale, this.origin);
+            }
+            get transform() {
+                const scaleMatrix = getScale(scale(this.size, app.scale));
+                return multiply(scaleMatrix, this.origin);
             }
             update(child) {
-                const nodes = app.nodeMap.get(this);
-                nodes[1].innerHTML = this.position[0].toFixed(2);
-                nodes[2].innerHTML = this.position[1].toFixed(2);
-                nodes[3].innerHTML = this.position[2].toFixed(2);
-                this.setTransform();
+                for (let i = 0; i < 16; ++i) {
+                    this.matrix[i] = this.transform[i];
+                }
                 this.children.forEach((child) => child.update(true));
                 app.instancesChanged = true;
+                this.updateNodes();
                 if (!child) {
                     updateColours();
                     updateTextBuffer();
                 }
+            }
+            updateNodes() {
+                const { translation, scale, angle, axis } = decompose(this.transform);
+                const nodes = this.nodes;
+                nodes[0].innerHTML = this.name;
+                nodes[2].innerHTML = translation[0].toFixed(2);
+                nodes[3].innerHTML = translation[1].toFixed(2);
+                nodes[4].innerHTML = translation[2].toFixed(2);
+
+                nodes[5].innerHTML = scale[0].toFixed(2);
+                nodes[6].innerHTML = scale[1].toFixed(2);
+                nodes[7].innerHTML = scale[2].toFixed(2);
+
+                nodes[8].innerHTML = angle.toFixed(2);
+                nodes[9].innerHTML = axis[0].toFixed(2);
+                nodes[10].innerHTML = axis[1].toFixed(2);
+                nodes[11].innerHTML = axis[2].toFixed(2);
+            }
+            translate(vector) {
+                const translation = getTranslation(vector);
+                this.origin = matrixMultiply(this.origin, translation);
+                this.updateNodes();
+                app.instancesChanged = true;
+            }
+            rotate(angle, axis) {
+                const rotation = getRotation(angle, axis);
+                const offset = extractTranslation(this.origin);
+                const translation = getTranslation(offset);
+                const translationBack = getTranslation(scale(offset, -1));
+                const transform = matrixMultiply(translationBack, matrixMultiply(rotation, translation));
+
+                const apply = (instance) => {
+                    instance.origin = matrixMultiply(instance.origin, transform);
+                    instance.children.forEach((child) => apply(child));
+                }
+                apply(this);
+                                
+                this.update();
+                this.updateNodes();
+                app.instancesChanged = true;
             }
             addChild(position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
                 const newInstance = new Instance(
@@ -1555,12 +1602,13 @@
                 return app.nodeMap.get(this);
             }
             overlap(position, other) {
-                return ((position[0] + this.size[0]) >= other.position[0])
-                    && (position[0] <= (other.position[0] + other.size[0]))
-                    && ((position[1] + this.size[1]) >= other.position[1])
-                    && (position[1] <= (other.position[1] + other.size[1]))
-                    && ((position[2] + this.size[2]) >= other.position[2])
-                    && (position[2] <= (other.position[2] + other.size[2]));
+                const otherPosition = extractTranslation(other.origin);
+                return ((position[0] + this.size[0]) >= otherPosition[0])
+                    && (position[0] <= (otherPosition[0] + other.size[0]))
+                    && ((position[1] + this.size[1]) >= otherPosition[1])
+                    && (position[1] <= (otherPosition[1] + other.size[1]))
+                    && ((position[2] + this.size[2]) >= otherPosition[2])
+                    && (position[2] <= (otherPosition[2] + other.size[2]));
             }
             move(vector) {
                 this.siblings.forEach((sibling) => {
@@ -1568,9 +1616,11 @@
                     const requestedPosition = add(this.start, vector);
                     if (this.overlap(requestedPosition, sibling)) {
                         const delta = [0, 0, 0];
+                        const siblingPosition = extractTranslation(sibling.origin);
+
                         for (let i = 0; i < 3; ++i) {
-                            const d1 = sibling.position[i] - requestedPosition[i] - this.size[i];
-                            const d2 = sibling.position[i] + sibling.size[i] - requestedPosition[i];
+                            const d1 = siblingPosition[i] - requestedPosition[i] - this.size[i];
+                            const d2 = siblingPosition[i] + sibling.size[i] - requestedPosition[i];
                             delta[i] = Math.abs(d1) < Math.abs(d2) ? d1 : d2;
                         }
                         if (Math.abs(delta[1]) < Math.abs(delta[0])) {
@@ -1592,7 +1642,11 @@
                         sibling.state = 'hit';
                     }
                 });
-                this.position = add(this.start, vector);
+                // update position
+                this.origin[12] = this.start[0] + vector[0];
+                this.origin[13] = this.start[1] + vector[1];
+                this.origin[14] = this.start[2] + vector[2];
+                this.update();
                 updateColours();
             }
             promote() {
@@ -1649,15 +1703,19 @@
          */
         function endMove() {
             const start = [...action.selected.start];
-            const end = [...action.selected.position];
+            const end = extractTranslation(action.selected.origin);
             const instance = action.selected;
             history.push({
                 undo: () => {
-                    instance.position = start;
+                    instance.origin[12] = start[0];
+                    instance.origin[13] = start[1];
+                    instance.origin[14] = start[2];
                     instance.update();
                 },
                 redo: () => {
-                    instance.position = end;
+                    instance.origin[12] = end[0];
+                    instance.origin[13] = end[1];
+                    instance.origin[14] = end[2];
                     instance.update();
                 },
             });
@@ -1983,7 +2041,7 @@
                         }
                         return [];
                     }
-                    const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, instances] = line.split(/\s*;\s*/);
+                    const [indentedName, positionStr, sizeStr, angleStr, axisStr, colourStr, specularStr, opacityStr, serialNumberStr] = line.split(/\s*;\s*/);
                     const indent = indentedName.replace(/\S.*/, '');
                     const rangeName = indentedName.replace(/^\s+/, '');
                     const match = rangeName.match(/(\[(?<instances>[^\]]+)\]\s*)?(?<name>.*)/);
@@ -2005,6 +2063,7 @@
                     const colour = colourStr ? colourStr.split(',') : null;
                     const specular = specularStr ? specularStr : null;
                     const opacity = opacityStr ? opacityStr : null;
+                    const serialNumbers = serialNumberStr ? serialNumberStr.split(/\s*,\s*/g) : [];
                     const obj = {
                         name,
                         types,
@@ -2016,7 +2075,9 @@
                         colour,
                         specular,
                         opacity,
-                        instances: instances ?? match.groups.instances, children: [],
+                        instances: match.groups.instances,
+                        children: [],
+                        serialNumbers,
                     }
                     return obj;
                 }
@@ -2064,8 +2125,12 @@
                     stack.shift();
                 }
                 if (stack.length > 0) {
-                    stack[0].children.push(obj);
-                    obj.parent = stack[0];
+                    if (name.startsWith('^')) {
+                        stack[0].serialNumbers.push(this.name);
+                    } else {
+                        stack[0].children.push(obj);
+                        obj.parent = stack[0];
+                    }
                 } else {
                     roots.push(obj);
                 }
@@ -2281,6 +2346,190 @@
         }
 
         /**
+         * Return the result of multiplying 2 4x4 matrices
+         */
+        function matrixMultiply(a, b) {
+            return [
+                a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12],
+                a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13],
+                a[0] * b[2] + a[1] * b[6] + a[2] * b[10] + a[3] * b[14],
+                a[0] * b[3] + a[1] * b[7] + a[2] * b[11] + a[3] * b[15],
+
+                a[4] * b[0] + a[5] * b[4] + a[6] * b[8] + a[7] * b[12],
+                a[4] * b[1] + a[5] * b[5] + a[6] * b[9] + a[7] * b[13],
+                a[4] * b[2] + a[5] * b[6] + a[6] * b[10] + a[7] * b[14],
+                a[4] * b[3] + a[5] * b[7] + a[6] * b[11] + a[7] * b[15],
+
+                a[8] * b[0] + a[9] * b[4] + a[10] * b[8] + a[11] * b[12],
+                a[8] * b[1] + a[9] * b[5] + a[10] * b[9] + a[11] * b[13],
+                a[8] * b[2] + a[9] * b[6] + a[10] * b[10] + a[11] * b[14],
+                a[8] * b[3] + a[9] * b[7] + a[10] * b[11] + a[11] * b[15],
+
+                a[12] * b[0] + a[13] * b[4] + a[14] * b[8] + a[15] * b[12],
+                a[12] * b[1] + a[13] * b[5] + a[14] * b[9] + a[15] * b[13],
+                a[12] * b[2] + a[13] * b[6] + a[14] * b[10] + a[15] * b[14],
+                a[12] * b[3] + a[13] * b[7] + a[14] * b[11] + a[15] * b[15]
+            ];
+        }
+
+        /**
+         * Calculate the inverse of a 4x4 matrix.
+         * 
+         * Input: 16 element array
+         * Output: 16 element array
+         */
+        function invert(matrix) {
+            const a0 = matrix[0] * matrix[5] - matrix[1] * matrix[4];
+            const a1 = matrix[0] * matrix[6] - matrix[2] * matrix[4];
+            const a2 = matrix[0] * matrix[7] - matrix[3] * matrix[4];
+            const a3 = matrix[1] * matrix[6] - matrix[2] * matrix[5];
+            const a4 = matrix[1] * matrix[7] - matrix[3] * matrix[5];
+            const a5 = matrix[2] * matrix[7] - matrix[3] * matrix[6];
+            const b0 = matrix[8] * matrix[13] - matrix[9] * matrix[12];
+            const b1 = matrix[8] * matrix[14] - matrix[10] * matrix[12];
+            const b2 = matrix[8] * matrix[15] - matrix[11] * matrix[12];
+            const b3 = matrix[9] * matrix[14] - matrix[10] * matrix[13];
+            const b4 = matrix[9] * matrix[15] - matrix[11] * matrix[13];
+            const b5 = matrix[10] * matrix[15] - matrix[11] * matrix[14];
+            const invdet = 1 / (a0 * b5 - a1 * b4 + a2 * b3 + a3 * b2 - a4 * b1 + a5 * b0);
+
+            return [
+                (+matrix[5] * b5 - matrix[6] * b4 + matrix[7] * b3) * invdet,
+                (-matrix[1] * b5 + matrix[2] * b4 - matrix[3] * b3) * invdet,
+                (+matrix[13] * a5 - matrix[14] * a4 + matrix[15] * a3) * invdet,
+                (-matrix[9] * a5 + matrix[10] * a4 - matrix[11] * a3) * invdet,
+                (-matrix[4] * b5 + matrix[6] * b2 - matrix[7] * b1) * invdet,
+                (+matrix[0] * b5 - matrix[2] * b2 + matrix[3] * b1) * invdet,
+                (-matrix[12] * a5 + matrix[14] * a2 - matrix[15] * a1) * invdet,
+                (+matrix[8] * a5 - matrix[10] * a2 + matrix[11] * a1) * invdet,
+                (+matrix[4] * b4 - matrix[5] * b2 + matrix[7] * b0) * invdet,
+                (-matrix[0] * b4 + matrix[1] * b2 - matrix[3] * b0) * invdet,
+                (+matrix[12] * a4 - matrix[13] * a2 + matrix[15] * a0) * invdet,
+                (-matrix[8] * a4 + matrix[9] * a2 - matrix[11] * a0) * invdet,
+                (-matrix[4] * b3 + matrix[5] * b1 - matrix[6] * b0) * invdet,
+                (+matrix[0] * b3 - matrix[1] * b1 + matrix[2] * b0) * invdet,
+                (-matrix[12] * a3 + matrix[13] * a1 - matrix[14] * a0) * invdet,
+                (+matrix[8] * a3 - matrix[9] * a1 + matrix[10] * a0) * invdet];
+        }
+
+
+        /**
+         * Extract translation from a transformation matrix
+         */
+        function extractTranslation(matrix) {
+            return [matrix[12], matrix[13], matrix[14]];
+        }
+
+        /**
+         * Extract scale vector from a transformation matrix
+         */
+        function extractScale(matrix) {
+            return [
+                Math.hypot(matrix[0], matrix[1], matrix[2]),
+                Math.hypot(matrix[4], matrix[5], matrix[6]),
+                Math.hypot(matrix[8], matrix[9], matrix[10])];
+        }
+
+        /**
+         * Extract rotation from a transformation matrix
+         */
+        function extractRotation(matrix, scale) {
+            scale = scale || extractScale(matrix);
+            return [
+                matrix[0] / scale[0], matrix[1] / scale[0], matrix[2] / scale[0], 0,
+                matrix[4] / scale[1], matrix[5] / scale[1], matrix[6] / scale[1], 0,
+                matrix[8] / scale[2], matrix[9] / scale[2], matrix[10] / scale[2], 0,
+                0, 0, 0, 1,
+            ];
+        }
+
+        /**
+         * Extract quaternion from a rotation matrix
+         */
+        function extractQuaternion(rotation) {
+            const tr = rotation[0] + rotation[5] + rotation[10];
+            const quaternion = {};
+
+            // From: https://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/
+            if (tr > 0) {
+                const S = Math.sqrt(tr + 1.0) * 2; // S=4*quaternion.w 
+                quaternion.w = 0.25 * S;
+                quaternion.x = (rotation[9] - rotation[6]) / S;
+                quaternion.y = (rotation[2] - rotation[8]) / S;
+                quaternion.z = (rotation[4] - rotation[1]) / S;
+            } else if ((rotation[0] > rotation[5]) & (rotation[0] > rotation[10])) {
+                const S = Math.sqrt(1.0 + rotation[0] - rotation[5] - rotation[10]) * 2; // S=4*quaternion.x 
+                quaternion.w = (rotation[9] - rotation[6]) / S;
+                quaternion.x = 0.25 * S;
+                quaternion.y = (rotation[1] + rotation[4]) / S;
+                quaternion.z = (rotation[2] + rotation[8]) / S;
+            } else if (rotation[5] > rotation[10]) {
+                const S = Math.sqrt(1.0 + rotation[5] - rotation[0] - rotation[10]) * 2; // S=4*quaternion.y
+                quaternion.w = (rotation[2] - rotation[8]) / S;
+                quaternion.x = (rotation[1] + rotation[4]) / S;
+                quaternion.y = 0.25 * S;
+                quaternion.z = (rotation[6] + rotation[9]) / S;
+            } else {
+                const S = Math.sqrt(1.0 + rotation[10] - rotation[0] - rotation[5]) * 2; // S=4*quaternion.z
+                quaternion.w = (rotation[4] - rotation[1]) / S;
+                quaternion.x = (rotation[2] + rotation[8]) / S;
+                quaternion.y = (rotation[6] + rotation[9]) / S;
+                quaternion.z = 0.25 * S;
+            }
+            return quaternion;
+        }
+
+        /**
+         * Get angle and axis from a quaternion
+         */
+        function getAngleAxis(quaternion) {
+            const radians = Math.acos(quaternion.w);
+            const angle = 360 * radians / Math.PI;
+            if (Math.abs(angle) > 0.0001) {
+                const s = 1 / Math.sin(radians);
+                const axis = [quaternion.x * s, quaternion.y * s, quaternion.z * s];
+                return { angle, axis };
+            }
+            return { angle: 0, axis: [0, 1, 0] };
+        }
+
+        /**
+         * Decompose a transform matrix into a translation, rotation and scale
+         */
+        function decompose(matrix) {
+            const translation = extractTranslation(matrix);
+            const scale = extractScale(matrix);
+            const rotation = extractRotation(matrix, scale);
+            const quaternion = extractQuaternion(rotation);
+            const { angle, axis } = getAngleAxis(quaternion);
+            return { translation, scale, angle, axis };
+        }
+
+        /**
+         * Return the translation matrix based on vector transation.
+         */
+        function getTranslation(vector) {
+            return [
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                vector[0], vector[1], vector[2], 1
+            ];
+        }
+
+        /**
+         * Return the scale matrix based on vector scales.
+         */
+        function getScale(vector) {
+            return [
+                vector[0], 0, 0, 0,
+                0, vector[1], 0, 0,
+                0, 0, vector[2], 0,
+                0, 0, 0, 1
+            ];
+        }
+
+        /**
          * Return the rotation matrix based on angle and axis.
          */
         function getRotation(angle, axis) {
@@ -2380,13 +2629,14 @@
                 if (dist < radius) {
                     const corner1 = applyTransform(scale(size, -1), instance.origin);
                     const corner2 = applyTransform(size, instance.origin);
+                    const rotation = extractRotation(instance.transform);
                     const planes = [
-                        { point: corner1, normal: applyTransform([-1, 0, 0], instance.rotation) },
-                        { point: corner1, normal: applyTransform([0, -1, 0], instance.rotation) },
-                        { point: corner1, normal: applyTransform([0, 0, -1], instance.rotation) },
-                        { point: corner2, normal: applyTransform([1, 0, 0], instance.rotation) },
-                        { point: corner2, normal: applyTransform([0, 1, 0], instance.rotation) },
-                        { point: corner2, normal: applyTransform([0, 0, 1], instance.rotation) },
+                        { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                        { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                        { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                        { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                        { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
+                        { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
                     ];
                     const points = convexHullIntercept(line, planes);
                     if (points) {
@@ -2450,7 +2700,7 @@
 
             const addInstance = (instance, level = 0) => {
                 lines.push(`${''.padStart(level * 2, ' ')}${instance.asString()}`);
-                instance.children.forEach((child) => child.addInstance(child, level + 1));
+                instance.children.forEach((child) => addInstance(child, level + 1));
             };
             app.roots.forEach((root) => addInstance(root));
             downloadText(lines.join('\n'));
@@ -2463,6 +2713,33 @@
             app.selected = null;
             app.instances.forEach((instance) => instance.selected = false);
             updateTextBuffer();
+            updateColours();
+        }
+
+        /**
+         * Rotate the seleceted item
+         */
+        function rotateSelected(angle, axis, local) {
+            app.instances.filter((instance) => instance.selected)
+                .forEach((instance) => {
+                    if (local) {
+                        axis = applyTransform(axis, extractRotation(instance.origin));
+                    }
+                    instance.rotate(angle, axis);
+                });
+        }
+
+        /**
+         * Selected item(s) parent.
+         */
+        function selectParent() {
+            const parents = app.instances.flatMap((instance) => instance.selected ? (instance.parent ?? []) : []);
+            if (!event.shiftKey) {
+                app.instances.forEach((instance) => instance.selected = false);
+            }
+            parents.forEach((instance) => instance.selected = true);
+            updateInstances();
+            updateText();
             updateColours();
         }
 
@@ -2513,19 +2790,6 @@
             canvas.tabIndex = 0;
             canvas.addEventListener('keydown', (event) => {
                 report(event.key);
-                /*
-                                if (event.key === 'w') {
-                                    app.wireframe = !app.wireframe;
-                                }
-                                if (event.key === 'i') {
-                                    app.cullFaces = !app.cullFaces;
-                                    updateColours();
-                                }
-                                if (event.key === 'c') {
-                                    app.points = [];
-                                    updatePoints();
-                                }
-                                    */
                 const shiftMapping = {
                     ArrowUp: (event) => up(),
                     ArrowDown: (event) => up(-1),
@@ -2550,6 +2814,9 @@
                     ArrowDown: (event) => addBlocks([0, 0, 1]),
                     ArrowLeft: (event) => addBlocks([-1, 0, 0]),
                     ArrowRight: (event) => addBlocks([1, 0, 0]),
+                    x: (event) => rotateSelected(45, [1, 0, 0], true),
+                    y: (event) => rotateSelected(45, [0, 1, 0], true),
+                    z: (event) => rotateSelected(45, [0, 0, 1], true),
                 }
                 const mapping = {
                     ArrowUp: (event) => forward(),
@@ -2565,10 +2832,14 @@
                     h: (event) => hideSelected(event),
                     i: (event) => { app.solid = !app.solid; updateColours(); },
                     l: (event) => setView([-1, 0, 0]),
+                    p: (event) => selectParent(event),
                     r: (event) => setView([1, 0, 0]),
                     s: (event) => save(),
                     t: (event) => setView([0, 1, 0], [0, 0, -1]),
                     w: (event) => app.wireframe = !app.wireframe,
+                    x: (event) => rotateSelected(45, [1, 0, 0]),
+                    y: (event) => rotateSelected(45, [0, 1, 0]),
+                    z: (event) => rotateSelected(45, [0, 0, 1]),
                 }
 
                 if (event.ctrlKey && ctrlMapping[event.key]) {
@@ -2599,6 +2870,7 @@
                     action.selected = hits[0];
                     app.instances.forEach((instance) => instance.state = 'ghost');
                     action.selected.siblings.forEach((instance) => instance.state = 'constraint');
+                    action.selected.state = 'selected';
 
                     report(action.selected.name);
                     app.nodeMap.get(action.selected).forEach((node) => node.classList.add('selected'));
@@ -2609,7 +2881,7 @@
                         action.plane.normal = [0, 1, 0];
                     }
                     const selected = app.instances.filter((instance) => instance.selected);
-                    selected.forEach((instance) => instance.start = [...instance.position]);
+                    selected.forEach((instance) => instance.start = extractTranslation(instance.origin));
                     action.move = (event) => {
                         const mouseLine = getRay(event.clientX, event.clientY);
                         const n = planeIntercept(mouseLine, action.plane);
