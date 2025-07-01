@@ -21,6 +21,10 @@
             overflow: hidden;
         }
 
+        ul {
+            margin: 0;
+        }
+
         #main-canvas {
             width: 100dvw;
             height: 100dvh;
@@ -76,6 +80,10 @@
 
         #projection-control>details {
             grid-column: 1 / -1;
+        }
+
+        details details {
+            margin-left: 1em;
         }
 
         #structure {
@@ -932,6 +940,12 @@
                     colourBuffer.push(0.1, 0.1, 0.1);
                     colourBuffer.push(instance.specular);
                     colourBuffer.push(0.1);
+                } else if (instance.state === 'set') {
+                    colourBuffer.push(0.3, 0.0, 0.0);
+                    colourBuffer.push(0.3, 0.0, 0.0);
+                    colourBuffer.push(0.1, 0.0, 0.0);
+                    colourBuffer.push(instance.specular);
+                    colourBuffer.push(0.1);
                 } else if (instance.state === 'constraint') {
                     colourBuffer.push(0.3, 1.0, 0.3);
                     colourBuffer.push(0.3, 1.0, 0.3);
@@ -951,7 +965,6 @@
                     colourBuffer.push(...colour.map((v) => v * 1.0));
                     colourBuffer.push(instance.specular);
                     const opacity = app.solid ? 1 : app.wireframe ? 0.1 : instance.children.length > 0 ? 0.5 : 1;
-                    //colourBuffer.push(app.wireframe || !app.cullFaces ? 0 : instance.children.length);
                     colourBuffer.push(opacity);
                 }
             });
@@ -2028,10 +2041,10 @@
         /**
          * Utility function to make a node draggable
          */
-        function makeDraggable(node, data) {
+        function makeDraggable(node, type, data) {
             node.draggable = true;
             node.addEventListener('dragstart', (event) => {
-                event.dataTransfer.setData("text/plain", data);
+                event.dataTransfer.setData(type, data);
             });
         }
 
@@ -2060,7 +2073,7 @@
                     const list = document.createElement('ul');
                     items.forEach((item) => {
                         const itemNode = document.createElement('li');
-                        makeDraggable(itemNode, item);
+                        makeDraggable(itemNode, part, item);
                         itemNode.innerHTML = item;
                         list.append(itemNode);
                     });
@@ -2345,7 +2358,7 @@
                 const addNode = (parent, node) => {
                     if (node.name.startsWith('~')) {
                         parent.parts = parent.parts || [];
-                        parent.parts.push(node.name.replace(/^~\s/, ''));
+                        parent.parts.push(node.name.replace(/^~\s*/, '').toLowerCase());
                     } else {
                         const child = parent.addChild(node);
                         node.children.forEach((node) => addNode(child, node));
@@ -2725,7 +2738,7 @@
          */
         function getIntersection(line) {
             // Check whether a line passes within the radius of the bounding sphere
-            const hits = app.instances.filter((instance) => {
+            return app.instances.filter((instance) => {
                 const size = scale(instance.size, 0.5 * app.scale);
                 const origin = [0, 0, 0];
                 const centre = applyTransform(origin, instance.origin);
@@ -2758,6 +2771,12 @@
                     }
                 }
             });
+        }
+
+        /**
+         * Find the intersection of a ray and objects
+         */
+        function getSelected(hits) {
             if (hits.length) {
                 const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                 // Find the closest to the view position that isn't a parent
@@ -2772,16 +2791,9 @@
                 } else {
                     app.instances.forEach((instance) => instance.selected = instance === hit[0]);
                 }
-                updateColours();
-                updateTextBuffer();
-                updatePoints();
                 return hit;
             }
-
             app.instances.forEach((instance) => instance.selected = false);
-            updateColours();
-            updateTextBuffer();
-            updatePoints();
         }
 
         /**
@@ -2978,7 +2990,7 @@
                 action.lastX = event.clientX;
                 action.lastY = event.clientY;
                 const mouseLine = getRay(event.clientX, event.clientY);
-                const hits = getIntersection(mouseLine);
+                const hits = getSelected(getIntersection(mouseLine));
                 for (const node of document.body.querySelectorAll('.selected')) {
                     node.classList.remove('selected');
                 }
@@ -3021,7 +3033,6 @@
                             selected.update();
                         });
                     };
-                    updateColours();
                     action.end = endMove;
                 } else {
                     // Rotate the view
@@ -3069,6 +3080,9 @@
                         }
                     }
                 }
+                updateColours();
+                updateTextBuffer();
+                updatePoints();
             };
             canvas.addEventListener('mousedown', (event) => mouseDown(event));
             canvas.addEventListener('touchstart', (event) => mouseDown(touch(event)));
@@ -3087,6 +3101,9 @@
              * Process a dropped file
              */
             function dropHandler(event) {
+                dragPart = false;
+                app.instances.forEach((instance) => instance.state = null);
+
                 event.preventDefault();
                 const replace = event.shiftKey;
 
@@ -3117,11 +3134,39 @@
                     // Use DataTransfer interface to access the file(s)
                     [...event.dataTransfer.files].forEach((file, i) => loadFile(file));
                 }
+                const types = event.dataTransfer.types;
+                if (types.length) {
+                    const mouseLine = getRay(event.clientX, event.clientY);
+                    const hits = getIntersection(mouseLine).filter((instance) => instance.parts?.includes(types[0]));
+                    if (hits.length) {
+                        const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
+                        hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
+                        if (hits[0]) {
+                            hits[0].part = event.dataTransfer.getData(types[0]);
+                            hits[0].colour = [1, 0, 0];
+                        }
+                    }
+                }
+                updateColours();
             }
 
+            let dragPart = false;
             function dragOverHandler(event) {
                 // Prevent default behavior (Prevent file from being opened)
                 event.preventDefault();
+                const types = event.dataTransfer.types;
+                if (types.length) {
+                    const mouseLine = getRay(event.clientX, event.clientY);
+                    const hits = getIntersection(mouseLine).filter((instance) => instance.parts?.includes(types[0]));
+                    if (hits.length) {
+                        const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
+                        hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
+                        // Move the clicked object
+                        app.instances.forEach((instance) =>
+                            instance.state = instance === hits[0] ? null : instance.part ? 'filled' : 'ghost');
+                        updateColours();
+                    }
+                }
             }
 
             canvas.addEventListener('dragover', dragOverHandler);
