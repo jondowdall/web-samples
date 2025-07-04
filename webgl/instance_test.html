@@ -119,6 +119,35 @@
             padding: 0.3em;
         }
 
+        #info {
+            position: fixed;
+            bottom: 1em;
+            right: 1em;
+            color: yellow;
+            background-color: rgb(80, 80, 30, 0.8);
+            border: 1px solid orange;
+            border-radius: 0.5em;
+            padding: 0.5em;
+            min-width: 20em;
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            grid-auto-rows: max-content;
+            grid-row-gap: 3px;
+        }
+
+        .all-columns {
+            grid-column: 1 / -1;
+        }
+
+        #info h2 {
+            margin-block-start: 0em;
+        }
+
+        #info textarea {
+            background-color: none;
+            width: calc(100%);
+        }
+
         #load-file {
             display: none;
         }
@@ -141,7 +170,7 @@
         }
 
         .hide {
-            display: none;
+            display: none !important;
         }
 
         .three-columns {
@@ -222,6 +251,7 @@
         <button id="move-backwards">&#8634;</button>
     </div>
     <div id="state"></div>
+    <div id="info" class="hide"></div>
 
     <script type="x-shader/x-vertex" id="vertex-shader">
     #version 300 es
@@ -434,7 +464,10 @@
          */
         function forward(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            app.velocity = add(app.velocity, scale(zAxis, amount * distance / 1000));
+            const offset = scale(zAxis, amount * distance / 10);
+            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            canvas.focus();
+
         }
 
         /**
@@ -442,7 +475,10 @@
          */
         function right(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            app.velocity = add(app.velocity, scale(xAxis, amount * distance / 1000));
+            const offset = scale(xAxis, amount * distance / 10);
+            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            canvas.focus();
+
         }
 
         /**
@@ -450,7 +486,9 @@
          */
         function up(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            app.velocity = add(app.velocity, scale(yAxis, -amount * distance / 1000));
+            const offset = scale(yAxis, amount * distance / 10);
+            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            canvas.focus();
         }
 
         /**
@@ -458,10 +496,11 @@
          */
         function clockwise(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const rotation = getRotation(-amount, zAxis);
-            app.camera.up = applyTransform(yAxis, rotation);
-            app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
-            app.camera.updateViewControls();
+            const rotation = getRotation(-amount * 15, zAxis);
+            const roll = applyTransform(yAxis, rotation);
+            moveCamera(app.camera.position, app.camera.lookAt, roll);
+            canvas.focus();
+
         }
 
         /**
@@ -469,8 +508,10 @@
          */
         function rotateRight(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const rotation = getRotation(-amount, yAxis);
-            app.rotation = multiply(app.rotation, rotation);
+            const direction = subtract(app.camera.lookAt, app.camera.position);
+            const rotation = getRotation(-amount * 15, yAxis);
+            const newDirection = applyTransform(direction, rotation);
+            moveCamera(app.camera.position, add(app.camera.position, newDirection), app.camera.up);
         }
 
         /**
@@ -581,19 +622,22 @@
             const axis = cross(zAxis, normalised(direction));
             const opposite = Math.sign(dot(zAxis, direction)) || 1;
             const deg = -180 * Math.asin(Math.hypot(...axis)) / Math.PI;
-            const angle = opposite < 0 ? -deg : deg;
+            // Allow for angles greater than 90 degrees
+            const angle = opposite < 0 ? 180 + deg : deg;
             if (Math.abs(angle) < 0.001) {
                 axis[1] = 1;
             }
-            app.movement.rotation = { angle, axis: normalised(scale(axis, -1)), };
+            app.movement.rotation = { angle, axis: normalised(scale(axis, opposite)), };
             const rotation = getRotation(app.movement.rotation.angle, app.movement.rotation.axis);
             const endUp = applyTransform(yAxis, rotation);
-            const x1 = cross(up, direction);
-            const x2 = cross(endUp, direction);
+            const x1 = normalised(cross(up, direction));
+            const x2 = normalised(cross(endUp, direction));
             // Calculate the axis and angle from the cross product of the view directions
-            const rollAxis = cross(normalised(x1), normalised(x2));
+            const rollAxis = cross(x1, x2);
+            const accute = dot(x1, x2) || 1;
             const sign = Math.sign(dot(rollAxis, direction));
-            const roll = -180 * sign * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
+            const roll1 = -180 * sign * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
+            const roll = accute < 0 ? -180 - roll1 : roll1;
             // Check for 180 degree rotation
             if (Math.abs(roll) < 0.1 && dot(endUp, up) < 0) {
                 app.movement.roll = 180;
@@ -937,7 +981,7 @@
             const colourBuffer = [];
             const setTransparency = (instance) => {
                 instance.state.transparent = instance.children.reduce((result, instance) => result || (setSelected(instance)), 1);
-                return instance.state.transparent || instance.selected; 
+                return instance.state.transparent || instance.selected;
             }
             app.roots.forEach((instance) => setTransparency(instance));
             app.instances.filter((instance) => !instance.hidden).toReversed().forEach((instance, index) => {
@@ -1494,6 +1538,27 @@
                     this.opacity,
                 ];
                 return attributes.join('; ');
+            }
+            showInfo() {
+                const container = document.getElementById('info');
+                container.classList.remove('hide');
+                container.innerHTML = `
+                <h2 class="all-columns">${this.name}</h2>
+                <span class="all-columns">${this.path}</span>
+                <span>P/N:</span><span>${this.partNumber}</span>
+                <span>S/N:</span><span>${this.serialNumber}</span>
+                <span>Notes:</span>`;
+                const notes = document.createElement('textarea');
+                notes.value = this.notes || '';
+                notes.classList.add('all-columns')
+                notes.addEventListener('blur', (event) => {
+                    this.notes = notes.value;
+                });
+                container.append(notes);
+
+            }
+            get path() {
+                return `${this.parent ? this.parent.path : ''}/${this.name}`;
             }
             /**
              * Set the transform of a shape based on its position, rotation and scale.
@@ -2866,6 +2931,8 @@
          */
         function clearSelection() {
             app.instances.forEach((instance) => instance.selected = false);
+            document.getElementById('info').innerHTML = '';
+            document.getElementById('info').classList.add('hide');
             updateTextBuffer();
             app.colourUpdate = true;
         }
@@ -3033,9 +3100,10 @@
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     action.selected = hits[0];
+                    action.selected.showInfo();
 
                     action.selected.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
-                    if (action.selected.part) {
+                    if (action.selected.serialNumber) {
 
                     } else {
                         action.selected.state.selected = true;
@@ -3184,8 +3252,9 @@
                         const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                         hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                         if (hits[0]) {
-                            hits[0].part = event.dataTransfer.getData(types[0]);
+                            hits[0].serialNumber = event.dataTransfer.getData(types[0]);
                             hits[0].colour = [1, 0, 0];
+                            hits[0].showInfo();
                         }
                     }
                 }
@@ -3206,7 +3275,7 @@
                     }
                     app.instances.forEach((instance) => {
                         instance.state.highlight = instance === hits[0];
-                        instance.state.hasPart = instance.part;
+                        instance.state.hasPart = instance.serialNumber;
                         instance.state.constraint = instance.parts?.includes(types[0]);
                         instance.state.ghost = true;
                     });
