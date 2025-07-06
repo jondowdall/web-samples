@@ -1410,19 +1410,19 @@
             gl.disableVertexAttribArray(app.shader.model + 3);
             gl.vertexAttrib4f(app.shader.model + 3, 0, 0, 0, 1);
 
-/*
-            gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
-            gl.disableVertexAttribArray(app.shader.ambientColour);
-            gl.vertexAttribDivisor(app.shader.ambientColour, 0);
-
-            gl.vertexAttrib3f(app.shader.diffuseColour, 1, 1, 1);
-            gl.disableVertexAttribArray(app.shader.diffuseColour);
-            gl.vertexAttribDivisor(app.shader.diffuseColour, 0);
-
-            gl.vertexAttrib3f(app.shader.specularColour, 1, 1, 1);
-            gl.disableVertexAttribArray(app.shader.specularColour);
-            gl.vertexAttribDivisor(app.shader.specularColour, 0);
-*/
+            /*
+                        gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
+                        gl.disableVertexAttribArray(app.shader.ambientColour);
+                        gl.vertexAttribDivisor(app.shader.ambientColour, 0);
+            
+                        gl.vertexAttrib3f(app.shader.diffuseColour, 1, 1, 1);
+                        gl.disableVertexAttribArray(app.shader.diffuseColour);
+                        gl.vertexAttribDivisor(app.shader.diffuseColour, 0);
+            
+                        gl.vertexAttrib3f(app.shader.specularColour, 1, 1, 1);
+                        gl.disableVertexAttribArray(app.shader.specularColour);
+                        gl.vertexAttribDivisor(app.shader.specularColour, 0);
+            */
 
             gl.disableVertexAttribArray(app.shader.specularIntensity);
             gl.vertexAttrib1f(app.shader.specularIntensity, 1);
@@ -1435,10 +1435,10 @@
             // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
             gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
             gl.enableVertexAttribArray(app.shader.position);
-/*
-            gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, true, 24, 0);
-            gl.enableVertexAttribArray(app.shader.normal);
-*/
+            /*
+                        gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, true, 24, 0);
+                        gl.enableVertexAttribArray(app.shader.normal);
+            */
             gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 24, 12);
             gl.enableVertexAttribArray(app.shader.ambientColour);
 
@@ -2333,6 +2333,103 @@
                 gl.clearColor(...colour, 1.0);
             }
         }
+
+
+        /**
+         * Convert lines to objects
+         */
+        function processText(text) {
+            const lines = text.split(/\r?\n/g);
+            const roots = [];
+            const stack = [{
+                level: -1,
+                context: [],
+                action(obj) { roots.push(obj) }
+            }];
+
+            const getLevel = (line) => {
+                let level = 0;
+                for (let i = 0; i < line.length; ++i) {
+                    if (line[i] === ' ' || line[i] === '\t') {
+                        level += line[i] === '\t' ? 4 - (level % 4) : 1;
+                    } else {
+                        break;
+                    }
+                }
+                return level;
+            }
+
+            const startGroup = /^\[([^\]]+)\]/;
+            const endGroup = /\[([^\]]+)\]$/;
+            let process = true;
+            lines.forEach((line, lineNumber) => {
+                if (line === '!stop') {
+                    process = false;
+                }
+                if (process && line.trim() !== '' && !/^\s*`/.test(line)) {
+                    const level = getLevel(line);
+                    while (level <= stack.at(-1).level) {
+                        stack.pop();
+                    }
+                    const context = stack[0].context || [];
+                    const body = line.trim();
+                    const range = body.match(startGroup)?.[1] || line.match(endGroup)?.[1];
+
+                    const instances = range ? getList(range) : undefined;
+
+                    const components = body.replace(startGroup, '').replace(endGroup, '')
+                        .split(/\s*[;\|\t\u{1f}]\s*/u);
+
+                    const obj = components.filter((item) => item).reduce((obj, item, index) => {
+                        const [name, value] = item.split(/\s*=\s*/);
+                        if (value !== undefined) {
+                            obj[name] = value;
+                        } else {
+                            obj[context[index] || index] = name;
+                        }
+                        return obj;
+                    }, {});
+                    if (instances) {
+                        obj.instances = instances;
+                    }
+
+                    stack.at(-1).action(obj);
+                    if (components.at(-1).endsWith(':')) {
+                        const parameter = components.at(-1).replace(/:$/, '');
+                        if (components.length === 1 && stack.at(-1).parameter) {
+                            stack.at(-1).parameter = parameter;
+                        } else {
+                            stack.push({
+                                level,
+                                item: obj,
+                                context: [],
+                                parameter,
+                                action(obj) {
+                                    obj.parent = this.item;
+                                    this.item[this.parameter] = this.item[parameter] || []
+                                    this.item[this.parameter].push(obj);
+                                },
+                            });
+                        }
+                    } else {
+                        stack.push({
+                            level,
+                            item: obj,
+                            context: [],
+                            action(obj) {
+                                obj.parent = this.item;
+                                this.item.children = this.item.children || []
+                                this.item.children.push(obj);
+                            },
+                        });
+                    }
+                }
+            });
+            return roots;
+        }
+
+
+
 
         /**
          * Convert text to objects
@@ -3359,6 +3456,7 @@
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
+                        const roots = processText(reader.result);
                         const objs = getObjects(reader.result);
                         const tree = getTree(objs);
                         const graph = expandGraph(tree);
