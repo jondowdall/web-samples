@@ -580,7 +580,6 @@
             showStructure();
         }
 
-
         /**
          * Move the camera to a new position
          */
@@ -1592,6 +1591,7 @@
                     this.opacity = opacity;
                     this.specular = specular;
                 }
+                this.position[2] = - this.position[2];
                 this.origin = Array(16);
                 this.children = [];
                 this.rate = 0;
@@ -2344,6 +2344,7 @@
             const stack = [{
                 level: -1,
                 context: [],
+                parameters: [],
                 action(obj) { roots.push(obj) }
             }];
 
@@ -2385,7 +2386,7 @@
                         if (value !== undefined) {
                             obj[name] = value;
                         } else {
-                            obj[context[index] || index] = name;
+                            obj[stack.at(-1).parameters[index] || index] = name;
                         }
                         return obj;
                     }, {});
@@ -2393,9 +2394,15 @@
                         obj.instances = instances;
                     }
 
-                    stack.at(-1).action(obj);
-                    if (components.at(-1).endsWith(':')) {
-                        const parameter = components.at(-1).replace(/:$/, '');
+                    if (components[0].startsWith('!')) {
+                        if (/^!\s*parameters\s*=\s*/.test(components[0])) {
+                            components[0].replace(/^!\s*parameters\s*=\s*/, '').split(/\s*;\s*/g).forEach((parameter, index) => {
+                                stack.at(-1).parameters[index] = parameter;
+                            });
+                        }
+                    } else {
+                        stack.at(-1).action(obj);
+                        const parameter = components.at(-1).endsWith(':') ? components.at(-1).replace(/:$/, '') : 'children';
                         if (components.length === 1 && stack.at(-1).parameter) {
                             stack.at(-1).parameter = parameter;
                         } else {
@@ -2404,24 +2411,17 @@
                                 item: obj,
                                 context: [],
                                 parameter,
+                                parameters: [...stack.at(-1).parameters],
                                 action(obj) {
                                     obj.parent = this.item;
                                     this.item[this.parameter] = this.item[parameter] || []
                                     this.item[this.parameter].push(obj);
                                 },
+                                add() {
+
+                                }
                             });
                         }
-                    } else {
-                        stack.push({
-                            level,
-                            item: obj,
-                            context: [],
-                            action(obj) {
-                                obj.parent = this.item;
-                                this.item.children = this.item.children || []
-                                this.item.children.push(obj);
-                            },
-                        });
                     }
                 }
             });
@@ -2576,6 +2576,11 @@
             return list;
         }
 
+        const mathFunctions = Object.getOwnPropertyNames(Math).reduce((context, key) => {
+            context[key] = Math[key];
+            return context;
+        }, {});
+
         /**
          * Expand a template graph to a full graph.
          */
@@ -2590,8 +2595,8 @@
                             .replace(/<n([0-9]*)>/g, (match, level) => (context[parseInt(level || 0)].idx) ?? 0)
                             .replace(/<i([0-9]*)>/g, (match, level) => (context[parseInt(level || 0)].index) ?? 0);
                         if (isNaN(Number(value))) {
-                            const func = new Function(`return ${value};`);
-                            return func();
+                            const func = new Function(...Object.keys(mathFunctions), `return ${value};`);
+                            return func(...Object.values(mathFunctions));
                         }
                     }
                     return Number(value);
@@ -2727,7 +2732,7 @@
         }
 
         /**
-         * Componentwise sum of vectors
+         * Component-wise sum of vectors
          */
         function add(...vectors) {
             const length = Math.max(...vectors.map((v) => v.length));
@@ -2746,7 +2751,7 @@
         }
 
         /**
-         * Componentwise product of vectors
+         * Component-wise product of vectors
          */
         function product(v1, v2) {
             return v1.map((v, i) => v * v2[i]);
@@ -3456,14 +3461,7 @@
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
-                        const roots = processText(reader.result);
-                        const objs = getObjects(reader.result);
-                        const tree = getTree(objs);
-                        const graph = expandGraph(tree);
-                        makeGraph(graph, replace);
-                        showStock();
-                        const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                        app.camera.up = yAxis;
+                        processDefinition(reader.result, replace);
                     });
                     reader.readAsText(file);
                 }
@@ -3525,10 +3523,37 @@
             canvas.addEventListener('drop', dropHandler);
         }
 
+
+        /**
+         * Process definition
+         */
+        function processDefinition(definition, replace) {
+            const roots = processText(definition);
+            const objs = getObjects(definition);
+            const tree = getTree(objs);
+            const graph = expandGraph(tree);
+            makeGraph(graph, replace);
+            showStock();
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            app.camera.up = yAxis;
+        }
+
+
+        /**
+         * Load file
+         */
+        async function loadFile() {
+            const result = await fetch('views/tx_building.txt');
+            const content = await result.text();
+            processDefinition(content);
+        }
+
+
         /**
          * Perform all once off set-up (e.g. creating buffer etc.)
          */
         function initialise() {
+            loadFile();
             addMovementControls();
             projectionControl();
             viewControl(document.getElementById('view-vectors'));
