@@ -289,11 +289,16 @@
         v_specularIntensity = specularIntensity;
 
         gl_PointSize = 50.0;//50.0 * model[0][0];
+
+        if (opacity < 1.0) {
+            gl_Position.z = gl_Position.w;
+        }
     }
     </script>
     <script type="x-shader/x-fragment" id="fragment-shader">
     #version 300 es
     precision highp float;
+
     uniform vec3 lightPosition1;
     uniform vec3 lightPosition2;
     uniform vec3 lightPosition3;
@@ -326,6 +331,7 @@
 
         vec3 colour = v_ambientColour + v_diffuseColour * df + v_specularColour * sf;
         fragmentColour = vec4(colour, v_opacity);
+
         /*
         if (v_opacity > 0.0 && dot(normal, toEye) > -0.1) {
             discard;
@@ -981,7 +987,7 @@
         function updateColours() {
             const colourBuffer = [];
             const setTransparency = (instance) => {
-                instance.state.transparent = instance.children.reduce((result, instance) => result || (setSelected(instance)), 1);
+                instance.state.transparent = instance.content.reduce((result, instance) => result || (setSelected(instance)), 1);
                 return instance.state.transparent || instance.selected;
             }
             app.roots.forEach((instance) => setTransparency(instance));
@@ -1016,7 +1022,7 @@
                     colourBuffer.push(...colour.map((v) => v * 0.3));
                     colourBuffer.push(...colour.map((v) => v * 1.0));
                     colourBuffer.push(instance.specular);
-                    const opacity = ((app.solid && !instance.state.transparent) || instance.state.moving) ? 1 : app.wireframe ? 0.1 : instance.children.length > 0 ? 0.5 : 1;
+                    const opacity = ((app.solid && !instance.state.transparent) || instance.state.moving) ? 1 : app.wireframe ? 0.1 : instance.content.length > 0 ? 0.5 : 1;
                     colourBuffer.push(opacity);
                 }
             });
@@ -1561,10 +1567,74 @@
             return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
         }
 
+
+        /**
+         * Actions that can be performed on definition objects.
+         */
+        const actions = {
+            'make instance'(source, parent) {
+                const get = (attribute) => {
+                    if (source.data[attribute] !== undefined) {
+                        return source.data[attribute];
+                    }
+                    if (source.types) {
+                        const stack = [...source.types];
+                        while (stack.length > 0) {
+                            const prototype = stack.shift();
+                            if (prototype.data[attribute] !== undefined) {
+                                return prototype.data[attribute];
+                            }
+                            stack.push(...prototype.types);
+                        }
+                    }
+                }
+                if (source.data.position) {
+                    const position = evaluate(get('position'));
+                    const size = evaluate(get('size'));
+                    const angle = evaluate(get('angle'));
+                    const axis = normalised(evaluate(get('axis')));
+                    const colour = evaluate(get('colour'));
+                    const opacity = evaluate(get('opacity'));
+                    const specular = evaluate(get('specular'));
+                    if (size && angle !== undefined && axis && colour && opacity !== undefined && specular !== undefined) {
+                        if (parent) {
+                            parent = parent.addChild(position, size, angle, axis, colour, opacity, specular);
+                        } else {
+                            parent = app.addRoot(position, size, angle, axis, colour, opacity, specular);
+                        }
+                    }
+                    source.content.forEach((child) => actions[child.action](child, parent));
+                }
+            }
+        }
+
+        /**
+         * Evaluate the element passed in.
+         */
+        function evaluate(item) {
+            if (Array.isArray(item)) {
+                return item.map((element) => evaluate(element));
+            }
+            if (isNaN(item)) {
+                const func = new Function(...Object.keys(mathFunctions), `return ${item};`);
+                return func(...Object.values(mathFunctions));
+            }
+            return item;
+        }
+
+
         /**
          * Manage an instance.
          */
         class Instance {
+            static make(parent, source) {
+                if (source.position) {
+                    const instance = new Instance(parent, source.position, source.size, source.angle, source.axis, source.colour, source.opacity, source.specular);
+                    instance.content = source.content.flatMap((child) => Instance.make(instance, child));
+                    return instance;
+                }
+                return source.content.flatMap((child) => Instance.make(parent, child));
+            }
             constructor(parent, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10) {
                 const normalised = ([x, y, z]) => {
                     const l = Math.hypot(x, y, z);
@@ -1574,26 +1644,28 @@
                 this.parent = parent;
                 if (position.name) {
                     this.name = position.name;
-                    this.position = position.position;
-                    this.size = position.size;
-                    this.angle = position.angle;
-                    this.axis = normalised(position.axis);
-                    this.colour = position.colour;
-                    this.opacity = position.opacity;
-                    this.specular = position.specular;
+                    size = position.size;
+                    angle = position.angle;
+                    axis = position.axis;
+                    colour = position.colour;
+                    opacity = position.opacity;
+                    specular = position.specular;
+
+                    position = position.position;
                 } else {
                     this.name = `Instance ${app.instances.length + 1}`;
-                    this.position = position;
-                    this.size = size;
-                    this.angle = angle;
-                    this.axis = normalised(axis);
-                    this.colour = colour;
-                    this.opacity = opacity;
-                    this.specular = specular;
                 }
+                this.position = evaluate(position);
+                this.size = evaluate(size);
+                this.angle = evaluate(angle);
+                this.axis = normalised(evaluate(axis));
+                this.colour = evaluate(colour);
+                this.opacity = evaluate(opacity);
+                this.specular = evaluate(specular);
                 this.position[2] = - this.position[2];
+
                 this.origin = Array(16);
-                this.children = [];
+                this.content = [];
                 this.rate = 0;
                 this.offset = 0;
                 this.setTransform();
@@ -1644,7 +1716,7 @@
             /**
              * Set the transform of a shape based on its position, rotation and scale.
              * 
-             * Calculate the origin for children of the shape
+             * Calculate the origin for content of the shape
              */
             setTransform() {
                 const normalised = ([x, y, z]) => {
@@ -1697,13 +1769,13 @@
             }
             apply(action) {
                 action(this);
-                this.children.forEach((child) => child.apply(action));
+                this.content.forEach((child) => child.apply(action));
             }
             update(child) {
                 for (let i = 0; i < 16; ++i) {
                     this.matrix[i] = this.transform[i];
                 }
-                this.children.forEach((child) => child.update(true));
+                this.content.forEach((child) => child.update(true));
                 app.instancesChanged = true;
                 this.updateNodes();
                 if (!child) {
@@ -1760,23 +1832,23 @@
                     colour || this.colour,
                     opacity || this.opacity,
                     specular || this.specular);
-                this.children.push(newInstance);
+                this.content.push(newInstance);
                 app.instances.push(newInstance);
                 return newInstance;
             }
             delete() {
-                const children = [...this.children];
-                children.forEach((child) => child.delete);
+                const content = [...this.content];
+                content.forEach((child) => child.delete);
                 if (this.parent) {
-                    const position = this.parent.children.indexOf(this);
-                    this.parent.children.splice(position, 1);
+                    const position = this.parent.content.indexOf(this);
+                    this.parent.content.splice(position, 1);
                 } else {
                     const position = app.roots.indexOf(this);
                     app.roots.splice(position, 1);
                 }
             }
             get siblings() {
-                const list = this.parent ? this.parent.children : app.roots;
+                const list = this.parent ? this.parent.content : app.roots;
                 return list.filter((child) => child !== this)
             }
             get nodes() {
@@ -1837,31 +1909,31 @@
             }
             promote() {
                 if (this.parent) {
-                    const siblings = this.parent.children;
+                    const siblings = this.parent.content;
                     const position = siblings.indexOf(this);
-                    const children = siblings.splice(position, siblings.length - position);
-                    children.shift();
-                    this.children.push(...children);
-                    children.forEach((child) => child.parent = this);
+                    const content = siblings.splice(position, siblings.length - position);
+                    content.shift();
+                    this.content.push(...content);
+                    content.forEach((child) => child.parent = this);
                     this.update();
-                    const list = this.parent.parent ? this.parent.parent.children : app.roots;
+                    const list = this.parent.parent ? this.parent.parent.content : app.roots;
                     const pos = list.indexOf(this.parent);
                     list.splice(pos + 1, 0, this);
                     this.parent = this.parent.parent;
                 }
             }
             demote() {
-                const list = this.parent ? this.parent.children : app.roots;
+                const list = this.parent ? this.parent.content : app.roots;
                 const position = list.indexOf(this);
                 if (position > 1) {
                     list.splice(position, 1);
-                    list[position - 1].children.unshift(this);
+                    list[position - 1].content.unshift(this);
                     this.parent = list[position - 1];
                     this.update();
                 }
             }
             down() {
-                const list = this.parent ? this.parent.children : app.roots;
+                const list = this.parent ? this.parent.content : app.roots;
                 const position = list.indexOf(this);
                 if (position < list.length - 1) {
                     list.splice(position, 1);
@@ -1870,7 +1942,7 @@
                 }
             }
             up() {
-                const list = this.parent ? this.parent.children : app.roots;
+                const list = this.parent ? this.parent.content : app.roots;
                 const position = list.indexOf(this);
                 if (position > 0) {
                     list.splice(position, 1);
@@ -2192,10 +2264,10 @@
 
                 if (instance.nodes) {
                     structure.append(...instance.nodes);
-                    instance.children.map((child) => addInstance(child, level + 1));
+                    instance.content.map((child) => addInstance(child, level + 1));
                 } else {
                     const expander = document.createElement('span');
-                    expander.innerHTML = instance.children.length ? '&#9660;' : '';
+                    expander.innerHTML = instance.content.length ? '&#9660;' : '';
                     expander.classList.add('expander');
 
                     const name = document.createElement('span');
@@ -2212,30 +2284,30 @@
                         addColour('colour'),
                         addSpan('specular'),
                         addSpan('opacity'));
-                    instance.children.map((child) => addInstance(child, level + 1));
+                    instance.content.map((child) => addInstance(child, level + 1));
 
                     const descend = (node, action) => {
                         action(node);
-                        node.children.forEach((child) => descend(child, action));
+                        node.content.forEach((child) => descend(child, action));
                     }
 
                     expander.addEventListener('click', (event) => {
                         const recursive = event.ctrlKey;
                         expander.classList.toggle('collapsed');
                         if (expander.classList.contains('collapsed')) {
-                            expander.innerHTML = instance.children.length ? '&#9654;' : '';
-                            instance.children.forEach((child) =>
+                            expander.innerHTML = instance.content.length ? '&#9654;' : '';
+                            instance.content.forEach((child) =>
                                 descend(child, (node) => {
-                                    if (recursive && node.children.length > 0) {
+                                    if (recursive && node.content.length > 0) {
                                         node.nodes[1].querySelector('.expander').classList.add('collapsed');
                                     }
                                     node.nodes.forEach((node) => node.classList.add('hide'));
                                 }));
                         } else {
-                            expander.innerHTML = instance.children.length ? '&#9660;' : '';
-                            instance.children.forEach((child) =>
+                            expander.innerHTML = instance.content.length ? '&#9660;' : '';
+                            instance.content.forEach((child) =>
                                 descend(child, (node) => {
-                                    if (recursive && node.children.length > 0) {
+                                    if (recursive && node.content.length > 0) {
                                         node.nodes[1].querySelector('.expander').classList.remove('collapsed');
                                     }
                                     if (!node.nodes[1].querySelector('.expander').classList.contains('collapsed')) {
@@ -2336,15 +2408,48 @@
 
 
         /**
+         * Convert a string to the best cannonical object
+         */
+        function interpret(string) {
+            if (string === undefined) {
+                return;
+            }
+            const trimmed = string.trim();
+            if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+                return string.replace(/^\s*"/, '').replace(/"\s*$/, '');
+            }
+            const datePattern = /(?<day>[0-9]{1,4})[-\._\/](?<month>[0-9]{1,2})[-\._\/](?<year>[0-9]{2,4})/;
+            const dateMatch = string.match(datePattern);
+            if (dateMatch) {
+                const [p1, month, p3] = dateMatch.slice(1).map((v) => parseInt(v));
+                const [year, day] = p1 > 31 ? [p1, p3] : [p3, p1];
+                return new Date((year < 2000 ? year + 2000 : year), month - 1, day);
+            }
+            if (!isNaN(Number(string))) {
+                return Number(string);
+            }
+            const parts = string.split(/\s*,\s*/g);
+            if (parts.length > 1) {
+                return parts.map((part) => interpret(part));
+            }
+            return string;
+        }
+
+
+        /**
          * Convert lines to objects
          */
-        function processText(text) {
+        function processText(text, replace) {
+            if (replace) {
+                app.instances = [];
+                app.roots = [];
+                app.stock = {};
+            }
+
             const lines = text.split(/\r?\n/g);
             const roots = [];
             const stack = [{
                 level: -1,
-                context: [],
-                parameters: [],
                 action(obj) { roots.push(obj) }
             }];
 
@@ -2360,76 +2465,202 @@
                 return level;
             }
 
-            const startGroup = /^\[([^\]]+)\]/;
-            const endGroup = /\[([^\]]+)\]$/;
             let process = true;
             lines.forEach((line, lineNumber) => {
                 if (line === '!stop') {
                     process = false;
                 }
-                if (process && line.trim() !== '' && !/^\s*`/.test(line)) {
+                if (process && line.trim() !== '' && !/^\s*#/.test(line)) {
                     const level = getLevel(line);
                     while (level <= stack.at(-1).level) {
                         stack.pop();
                     }
-                    const context = stack[0].context || [];
-                    const body = line.trim();
-                    const range = body.match(startGroup)?.[1] || line.match(endGroup)?.[1];
+                    const item = { line, lineNumber, content: [] };
+                    stack.at(-1).action(item);
+                    stack.push({
+                        level,
+                        item,
+                        lineNumber,
+                        action(item) {
+                            item.parent = this.item;
+                            this.item.content.push(item);
+                        },
+                    });
+                }
+            });
 
-                    const instances = range ? getList(range) : undefined;
+            const startGroup = /^\[([^\]]+)\]\s*/;
+            const endGroup = /\s*\[([^\]]+)\]$/;
+            const expand = (item, instance = []) => {
+                const line = item.line.trim();
+                const range = line.match(startGroup)?.[1] || line.match(endGroup)?.[1];
+                const instances = range ? getList(range) : undefined;
+                const value = line.replace(startGroup, '').replace(endGroup, '');
+                if (instances) {
+                    return instances.flatMap((name, index) => ({
+                        value,
+                        lineNumber: item.lineNumber,
+                        content: item.content.flatMap((child) => expand(child, [{ name, index }, ...instance])),
+                        instance: [{ name, index }, ...instance],
+                    }));
+                }
+                return {
+                    value,
+                    lineNumber: item.lineNumber,
+                    content: item.content.flatMap((child) => expand(child, instance)),
+                    instance,
+                };
+            };
 
-                    const components = body.replace(startGroup, '').replace(endGroup, '')
-                        .split(/\s*[;\|\t\u{1f}]\s*/u);
+            const expanded = roots.flatMap((item) => expand(item));
 
-                    const obj = components.filter((item) => item).reduce((obj, item, index) => {
-                        const [name, value] = item.split(/\s*=\s*/);
-                        if (value !== undefined) {
-                            obj[name] = value;
-                        } else {
-                            obj[stack.at(-1).parameters[index] || index] = name;
-                        }
-                        return obj;
-                    }, {});
-                    if (instances) {
-                        obj.instances = instances;
+            const find = (string) => {
+                const path = string.split(/\/\./g);
+                let target;
+                while (path.length) {
+                    if (target) {
+                        const name = path.shift();
+                        target = target.content.find((child) => child.name === name) ?? target.attrs[name];
+                    } else {
+                        target = named[path.shift()];
+                    }
+                }
+            }
+
+            const named = {};
+
+            const resolve = (string, instance, vars) =>
+                string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
+                    .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
+                    .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match);
+
+            const content = Symbol('content');
+            const graph = { [content]: [], }
+            const contextStack = [{ object: graph, name: 0, parameters: [], action: 'make instance' }];
+            /*
+             * lines starting with '>' provide app settings
+             * lines starting with '!' control context to modify object interpretation
+             * other lines are either objects or values
+             * lines starting with '`' are unparsed values
+             */
+            const evaluate = (line) => {
+                const context = structuredClone(contextStack.at(-1)) || { name: 0, parameters: [], };
+                const vars = Object.assign(named);
+                const resolved = resolve(line.value, line.instance, vars);
+
+                const add = (item) => {
+                    const arg = context.parameters.shift()?.name ?? context.parameter ?? content;
+                    if (Array.isArray(context.object[arg])) {
+                        context.object[arg].push(item);
+                    } else if (context.object[arg] === undefined) {
+                        context.object[arg] = item;
+                    } else {
+                        context.object[arg] = [context.object[arg], item];
+                    }
+                }
+
+                if (line.value.startsWith('`')) {
+                    add(line.value);
+                } else if (line.value.startsWith("'")) {
+                    add(resolved);
+                } else if (line.value.startsWith('>')) {
+                    const [command, value] = resolved.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                    if (commands[command]) {
+                        commands[command](value);
+                    }
+                } else if (line.value.startsWith('!')) {
+                    const localContext = line.content.length > 0 ? context : contextStack.at(-1);
+                    if (resolved.startsWith('!parameters')) {
+                        const components = resolved.split(/\s*[;\|\t\u{1f}]\s*/ug);
+                        components.shift();
+                        components.forEach((element, index) => {
+                            const [name, value] = element.split(/\s*=\s*/);
+                            localContext.parameters[index] = { name, value: interpret(value) };
+                        });
+                    } else if (resolved.startsWith('!class')) {
+                        localContext.class = resolved.replace(/^!class(\s+|\s*=\s*)/, '');
+                    } else if (resolved.startsWith('!action')) {
+                        localContext.action = resolved.replace(/^!action(\s+|\s*=\s*)/, '');
+                    }
+                    contextStack.push(context);
+                    line.content.forEach((child) => evaluate(child));
+                    contextStack.pop();
+                } else {
+                    // Options
+                    // 1 component
+                    //   assignment
+                    //     has content
+                    //       - assign value as first element of array
+                    //     no content
+                    //       - assign value to parameter
+                    //   value
+                    //     has content
+                    //       - assign content as elements
+                    //     no content
+                    //       unused context parameters
+                    //         - assign to next content parameter
+                    //       no unused parameters
+                    //         - assign as specified by context
+                    // multiple components
+                    //  - create object and update context
+                    const components = resolved.split(/\s*[;\|\t\u{1f}]\s*/ug);
+                    if (!components.at(-1).includes('=') && components.at(-1).endsWith(':')) {
+                        contextStack.at(-1).parameter = componnents.at(-1).replace(/\s*:$/, '');
+                        components.pop();
                     }
 
-                    if (components[0].startsWith('!')) {
-                        if (/^!\s*parameters\s*=\s*/.test(components[0])) {
-                            components[0].replace(/^!\s*parameters\s*=\s*/, '').split(/\s*;\s*/g).forEach((parameter, index) => {
-                                stack.at(-1).parameters[index] = parameter;
-                            });
-                        }
-                    } else {
-                        stack.at(-1).action(obj);
-                        const parameter = components.at(-1).endsWith(':') ? components.at(-1).replace(/:$/, '') : 'children';
-                        if (components.length === 1 && stack.at(-1).parameter) {
-                            stack.at(-1).parameter = parameter;
+                    const addComponent = (component, content=[]) => {
+                        if (component.includes('=')) {
+                            const [name, value] = component.split(/\s*=\s*/);
+                            if (content.length > 0) {
+                                context.object[name] = context.object[name] || [];
+                                context.object[name].push(interpret(value));
+                            } else {
+                                context.object[name] = value;
+                            }
                         } else {
-                            stack.push({
-                                level,
-                                item: obj,
-                                context: [],
-                                parameter,
-                                parameters: [...stack.at(-1).parameters],
-                                action(obj) {
-                                    obj.parent = this.item;
-                                    this.item[this.parameter] = this.item[parameter] || []
-                                    this.item[this.parameter].push(obj);
-                                },
-                                add() {
+                            if (content.length > 0) {
+                                context.parameter === component;
+                            } else {
+                                add(interpret(component));
+                            }
+                        }
+                    }
+                    if (components.length === 1) {
+                        addComponent(components[0], line.content);
+                        line.content.forEach((item) => evaluate(item));
+                    } else if (components.length > 1) {
+                        const obj =  { [content]: [], };
+                        add(obj);
+                        context.object = obj;
+                        components.forEach((component) => addComponent(component));
 
-                                }
-                            });
+                        contextStack.push(context);
+                        line.content.forEach((item) => evaluate(item));
+                        contextStack.pop();
+
+                        const [name, ...typeNames] = (context.object.name ?? '').split(/\s*:\s*/g);
+                        const types = typeNames.flatMap((type) => (named[type] || find(type)) ?? []);
+                        context.object.name = name;
+                        context.object.types = (context.object.types || []).flatMap((type) =>
+                            typeof type === 'object' ? type : (named[type] || find(type)) ?? []);
+                        context.object.types.push(...types);
+
+                        // Add remaining default values
+                        while (context.parameters.length) {
+                            const parameter = context.parameters.shift();
+                            if (parameter.value !== undefined) {
+                                context.object[parameter.name] = parameter.value;
+                            }
                         }
                     }
                 }
-            });
-            return roots;
+            };
+
+            expanded.flatMap((node) => evaluate(node));
+
+            return;// evaluated.filter((node) => node.data.position).flatMap((node) => actions[node.action](node));
         }
-
-
-
 
         /**
          * Convert text to objects
@@ -2441,7 +2672,7 @@
                 if (line === '!stop') {
                     processLine = false;
                 }
-                if (processLine && line.trim() !== '' && !line.trim().startsWith('`')) {
+                if (processLine && line.trim() !== '' && !line.trim().startsWith('#') && !line.trim().startsWith('!')) {
                     if (line.startsWith('>')) {
                         const [command, value] = line.replace(/^>\s*/, '').split('=').map((v) => v.trim());
                         if (commands[command]) {
@@ -2484,7 +2715,7 @@
                         specular,
                         opacity,
                         instances: match.groups.instances,
-                        children: [],
+                        content: [],
                         serialNumbers,
                     }
                     return obj;
@@ -2510,7 +2741,7 @@
             const named = {};
             objs.forEach((obj) => {
                 named[obj.name] = obj;
-                obj.types = obj.types.map((type) => named[type]);
+                obj.types = obj.types.flatMap((type) => named[type]);
 
                 if (obj.types.length) {
                     Object.getOwnPropertyNames(obj).filter((property) => obj[property] === null)
@@ -2523,7 +2754,7 @@
                             }
                         });
                     obj.types.forEach((type) =>
-                        obj.children.push(...type.children.map((child) => Object.assign({}, child))));
+                        obj.content.push(...type.content.map((child) => Object.assign({}, child))));
                 }
                 Object.getOwnPropertyNames(defaults).filter((property) => obj[property] === null)
                     .forEach((property) => obj[property] = [defaults[property]].flatMap((v) => v));
@@ -2535,7 +2766,7 @@
                     if (name.startsWith('^')) {
                         stack[0].serialNumbers.push(this.name);
                     } else {
-                        stack[0].children.push(obj);
+                        stack[0].content.push(obj);
                         obj.parent = stack[0];
                     }
                 } else {
@@ -2611,7 +2842,7 @@
                     colour: node.colour.map((v) => resolve(v, context)),
                     specular: resolve(node.specular, context),
                     opacity: resolve(node.opacity, context),
-                    children: node.children.flatMap((child, index) => expand(child, [{ index }, ...context], positioned)),
+                    content: node.content.flatMap((child, index) => expand(child, [{ index }, ...context], positioned)),
                 });
 
                 if (node.instances) {
@@ -2624,12 +2855,12 @@
                         });
                     } else {
                         return instances.flatMap((instance, idx) =>
-                            node.children.flatMap((child, index) => expand(child, [{ instance, index, idx }, ...context], positioned)));
+                            node.content.flatMap((child, index) => expand(child, [{ instance, index, idx }, ...context], positioned)));
                     }
                 } else if (node.position) {
                     return makeInstance(node, context);
                 } else if (positioned) {
-                    return node.children.flatMap((child, index) => expand(child, [{ index }, ...context]), true);
+                    return node.content.flatMap((child, index) => expand(child, [{ index }, ...context]), true);
                 } else {
                     app.nodes.push(node);
                 }
@@ -2650,7 +2881,7 @@
                     app.stock = {};
                 }
                 app.nodes.forEach((node) => {
-                    const items = node.children.filter((child) => child.name.startsWith('#'));
+                    const items = node.content.filter((child) => child.name.startsWith('#'));
                     if (items.length) {
                         app.stock[node.name] = app.stock[node.name] || new Map();
 
@@ -2667,7 +2898,7 @@
                 const adjustOrigin = (node, offset = [0, 0, 0]) => {
                     if (app.cornerOrigin) {
                         node.position = add(node.position, scale(node.size, 0.5), offset);
-                        node.children.filter((child) => child.position).forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
+                        node.content.filter((child) => child.position).forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
                     }
                 }
 
@@ -2679,12 +2910,12 @@
                         parent.parts.push(node.name.replace(/^~\s*/, '').toLowerCase());
                     } else {
                         const child = parent.addChild(node);
-                        node.children.forEach((node) => addNode(child, node));
+                        node.content.forEach((node) => addNode(child, node));
                     }
                 }
                 source.forEach((node) => {
                     const root = app.addRoot(node);
-                    node.children.forEach((child) => addNode(root, child));
+                    node.content.forEach((child) => addNode(root, child));
                 });
                 initialiseInstances();
             } else {
@@ -3064,7 +3295,7 @@
                 const radius = Math.hypot(...size);
 
                 if (radius === 0) {
-                    return instance.children.filter((child) => test(child)).length > 0;
+                    return instance.content.filter((child) => test(child)).length > 0;
                 } else {
 
                     const l = dot(line.direction, subtract(centre, line.point));
@@ -3094,8 +3325,8 @@
                             if (app.solid && !instance.state.transparent) {
                                 hits.push(instance);
                             } else {
-                                const children = instance.children.filter((child) => test(child));
-                                if (all || children.length === 0) {
+                                const content = instance.content.filter((child) => test(child));
+                                if (all || content.length === 0) {
                                     hits.push(instance);
                                 }
                             }
@@ -3116,7 +3347,7 @@
             if (hits.length) {
                 const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                 // Find the closest to the view position that isn't a parent
-                const hit = hits.filter((hit) => hit.children.filter((child) => hits.includes(child)).length === 0);
+                const hit = hits.filter((hit) => hit.content.filter((child) => hits.includes(child)).length === 0);
                 hit.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                 if (event.shiftKey) {
                     if (event.ctrlKey) {
@@ -3158,7 +3389,7 @@
 
             const addInstance = (instance, level = 0) => {
                 lines.push(`${''.padStart(level * 2, ' ')}${instance.asString()}`);
-                instance.children.forEach((child) => addInstance(child, level + 1));
+                instance.content.forEach((child) => addInstance(child, level + 1));
             };
             app.roots.forEach((root) => addInstance(root));
             downloadText(lines.join('\n'));
@@ -3273,6 +3504,7 @@
                     ArrowLeft: (event) => addBlocks([-1, 0, 0]),
                     ArrowRight: (event) => addBlocks([1, 0, 0]),
                     l: (event) => document.getElementById('load-file').click(),
+                    r: (event) => processDefinition(app.definition, true),
                     z: (event) => undo(),
                     Z: (event) => redo(),
                 }
@@ -3360,7 +3592,7 @@
                         }
                         const apply = (instance, action) => {
                             action(instance);
-                            instance.children.forEach((child) => apply(child, action));
+                            instance.content.forEach((child) => apply(child, action));
                         }
                         const selected = app.instances.filter((instance) => instance.selected);
                         selected.forEach((instance) =>
@@ -3461,7 +3693,8 @@
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
-                        processDefinition(reader.result, replace);
+                        app.definition = reader.result;
+                        processDefinition(app.definition, replace);
                     });
                     reader.readAsText(file);
                 }
@@ -3528,11 +3761,13 @@
          * Process definition
          */
         function processDefinition(definition, replace) {
-            const roots = processText(definition);
+            const roots = processText(definition, replace);
+            /*
             const objs = getObjects(definition);
             const tree = getTree(objs);
             const graph = expandGraph(tree);
             makeGraph(graph, replace);
+            */
             showStock();
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
@@ -3543,7 +3778,7 @@
          * Load file
          */
         async function loadFile() {
-            const result = await fetch('views/tx_building.txt');
+            const result = await fetch('boxes.txt');
             const content = await result.text();
             processDefinition(content);
         }
@@ -3553,7 +3788,7 @@
          * Perform all once off set-up (e.g. creating buffer etc.)
          */
         function initialise() {
-            loadFile();
+            //loadFile();
             addMovementControls();
             projectionControl();
             viewControl(document.getElementById('view-vectors'));
