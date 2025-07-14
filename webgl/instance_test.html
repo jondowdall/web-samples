@@ -2465,10 +2465,10 @@
                 return level;
             }
 
-            let process = true;
+            let process = false;
             lines.forEach((line, lineNumber) => {
                 if (line === '!stop') {
-                    process = false;
+                    process = true;
                 }
                 if (process && line.trim() !== '' && !/^\s*#/.test(line)) {
                     const level = getLevel(line);
@@ -2489,27 +2489,35 @@
                 }
             });
 
-            const startGroup = /^\[([^\]]+)\]\s*/;
-            const endGroup = /\s*\[([^\]]+)\]$/;
+            const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
+            const templatePattern = /\s*\[([^\]]+)\]$/;
             const expand = (item, instance = []) => {
                 const line = item.line.trim();
-                const range = line.match(startGroup)?.[1] || line.match(endGroup)?.[1];
-                const instances = range ? getList(range) : undefined;
-                const value = line.replace(startGroup, '').replace(endGroup, '');
-                if (instances) {
-                    return instances.flatMap((name, index) => ({
+                const group = line.match(groupPattern);
+                if (group) {
+                    const instances = getList(group[1]);
+                    const name = group[2];
+                    return instances.flatMap((label, index) =>
+                        item.content.flatMap((child) => expand(child, [{ label, name, index }, ...instance])));
+                } else {
+                    const template = line.match(templatePattern);
+                    const instances = template ? getList(template[1]) : undefined;
+                    const value = line.replace(groupPattern, '').replace(templatePattern, '');
+                    if (instances) {
+                        return instances.flatMap((name, index) => ({
+                            value,
+                            lineNumber: item.lineNumber,
+                            content: item.content.flatMap((child) => expand(child, [{ name, index }, ...instance])),
+                            instance: [{ name, index }, ...instance],
+                        }));
+                    }
+                    return {
                         value,
                         lineNumber: item.lineNumber,
-                        content: item.content.flatMap((child) => expand(child, [{ name, index }, ...instance])),
-                        instance: [{ name, index }, ...instance],
-                    }));
+                        content: item.content.flatMap((child) => expand(child, instance)),
+                        instance,
+                    };
                 }
-                return {
-                    value,
-                    lineNumber: item.lineNumber,
-                    content: item.content.flatMap((child) => expand(child, instance)),
-                    instance,
-                };
             };
 
             const expanded = roots.flatMap((item) => expand(item));
@@ -2536,7 +2544,7 @@
 
             const content = Symbol('content');
             const graph = { [content]: [], }
-            const contextStack = [{ object: graph, name: 0, parameters: [], action: 'make instance' }];
+            const contextStack = [{ object: graph, name: 0, defaultParameters: [], action: 'make instance' }];
             /*
              * lines starting with '>' provide app settings
              * lines starting with '!' control context to modify object interpretation
@@ -2544,12 +2552,14 @@
              * lines starting with '`' are unparsed values
              */
             const evaluate = (line) => {
-                const context = structuredClone(contextStack.at(-1)) || { name: 0, parameters: [], };
+                const context = Object.assign({}, contextStack.at(-1));
+                context.parameters = [...context.defaultParameters];
                 const vars = Object.assign(named);
                 const resolved = resolve(line.value, line.instance, vars);
 
                 const add = (item) => {
-                    const arg = context.parameters.shift()?.name ?? context.parameter ?? content;
+                    //const arg = context.parameters.shift()?.name ?? context.parameter ?? content;
+                    const arg = context.parameter ?? content;
                     if (Array.isArray(context.object[arg])) {
                         context.object[arg].push(item);
                     } else if (context.object[arg] === undefined) {
@@ -2568,23 +2578,6 @@
                     if (commands[command]) {
                         commands[command](value);
                     }
-                } else if (line.value.startsWith('!')) {
-                    const localContext = line.content.length > 0 ? context : contextStack.at(-1);
-                    if (resolved.startsWith('!parameters')) {
-                        const components = resolved.split(/\s*[;\|\t\u{1f}]\s*/ug);
-                        components.shift();
-                        components.forEach((element, index) => {
-                            const [name, value] = element.split(/\s*=\s*/);
-                            localContext.parameters[index] = { name, value: interpret(value) };
-                        });
-                    } else if (resolved.startsWith('!class')) {
-                        localContext.class = resolved.replace(/^!class(\s+|\s*=\s*)/, '');
-                    } else if (resolved.startsWith('!action')) {
-                        localContext.action = resolved.replace(/^!action(\s+|\s*=\s*)/, '');
-                    }
-                    contextStack.push(context);
-                    line.content.forEach((child) => evaluate(child));
-                    contextStack.pop();
                 } else {
                     // Options
                     // 1 component
@@ -2604,12 +2597,8 @@
                     // multiple components
                     //  - create object and update context
                     const components = resolved.split(/\s*[;\|\t\u{1f}]\s*/ug);
-                    if (!components.at(-1).includes('=') && components.at(-1).endsWith(':')) {
-                        contextStack.at(-1).parameter = componnents.at(-1).replace(/\s*:$/, '');
-                        components.pop();
-                    }
 
-                    const addComponent = (component, content=[]) => {
+                    const addComponent = (component, content = []) => {
                         if (component.includes('=')) {
                             const [name, value] = component.split(/\s*=\s*/);
                             if (content.length > 0) {
@@ -2620,22 +2609,53 @@
                             }
                         } else {
                             if (content.length > 0) {
-                                context.parameter === component;
+                                context.parameter === interpret(component);
                             } else {
-                                add(interpret(component));
+                                const arg = context.parameters.shift()?.name ?? context.parameter ?? content;
+                                if (Array.isArray(context.object[arg])) {
+                                    context.object[arg].push(interpret(component));
+                                } else if (context.object[arg] === undefined) {
+                                    context.object[arg] = interpret(component);
+                                } else {
+                                    context.object[arg] = [context.object[arg], interpret(component)];
+                                }
+
+                                //add(interpret(component));
                             }
                         }
                     }
-                    if (components.length === 1) {
-                        addComponent(components[0], line.content);
-                        line.content.forEach((item) => evaluate(item));
+
+                    if (components[0] === '') {
+                        components.shift();
+                        components.forEach((element, index) => {
+                            const [name, value] = element.split(/\s*=\s*/);
+                            context.defaultParameters[index] = { name, value: interpret(value) };
+                        });
+                        contextStack.push(context);
+                        line.content.forEach((child) => evaluate(child));
+                        contextStack.pop();
+                    } else if (components.length === 1) {
+                        if (components[0].endsWith('=')) {
+                            context.parameter = components[0].replace(/\s*=$/, '');
+                            contextStack.push(context);
+                            line.content.forEach((item) => evaluate(item));
+                            contextStack.pop()
+                        } else {
+                            addComponent(components[0], line.content);
+                            line.content.forEach((item) => evaluate(item));
+                        }
                     } else if (components.length > 1) {
-                        const obj =  { [content]: [], };
+                        const obj = { [content]: [], };
                         add(obj);
                         context.object = obj;
-                        components.forEach((component) => addComponent(component));
+                        if (components.at(-1).endsWith('=')) {
+                            context.parameter = components.at(-1).replace(/\s*=$/, '');
+                            components.pop();
+                        }
+
 
                         contextStack.push(context);
+                        components.forEach((component) => addComponent(component));
                         line.content.forEach((item) => evaluate(item));
                         contextStack.pop();
 
@@ -3761,13 +3781,13 @@
          * Process definition
          */
         function processDefinition(definition, replace) {
-            const roots = processText(definition, replace);
-            /*
+            processText(definition, replace);
+
             const objs = getObjects(definition);
             const tree = getTree(objs);
             const graph = expandGraph(tree);
             makeGraph(graph, replace);
-            */
+
             showStock();
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
