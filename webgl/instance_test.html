@@ -154,7 +154,6 @@
         }
 
         .texture-canvas {
-            display: none;
             position: fixed;
             top: 200px;
             left: 0;
@@ -522,6 +521,18 @@
         }
 
         /**
+         * Get a unique name for a new block
+         */
+        function getUniqueName(base = 'block') {
+            let index = 1;
+            let name = `${base} ${index++}`;
+            while (app.instances.find((instance) => instance.name === name)) {
+                name = `${base} ${index++}`;
+            }
+            return name
+        }
+
+        /**
          * Add a new block
          */
         function newBlock(offset) {
@@ -530,7 +541,8 @@
 
             } else {
                 const scale = Math.hypot(...subtract(app.camera.lookAt, app.camera.position)) / 10;
-                const newInstance = app.addRoot([...app.camera.lookAt], [scale, scale, scale]);
+                const name = getUniqueName();
+                const newInstance = app.addRoot(name, [...app.camera.lookAt], [scale, scale, scale]);
             }
             initialiseInstances()
             app.colourUpdate = true;
@@ -547,7 +559,9 @@
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
                 const position = add(selected.position, product(selected.size, offset));
+                const name = getUniqueName(selected.name.replace(/\s*[0-9]+/, ''));
                 const attributes = [
+                    name,
                     position,
                     [...selected.size],
                     selected.angle,
@@ -797,16 +811,29 @@
             cornerOrigin: true,
             velocity: [0, 0, 0],
             rotation: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            addRoot(position, size, rotation, axis, colour, opacity, specular) {
+            addRoot(name, position, size, rotation, axis, colour, opacity, specular) {
+                const data = name;
+                if (typeof name === 'object') {
+                    position = getAttribute(name, 'position');
+                    size = getAttribute(name, 'size');
+                    angle = getAttribute(name, 'angle');
+                    axis = getAttribute(name, 'axis');
+                    colour = getAttribute(name, 'colour');
+                    opacity = getAttribute(name, 'opacity');
+                    specular = getAttribute(name, 'specular');
+                    name = getAttribute(name, 'name');
+                }
                 const root = new Instance(
                     undefined,
+                    name,
                     position,
                     size,
                     rotation,
                     axis,
                     colour,
                     opacity,
-                    specular);
+                    specular,
+                    data);
                 this.instances.push(root);
                 this.roots.push(root);
                 return root;
@@ -1111,7 +1138,7 @@
             const width = 2048;
             if (!app.textureCanvas) {
                 app.textureCanvas = document.createElement('canvas');
-                app.textureCanvas.classList.add('texture-canvas');
+                app.textureCanvas.classList.add('texture-canvas', 'hide');
                 document.body.appendChild(app.textureCanvas);
             }
             const context = app.textureCanvas.getContext('2d');
@@ -1125,15 +1152,19 @@
             let x = y = 0;
             let lineHeight = 0;
 
-            app.text = app.instances.map((instance) => {
-                const metrics = context.measureText(instance.name);
+            // Create dictionary of all labels
+            const labels = new Set(app.instances.map((instance) => instance.name));
+
+            // Determine size of canvas required
+            labels.forEach((label) => {
+                const metrics = context.measureText(label);
                 const fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
-                if (x + metrics.width > width) {
+                if (x + metrics.width + (fontHeight * 2) > width) {
                     x = 0;
                     y += lineHeight;
                     lineHeight = 0;
                 }
-                x += metrics.width;
+                x += metrics.width + (fontHeight * 2);
                 lineHeight = Math.max(lineHeight, fontHeight);
             });
 
@@ -1150,7 +1181,50 @@
             context.clearRect(0, 0, app.textureCanvas.width, app.textureCanvas.height);
 
             lineHeight = x = y = 0;
-            app.text = app.instances.map((instance) => {
+            app.text = {};
+            labels.forEach((label) => {
+                const metrics = context.measureText(label);
+
+                const fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+                const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+
+                if (x + metrics.width + (fontHeight * 2) > width) {
+                    x = 0;
+                    y += lineHeight;
+                    lineHeight = 0;
+                }
+                const radius = fontHeight / 2;
+                const textureOrigin = [x, y];
+                context.fillStyle = 'rgb(0, 0, 80, 0.9)';
+                context.beginPath();
+                context.moveTo(x + radius, y);
+                context.lineTo(x + radius + metrics.width, y);
+
+                context.arcTo(x + radius * 2 + metrics.width, y, x + radius * 2 + metrics.width, y + radius, radius);
+                context.arcTo(x + radius * 2 + metrics.width, y + fontHeight, x + radius + metrics.width, y + fontHeight, radius);
+
+                context.lineTo(x + radius + metrics.width, y + fontHeight);
+                context.lineTo(x + radius, y + fontHeight);
+
+                context.arcTo(x, y + fontHeight, x, y + radius, radius);
+                context.arcTo(x, y, x + radius, y, radius);
+
+                context.fill();
+
+                context.fillStyle = 'white';
+                context.fillText(label, x + radius, y + 2);
+                x += metrics.width + fontHeight;
+                lineHeight = Math.max(lineHeight, fontHeight);
+
+                app.text[label] = {
+                    size: [metrics.width + fontHeight, fontHeight],
+                    textureOrigin,
+                    canvas: app.textureCanvas,
+                }
+            });
+            /*
+            app.text = {};
+            names.forEach((name) => {
                 const metrics = context.measureText(instance.name);
 
                 const fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
@@ -1167,6 +1241,7 @@
 
                 lineHeight = Math.max(lineHeight, fontHeight);
                 const scale = instance.labelScale ?? 1;
+
                 return {
                     position: instance.labelPosition ?? [0.0, 0.0, 0.0],
                     size: [scale * metrics.width, scale * fontHeight],
@@ -1176,7 +1251,7 @@
                     canvas: app.textureCanvas,
                 }
             });
-
+            */
             copyTexture(app.textureCanvas);
             updateTextBuffer();
         }
@@ -1186,14 +1261,19 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = app.showNames ? app.text : app.text.filter((item) => item.instance.selected);
-            selected.forEach((text) => {
-                data.push(...text.position);
-                data.push(text.size[0] / gl.canvas.clientWidth, text.size[1] / gl.canvas.clientHeight); // image size
-                data.push(text.size[0] / text.canvas.width, text.size[1] / text.canvas.height);  // Texture Size
+            const selected = app.showNames ? app.instances : app.instances.filter((instance) => instance.selected);
+            selected.forEach((instance) => {
+                const text = app.text[instance.name];
+                const position = instance.labelPosition ?? [0.0, 0.0, 0.0];
+                const scale = instance.labelScale ?? 1;
+                const size = [scale * text.size[0], scale * text.size[1]];
+                const colour = instance.labelColour ?? [1, 1, 1, 1];
+                data.push(...position);
+                data.push(size[0] / gl.canvas.clientWidth, size[1] / gl.canvas.clientHeight); // image size
+                data.push(size[0] / text.canvas.width, size[1] / text.canvas.height);  // Texture Size
                 data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
-                data.push(...text.colour);
-                data.push(...text.instance.origin);
+                data.push(...colour);
+                data.push(...instance.origin);
             });
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
@@ -1598,9 +1678,9 @@
                     const specular = evaluate(get('specular'));
                     if (size && angle !== undefined && axis && colour && opacity !== undefined && specular !== undefined) {
                         if (parent) {
-                            parent = parent.addChild(position, size, angle, axis, colour, opacity, specular);
+                            parent = parent.addChild(undefined, position, size, angle, axis, colour, opacity, specular);
                         } else {
-                            parent = app.addRoot(position, size, angle, axis, colour, opacity, specular);
+                            parent = app.addRoot(undefined, position, size, angle, axis, colour, opacity, specular);
                         }
                     }
                     source.content.forEach((child) => actions[child.action](child, parent));
@@ -1624,6 +1704,25 @@
 
 
         /**
+         * Return an attribute value, doing a breadth first search of the types.
+         */
+        function getAttribute(item, attribute) {
+            if (item[attribute] !== undefined) {
+                return item[attribute];
+            }
+            if (item.types) {
+                const stack = [...item.types];
+                while (stack.length > 0) {
+                    const prototype = stack.shift();
+                    if (prototype.data[attribute] !== undefined) {
+                        return prototype.data[attribute];
+                    }
+                    stack.push(...prototype.types);
+                }
+            }
+        }
+
+        /**
          * Manage an instance.
          */
         class Instance {
@@ -1635,7 +1734,8 @@
                 }
                 return source.content.flatMap((child) => Instance.make(parent, child));
             }
-            constructor(parent, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10) {
+
+            constructor(parent, name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10, data = {}) {
                 const normalised = ([x, y, z]) => {
                     const l = Math.hypot(x, y, z);
                     return [x / l, y / l, z / l];
@@ -1653,7 +1753,7 @@
 
                     position = position.position;
                 } else {
-                    this.name = `Instance ${app.instances.length + 1}`;
+                    this.name = name || `Instance ${app.instances.length + 1}`;
                 }
                 this.position = evaluate(position);
                 this.size = evaluate(size);
@@ -1662,6 +1762,16 @@
                 this.colour = evaluate(colour);
                 this.opacity = evaluate(opacity);
                 this.specular = evaluate(specular);
+                this.data = data;
+
+                if (app.adjustOrigin) {
+                    this.position = add(this.position, scale(this.size, 0.5));
+                    if (this.parent) {
+                        this.position = add(this.position, scale(this.parent.size, -0.5));
+                    }
+                }
+
+
                 this.position[2] = - this.position[2];
 
                 this.origin = Array(16);
@@ -1822,16 +1932,29 @@
                 this.updateNodes();
                 app.instancesChanged = true;
             }
-            addChild(position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
+            addChild(name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
+                const data = name;
+                if (typeof name === 'object') {
+                    position = getAttribute(name, 'position');
+                    size = getAttribute(name, 'size');
+                    angle = getAttribute(name, 'angle');
+                    axis = getAttribute(name, 'axis');
+                    colour = getAttribute(name, 'colour');
+                    opacity = getAttribute(name, 'opacity');
+                    specular = getAttribute(name, 'specular');
+                    name = getAttribute(name, 'name');
+                }
                 const newInstance = new Instance(
                     this,
+                    name,
                     position,
                     size,
                     angle,
                     axis,
                     colour || this.colour,
                     opacity || this.opacity,
-                    specular || this.specular);
+                    specular || this.specular,
+                    data);
                 this.content.push(newInstance);
                 app.instances.push(newInstance);
                 return newInstance;
@@ -2014,7 +2137,7 @@
         /**
          * End a mouse movement and store change in history.
          */
-        function endMove() {
+        function endMove(event) {
             if (action.moved) {
                 const instances = new Set();
                 app.instances.filter((instance) => instance.selected)
@@ -2042,6 +2165,11 @@
                         action.instance.update();
                     }),
                 });
+            } else {
+                if ((event.crtlKey || action.selected?.data.load !== true) && action.selected?.data?.url) {
+                    load(action.selected.data.url, action.selected, event.shiftKey);
+                    action.selected.data.load = true;
+                }
             }
             action.move = null;
             historyPosition = null;
@@ -2400,6 +2528,9 @@
                 app.far = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
+            origin(value) {
+                app.adjustOrigin = true;
+            },
             background(value) {
                 const colour = value.split(/,/g).map((v) => parseFloat(v));
                 gl.clearColor(...colour, 1.0);
@@ -2408,7 +2539,7 @@
 
 
         /**
-         * Convert a string to the best cannonical object
+         * Convert a string to the best canonical object
          */
         function interpret(string) {
             if (string === undefined) {
@@ -2435,11 +2566,22 @@
             return string;
         }
 
+        /**
+         * Load a definition file
+         */
+        async function load(url, parent, replace) {
+            document.body.style.cursor = 'progress';
+            const response = await fetch(url);
+            const content = await response.text();
+            processText(content, parent, replace);
+            document.body.style.cursor = 'auto';
+        }
+
 
         /**
          * Convert lines to objects
          */
-        function processText(text, replace) {
+        function processText(text, parent, replace) {
             if (replace) {
                 app.instances = [];
                 app.roots = [];
@@ -2465,10 +2607,10 @@
                 return level;
             }
 
-            let process = false;
+            let process = true;
             lines.forEach((line, lineNumber) => {
                 if (line === '!stop') {
-                    process = true;
+                    process = false;
                 }
                 if (process && line.trim() !== '' && !/^\s*#/.test(line)) {
                     const level = getLevel(line);
@@ -2575,7 +2717,7 @@
                     add(resolved);
                 } else if (line.value.startsWith('>')) {
                     const [command, value] = resolved.replace(/^>\s*/, '').split('=').map((v) => v.trim());
-                    if (commands[command]) {
+                    if (!parent && commands[command]) {
                         commands[command](value);
                     }
                 } else {
@@ -2679,7 +2821,27 @@
 
             expanded.flatMap((node) => evaluate(node));
 
-            return;// evaluated.filter((node) => node.data.position).flatMap((node) => actions[node.action](node));
+            const addItems = (parent, node) => {
+                node[content].forEach((node) => {
+                    if (node.size) {
+                        const child = parent.addChild(node);
+                        addItems(child, node);
+                    }
+                });
+            }
+            graph[content].forEach((node) => {
+                if (node.position) {
+                    const root = parent ? parent.addChild(node) : app.addRoot(node);
+                    addItems(root, node);
+                }
+            })
+            initialiseInstances();
+            if (parent) {
+                updateText();
+                showStructure();
+                showStock();
+
+            }
         }
 
         /**
@@ -2914,7 +3076,7 @@
                             }
                         });
                     }
-                })
+                });
                 const adjustOrigin = (node, offset = [0, 0, 0]) => {
                     if (app.cornerOrigin) {
                         node.position = add(node.position, scale(node.size, 0.5), offset);
@@ -2934,12 +3096,13 @@
                     }
                 }
                 source.forEach((node) => {
-                    const root = app.addRoot(node);
+                    const root = app.addRoot(undefined, node);
                     node.content.forEach((child) => addNode(root, child));
                 });
                 initialiseInstances();
             } else {
                 const root = app.addRoot(
+                    'cube',
                     [0, 0, 0],    // Position
                     [1, 1, 1],    // Size
                     0,            // Rotation
@@ -3552,6 +3715,7 @@
                     i: (event) => { app.solid = !app.solid; app.colourUpdate = true; },
                     l: (event) => setView([-1, 0, 0]),
                     p: (event) => selectParent(event),
+                    q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
                     r: (event) => setView([1, 0, 0]),
                     s: (event) => save(),
                     t: (event) => setView([0, 1, 0], [0, 0, -1]),
@@ -3776,39 +3940,38 @@
             canvas.addEventListener('drop', dropHandler);
         }
 
-
         /**
          * Process definition
          */
         function processDefinition(definition, replace) {
-            processText(definition, replace);
+            processText(definition, undefined, replace);
 
+            /*
             const objs = getObjects(definition);
             const tree = getTree(objs);
             const graph = expandGraph(tree);
-            makeGraph(graph, replace);
-
+            //makeGraph(graph, replace);
+*/
+            updateText();
+            showStructure();
             showStock();
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
         }
 
-
         /**
          * Load file
          */
-        async function loadFile() {
-            const result = await fetch('boxes.txt');
+        async function loadFile(url) {
+            const result = await fetch(url);
             const content = await result.text();
             processDefinition(content);
         }
-
 
         /**
          * Perform all once off set-up (e.g. creating buffer etc.)
          */
         function initialise() {
-            //loadFile();
             addMovementControls();
             projectionControl();
             viewControl(document.getElementById('view-vectors'));
@@ -3850,7 +4013,11 @@
             setBoxAttributes();
             setPointAttributes();
             setLineAttributes();
-            makeGraph();
+            if (location.protocol === 'http:') {
+                loadFile('start.txt');
+            } else {
+                makeGraph();
+            }
             initialiseInstances();
 
             const fileSelection = document.getElementById('load-file');
@@ -3875,11 +4042,12 @@
         /**
          * Called once html has loaded.
          *
-         * Create the Webgl contect, set up the buffers and call the event loop.
+         * Create the Webgl context, set up the buffers and call the event loop.
          */
         function main(event) {
             initialise();
             requestAnimationFrame(render);
+            report(location.protocol);
         }
 
         window.addEventListener('load', main);
