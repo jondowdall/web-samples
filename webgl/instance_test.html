@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="utf-8">
-    <title>Instances</title>
+    <title>3d System Model</title>
     <style>
         html {
             box-sizing: border-box;
@@ -54,13 +54,14 @@
 
         #movement {
             position: fixed;
-            bottom: 0;
+            bottom: 1em;
             left: 50%;
             transform: translateX(-50%);
             display: grid;
             grid-template-columns: repeat(3, max-content);
             grid-template-rows: repeat(3, max-content);
             background-color: white;
+            border-radius: 3px;
         }
 
         #stock {
@@ -526,7 +527,7 @@
         function getUniqueName(base = 'block') {
             let index = 1;
             let name = `${base} ${index++}`;
-            while (app.instances.find((instance) => instance.name === name)) {
+            while (app.boxes.find((instance) => instance.name === name)) {
                 name = `${base} ${index++}`;
             }
             return name
@@ -536,15 +537,15 @@
          * Add a new block
          */
         function newBlock(offset) {
-            const selected = app.instances.filter((instance) => instance.selected);
+            const selected = app.boxes.filter((instance) => instance.selected);
             if (selected.length) {
 
             } else {
                 const scale = Math.hypot(...subtract(app.camera.lookAt, app.camera.position)) / 10;
                 const name = getUniqueName();
-                const newInstance = app.addRoot(name, [...app.camera.lookAt], [scale, scale, scale]);
+                const newBox = app.addRoot(name, [...app.camera.lookAt], [scale, scale, scale]);
             }
-            initialiseInstances()
+            initialiseBoxes()
             app.colourUpdate = true;
             updateText();
             showStructure();
@@ -554,7 +555,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.instances.filter((instance) => instance.selected);
+            const selected = app.boxes.filter((instance) => instance.selected);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -571,15 +572,15 @@
                     selected.specular
                 ];
                 if (selected.parent) {
-                    const newInstance = selected.parent.addChild(...attributes);
-                    newInstance.selected = true;
+                    const newBox = selected.parent.addChild(...attributes);
+                    newBox.selected = true;
                 } else {
-                    const newInstance = app.addRoot(...attributes);
-                    newInstance.selected = true;
+                    const newBox = app.addRoot(...attributes);
+                    newBox.selected = true;
                 }
                 selected.selected = false;
             });
-            initialiseInstances();
+            initialiseBoxes();
             app.colourUpdate = true;
             updateText();
             showStructure();
@@ -589,12 +590,12 @@
          * Add a block next to the current block
          */
         function deleteBlocks(offset) {
-            const selected = app.instances.filter((instance) => instance.selected);
+            const selected = app.boxes.filter((instance) => instance.selected);
             selected.forEach((selected) => {
                 selected.delete();
             });
-            app.instances = app.instances.filter((instance) => !selected.includes(instance));
-            initialiseInstances()
+            app.boxes = app.boxes.filter((instance) => !selected.includes(instance));
+            initialiseBoxes()
             app.colourUpdate = true;
             updateText();
             showStructure();
@@ -798,7 +799,8 @@
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            instances: [],
+            boxes: [],
+            quads: [],
             stock: {},
             nodes: [],
             points: [],
@@ -823,7 +825,7 @@
                     specular = getAttribute(name, 'specular');
                     name = getAttribute(name, 'name');
                 }
-                const root = new Instance(
+                const root = new Box(
                     undefined,
                     name,
                     position,
@@ -834,7 +836,7 @@
                     opacity,
                     specular,
                     data);
-                this.instances.push(root);
+                this.boxes.push(root);
                 this.roots.push(root);
                 return root;
             },
@@ -894,6 +896,45 @@
                 return shader;
             }
         }
+
+        /**
+         * Generate the vertex data for a quad.
+         */
+        function makeQuad() {
+            const positions = [
+                [-1, -1, 0,],
+                [1, -1, 0,],
+                [-1, 1, 0,],
+                [1, 1, 0,],
+            ].map((v) => v.map((i) => i / 2));
+
+            /*
+            *       4 ------ 5
+            *      /|        | \
+            *    0 ------------ 1
+            *    |  |        |  |
+            *    |  |        |  |
+            *    |  |        |  |
+            *    |  6 ------ 7  |
+            *    | /          \ |
+            *    2 ------------ 3
+            */
+
+            const triangles = [
+                { p1: positions[0], p2: positions[1], p3: positions[2], n: [0, 0, 1] },
+                { p1: positions[1], p2: positions[3], p3: positions[2], n: [0, 0, 1] },
+            ];
+            const lines = [
+                positions[0], positions[1],
+                positions[1], positions[3],
+                positions[3], positions[2],
+                positions[2], positions[0],
+            ];
+            return [...triangles.flatMap((t) => [...t.p1, ...t.n, ...t.p2, ...t.n, ...t.p3, ...t.n]),
+            ...lines.flatMap((p) => [...p, ...normalised(p)])];
+        }
+
+
 
         /**
          * Generate the vertex data for a cube.
@@ -984,24 +1025,39 @@
         }
 
         /**
-         * Initialise Instances
+         * Initialise Boxes
          */
-        function initialiseInstances() {
+        function initialiseBoxes() {
             const matrices = [];
-            const reversed = app.instances.filter((instance) => !instance.hidden).toReversed();
+            const reversed = app.boxes.filter((instance) => !instance.hidden).toReversed();
             reversed.forEach((instance) => matrices.push(...instance.transform));
 
             app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
             reversed.forEach((instance, index) =>
                 instance.matrix = new Float32Array(app.modelMatrix.buffer, index * 16 * 4, 16));
 
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.boxes);
             gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
 
             app.colourUpdate = true;
 
-            app.instancesChanged = true;
-            app.instanceCount = reversed.length;
+            app.boxesChanged = true;
+            app.boxCount = reversed.length;
+        }
+
+        /**
+         * Initialise Quads
+         */
+        function initialiseQuads() {
+            const matrices = [];
+            const quads = app.quads.filter((quad) => !quad.hidden);
+            quads.forEach((quad) => matrices.push(...quad.transform));
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
+
+            app.colourUpdate = true;
+            app.quadsChanged = true;
         }
 
         /**
@@ -1014,7 +1070,7 @@
                 return instance.state.transparent || instance.selected;
             }
             app.roots.forEach((instance) => setTransparency(instance));
-            app.instances.filter((instance) => !instance.hidden).toReversed().forEach((instance, index) => {
+            app.boxes.filter((instance) => !instance.hidden).toReversed().forEach((instance, index) => {
                 if (instance.state.ghost) {
                     colourBuffer.push(0.3, 0.3, 0.3);
                     colourBuffer.push(0.3, 0.3, 0.3);
@@ -1149,7 +1205,7 @@
             let lineHeight = 0;
 
             // Create dictionary of all labels
-            const labels = new Set(app.instances.map((instance) => instance.name));
+            const labels = new Set(app.boxes.map((instance) => instance.name));
 
             // Determine size of canvas required
             labels.forEach((label) => {
@@ -1257,7 +1313,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = app.showNames ? app.instances : app.instances.filter((instance) => instance.selected);
+            const selected = app.showNames ? app.boxes : app.boxes.filter((instance) => instance.selected);
             selected.forEach((instance) => {
                 const text = app.text[instance.name];
                 const position = instance.labelPosition ?? [0.0, 0.0, 0.0];
@@ -1274,13 +1330,6 @@
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
-        }
-
-        /**
-         * Add instance
-         */
-        function addInstance(size, position, rotation) {
-
         }
 
         /**
@@ -1313,8 +1362,8 @@
         /**
          * Update the gl buffers used to define each instance of an object.
          */
-        function updateInstances(time) {
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+        function updateBoxes(time) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.boxes);
             gl.bufferSubData(gl.ARRAY_BUFFER, 0, app.modelMatrix);
         }
 
@@ -1339,9 +1388,9 @@
             if (app.objectChanged) {
                 updateObject(time);
             }
-            if (app.instancesChanged) {
-                updateInstances(time);
-                app.instancesChanged = false;
+            if (app.boxesChanged) {
+                updateBoxes(time);
+                app.boxesChanged = false;
             }
             updateLines(time);
         }
@@ -1393,7 +1442,56 @@
             gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
             gl.enableVertexAttribArray(app.shader.normal);
 
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.instances);
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.boxes);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.shader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 16, i * 16);
+                gl.vertexAttribDivisor(location, 1);
+                gl.enableVertexAttribArray(location);
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+
+            gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
+            gl.enableVertexAttribArray(app.shader.ambientColour);
+            gl.vertexAttribDivisor(app.shader.ambientColour, 1);
+
+            gl.vertexAttribPointer(app.shader.diffuseColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 12);
+            gl.enableVertexAttribArray(app.shader.diffuseColour);
+            gl.vertexAttribDivisor(app.shader.diffuseColour, 1);
+
+            gl.vertexAttribPointer(app.shader.specularColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
+            gl.enableVertexAttribArray(app.shader.specularColour);
+            gl.vertexAttribDivisor(app.shader.specularColour, 1);
+
+            gl.vertexAttribPointer(app.shader.specularIntensity, 1, gl.FLOAT, false, 4 * (3 * 3 + 2), 36);
+            gl.enableVertexAttribArray(app.shader.specularIntensity);
+            gl.vertexAttribDivisor(app.shader.specularIntensity, 1);
+
+            gl.vertexAttribPointer(app.shader.opacity, 1, gl.FLOAT, false, 4 * (3 * 3 + 2), 40);
+            gl.enableVertexAttribArray(app.shader.opacity);
+            gl.vertexAttribDivisor(app.shader.opacity, 1);
+        }
+
+        /**
+         * Set Attribute pointers for drawing boxes.
+         */
+        function setQuadAttributes() {
+            app.quadVertexArray = gl.createVertexArray();
+            gl.bindVertexArray(app.quadVertexArray);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
+            // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride = 3 * 4 * 2,  offset = 0
+            gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(app.shader.position);
+
+            gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(app.shader.normal);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
 
             // Matrices are passed as 4 vertex attributes
             for (let i = 0; i < 4; ++i) {
@@ -1491,25 +1589,11 @@
             gl.disableVertexAttribArray(app.shader.model + 3);
             gl.vertexAttrib4f(app.shader.model + 3, 0, 0, 0, 1);
 
-            /*
-                        gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
-                        gl.disableVertexAttribArray(app.shader.ambientColour);
-                        gl.vertexAttribDivisor(app.shader.ambientColour, 0);
-            
-                        gl.vertexAttrib3f(app.shader.diffuseColour, 1, 1, 1);
-                        gl.disableVertexAttribArray(app.shader.diffuseColour);
-                        gl.vertexAttribDivisor(app.shader.diffuseColour, 0);
-            
-                        gl.vertexAttrib3f(app.shader.specularColour, 1, 1, 1);
-                        gl.disableVertexAttribArray(app.shader.specularColour);
-                        gl.vertexAttribDivisor(app.shader.specularColour, 0);
-            */
-
             gl.disableVertexAttribArray(app.shader.specularIntensity);
             gl.vertexAttrib1f(app.shader.specularIntensity, 1);
 
             gl.disableVertexAttribArray(app.shader.opacity);
-            gl.vertexAttrib1f(app.shader.opacity, 0.5);
+            gl.vertexAttrib1f(app.shader.opacity, 1);
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.lines);
 
@@ -1568,13 +1652,13 @@
                     }
                 }
                 const delta = time - start;
-                /*
+
                 app.camera.position = add(app.camera.position, scale(app.velocity, delta / 1000));
                 app.camera.lookAt = add(app.camera.lookAt, scale(app.velocity, delta / 1000));
                 const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
                 app.rotation = scaleMatrix(app.rotation, 0.1);
                 app.camera.lookAt = add(app.camera.position, direction);
-                */
+
                 app.camera.updateViewControls();
                 app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
                 app.velocity = scale(app.velocity, 0.9);
@@ -1591,10 +1675,18 @@
                 gl.uniform3fv(app.shader.lightPosition3, [1000, 15000, 1000]);
 
                 if (!app.wireframe) {
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, app.vertexCount, app.instanceCount);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
                 }
                 if (app.wireframe || !app.solid) {
-                    gl.drawArraysInstanced(gl.LINES, 36, 24, app.instanceCount);
+                    gl.drawArraysInstanced(gl.LINES, 36, 24, app.boxCount);
+                }
+
+                if (app.quads.length > 0) {
+                    gl.bindVertexArray(app.quadVertexArray);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.quads.length);
+                    if (app.wireframe || !app.solid) {
+                        //gl.drawArraysInstanced(gl.LINES_STRIP, 5, 24, app.quadCount);
+                    }
                 }
 
                 if (app.connections.length > 0) {
@@ -1746,10 +1838,14 @@
          * Base class for 3D shapes.
          */
         class Shape {
-            constructor(parent, name, position = [0, 0, 0], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10, data = {}) {
+            constructor(parent, name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10, data = {}) {
                 this.parent = parent;
+                const resolve = (string) =>
+                    string.replace(/<([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.name ?? match)
+                        .replace(/<n([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.index ?? match);
+
                 if (position.name) {
-                    this.name = position.name;
+                    this.name = resolve(position.name);
                     size = position.size;
                     angle = position.angle;
                     axis = position.axis;
@@ -1759,15 +1855,16 @@
 
                     position = position.position;
                 } else {
-                    this.name = name || `Instance ${app.instances.length + 1}`;
+                    this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
                 }
-                this.position = evaluate(position);
-                this.size = evaluate(size);
-                this.angle = evaluate(angle);
-                this.axis = normalised(evaluate(axis));
-                this.colour = evaluate(colour);
-                this.opacity = evaluate(opacity);
-                this.specular = evaluate(specular);
+
+                this.position = evaluate(position, data);
+                this.size = evaluate(size, data);
+                this.angle = evaluate(angle, data);
+                this.axis = normalised(evaluate(axis, data));
+                this.colour = evaluate(colour, data);
+                this.opacity = evaluate(opacity, data);
+                this.specular = evaluate(specular, data);
                 this.data = data;
 
                 if (app.adjustOrigin) {
@@ -1776,8 +1873,6 @@
                         this.position = add(this.position, scale(this.parent.size, -0.5));
                     }
                 }
-
-
                 this.position[2] = - this.position[2];
 
                 this.origin = Array(16);
@@ -1899,7 +1994,7 @@
                     this.matrix[i] = this.transform[i];
                 }
                 this.content.forEach((child) => child.update(true));
-                app.instancesChanged = true;
+                app.boxesChanged = true;
                 this.updateNodes();
                 if (!child) {
                     app.colourUpdate = true;
@@ -1929,7 +2024,7 @@
                 const translation = getTranslation(vector);
                 this.origin = matrixMultiply(this.origin, translation);
                 this.updateNodes();
-                app.instancesChanged = true;
+                app.boxesChanged = true;
             }
             rotate(angle, axis) {
                 const rotation = getRotation(angle, axis);
@@ -1943,7 +2038,7 @@
 
                 this.update();
                 this.updateNodes();
-                app.instancesChanged = true;
+                app.boxesChanged = true;
             }
             addChild(name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
                 const data = name;
@@ -1957,7 +2052,7 @@
                     specular = getAttribute(name, 'specular');
                     name = getAttribute(name, 'name');
                 }
-                const newInstance = new Instance(
+                const newBox = new Box(
                     this,
                     name,
                     position,
@@ -1968,9 +2063,9 @@
                     opacity || this.opacity,
                     specular || this.specular,
                     data);
-                this.content.push(newInstance);
-                app.instances.push(newInstance);
-                return newInstance;
+                this.content.push(newBox);
+                app.boxes.push(newBox);
+                return newBox;
             }
             delete() {
                 const content = [...this.content];
@@ -2088,12 +2183,13 @@
             }
         }
 
-
         /**
-         * Manage an instance.
+         * Manage a box.
          */
-        class Instance {
+        class Box extends Shape {
             constructor(parent, name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour = [0.5, 0.5, 0.5], opacity = 1, specular = 10, data = {}) {
+                super(parent, name, position, size, angle, axis, colour, opacity, specular, data);
+                /*
                 this.parent = parent;
                 const resolve = (string) =>
                     string.replace(/<([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.name ?? match)
@@ -2110,7 +2206,7 @@
 
                     position = position.position;
                 } else {
-                    this.name = name ? resolve(name) : `Block ${app.instances.length + 1}`;
+                    this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
                 }
 
                 this.position = evaluate(position, data);
@@ -2138,6 +2234,7 @@
                 this.offset = 0;
                 this.setTransform();
                 this.state = {};
+                */
             }
             asString() {
                 const getVector = (vector, places = 2) => vector.map((v) => v.toFixed(places)).join(', ');
@@ -2251,7 +2348,7 @@
                     this.matrix[i] = this.transform[i];
                 }
                 this.content.forEach((child) => child.update(true));
-                app.instancesChanged = true;
+                app.boxesChanged = true;
                 this.updateNodes();
                 if (!child) {
                     app.colourUpdate = true;
@@ -2281,7 +2378,7 @@
                 const translation = getTranslation(vector);
                 this.origin = matrixMultiply(this.origin, translation);
                 this.updateNodes();
-                app.instancesChanged = true;
+                app.boxesChanged = true;
             }
             rotate(angle, axis) {
                 const rotation = getRotation(angle, axis);
@@ -2295,7 +2392,7 @@
 
                 this.update();
                 this.updateNodes();
-                app.instancesChanged = true;
+                app.boxesChanged = true;
             }
             addChild(name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
                 const data = name;
@@ -2309,7 +2406,7 @@
                     specular = getAttribute(name, 'specular');
                     name = getAttribute(name, 'name');
                 }
-                const newInstance = new Instance(
+                const newBox = new Box(
                     this,
                     name,
                     position,
@@ -2320,9 +2417,9 @@
                     opacity || this.opacity,
                     specular || this.specular,
                     data);
-                this.content.push(newInstance);
-                app.instances.push(newInstance);
-                return newInstance;
+                this.content.push(newBox);
+                app.boxes.push(newBox);
+                return newBox;
             }
             delete() {
                 const content = [...this.content];
@@ -2441,6 +2538,12 @@
         }
 
         /**
+         * Manage a quad.
+         */
+        class Quad extends Shape {
+        }
+
+        /**
          * Convert a position to client window space
          */
         function toClientSpace(point) {
@@ -2463,7 +2566,9 @@
                 this.start = start;
                 this.end = end;
                 this.points = points;
-                this.colour = [1, 1, 1];
+                this.colour = [1, 1, 0];
+                this.startColour = [0, 1, 0.5];
+                this.endColour = [0.5, 1, 0];
                 this.getSegments();
             }
             get context() {
@@ -2479,33 +2584,36 @@
             addVertices(vertices) {
                 this.first = vertices.length / 6;
                 this.length = 0;
+                const startColour = this.selected ? [1, 0.5, 0.5] : (this.startColour ?? this.colour);
+                const colour = this.selected ? [1, 0.5, 0.5] : this.colour;
+                const endColour = this.selected ? [1, 0.5, 0.5] : (this.endColour ?? this.colour);
                 if (this.points[0].length) {
                     this.points[0].forEach((point) => {
                         vertices.push(...applyTransform(point, this.start.origin));
-                        vertices.push(...this.colour);
+                        vertices.push(...startColour);
                     });
                     this.length += this.points[0].length;
                 } else {
                     vertices.push(...applyTransform([0, 0, 0], this.start.origin));
-                    vertices.push(...this.start.colour);
+                    vertices.push(...startColour);
                     this.length += 1;
                 }
                 const context = this.context;
                 this.points[1].forEach((point) => {
                     vertices.push(...applyTransform(point, context.origin));
-                    vertices.push(...this.colour);
+                    vertices.push(...colour);
                 });
                 this.length += this.points[1].length;
 
                 if (this.points[2].length) {
                     this.points[2].forEach((point) => {
                         vertices.push(...applyTransform(point, this.end.origin));
-                        vertices.push(...this.colour);
+                        vertices.push(...endColour);
                     });
                     this.length += this.points[2].length;
                 } else {
                     vertices.push(...applyTransform([0, 0, 0], this.end.origin));
-                    vertices.push(...this.end.colour);
+                    vertices.push(...endColour);
                     this.length += 1;
                 }
             }
@@ -2563,7 +2671,7 @@
         function endMove(event) {
             if (action.moved) {
                 const instances = new Set();
-                app.instances.filter((instance) => instance.selected)
+                app.boxes.filter((instance) => instance.selected)
                     .forEach((instance) => instance.apply((instance) => instances.add(instance)));
                 const undo = Array.from(instances).map((instance) => ({
                     instance, start: [...instance.start],
@@ -2603,7 +2711,7 @@
             }
             action.move = null;
             historyPosition = null;
-            app.instances.forEach((instance) => {
+            app.boxes.forEach((instance) => {
                 instance.state = {};
             });
         }
@@ -2654,7 +2762,7 @@
                     node.contentEditable = true;
                     node.addEventListener('focus', (event) => {
                         if (!event.shiftKey) {
-                            app.instances.forEach((instance) => instance.selected = false);
+                            app.boxes.forEach((instance) => instance.selected = false);
                         }
                         instance.selected = true;
                         app.colourUpdate = true;
@@ -2679,7 +2787,7 @@
                             event.preventDefault();
                             if (event.shiftKey) {
                                 instance.addChild([0, 0, 0], scale(instance.size, 0.5));
-                                initialiseInstances();
+                                initialiseBoxes();
                                 showStructure();
                             } else {
                                 if (isNaN(Number(node.innerText))) {
@@ -3023,13 +3131,14 @@
 
         const meta = Symbol('meta');
         const content = Symbol('content');
+        const connections = Symbol('connections');
 
         /**
          * Convert lines to objects
          */
         function processText(text, parent, replace) {
             if (replace) {
-                app.instances = [];
+                app.boxes = [];
                 app.roots = [];
                 app.stock = {};
             }
@@ -3236,13 +3345,12 @@
                             contextStack.at(-1).object[context.parameter] = contextStack.at(-1).object[context.parameter] || [];
                             contextStack.push(context);
                             line.content.forEach((item) => evaluate(item));
-                            contextStack.pop()
+                            contextStack.pop();
                         } else if (line.value.includes(':') && !line.value.includes('=')) {
                             add(node);
                             context.object = node;
                             const [name, ...typeNames] = (line.value ?? '').split(/\s*:\s*/g);
                             const types = typeNames.flatMap((type) => (named[type] || find(type)) ?? []);
-
 
                             node.name = name;
                             node.types = (node.types || []).flatMap((type) =>
@@ -3253,11 +3361,24 @@
                             contextStack.push(context);
                             line.content.forEach((item) => evaluate(item));
                             contextStack.pop();
+                        } else if (components[0].includes('--')) {
+                            const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                            contextStack.push(context);
+                            components.forEach((component) => addComponent(component));
+                            line.content.forEach((item) => evaluate(item));
                         } else {
                             addComponent(components[0], line.content);
                             line.content.forEach((item) => evaluate(item));
                         }
                     } else if (components.length > 1) {
+                        if (components[0].includes('--')) {
+                            context.parameter = 'connections';
+                            context.object.connections = context.object.connections || [];
+                            const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                            node.start = start;
+                            node.end = end;
+                            node.connectionType = type;
+                        }
                         add(node);
                         context.object = node;
                         if (components.at(-1).endsWith('=')) {
@@ -3320,7 +3441,7 @@
                     addItems(root, node);
                 }
             })
-            initialiseInstances();
+            initialiseBoxes();
             updateText();
             showStructure();
             showStock();
@@ -3368,7 +3489,7 @@
         function makeGraph(source, replace) {
             if (source) {
                 if (replace) {
-                    app.instances = [];
+                    app.boxes = [];
                     app.roots = [];
                     app.stock = {};
                 }
@@ -3409,7 +3530,8 @@
                     const root = app.addRoot(undefined, node);
                     node.content.forEach((child) => addNode(root, child));
                 });
-                initialiseInstances();
+                initialiseBoxes();
+                initialiseQuads();
             } else {
                 const root = app.addRoot(
                     'cube',
@@ -3428,6 +3550,8 @@
             */
             }
 
+            app.quads.push(new Quad(undefined, 'Quad', [0,0,0], [1,2,0]));
+            initialiseQuads();
             showStructure();
             updateText();
         }
@@ -3869,11 +3993,11 @@
                         hit[0].selected = true;
                     }
                 } else {
-                    app.instances.forEach((instance) => instance.selected = instance === hit[0]);
+                    app.boxes.forEach((instance) => instance.selected = instance === hit[0]);
                 }
                 return hit;
             }
-            app.instances.forEach((instance) => instance.selected = false);
+            app.boxes.forEach((instance) => instance.selected = false);
         }
 
         /**
@@ -3912,7 +4036,7 @@
          * Clear Selection
          */
         function clearSelection() {
-            app.instances.forEach((instance) => instance.selected = false);
+            app.boxes.forEach((instance) => instance.selected = false);
             document.getElementById('info').innerHTML = '';
             document.getElementById('info').classList.add('hide');
             updateTextBuffer();
@@ -3923,7 +4047,7 @@
          * Rotate the selected item
          */
         function rotateSelected(angle, axis, local) {
-            app.instances.filter((instance) => instance.selected)
+            app.boxes.filter((instance) => instance.selected)
                 .forEach((instance) => {
                     if (local) {
                         axis = applyTransform(axis, extractRotation(instance.origin));
@@ -3936,12 +4060,12 @@
          * Selected item(s) parent.
          */
         function selectParent() {
-            const parents = app.instances.flatMap((instance) => instance.selected ? (instance.parent ?? []) : []);
+            const parents = app.boxes.flatMap((instance) => instance.selected ? (instance.parent ?? []) : []);
             if (!event.shiftKey) {
-                app.instances.forEach((instance) => instance.selected = false);
+                app.boxes.forEach((instance) => instance.selected = false);
             }
             parents.forEach((instance) => instance.selected = true);
-            app.instancesChanged = true;
+            app.boxesChanged = true;
             updateText();
             app.colourUpdate = true;
         }
@@ -3950,9 +4074,9 @@
          * 'Hide' the selected item(s).
          */
         function hideSelected() {
-            app.instances.filter((instance) => instance.selected)
+            app.boxes.filter((instance) => instance.selected)
                 .forEach((instance) => instance.hidden = !instance.hidden);
-            app.instances.forEach((instance) => {
+            app.boxes.forEach((instance) => {
                 const node = app.nodeMap.get(instance)[0];
                 if (instance.hidden) {
                     node.classList.add('hidden');
@@ -3960,7 +4084,7 @@
                     node.classList.remove('hidden');
                 }
             });
-            initialiseInstances();
+            initialiseBoxes();
         }
 
         /**
@@ -4076,9 +4200,7 @@
                 const mouseLine = getRay(event.clientX, event.clientY);
                 const hits = getSelected(getIntersection(mouseLine));
                 if (app.connections) {
-                    console.log(mouseLine);
-                    console.log(app.connections.map((connection) => connection.getDist(mouseLine)));
-                    report(app.connections.map((connection) => connection.getDist(mouseLine)).join(', '));
+                    app.connections.forEach((connection) => connection.selected = (connection.getDist(mouseLine) < 5));
                 }
                 for (const node of document.body.querySelectorAll('.selected')) {
                     node.classList.remove('selected');
@@ -4113,11 +4235,11 @@
                             action(instance);
                             instance.content.forEach((child) => apply(child, action));
                         }
-                        const selected = app.instances.filter((instance) => instance.selected);
+                        const selected = app.boxes.filter((instance) => instance.selected);
                         selected.forEach((instance) =>
                             instance.apply((instance) => instance.start = extractTranslation(instance.origin)));
                         action.move = (event) => {
-                            app.instances.forEach((instance) => instance.state.ghost = true);
+                            app.boxes.forEach((instance) => instance.state.ghost = true);
                             action.selected.siblings.forEach((instance) => instance.state.constraint = true);
                             action.selected.state.moving = true;
 
@@ -4203,7 +4325,7 @@
              */
             function dropHandler(event) {
                 dragPart = false;
-                app.instances.forEach((instance) => instance.state = {});
+                app.boxes.forEach((instance) => instance.state = {});
 
                 event.preventDefault();
                 const replace = event.shiftKey;
@@ -4261,7 +4383,7 @@
                         const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                         hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                     }
-                    app.instances.forEach((instance) => {
+                    app.boxes.forEach((instance) => {
                         instance.state.highlight = instance === hits[0];
                         instance.state.hasPart = instance.serialNumber;
                         instance.state.constraint = instance.parts?.includes(types[0]);
@@ -4333,20 +4455,22 @@
 
             app.buffers = {
                 vertex: gl.createBuffer(),
-                instances: gl.createBuffer(),
                 colour: gl.createBuffer(),
+                boxes: gl.createBuffer(),
+                quads: gl.createBuffer(),
                 points: gl.createBuffer(),
                 lines: gl.createBuffer(),
                 textInstance: gl.createBuffer(),
                 textItems: gl.createBuffer(),
             };
             app.textTexture = gl.createTexture();
-            app.vertexCount = 36;
             initialiseText();
             const shape = makeCube();
+            shape.push(...makeQuad());
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
             setBoxAttributes();
+            setQuadAttributes();
             setPointAttributes();
             setLineAttributes();
             if (location.protocol === 'http:') {
@@ -4354,7 +4478,7 @@
             } else {
                 makeGraph();
             }
-            initialiseInstances();
+            initialiseBoxes();
 
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
