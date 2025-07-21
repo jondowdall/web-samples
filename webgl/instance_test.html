@@ -60,8 +60,6 @@
             display: grid;
             grid-template-columns: repeat(3, max-content);
             grid-template-rows: repeat(3, max-content);
-            background-color: white;
-            border-radius: 3px;
         }
 
         #stock {
@@ -1378,6 +1376,23 @@
         }
 
         /**
+         * Update the gl buffers used to define each instance of an object.
+         */
+        function updateQuads(time) {
+            const matrices = [];
+            const boxes = app.boxes.filter((box) => box.highlight)
+            boxes.forEach((box) => matrices.push(...box.transform));
+            app.faceCount = boxes.length;
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
+
+            //app.colourUpdate = true;
+            //app.quadsChanged = true;
+
+        }
+
+        /**
          * Update the object definition and the instances if required.
          */
         function updateBuffers(time) {
@@ -1392,6 +1407,7 @@
                 updateBoxes(time);
                 app.boxesChanged = false;
             }
+            updateQuads(time);
             updateLines(time);
         }
 
@@ -1600,10 +1616,7 @@
             // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
             gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
             gl.enableVertexAttribArray(app.shader.position);
-            /*
-                        gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, true, 24, 0);
-                        gl.enableVertexAttribArray(app.shader.normal);
-            */
+
             gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 24, 12);
             gl.enableVertexAttribArray(app.shader.ambientColour);
 
@@ -1680,15 +1693,15 @@
                 if (app.wireframe || !app.solid) {
                     gl.drawArraysInstanced(gl.LINES, 36, 24, app.boxCount);
                 }
-
-                if (app.quads.length > 0) {
-                    gl.bindVertexArray(app.quadVertexArray);
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.quads.length);
-                    if (app.wireframe || !app.solid) {
-                        //gl.drawArraysInstanced(gl.LINES_STRIP, 5, 24, app.quadCount);
-                    }
-                }
-
+                /*
+                                if (app.quads.length > 0) {
+                                    gl.bindVertexArray(app.quadVertexArray);
+                                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.quads.length);
+                                    if (app.wireframe || !app.solid) {
+                                        //gl.drawArraysInstanced(gl.LINES_STRIP, 5, 24, app.quadCount);
+                                    }
+                                }
+                */
                 if (app.connections.length > 0) {
                     gl.bindVertexArray(app.lineVertexArray);
                     app.connections.forEach((connection) =>
@@ -1696,6 +1709,20 @@
                 }
 
                 gl.disable(gl.DEPTH_TEST);
+
+                app.boxes.forEach((box) => {
+                    if (box.highlight) {
+                        gl.disableVertexAttribArray(app.shader.ambientColour);
+                        gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
+                        gl.drawArraysInstanced(gl.TRIANGLES, 6 * (box.highlight - 1), 6, app.faceCount);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
+
+                        gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
+                        gl.enableVertexAttribArray(app.shader.ambientColour);
+                        gl.vertexAttribDivisor(app.shader.ambientColour, 1);
+
+                    }
+                });
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
@@ -2448,6 +2475,42 @@
                     && ((position[2] + this.size[2]) >= otherPosition[2])
                     && (position[2] <= (otherPosition[2] + other.size[2]));
             }
+            highlightFace(line) {
+                const local = invert(this.origin);
+                const local2 = invert(this.rotation);
+                // Convert the line to local space
+                const line2 = { point: applyTransform(line.point, local), direction: applyTransform(line.direction, this.rotation) };
+
+                const getPoint = (line, plane) => {
+                    const dist = planeIntercept(line, plane);
+                    return { dist, point: add(line.point, scale(line.direction, dist)), };
+                };
+                const size = scale(this.size, 0.5 * app.scale);
+                const size1 = scale(this.size, -0.5 * app.scale);
+
+                const points = [
+                    { point: size1, normal: [0, 0, -1], },
+                    { point: size1, normal: [0, 1, 0], },
+                    
+                    { point: size, normal: [0, 0, 1], },                    
+                    { point: size, normal: [0, -1, 0], },
+
+                    { point: size, normal: [-1, 0, 0], },
+                    { point: size1, normal: [1, 0, 0], },
+
+                ].map((plane) => getPoint(line, plane)).flatMap((hit, index) => 
+                     ((Math.abs(hit.point[0]) <= size[0]) &&
+                        (Math.abs(hit.point[1]) <= size[1]) &&
+                        (Math.abs(hit.point[2]) <= size[2])) ? { hit, index } : []
+                );
+
+                if (points.length) {
+                    points.sort((a, b) => a.hit.dist - b.hit.dist);
+                    this.highlight = points[0].index + 1;
+                    //app.points.push({ position: applyTransform(points[0].hit.point, this.transform), colour: [1, 1, 1] });
+                    report(this.highlight);
+                }
+            }
             move(vector) {
                 this.siblings.forEach((sibling) => {
                     sibling.state.constraint = true;
@@ -2666,6 +2729,19 @@
         let historyPosition;
 
         /**
+         * Highlight the face under the mouse pointer
+         */
+        function highlightFace(event) {
+            const line = getRay(event.clientX, event.clientY);
+            app.boxes.forEach((box) => box.highlight = 0);
+            const hits = getSelected(getIntersection(line));
+            if (hits) {
+                hits[0].highlightFace(line);
+            }
+        }
+
+
+        /**
          * End a mouse movement and store change in history.
          */
         function endMove(event) {
@@ -2709,7 +2785,7 @@
                     action.selected.data.load = true;
                 }
             }
-            action.move = null;
+            action.move = highlightFace;
             historyPosition = null;
             app.boxes.forEach((instance) => {
                 instance.state = {};
@@ -2834,7 +2910,7 @@
                             };
                             const initial = item[element];
                             action.end = () => {
-                                action.move = null;
+                                action.move = highlightFace;
                                 if (action.moved) {
                                     const end = item[element];
                                     history.push({
@@ -2866,7 +2942,7 @@
                             };
                             const initial = item[element];
                             action.end = () => {
-                                action.move = null;
+                                action.move = highlightFace;
                                 if (action.moved) {
                                     const end = item[element];
                                     history.push({
@@ -3531,7 +3607,6 @@
                     node.content.forEach((child) => addNode(root, child));
                 });
                 initialiseBoxes();
-                initialiseQuads();
             } else {
                 const root = app.addRoot(
                     'cube',
@@ -3550,7 +3625,7 @@
             */
             }
 
-            app.quads.push(new Quad(undefined, 'Quad', [0,0,0], [1,2,0]));
+            app.quads.push(new Quad(undefined, 'Quad', [0, 0, 0], [1, 2, 0]));
             initialiseQuads();
             showStructure();
             updateText();
@@ -4289,7 +4364,7 @@
                         up: [...app.camera.up],
                     };
                     action.end = () => {
-                        action.move = null;
+                        action.move = highlightFace;
                         const end = {
                             position: [...app.camera.position],
                             lookAt: [...app.camera.lookAt],
