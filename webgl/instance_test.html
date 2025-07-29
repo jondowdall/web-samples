@@ -22,6 +22,18 @@
             overflow: hidden;
         }
 
+        table,
+        th,
+        td {
+            border-collapse: collapse;
+            border: 1px solid gray;
+        }
+
+        th,
+        td {
+            padding: 2px 5px;
+        }
+
         ul {
             margin: 0;
         }
@@ -84,6 +96,25 @@
 
         details details {
             margin-left: 1em;
+        }
+
+        #model {
+            overflow: auto;
+            max-width: 50vw;
+            max-height: 50vh;
+        }
+
+        #model .title {
+            font-weight: bold;
+            position: sticky;
+            left: 0;
+            background-color: white;
+        }
+
+        #model th {
+            position: sticky;
+            top: 0;
+            background-color: white;
         }
 
         #structure {
@@ -173,6 +204,10 @@
             display: none !important;
         }
 
+        .undefined {
+            background-color: lightgrey;
+        }
+
         .three-columns {
             grid-column: span 3;
         }
@@ -203,6 +238,11 @@
                 Aspect<input id="aspect" type="number" />
                 Near<input id="near" type="number" />
                 Far<input id="far" type="number" />
+            </div>
+        </details>
+        <details>
+            <summary>Model</summary>
+            <div id="model">
             </div>
         </details>
         <details>
@@ -821,6 +861,7 @@
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             boxes: [],
+            cylinders: [],
             quads: [],
             stock: {},
             nodes: [],
@@ -1034,9 +1075,9 @@
          */
         function makeCylinder(sides) {
             const triangles = [];
-            for (let i=0; i < sides; ++i) {
-                const angle1 = Math.PI * 2 * i  / sides;
-                const angle2 = Math.PI * 2 * i  / sides;
+            for (let i = 0; i < sides; ++i) {
+                const angle1 = Math.PI * 2 * i / sides;
+                const angle2 = Math.PI * 2 * i / sides;
                 triangles.push(
                     0, -1, 0, 0, -1, 0,
                     Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0,
@@ -1055,6 +1096,7 @@
                     Math.sin(angle2), 1, Math.cos(angle2), 0, 1, 0,
                 );
             }
+            return triangles;
         }
 
         /**
@@ -1062,12 +1104,12 @@
          */
         function makeOffsetCylinder(sides) {
             const triangles = [];
-            for (let i=0; i < sides; ++i) {
-                const angle1 = Math.PI * 2 * i  / sides;
-                const angle2 = Math.PI * 2 * i  / sides;
-                const angle3 = Math.PI * 2 * i  / sides;
-                const angle4 = Math.PI * 2 * i  / sides;
-                vertices. push([Math.sin(angle), 1, Math.cos(angle)]);
+            for (let i = 0; i < sides; ++i) {
+                const angle1 = Math.PI * 2 * i / sides;
+                const angle2 = Math.PI * 2 * i / sides;
+                const angle3 = Math.PI * 2 * i / sides;
+                const angle4 = Math.PI * 2 * i / sides;
+                vertices.push([Math.sin(angle), 1, Math.cos(angle)]);
             }
         }
 
@@ -1105,6 +1147,27 @@
 
             app.boxesChanged = true;
             app.boxCount = reversed.length;
+        }
+
+        /**
+         * Initialise Cylinders
+         */
+        function initialiseCylinders() {
+            const matrices = [];
+            const reversed = app.cylinders.filter((box) => !box.hidden).toReversed();
+            reversed.forEach((box) => matrices.push(...box.transform));
+
+            app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
+            reversed.forEach((box, index) =>
+                box.matrix = new Float32Array(app.modelMatrix.buffer, index * 16 * 4, 16));
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.cylinders);
+            gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
+
+            app.colourUpdate = true;
+
+            app.cylindersChanged = true;
+            app.cylinderCount = reversed.length;
         }
 
         /**
@@ -1728,6 +1791,7 @@
 
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 60, 144, app.cylinderCount);
                 }
                 if (app.wireframe || !app.solid) {
                     gl.drawArraysInstanced(gl.LINES, 36, 24, app.boxCount);
@@ -2780,6 +2844,63 @@
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
         document.body.addEventListener('touchend', completeAction);
 
+
+        /**
+         * Show Model
+         */
+        function showModel(model) {
+            const container = document.getElementById('model');
+            container.innerHTML = '';
+            const table = document.createElement('table');
+            container.append(table);
+            const head = document.createElement('thead');
+            const body = document.createElement('tbody');
+            table.append(head, body);
+
+            columns = new Set();
+            const stack = [model];
+            while (stack.length) {
+                const item = stack.shift();
+                stack.unshift(...item[content]);
+                Object.getOwnPropertyNames(item).forEach((property) => columns.add(property));
+
+                columns.delete('name');
+                const row = document.createElement('tr');
+                body.append(row);
+                const cell = document.createElement('td');
+                cell.class = 'title';
+                cell.innerText = item[meta].name[0];
+                row.append(cell);
+
+                columns.forEach((column) => {
+                    const cell = document.createElement('td');
+                    cell.innerText = item[column] ?? '';
+                    if (item[column] === undefined) {
+                        cell.classList.add('undefined');
+                    }
+                    row.append(cell);
+                });
+            }
+            const row = document.createElement('tr');
+            head.append(row);
+            const cell = document.createElement('th');
+            cell.innerText = 'Name';
+            row.append(cell);
+            columns.forEach((column) => {
+                const cell = document.createElement('th');
+                cell.innerText = column;
+                row.append(cell);
+            });
+
+            for (const node of body.children) {
+                for (let i = node.children.length - 1; i < columns.size; ++i) {
+                    const cell = document.createElement('td');
+                    cell.classList.add('undefined');
+                    node.append(cell);
+                }
+            }
+        }
+
         /**
          * Show structure
          */
@@ -3282,6 +3403,7 @@
             const expanded = roots.flatMap((item) => expand(item));
 
             const find = (string) => {
+                if (!string.split) return;
                 const path = string.split(/\/\./g);
                 let target;
                 while (path.length) {
@@ -3317,7 +3439,7 @@
                     });
 
             const graph = {
-                [meta]: { name: ''},
+                [meta]: { name: '' },
                 [content]: [],
             }
             const contextStack = [{ object: graph, name: 0, defaultParameters: [], }];
@@ -3490,8 +3612,11 @@
                         node[meta].name.push(name);
 
                         node[meta].type.push(...typeNames.flatMap((type) => (named[type] || find(type)) ?? []));
-                        node[meta].type.push(...(node.type || []).flatMap((type) =>
-                            typeof type === 'object' ? type : (named[type] || find(type)) ?? []));
+                        if (node.type) {
+                            node.type = [node.type].flatMap((type) => type);
+                            node[meta].type.push(...(node.type.flatMap((type) =>
+                                typeof type === 'object' ? type : (named[type] || find(type)) ?? [])));
+                        }
                         node[meta].type.forEach((type) =>
                             type[content].forEach((typeComponent) =>
                                 evaluate({ [meta]: typeComponent[meta], [content]: typeComponent[content] })));
@@ -3514,8 +3639,6 @@
 
             const addItems = (parent, node) => {
                 node[content].forEach((node) => {
-
-                    console.log(`${node[meta].name[0]}:`);
                     const stack = [node];
                     const obj = {};
                     const content = [];
@@ -3526,7 +3649,6 @@
                         Object.getOwnPropertyNames(node).forEach((property) =>
                             obj[property] = obj[property] ?? node[property]);
                     }
-                    console.log(obj, content);
 
                     if (getAttribute(node, 'size')) {
                         const child = parent.addChild(node);
@@ -3544,6 +3666,7 @@
                     }
                 })
             }
+            showModel(graph);
             graph[content].forEach((node) => {
                 if (node.position) {
                     const root = parent ? parent.addChild(node) : app.addRoot(node);
@@ -4606,6 +4729,7 @@
                 vertex: gl.createBuffer(),
                 colour: gl.createBuffer(),
                 boxes: gl.createBuffer(),
+                cylinders: gl.createBuffer(),
                 quads: gl.createBuffer(),
                 points: gl.createBuffer(),
                 lines: gl.createBuffer(),
@@ -4615,6 +4739,7 @@
             app.textTexture = gl.createTexture();
             initialiseText();
             const shape = makeCube();
+            shape.push(...makeCylinder(12));
             shape.push(...makeQuad());
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
@@ -4628,6 +4753,7 @@
                 makeGraph();
             }
             initialiseBoxes();
+            initialiseCylinders();
 
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
