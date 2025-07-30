@@ -100,8 +100,9 @@
 
         #model {
             overflow: auto;
-            max-width: 50vw;
-            max-height: 50vh;
+            width: 50vw;
+            height: 50vh;
+            resize: both;
         }
 
         #model .title {
@@ -124,7 +125,9 @@
 
             grid-gap: 3px;
             overflow: auto;
-            max-height: 50vh;
+            height: 50vh;
+            width: 50vw;
+            resize: both;
         }
 
         #structure .value {
@@ -206,6 +209,10 @@
 
         .undefined {
             background-color: lightgrey;
+        }
+
+        .inherited {
+            font-style: italic;
         }
 
         .three-columns {
@@ -594,7 +601,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.boxes.filter((instance) => instance.selected);
+            const selected = app.boxes.filter((box) => box.selected);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -1154,15 +1161,15 @@
          */
         function initialiseCylinders() {
             const matrices = [];
-            const reversed = app.cylinders.filter((box) => !box.hidden).toReversed();
-            reversed.forEach((box) => matrices.push(...box.transform));
+            const reversed = app.cylinders.filter((cylinder) => !cylinder.hidden).toReversed();
+            reversed.forEach((cylinder) => matrices.push(...cylinder.transform));
 
-            app.modelMatrix = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
-            reversed.forEach((box, index) =>
-                box.matrix = new Float32Array(app.modelMatrix.buffer, index * 16 * 4, 16));
+            app.cylinderData = new Float32Array(matrices); // 4 bytes per float, 16 floats per matrix
+            reversed.forEach((cylinder, index) =>
+                cylinder.matrix = new Float32Array(app.cylinderData.buffer, index * 16 * 4, 16));
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.cylinders);
-            gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
+            gl.bufferData(gl.ARRAY_BUFFER, app.cylinderData.byteLength, gl.DYNAMIC_DRAW);
 
             app.colourUpdate = true;
 
@@ -2293,7 +2300,7 @@
         }
 
         /**
-         * Manage a box.
+         * Manage boxes.
          */
         class Box extends Shape {
             constructor(parent, name, position, size, angle, axis, colour, opacity, specular, data = {}) {
@@ -2637,7 +2644,16 @@
         }
 
         /**
-         * Manage a quad.
+         * Manage a box.
+         */
+        class Cylinder extends Shape {
+            constructor(parent, name, position, height, radius, angle, axis, colour, opacity, specular, data = {}) {
+                super(parent, name, position, [radius, height, radius], angle, axis, colour, opacity, specular, data);
+            }
+        }
+
+        /**
+         * Manage quads.
          */
         class Quad extends Shape {
         }
@@ -2858,10 +2874,10 @@
             table.append(head, body);
 
             columns = new Set();
-            const stack = [model];
+            const stack = [[model, 0]];
             while (stack.length) {
-                const item = stack.shift();
-                stack.unshift(...item[content]);
+                const [item, level] = stack.shift();
+                stack.unshift(...item[content].map((item) => [item, level + 1]));
                 Object.getOwnPropertyNames(item).forEach((property) => columns.add(property));
 
                 columns.delete('name');
@@ -2870,16 +2886,23 @@
                 const cell = document.createElement('td');
                 cell.class = 'title';
                 cell.innerText = item[meta].name[0];
+                cell.style.paddingLeft = `${level}em`;
                 row.append(cell);
 
                 columns.forEach((column) => {
                     const cell = document.createElement('td');
                     cell.innerText = item[column] ?? '';
                     if (item[column] === undefined) {
-                        cell.classList.add('undefined');
+                        if (item[meta].inherited[column] === undefined) {
+                            cell.classList.add('undefined');
+                        } else {
+                            cell.innerText = item[meta].inherited[column];
+                            cell.classList.add('inherited');
+                        }
                     }
                     row.append(cell);
                 });
+
             }
             const row = document.createElement('tr');
             head.append(row);
@@ -3382,6 +3405,7 @@
                                 instance: [{ name, index }, ...instance],
                                 name: [],
                                 type: [],
+                                inherited: {},
                             },
                             [content]: [],
                         }));
@@ -3394,6 +3418,7 @@
                             instance,
                             name: [],
                             type: [],
+                            inherited: {},
                         },
                         [content]: [],
                     };
@@ -3439,7 +3464,7 @@
                     });
 
             const graph = {
-                [meta]: { name: '' },
+                [meta]: { name: '', inherited: {} },
                 [content]: [],
             }
             const contextStack = [{ object: graph, name: 0, defaultParameters: [], }];
@@ -3611,7 +3636,10 @@
                         }
                         node[meta].name.push(name);
 
-                        node[meta].type.push(...typeNames.flatMap((type) => (named[type] || find(type)) ?? []));
+                        node[meta].type = node[meta].type.flatMap((typeName) =>
+                            (named[typeName] || find(typeName)) ?? []);
+
+                        node[meta].type.push(...typeNames.flatMap((typeName) => (named[typeName] || find(tytypeNamepe)) ?? []));
                         if (node.type) {
                             node.type = [node.type].flatMap((type) => type);
                             node[meta].type.push(...(node.type.flatMap((type) =>
@@ -3637,23 +3665,69 @@
 
             expanded.flatMap((node) => evaluate(node));
 
+            const addInheritedProperties = (node) => {
+                const resolve = (string, instance) => {
+                    const attrs = instance.filter((instance) => instance.label);
+                    attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({label: `${attr.label}_n`, name: attr.index})));
+                    const vars = attrs.reduce((obj, attr) => {
+                        obj[attr.label] = attr.name;
+                        return obj;
+                    }, {})
+                    return string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
+                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
+                        .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
+                        .replace(/\{([^\}]+)\}/, (match, p1) => {
+                            try {
+                                func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
+                                return func(zeroPad, ...attrs.map((attr) => attr.name));
+                            } catch (err) {
+                                report(err.message);
+                                return `${err.message}: ${match}`;
+                            }
+                        });
+                };
+
+
+                const stack = [node];
+                node[meta].inherited[content] = [];
+                while (stack.length > 0) {
+                    const base = stack.shift();
+                    node[meta].inherited[content].push(...base[meta].content)
+                    stack.push(...base[meta].type);
+                    Object.getOwnPropertyNames(base).forEach((property) =>
+                        node[meta].inherited[property] = node[meta].inherited[property] ?? base[property]);
+                }
+                node[content].forEach((node) => addInheritedProperties(node));
+                node[meta].name[0] = resolve(node[meta].name[0], node[meta].instance, {});
+            }
+
+            graph[content].forEach((node) => addInheritedProperties(node));
+
             const addItems = (parent, node) => {
                 node[content].forEach((node) => {
-                    const stack = [node];
-                    const obj = {};
-                    const content = [];
-                    while (stack.length > 0) {
-                        const node = stack.shift();
-                        content.push(...node[meta].content)
-                        stack.push(...node[meta].type);
-                        Object.getOwnPropertyNames(node).forEach((property) =>
-                            obj[property] = obj[property] ?? node[property]);
-                    }
+                    const getAttribute = (node, attribute) => node[attribute] || node[meta].inherited[attribute];
 
                     if (getAttribute(node, 'size')) {
                         const child = parent.addChild(node);
                         node[meta].representation = child;
                         addItems(child, node);
+                    } else if (getAttribute(node, 'radius')) {
+                        const newBox = new Cylinder(
+                            parent,
+                            node[meta].name,
+                            getAttribute(node, 'position'),
+                            getAttribute(node, 'height'),
+                            getAttribute(node, 'radius'),
+                            getAttribute(node, 'angle') || 0,
+                            getAttribute(node, 'axis') || [0, 1, 0],
+                            getAttribute(node, 'colour') || parent.colour,
+                            getAttribute(node, 'opacity') || parent.opacity,
+                            getAttribute(node, 'specular') || parent.specular,
+                            node);
+                        parent.content.push(cylinder);
+                        app.cylinders.push(cylinder);
+                        node[meta].representation = cylinder;
+                        addItems(cylinder, node);
                     }
                 });
                 (node.connections || []).forEach((connection) => {
@@ -3666,15 +3740,16 @@
                     }
                 })
             }
-            showModel(graph);
             graph[content].forEach((node) => {
                 if (node.position) {
                     const root = parent ? parent.addChild(node) : app.addRoot(node);
                     node[meta].representation = root;
                     addItems(root, node);
                 }
-            })
+            });
+            showModel(graph);
             initialiseBoxes();
+            initialiseCylinders();
             updateText();
             showStructure();
             showStock();
@@ -3764,6 +3839,7 @@
                     node.content.forEach((child) => addNode(root, child));
                 });
                 initialiseBoxes();
+                initialiseCylinders();
             } else {
                 const root = app.addRoot({
                     [meta]: { name: ['cube'] },
@@ -4325,6 +4401,7 @@
                 }
             });
             initialiseBoxes();
+            initialiseCylinders();
         }
 
         /**
@@ -4342,6 +4419,7 @@
                 }
             });
             initialiseBoxes();
+            initialiseCylinders();
         }
 
         /**
@@ -4354,6 +4432,7 @@
                 node.classList.remove('hidden');
             });
             initialiseBoxes();
+            initialiseCylinders();
         }
 
         /**
@@ -4674,17 +4753,6 @@
          */
         function processDefinition(definition, replace) {
             processText(definition, undefined, replace);
-
-            /*
-            const objs = getObjects(definition);
-            const tree = getTree(objs);
-            const graph = expandGraph(tree);
-            //makeGraph(graph, replace);
-
-            updateText();
-            showStructure();
-            showStock();
-*/
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
         }
