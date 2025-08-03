@@ -48,6 +48,8 @@
             background-color: white;
             left: 0;
             top: 0;
+            max-height: 100vh;
+            max-width: 80vw;
         }
 
         #projection-control {
@@ -100,8 +102,10 @@
 
         #model {
             overflow: auto;
+            /*
             width: 50vw;
             height: 50vh;
+            */
             resize: both;
         }
 
@@ -128,8 +132,10 @@
 
             grid-gap: 3px;
             overflow: auto;
+            /*
             height: 50vh;
             width: 50vw;
+            */
             resize: both;
         }
 
@@ -441,6 +447,7 @@
     </script>
 
     <script>
+        const CYLINDER_SIDES = 24;
         /**
          * Update report display.
          */
@@ -521,7 +528,7 @@
         function forward(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const offset = scale(zAxis, amount * distance / 10);
-            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            moveCamera(add(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
             canvas.focus();
 
         }
@@ -532,7 +539,7 @@
         function right(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const offset = scale(xAxis, amount * distance / 10);
-            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            moveCamera(add(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
             canvas.focus();
 
         }
@@ -543,7 +550,7 @@
         function up(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const offset = scale(yAxis, amount * distance / 10);
-            moveCamera(add(app.camera.position, offset), add(app.camera.lookAt, offset), app.camera.up);
+            moveCamera(add(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
             canvas.focus();
         }
 
@@ -567,7 +574,7 @@
             const direction = subtract(app.camera.lookAt, app.camera.position);
             const rotation = getRotation(-amount * 15, yAxis);
             const newDirection = applyTransform(direction, rotation);
-            moveCamera(app.camera.position, add(app.camera.position, newDirection), app.camera.up);
+            moveCamera(app.camera.position, sum(app.camera.position, newDirection), app.camera.up);
         }
 
         /**
@@ -608,7 +615,7 @@
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
-                const position = add(selected.position, product(selected.size, offset));
+                const position = sum(selected.position, product(selected.size, offset));
                 const name = getUniqueName(selected[meta].name[0].replace(/\s*[0-9]+/, ''));
                 const attributes = [
                     name,
@@ -662,14 +669,14 @@
                 const lookAt = scale(add(...selected.map((box) => box.world.translation)), 1 / selected.length);
                 const size = Math.max(...selected.map((box) => Math.hypot(...subtract(add(box.world.translation, box.size), lookAt))));
                 const dist = size / Math.tan(180 * app.fov / Math.PI);
-                const position = add(lookAt, scale(direction, dist));
+                const position = sum(lookAt, scale(direction, dist));
                 moveCamera(position, lookAt, up);
             } else {
                 const lookAt = app.initial.lookAt;
                 const viewVector = subtract(app.initial.lookAt, app.initial.position);
                 const dist = Math.hypot(...viewVector);
                 const offset = scale(direction, dist);
-                const position = add(lookAt, offset);
+                const position = sum(lookAt, offset);
                 moveCamera(position, lookAt, up);
             }
 
@@ -1087,7 +1094,7 @@
             const triangles = [];
             for (let i = 0; i < sides; ++i) {
                 const angle1 = Math.PI * 2 * i / sides;
-                const angle2 = Math.PI * 2 * i / sides;
+                const angle2 = Math.PI * 2 * (i + 1) / sides;
                 triangles.push(
                     0, -1, 0, 0, -1, 0,
                     Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0,
@@ -1131,6 +1138,418 @@
             return [-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1];
         }
 
+
+        /**
+         * Tessellate a face into triangles.
+         * 
+         * This is simple tessellation based on forming triangles from the starting point,
+         * it doesn't necessarily generate an optimum tessellation.
+         */
+        function tessellate(points) {
+            const indices = [];
+
+            // Ensure data is of right type
+            //points = points.map(v => Vector3d.createFromObject(v));
+            const winding = [0, 0, 0];
+            const segments = [];
+
+            function det(u, v) {
+                return u.x * v.z - u.z * v.x;
+            }
+
+            // Return true if point p is inside the triangle with a vertices at V0 
+            // and sides defined by D1 and d2
+            //
+            function inside(v0, d1, d2, p) {
+                const a = (det(p, d2) - det(v0, d2)) / det(d1, d2);
+                const b = (det(v0, d1) - det(p, d1)) / det(d1, d2);
+
+                return (a > 0) && (b > 0) && (a + b < 1);;
+            }
+
+
+            // Return false if any of the points are within the triangle with a vertices at V0 
+            // and sides defined by d1 and d2
+            //
+            function empty(v0, d1, d2) {
+                for (var i = 0; i < points.length; ++i) {
+                    if (inside(v0, d1, d2, points[i])) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            const grads = points.map((v, i, a) => {
+                const p = (i + a.length - 1) % a.length;
+                const n = (i + 1) % a.length;
+                const d1 = subtract(v, a[p]);
+                const d2 = subtract(a[n], v);
+                const grad = cross(d1, d2);
+                add(winding, grad);
+                segments.push({
+                    start: i,
+                    end: n,
+                });
+
+                return grad;
+            });
+
+            var i = 0;
+            var c = 0;
+            while (segments.length && c < 1000) {
+                const n = (i + 1) % segments.length;
+                if (segments[i].end !== segments[n].start) {
+                    console.log('error tessellating');
+                    break;
+                }
+                const v = points[segments[i].end];
+                const d1 = subtract(v, points[segments[i].start]);
+                const d2 = subtract(points[segments[n].end], v);
+                const g = cross(d1, d2);
+                const sgn = dot(g, winding);
+
+                if (sgn > 0 && empty(v, scale(d1, -1), d2)) {
+                    indices.push(segments[i].start, segments[i].end, segments[n].end);
+                    segments[i].end = segments[n].end;
+                    segments.splice(n, 1);
+                }
+                i = (i + 1) % segments.length;
+                ++c;
+            }
+
+            return { winding, indices }
+        }
+
+        /**
+         * Load a texture from a url.
+         */
+        function loadTexture(url) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            // Because images have to be downloaded over the internet
+            // they might take a moment until they are ready.
+            // Until then put a single pixel in the texture so we can
+            // use it immediately. When the image has finished downloading
+            // we'll update the texture with the contents of the image.
+            const level = 0;
+            const internalFormat = gl.RGBA;
+            const width = 1;
+            const height = 1;
+            const border = 0;
+            const srcFormat = gl.RGBA;
+            const srcType = gl.UNSIGNED_BYTE;
+            const pixel = new Uint8Array([0, 0, 255, 255]); // opaque blue
+            gl.texImage2D(
+                gl.TEXTURE_2D,
+                level,
+                internalFormat,
+                width,
+                height,
+                border,
+                srcFormat,
+                srcType,
+                pixel,
+            );
+
+            const image = new Image();
+            image.onload = () => {
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(
+                    gl.TEXTURE_2D,
+                    level,
+                    internalFormat,
+                    srcFormat,
+                    srcType,
+                    image,
+                );
+                gl.generateMipmap(gl.TEXTURE_2D);
+            };
+            image.src = url;
+
+            return texture;
+        }
+
+        /**
+         * Process data in wavefront mtl file format.
+         */
+        function processMtl(text, path) {
+            const materials = {};
+            const root = path.split(/\//g).slice(0, -1).join('/') + '/';
+
+            let material;
+            const lines = text.split(/\r?\n/g);
+
+            const textureOptions = `
+-blendu on | off                       # set horizontal texture blending (default on)
+-blendv on | off                       # set vertical texture blending (default on)
+-boost float_value                     # boost mip-map sharpness
+-mm base_value gain_value              # modify texture map values (default 0 1)
+                                       #     base_value = brightness, gain_value = contrast
+-o u [v [w]]                           # Origin offset             (default 0 0 0)
+-s u [v [w]]                           # Scale                     (default 1 1 1)
+-t u [v [w]]                           # Turbulence                (default 0 0 0)
+-texres resolution                     # texture resolution to create
+-clamp on | off                        # only render texels in the clamped 0-1 range (default off)
+                                       #   When unclamped, textures are repeated across a surface,
+                                       #   when clamped, only texels which fall within the 0-1
+                                       #   range are rendered.
+-bm mult_value                         # bump multiplier (for bump maps only)
+
+-imfchan r | g | b | m | l | z         # specifies which channel of the file is used to 
+                                       # create a scalar or bump texture. r:red, g:green,
+                                       # b:blue, m:matte, l:luminance, z:z-depth.. 
+                                       # (the default for bump is 'l' and for decal is 'm')`;
+
+            const pbr = `
+            Pr/map_Pr     # roughness
+Pm/map_Pm     # metallic
+Ps/map_Ps     # sheen
+Pc            # clearcoat thickness
+Pcr           # clearcoat roughness
+Ke/map_Ke     # emissive
+aniso         # anisotropy
+anisor        # anisotropy rotation
+norm          # normal map (RGB components represent XYZ components of the surface normal)`;
+
+
+            lines.forEach((line, i) => {
+                const trimmed = line.replace(/#.*/, '').trim();
+                const [command, ...value] = trimmed.split(/\s+/g);
+
+                if (command === 'newmtl') {
+                    material = {};
+                    materials[value] = material;
+                } else if (command === 'Ka') {
+                    material.ambientColour = value.map((value) => parseFloat(value));
+                } else if (command === 'Kd') {
+                    material.diffuseColour = value.map((value) => parseFloat(value));
+                } else if (command === 'Ks') {
+                    material.specularColour = value.map((value) => parseFloat(value));
+                } else if (command === 'Ns') {
+                    material.specularExponent = parseFloat(value[0]);
+                } else if (command === 'd') {
+                    material.opacity = parseFloat(value[0]);
+                } else if (command === 'Tr') {
+                    material.opacity = 1 - parseFloat(value[0]);
+                } else if (command === 'Tf') {
+                    material.transmissionFilter = value.map((value) => parseFloat(value));
+                } else if (command === 'Ni') {
+                    material.refractiveIndex = parseFloat(value[0]);
+                } else if (command === 'illum') {
+                    material.illuminationModel = [
+                        'Color on and Ambient off',
+                        'Color on and Ambient on',
+                        'Highlight on',
+                        'Reflection on and Ray trace on',
+                        'Transparency: Glass on, Reflection: Ray trace on',
+                        'Reflection: Fresnel on and Ray trace on',
+                        'Transparency: Refraction on, Reflection: Fresnel off and Ray trace on',
+                        'Transparency: Refraction on, Reflection: Fresnel on and Ray trace on',
+                        'Reflection on and Ray trace off',
+                        'Transparency: Glass on, Reflection: Ray trace off',
+                        'Casts shadows onto invisible surfaces'][parseFloat(value[0])];
+                } else if (command === 'map_Ka') {
+                    material.ambientTexture = loadTexture(root + value[0]);
+                } else if (command === 'map_Kd') {
+                    material.diffuseTexture = loadTexture(root + value[0]);
+                } else if (command === 'map_Ks') {
+                    material.specularTexture = loadTexture(root + value[0]);
+                } else if (command === 'map_Ns') {
+                    material.specularTexture = loadTexture(root + value[0]);
+                } else if (command === 'map_d') {
+                    material.specularTexture = loadTexture(root + value[0]);
+                } else if (command === 'map_bump') {
+                    material.specularTexture = loadTexture(root + value[0]);
+                } else if (command === 'bump') {
+                } else if (command === 'disp') {
+                    material.displacementTexture = loadTexture(root + value[0]);
+                } else if (command === 'deca') {
+                    material.stencilTexture = loadTexture(root + value[0]);
+
+                }
+            });
+
+            return materials;
+        }
+
+        /**
+         * Load materials from a wavefront mtl file.
+         */
+        async function loadMaterials(url) {
+            const response = await fetch(url);
+            if (response.ok) {
+                const content = await response.text();
+                return processMtl(content, url);
+            }
+        }
+
+
+        /**
+         * Process data in wavefront obj file format.
+         */
+        async function processOBJ(text, path) {
+            const positions = [];
+            const normals = [];
+            const texture = [];
+            const parameters = [];
+            const colours = [];
+            const polyLines = [];
+            const faces = [];
+            const materials = {}
+
+            const promisedMaterials = [];
+            let materialName;
+
+            const lines = text.split(/\r?\n/g);
+            lines.map(async (line, i) => {
+                const trimmed = line.replace(/#.*/, '').trim();
+                const [command, ...stringValues] = trimmed.split(/\s+/g);
+                const values = stringValues.map((str) => parseFloat(str));
+                if (command === 'vn') {
+                    const start = values.length;
+                    values.length = 3;
+                    normals.push(normalised(values.fill(0, start)));
+                } else if (command === 'vt') {
+                    texture.push(values);
+                } else if (command === 'vp') {
+                    parameters.push(value);
+                } else if (command === 'v') {
+                    if (values.length > 4) {
+                        const colour = values.slice(4);
+                        positions.push(values.slice(0, 3));
+                        colour.length = 3;
+                        colours.push(colour.fill(0, start))
+                    } else if (values.length === 4) {
+                        positions.push(values.slice(0, 3).map((v) => v / values[3]));
+                    } else {
+                        const start = values.length;
+                        values.length = 3;
+                        positions.push(values.fill(0, start));
+                    }
+                } else if (command === 'f') {
+                    faces.push(stringValues.map((string) => {
+                        const values = string.split(/\//).map((str) => parseInt(str));
+
+                        return [values[0] < 0 ? positions.length - values[0] : values[0] - 1,
+                        values[1] < 0 ? texture.length - values[1] : values[1] - 1,
+                        values[2] < 0 ? normals.length - values[2] : values[2] - 1];
+                    }));
+                } else if (command === 'o') {
+                } else if (command === 'g') {
+                } else if (command === 'mtllib') {
+                    const root = path.split(/\//g).slice(0, -1).join('/') + '/';
+                    promisedMaterials.push(loadMaterials(root + stringValues[0].replace(/\^.\//, '')));
+                } else if (command === 'usemtl') {
+                    materialName = stringValues[0];
+                }
+                if ((i % 1000) === 0) {
+                    console.log(i);
+                }
+            });
+
+            await Promise.all(promisedMaterials).then((values) =>
+                values.forEach((value) => Object.assign(materials, value)));
+
+            const material = materials[materialName];
+            let len = faces.length;
+            const triangles = faces.map((face, i) => {
+                if ((i % 1000) === 0) {
+                    console.log(`${(100 * i / len).toFixed(2)}% ${i} / ${len}`);
+                }
+                const points = face.map((vertex) => positions[vertex[0]]);
+                if (points.length === 3) {
+                    return face.map((vertex) => [vertex[0], vertex[2]]);
+                } else if (points.length === 4) {
+                    return [[face[0][0], face[0][2]], [face[1][0], face[1][2]], [face[2][0], face[2][2]],
+                    [face[2][0], face[2][2]], [face[3][0], face[3][2]], [face[0][0], face[0][2]]];
+                }
+                const tessellation = tessellate(points);
+                return tessellation.indices.map((index) => [face[index][0], face[index][2]]);
+            });
+
+            const buffers = {
+                vertex: gl.createBuffer(),
+                instances: gl.createBuffer(),
+            };
+
+            const vertexData = triangles.flatMap((triangle) => triangle.flatMap((point) => [...positions[point[0]], ...normals[point[1]]]));
+
+            app.tablePoints = vertexData.length / 6;
+
+            app.objBuffer = gl.createVertexArray();
+            gl.bindVertexArray(app.objBuffer);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexData), gl.DYNAMIC_DRAW);
+
+            // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride = 3 * 4 * 2,  offset = 0
+            gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(app.shader.position);
+
+            gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(app.shader.normal);
+
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
+
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(identityMatrix()), gl.DYNAMIC_DRAW);
+
+            // Matrices are passed as 4 vertex attributes
+            for (let i = 0; i < 4; ++i) {
+                const location = app.shader.model + i;
+                // attribute index, numComponents = 3, type = gl.FLOAT,  normalise = false,  stride (bytes),  offset
+                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 16, i * 16);
+                gl.vertexAttribDivisor(location, 1);
+                gl.enableVertexAttribArray(location);
+            }
+
+            gl.disableVertexAttribArray(app.shader.ambientColour);
+            gl.vertexAttrib3f(app.shader.ambientColour, ...material.ambientColour);
+
+            gl.disableVertexAttribArray(app.shader.diffuseColour);
+            gl.vertexAttrib3f(app.shader.diffuseColour, ...material.diffuseColour);
+
+            gl.disableVertexAttribArray(app.shader.specularColour);
+            gl.vertexAttrib3f(app.shader.specularColour, ...material.specularColour);
+
+            gl.disableVertexAttribArray(app.shader.specularIntensity);
+            gl.vertexAttrib1f(app.shader.specularIntensity, material.specularExponent ?? 20);
+
+            gl.disableVertexAttribArray(app.shader.opacity);
+            gl.vertexAttrib1f(app.shader.opacity, material.opacity ?? 1);
+
+            return {
+                scale(scale) {
+                    const transform= [
+                        scale[0], 0, 0, 0,
+                        0, scale[1], 0, 0,
+                        0, 0, scale[2], 0,
+                        0, 0, 0, 1
+                    ]
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(transform), gl.DYNAMIC_DRAW);
+                }
+            }
+        }
+
+
+        /**
+         * Load data from a wavefront obj file
+         */
+        async function loadOBJ(url) {
+            const size = [1, 1, 1];
+            const obj = {scale(...scale) { size.push(...scale)}};
+            const response = await fetch(url);
+            if (response.ok) {
+                const content = await response.text();
+                Object.assign(obj, processOBJ(content, url));
+                obj.scale(size);
+            }
+            return obj;
+        }
+
         /**
          * Update the gl buffers used to define the base object used for instancing.
          */
@@ -1172,7 +1591,7 @@
                 cylinder.matrix = new Float32Array(app.cylinderData.buffer, index * 16 * 4, 16));
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.cylinders);
-            gl.bufferData(gl.ARRAY_BUFFER, app.cylinderData.byteLength, gl.DYNAMIC_DRAW);
+            gl.bufferData(gl.ARRAY_BUFFER, app.cylinderData, gl.DYNAMIC_DRAW);
 
             app.colourUpdate = true;
 
@@ -1809,13 +2228,13 @@
                     const linear = (time - app.movement.start) / app.movement.duration;
                     const progress = timing(linear);
 
-                    app.camera.lookAt = add(app.movement.lookAt.start, scale(app.movement.lookAt.delta, progress));
+                    app.camera.lookAt = sum(app.movement.lookAt.start, scale(app.movement.lookAt.delta, progress));
                     const dist = app.movement.distance.start + progress * app.movement.distance.delta;
                     app.movement.distance.remaining = (1 - progress) * app.movement.distance.delta;
                     const view = scale(app.movement.direction, dist);
                     const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
                     const offset = applyTransform(view, rotation);
-                    app.camera.position = add(app.camera.lookAt, offset);
+                    app.camera.position = sum(app.camera.lookAt, offset);
 
                     const roll = getRotation(app.movement.roll * progress, offset);
                     app.camera.up = applyTransform(applyTransform(app.movement.up, rotation), roll);
@@ -1827,11 +2246,11 @@
                 }
                 const delta = time - start;
 
-                app.camera.position = add(app.camera.position, scale(app.velocity, delta / 1000));
-                app.camera.lookAt = add(app.camera.lookAt, scale(app.velocity, delta / 1000));
+                app.camera.position = sum(app.camera.position, scale(app.velocity, delta / 1000));
+                app.camera.lookAt = sum(app.camera.lookAt, scale(app.velocity, delta / 1000));
                 const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
                 app.rotation = scaleMatrix(app.rotation, 0.1);
-                app.camera.lookAt = add(app.camera.position, direction);
+                app.camera.lookAt = sum(app.camera.position, direction);
 
                 app.camera.updateViewControls();
                 app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
@@ -1856,8 +2275,7 @@
                 }
                 if (!app.wireframe) {
                     gl.bindVertexArray(app.cylinderVertexArray);
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.cylinderCount);
-                    //gl.drawArraysInstanced(gl.TRIANGLES, 60, 144, app.cylinderCount);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 60, 12 * CYLINDER_SIDES, app.cylinderCount);
                 }
                 /*
                                 if (app.quads.length > 0) {
@@ -1874,6 +2292,11 @@
                         gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
                 }
 
+                if (app.objBuffer) {
+                    gl.bindVertexArray(app.objBuffer);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, app.tablePoints, 1);
+                }
+
                 gl.disable(gl.DEPTH_TEST);
 
                 app.boxes.forEach((box) => {
@@ -1886,7 +2309,6 @@
                         gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
                         gl.enableVertexAttribArray(app.shader.ambientColour);
                         gl.vertexAttribDivisor(app.shader.ambientColour, 1);
-
                     }
                 });
 
@@ -2039,9 +2461,9 @@
                 this.data = data;
 
                 if (app.adjustOrigin) {
-                    this.position = add(this.position, scale(this.size, 0.5));
+                    this.position = sum(this.position, scale(this.size, 0.5));
                     if (this.parent) {
-                        this.position = add(this.position, scale(this.parent.size, -0.5));
+                        this.position = sum(this.position, scale(this.parent.size, -0.5));
                     }
                 }
                 //this.position[2] = - this.position[2];
@@ -2273,7 +2695,7 @@
                     sibling.state.constraint = true;
                     sibling.state.hit = false;
 
-                    const requestedPosition = add(this.start, vector);
+                    const requestedPosition = sum(this.start, vector);
                     if (this.overlap(requestedPosition, sibling)) {
                         const delta = [0, 0, 0];
                         const siblingPosition = extractTranslation(sibling.origin);
@@ -2298,7 +2720,7 @@
                                 delta[0] = 0;
                             }
                         }
-                        vector = add(vector, delta);
+                        vector = sum(vector, delta);
                         sibling.state.hit = true;
                     }
                 });
@@ -2584,7 +3006,7 @@
 
                 const getPoint = (line, plane) => {
                     const dist = planeIntercept(line, plane);
-                    return { dist, point: add(line.point, scale(line.direction, dist)), };
+                    return { dist, point: sum(line.point, scale(line.direction, dist)), };
                 };
                 const size = scale(this.size, 0.5 * app.scale);
                 const size1 = scale(this.size, -0.5 * app.scale);
@@ -2617,7 +3039,7 @@
                     sibling.state.constraint = true;
                     sibling.state.hit = false;
 
-                    const requestedPosition = add(this.start, vector);
+                    const requestedPosition = sum(this.start, vector);
                     if (this.overlap(requestedPosition, sibling)) {
                         const delta = [0, 0, 0];
                         const siblingPosition = extractTranslation(sibling.origin);
@@ -2642,7 +3064,7 @@
                                 delta[0] = 0;
                             }
                         }
-                        vector = add(vector, delta);
+                        vector = sum(vector, delta);
                         sibling.state.hit = true;
                     }
                 });
@@ -2823,8 +3245,8 @@
                 const dists = this.segments.map((segment) => {
                     const [t, s] = shortestLine(segment, line);
                     const t1 = Math.max(0, Math.min(1, t));
-                    const p1 = add(segment.point, scale(segment.direction, t1));
-                    const p2 = add(line.point, scale(line.direction, s));
+                    const p1 = sum(segment.point, scale(segment.direction, t1));
+                    const p2 = sum(line.point, scale(line.direction, s));
                     if (app.showPoints) {
                         app.points.push({ position: p1 }, { position: p2 });
                     }
@@ -3340,6 +3762,8 @@
         function interpret(string) {
             if (string === undefined) {
                 return;
+            } else if (typeof string !== 'string') {
+                return string;
             }
             const trimmed = string.trim();
             if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
@@ -3543,7 +3967,7 @@
                 const context = Object.assign({}, contextStack.at(-1));
                 context.parameters = [...context.defaultParameters];
                 const vars = Object.assign(named);
-                const resolved = resolve(line.value, line.instance, vars);
+                const resolved = line.value;//resolve(line.value, line.instance, vars);
 
                 const add = (item) => {
                     const arg = context.parameter ?? content;
@@ -3734,6 +4158,7 @@
             expanded.flatMap((node) => evaluate(node));
 
             const addInheritedProperties = (node) => {
+                /*
                 const resolve = (string, instance) => {
                     const attrs = instance.filter((instance) => instance.label);
                     attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
@@ -3754,7 +4179,7 @@
                             }
                         });
                 };
-
+                */
 
                 const stack = [node];
                 node[meta].inherited[content] = [];
@@ -3770,7 +4195,6 @@
 
             graph[content].forEach((node) => addInheritedProperties(node));
 
-
             const interpretValues = (node) => {
                 const instance = node[meta].instance;
                 const attrs = instance.filter((instance) => instance.label);
@@ -3780,20 +4204,20 @@
                     return obj;
                 }, {});
 
-                const resolve = (string) => {
-                    return string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
-                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
-                        .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
-                        .replace(/\{([^\}]+)\}/g, (match, p1) => {
-                            try {
-                                func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
-                                return func(zeroPad, ...attrs.map((attr) => attr.name));
-                            } catch (err) {
-                                report(err.message);
-                                return `${err.message}: ${match}`;
-                            }
-                        });
-                };
+                const resolve = (string) =>
+                    string.replace ?
+                        string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
+                            .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
+                            .replace(/\{([^\}]+)\}/g, (match, p1) => {
+                                try {
+                                    func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
+                                    return func(zeroPad, ...attrs.map((attr) => attr.name));
+                                } catch (err) {
+                                    report(err.message);
+                                    return `${err.message}: ${match}`;
+                                }
+                            }) : string;
                 Object.getOwnPropertyNames(node).forEach((property) =>
                     node[property] = interpret(resolve(node[property])));
                 Object.getOwnPropertyNames(node[meta].inherited).forEach((property) =>
@@ -3810,7 +4234,10 @@
                     const getAttribute = (node, attribute) => node[attribute] || node[meta].inherited[attribute];
                     let item = parent;
                     if (getAttribute(node, 'position')) {
-                        if (getAttribute(node, 'size')) {
+                        if (getAttribute(node, 'obj')) {
+                            node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
+                            item = node[meta].representation;
+                        } else if (getAttribute(node, 'size')) {
                             const child = parent.addChild(node);
                             node[meta].representation = child;
                             item = child;
@@ -3860,7 +4287,30 @@
             }
             graph[content].forEach((node) => {
                 if (node.position) {
-                    const root = parent ? parent.addChild(node) : app.addRoot(node);
+                    let root;
+                    if (getAttribute(node, 'obj')) {
+                        root = loadOBJ(getAttribute(node, 'obj'));
+                        node[meta].representation = root;
+                    } else if (getAttribute(node, 'size')) {
+                        root = parent ? parent.addChild(node) : app.addRoot(node);
+                    } else if (getAttribute(node, 'radius')) {
+                        root = new Cylinder(
+                            parent,
+                            node[meta].name,
+                            getAttribute(node, 'position'),
+                            getAttribute(node, 'height'),
+                            getAttribute(node, 'radius'),
+                            getAttribute(node, 'angle') || 0,
+                            getAttribute(node, 'axis') || [0, 1, 0],
+                            getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
+                            getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
+                            getAttribute(node, 'specular') ?? parent?.specular ?? 10,
+                            node);
+                        app.cylinders.push(root);
+                    }
+                    if (parent) {
+                        parent.content.push(root);
+                    }
                     node[meta].representation = root;
                     addItems(root, node);
                 }
@@ -3936,7 +4386,7 @@
                 });
                 const adjustOrigin = (node, offset = [0, 0, 0]) => {
                     if (app.cornerOrigin) {
-                        node.position = add(node.position, scale(node.size, 0.5), offset);
+                        node.position = sum(node.position, scale(node.size, 0.5), offset);
                         node.content.filter((child) => child.position).forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
                     }
                 }
@@ -4000,13 +4450,22 @@
         /**
          * Component-wise sum of vectors
          */
-        function add(...vectors) {
+        function sum(...vectors) {
             const length = Math.max(...vectors.map((v) => v.length));
             const result = [];
             for (let i = 0; i < length; ++i) {
                 result.push(vectors.reduce((s, v) => s + (v[i] ?? 0), 0));
             }
             return result;
+        }
+
+        /**
+         * Component-wise sum of vectors
+         */
+        function add(target, ...vectors) {
+            const length = Math.max(...vectors.map((v) => v.length));
+            vectors.forEach((vector) => vector.forEach((value, index) => target[index] += (value ?? 0)));
+            return target;
         }
 
         /**
@@ -4292,7 +4751,7 @@
             const yAxis = normalised(app.camera.up);
             const xAxis = cross(zAxis, yAxis);
 
-            const position = add(scale(xAxis, x - w), scale(yAxis, h - y), scale(zAxis, h * f));
+            const position = sum(scale(xAxis, x - w), scale(yAxis, h - y), scale(zAxis, h * f));
             const direction = normalised(position);
 
             return { point: app.camera.position, direction };
@@ -4352,7 +4811,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = add(line.point, scale(line.direction, n));
+                    const p = sum(line.point, scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
@@ -4369,8 +4828,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points) {
-                            const p1 = add(line.point, scale(line.direction, points[0]));
-                            const p2 = add(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, scale(line.direction, points[0]));
+                            const p2 = sum(line.point, scale(line.direction, points[1]));
                             //app.points.push({ position: p1 }, { position: p2 });
                             instance.points = [p1, p2];
 
@@ -4715,7 +5174,7 @@
                             action.moved = true;
                             const mouseLine = getRay(event.clientX, event.clientY);
                             const n = planeIntercept(mouseLine, action.plane);
-                            const point = add(mouseLine.point, scale(mouseLine.direction, n));
+                            const point = sum(mouseLine.point, scale(mouseLine.direction, n));
                             const delta = subtract(point, action.plane.point);
 
                             selected.forEach((selected) => {
@@ -4739,9 +5198,9 @@
                         const yAxis = cross(sightLine, xAxis);
                         if (event.shiftKey) {
                             const dist = Math.hypot(...sightLine) / -1000;
-                            const movement = add(scale(normalised(xAxis), deltaX * dist), scale(normalised(yAxis), deltaY * dist));
-                            app.camera.position = add(app.camera.position, movement);
-                            app.camera.lookAt = add(app.camera.lookAt, movement);
+                            const movement = sum(scale(normalised(xAxis), deltaX * dist), scale(normalised(yAxis), deltaY * dist));
+                            app.camera.position = sum(app.camera.position, movement);
+                            app.camera.lookAt = sum(app.camera.lookAt, movement);
                         } else {
                             const xRotation = getRotation(deltaY * Math.PI / 30, xAxis);
                             const yRotation = getRotation(deltaX * Math.PI / 30, app.camera.up);
@@ -4924,9 +5383,11 @@
             };
             app.textTexture = gl.createTexture();
             initialiseText();
+
             const shape = makeCube();
-            shape.push(...makeCylinder(12));
+            shape.push(...makeCylinder(CYLINDER_SIDES));
             shape.push(...makeQuad());
+
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
             setBoxAttributes();
