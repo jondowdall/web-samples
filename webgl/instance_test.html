@@ -598,8 +598,16 @@
 
             } else {
                 const scale = Math.hypot(...subtract(app.camera.lookAt, app.camera.position)) / 10;
-                const name = getUniqueName();
-                const newBox = app.addRoot(name, [...app.camera.lookAt], [scale, scale, scale]);
+                const definition = {
+                    [meta]: { name: [getUniqueName()] },
+                    [content]: [],
+                    position: [0, 0, 0],    // Position
+                    size: scale,
+                }
+
+                const box = Box.make(null, definition);
+                app.boxes.push(box);
+                app.roots.push(box);
             }
             initialiseBoxes()
             app.colourUpdate = true;
@@ -617,21 +625,25 @@
                 offset = applyTransform(offset, selected.rotation);
                 const position = sum(selected.position, product(selected.size, offset));
                 const name = getUniqueName(selected[meta].name[0].replace(/\s*[0-9]+/, ''));
-                const attributes = [
-                    name,
+                const attributes = {
+                    [meta]: { name: [name] },
                     position,
-                    [...selected.size],
-                    selected.angle,
-                    [...selected.axis],
-                    [...selected.colour],
-                    selected.opacity,
-                    selected.specular
-                ];
+                    size: [...selected.size],
+                    angle: selected.angle,
+                    axis: [...selected.axis],
+                    colour: [...selected.colour],
+                    opacity: selected.opacity,
+                    specular: selected.specular,
+                };
                 if (selected.parent) {
-                    const newBox = selected.parent.addChild(...attributes);
+                    const newBox = Box.make(selected.parent, attributes);
+                    app.boxes.push(newBox);
+                    selected.parent.push(newBox);
                     newBox.selected = true;
                 } else {
-                    const newBox = app.addRoot(...attributes);
+                    const newBox = Box.make(null, ...attributes);
+                    app.boxes.push(newBox);
+                    app.roots.push(newBox);
                     newBox.selected = true;
                 }
                 selected.selected = false;
@@ -885,40 +897,12 @@
             points: [],
             connections: [],
             text: [],
-            scale: 1, //0.001,
             roots: [],
             wireframe: false,
             cullFaces: true,
             cornerOrigin: true,
             velocity: [0, 0, 0],
             rotation: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            addRoot(name, position, size, angle, axis, colour, opacity, specular) {
-                const data = name;
-                if (typeof name === 'object') {
-                    position = getAttribute(name, 'position');
-                    size = getAttribute(name, 'size');
-                    angle = getAttribute(name, 'angle');
-                    axis = getAttribute(name, 'axis');
-                    colour = getAttribute(name, 'colour');
-                    opacity = getAttribute(name, 'opacity');
-                    specular = getAttribute(name, 'specular');
-                    name = name[meta].name[0];
-                }
-                const root = new Box(
-                    undefined,
-                    name,
-                    position,
-                    size,
-                    angle,
-                    axis,
-                    colour,
-                    opacity,
-                    specular,
-                    data);
-                this.boxes.push(root);
-                this.roots.push(root);
-                return root;
-            },
         };
 
         const shaderSource = {
@@ -1522,7 +1506,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
 
             return {
                 scale(scale) {
-                    const transform= [
+                    const transform = [
                         scale[0], 0, 0, 0,
                         0, scale[1], 0, 0,
                         0, 0, scale[2], 0,
@@ -1540,7 +1524,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          */
         async function loadOBJ(url) {
             const size = [1, 1, 1];
-            const obj = {scale(...scale) { size.push(...scale)}};
+            const obj = { scale(...scale) { size.push(...scale) } };
             const response = await fetch(url);
             if (response.ok) {
                 const content = await response.text();
@@ -2423,7 +2407,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * Base class for 3D shapes.
          */
         class Shape {
-            constructor(parent, name, position, size, angle, axis, colour, opacity, specular, data = {}) {
+            constructor(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data = {}) {
                 this.parent = parent;
                 const ancestors = [];
                 let modelParent = data;
@@ -2437,20 +2421,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         string.replace(/<([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.name ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.index ?? match) : string;
 
-                if (position.name) {
-                    this.name = resolve(position.name);
-                    size = position.size;
-                    angle = position.angle;
-                    axis = position.axis;
-                    colour = position.colour;
-                    opacity = position.opacity;
-                    specular = position.specular;
-
-                    position = position.position;
-                } else {
-                    this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
-                }
-
+                this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
                 this.position = evaluate(resolve(position) || [0, 0, 0]);
                 this.size = evaluate(resolve(size) || [1, 1, 1]);
                 this.angle = evaluate(resolve(angle) || 0);
@@ -2466,8 +2437,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         this.position = sum(this.position, scale(this.parent.size, -0.5));
                     }
                 }
-                //this.position[2] = - this.position[2];
-
                 this.origin = Array(16);
                 this.content = [];
                 this.rate = 0;
@@ -2551,9 +2520,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     1, 0, 0, 0,
                     0, 1, 0, 0,
                     0, 0, 1, 0,
-                    app.scale * this.position[0],
-                    app.scale * this.position[1],
-                    app.scale * this.position[2], 1
+                    this.position[0],
+                    this.position[1],
+                    this.position[2], 1
                 ];
                 this.rotation = [
                     1 - 2 * qy * qy - 2 * qz * qz,
@@ -2578,7 +2547,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.origin = multiply(rotationTranslate, origin);
             }
             get transform() {
-                const scaleMatrix = getScale(scale(this.size, app.scale));
+                const scaleMatrix = getScale(this.size);
                 return multiply(scaleMatrix, this.origin);
             }
             apply(action) {
@@ -2635,33 +2604,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.update();
                 this.updateNodes();
                 app.boxesChanged = true;
-            }
-            addChild(name, position, size, angle, axis, colour, opacity, specular) {
-                const data = name;
-                if (typeof name === 'object') {
-                    position = getAttribute(name, 'position') || [0, 0, 0];
-                    size = getAttribute(name, 'size') || [1, 1, 1];
-                    angle = getAttribute(name, 'angle') || 0;
-                    axis = getAttribute(name, 'axis') || [0, 1, 0];
-                    colour = getAttribute(name, 'colour');
-                    opacity = getAttribute(name, 'opacity');
-                    specular = getAttribute(name, 'specular');
-                    name = name[meta].name[0];
-                }
-                const newBox = new Box(
-                    this,
-                    name,
-                    position,
-                    size,
-                    angle,
-                    axis,
-                    colour || this.colour,
-                    opacity || this.opacity,
-                    specular || this.specular,
-                    data);
-                this.content.push(newBox);
-                app.boxes.push(newBox);
-                return newBox;
             }
             delete() {
                 const content = [...this.content];
@@ -2777,14 +2719,74 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     this.update();
                 }
             }
+            intersects(line) {
+                const size = scale(this.size, 0.5);
+                const origin = [0, 0, 0];
+                const centre = applyTransform(origin, instance.origin);
+                const radius = Math.hypot(...size);
+
+                if (radius === 0) {
+                    return instance.content.filter((child) => test(child)).length > 0;
+                } else {
+                    const l = dot(line.direction, subtract(centre, line.point));
+                    const n = l / line.direction.reduce((s, v) => s + v * v, 0);
+                    const p = sum(line.point, scale(line.direction, n));
+                    const v = subtract(p, centre);
+                    const dist = Math.hypot(...v);
+                    if (dist < radius) {
+                        const corner1 = applyTransform(scale(size, -1), instance.origin);
+                        const corner2 = applyTransform(size, instance.origin);
+                        const rotation = extractRotation(instance.transform);
+                        const planes = [
+                            { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                            { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                            { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                            { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                            { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
+                            { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
+                        ];
+                        const points = convexHullIntercept(line, planes);
+                        if (points) {
+                            const p1 = sum(line.point, scale(line.direction, points[0]));
+                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            //app.points.push({ position: p1 }, { position: p2 });
+                            instance.points = [p1, p2];
+
+                            if (app.solid && !instance.state.transparent) {
+                                hits.push(instance);
+                            } else {
+                                const content = instance.content.filter((child) => test(child));
+                                if (all || content.length === 0) {
+                                    hits.push(instance);
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
         }
 
         /**
          * Manage boxes.
          */
         class Box extends Shape {
-            constructor(parent, name, position, size, angle, axis, colour, opacity, specular, data = {}) {
-                super(parent, name, position, size, angle, axis, colour, opacity, specular, data);
+            static make(parent, node) {
+                return new Box(
+                    parent,
+                    node[meta].name[0],
+                    getAttribute(node, 'position') || [0, 0, 0],
+                    getAttribute(node, 'size') || [1, 1, 1],
+                    getAttribute(node, 'offset') || [0, 0, 0],
+                    getAttribute(node, 'angle') || 0,
+                    getAttribute(node, 'axis') || [0, 1, 0],
+                    getAttribute(node, 'colour'),
+                    getAttribute(node, 'opacity'),
+                    getAttribute(node, 'specular'),
+                    node);
+            }
+            constructor(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data = {}) {
+                super(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data);
             }
             asString() {
                 const getVector = (vector, places = 2) => vector.map((v) => v.toFixed(places)).join(', ');
@@ -2859,9 +2861,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     1, 0, 0, 0,
                     0, 1, 0, 0,
                     0, 0, 1, 0,
-                    app.scale * this.position[0],
-                    app.scale * this.position[1],
-                    app.scale * this.position[2], 1
+                    this.position[0],
+                    this.position[1],
+                    this.position[2], 1
                 ];
                 this.rotation = [
                     1 - 2 * qy * qy - 2 * qz * qz,
@@ -2886,7 +2888,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.origin = multiply(rotationTranslate, origin);
             }
             get transform() {
-                const scaleMatrix = getScale(scale(this.size, app.scale));
+                const scaleMatrix = getScale(this.size);
                 return multiply(scaleMatrix, this.origin);
             }
             apply(action) {
@@ -2944,33 +2946,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.updateNodes();
                 app.boxesChanged = true;
             }
-            addChild(name, position = [0, 0, 0], size = [1, 1, 1], angle = 0, axis = [0, 1, 0], colour, opacity, specular) {
-                const data = name;
-                if (typeof name === 'object') {
-                    position = getAttribute(name, 'position');
-                    size = getAttribute(name, 'size');
-                    angle = getAttribute(name, 'angle');
-                    axis = getAttribute(name, 'axis');
-                    colour = getAttribute(name, 'colour');
-                    opacity = getAttribute(name, 'opacity');
-                    specular = getAttribute(name, 'specular');
-                    name = name[meta].name[0];
-                }
-                const newBox = new Box(
-                    this,
-                    name,
-                    position,
-                    size,
-                    angle,
-                    axis,
-                    colour || this.colour,
-                    opacity || this.opacity,
-                    specular || this.specular,
-                    data);
-                this.content.push(newBox);
-                app.boxes.push(newBox);
-                return newBox;
-            }
             delete() {
                 const content = [...this.content];
                 content.forEach((child) => child.delete);
@@ -3008,8 +2983,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     const dist = planeIntercept(line, plane);
                     return { dist, point: sum(line.point, scale(line.direction, dist)), };
                 };
-                const size = scale(this.size, 0.5 * app.scale);
-                const size1 = scale(this.size, -0.5 * app.scale);
+                const size = scale(this.size, 0.5);
+                const size1 = scale(this.size, -0.5);
 
                 const points = [
                     { point: size1, normal: [0, 0, -1], },
@@ -3127,8 +3102,23 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * Manage a box.
          */
         class Cylinder extends Shape {
-            constructor(parent, name, position, height, radius, angle, axis, colour, opacity, specular, data = {}) {
-                super(parent, name, position, [radius, height, radius], angle, axis, colour, opacity, specular, data);
+            static make(parent, node) {
+                return new Cylinder(
+                    parent,
+                    node[meta].name,
+                    getAttribute(node, 'position'),
+                    getAttribute(node, 'height'),
+                    getAttribute(node, 'radius'),
+                    getAttribute(node, 'offset') || [0, 0, 0],
+                    getAttribute(node, 'angle') || 0,
+                    getAttribute(node, 'axis') || [0, 1, 0],
+                    getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
+                    getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
+                    getAttribute(node, 'specular') ?? parent?.specular ?? 10,
+                    node);
+            }
+            constructor(parent, name, position, height, radius, offset, angle, axis, colour, opacity, specular, data = {}) {
+                super(parent, name, position, [radius, height, radius], offset, angle, axis, colour, opacity, specular, data);
             }
             highlightFace(line) {
 
@@ -3468,7 +3458,14 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         if (event.key === 'Enter') {
                             event.preventDefault();
                             if (event.shiftKey) {
-                                instance.addChild([0, 0, 0], scale(instance.size, 0.5));
+                                const definition = {
+                                    [meta]: { name: [getUniqueName()] },
+                                    position: [0, 0, 0],
+                                    size: scale(instance.size, 0.5),
+                                }
+                                const box = Box.make(instance, definition);
+                                app.boxes.push(box);
+                                instance.content.push(box);
                                 initialiseBoxes();
                                 showStructure();
                             } else {
@@ -3937,20 +3934,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             const customFunctions = {
                 zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
             }
-            const resolve = (string, instance, vars) =>
-                string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
-                    .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
-                    .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
-                    .replace(/\{([^\}]+)\}/g, (match, p1) => {
-                        try {
-                            func = new Function('zeroPad', `return ${p1};`);
-                            return func(zeroPad);
-                        } catch (err) {
-                            report(err.message);
-                        }
-                        return match;
-                    });
-
             const graph = {
                 [meta]: { name: '', inherited: {} },
                 [content]: [],
@@ -3966,8 +3949,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 const line = node[meta];
                 const context = Object.assign({}, contextStack.at(-1));
                 context.parameters = [...context.defaultParameters];
-                const vars = Object.assign(named);
-                const resolved = line.value;//resolve(line.value, line.instance, vars);
 
                 const add = (item) => {
                     const arg = context.parameter ?? content;
@@ -3983,9 +3964,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 if (line.value.startsWith('`')) {
                     add(line.value);
                 } else if (line.value.startsWith("'")) {
-                    add(resolved);
+                    add(line.value);
                 } else if (line.value.startsWith('>')) {
-                    const [command, value] = resolved.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                    const [command, value] = line.value.replace(/^>\s*/, '').split('=').map((v) => v.trim());
                     if (!parent && commands[command]) {
                         commands[command](value);
                     }
@@ -4007,7 +3988,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     //         - assign as specified by context
                     // multiple components
                     //  - create object and update context
-                    const components = resolved.split(/\s*[;\|\t\u{1f}]\s*/ug);
+                    const components = line.value.split(/\s*[;\|\t\u{1f}]\s*/ug);
 
                     const addComponent = (component, first, last) => {
 
@@ -4118,7 +4099,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         contextStack.push(context);
                         components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
 
-                        const qualifiedName = node[meta].name[0] ?? node.name ?? components[0];
+                        //const qualifiedName = node[meta].name[0] ?? node.name ?? components[0];
+                        const qualifiedName = node.name ?? components[0];
 
                         line.content.forEach((item) => evaluate(item));
 
@@ -4158,29 +4140,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             expanded.flatMap((node) => evaluate(node));
 
             const addInheritedProperties = (node) => {
-                /*
-                const resolve = (string, instance) => {
-                    const attrs = instance.filter((instance) => instance.label);
-                    attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
-                    const vars = attrs.reduce((obj, attr) => {
-                        obj[attr.label] = attr.name;
-                        return obj;
-                    }, {});
-                    return string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
-                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
-                        .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
-                        .replace(/\{([^\}]+)\}/g, (match, p1) => {
-                            try {
-                                func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
-                                return func(zeroPad, ...attrs.map((attr) => attr.name));
-                            } catch (err) {
-                                report(err.message);
-                                return `${err.message}: ${match}`;
-                            }
-                        });
-                };
-                */
-
                 const stack = [node];
                 node[meta].inherited[content] = [];
                 while (stack.length > 0) {
@@ -4199,7 +4158,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 const instance = node[meta].instance;
                 const attrs = instance.filter((instance) => instance.label);
                 attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
-                const vars = attrs.reduce((obj, attr) => {
+                const instanceVariables = attrs.reduce((obj, attr) => {
                     obj[attr.label] = attr.name;
                     return obj;
                 }, {});
@@ -4208,7 +4167,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     string.replace ?
                         string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
-                            .replace(/<([^>]+)>/g, (match, val) => vars[val] ?? match)
+                            .replace(/<([^>]+)>/g, (match, val) => instanceVariables[val] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, p1) => {
                                 try {
                                     func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
@@ -4238,22 +4197,13 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
                             item = node[meta].representation;
                         } else if (getAttribute(node, 'size')) {
-                            const child = parent.addChild(node);
-                            node[meta].representation = child;
-                            item = child;
+                            const box = Box.make(parent, node);
+                            parent.content.push(box);
+                            app.boxes.push(box);
+                            node[meta].representation = box;
+                            item = box;
                         } else if (getAttribute(node, 'radius')) {
-                            const cylinder = new Cylinder(
-                                parent,
-                                node[meta].name,
-                                getAttribute(node, 'position'),
-                                getAttribute(node, 'height'),
-                                getAttribute(node, 'radius'),
-                                getAttribute(node, 'angle') || 0,
-                                getAttribute(node, 'axis') || [0, 1, 0],
-                                getAttribute(node, 'colour') || parent.colour,
-                                getAttribute(node, 'opacity') || parent.opacity,
-                                getAttribute(node, 'specular') || parent.specular,
-                                node);
+                            const cylinder = Cylinder.make(parent, node);
                             parent.content.push(cylinder);
                             app.cylinders.push(cylinder);
                             node[meta].representation = cylinder;
@@ -4262,6 +4212,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             const shape = new Box(parent,
                                 node[meta].name,
                                 getAttribute(node, 'position'),
+                                [0, 0, 0],
                                 [0, 0, 0],
                                 0,
                                 [0, 1, 0],
@@ -4289,30 +4240,23 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 if (node.position) {
                     let root;
                     if (getAttribute(node, 'obj')) {
-                        root = loadOBJ(getAttribute(node, 'obj'));
-                        node[meta].representation = root;
+                        loadOBJ(getAttribute(node, 'obj'));
+                        //node[meta].representation = root;
                     } else if (getAttribute(node, 'size')) {
-                        root = parent ? parent.addChild(node) : app.addRoot(node);
+                        root = Box.make(parent, node);
+                        app.boxes.push(root);
                     } else if (getAttribute(node, 'radius')) {
-                        root = new Cylinder(
-                            parent,
-                            node[meta].name,
-                            getAttribute(node, 'position'),
-                            getAttribute(node, 'height'),
-                            getAttribute(node, 'radius'),
-                            getAttribute(node, 'angle') || 0,
-                            getAttribute(node, 'axis') || [0, 1, 0],
-                            getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
-                            getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
-                            getAttribute(node, 'specular') ?? parent?.specular ?? 10,
-                            node);
+                        root = Cylinder.make(parent, node);
                         app.cylinders.push(root);
                     }
                     if (parent) {
                         parent.content.push(root);
                     }
-                    node[meta].representation = root;
-                    addItems(root, node);
+                    if (root) {
+                        node[meta].representation = root;
+                        app.roots.push(root);
+                        addItems(root, node);
+                    }
                 }
             });
             showModel(graph);
@@ -4398,24 +4342,30 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         parent.parts = parent.parts || [];
                         parent.parts.push(node[meta].name[0].replace(/^~\s*/, '').toLowerCase());
                     } else {
-                        const child = parent.addChild(node);
-                        node.content.forEach((node) => addNode(child, node));
+                        const box = Box.make(parent, node);
+                        parent.content.push(box);
+                        app.boxes.push(box);
+                        node.content.forEach((node) => addNode(box, node));
                     }
                 }
                 source.forEach((node) => {
-                    const root = app.addRoot(undefined, node);
+                    const root = Box.make(undefined, node);
+                    app.boxes.add(root);
+                    app.roots.add(root);
                     node.content.forEach((child) => addNode(root, child));
                 });
                 initialiseBoxes();
                 initialiseCylinders();
             } else {
-                const root = app.addRoot({
+                const root = Box.make({
                     [meta]: { name: ['cube'] },
                     [content]: [],
                     name: 'cube',
                     position: [0, 0, 0],    // Position
-                    size: [1, 1, 1],    // Size
+                    size: [1, 1, 1]
                 });
+                app.boxes.push(root);
+                app.roots.push(root);
             }
 
             //app.quads.push(new Quad(undefined, 'Quad', [0, 0, 0], [1, 2, 0]));
@@ -4801,7 +4751,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 if (instance.hidden) {
                     return;
                 }
-                const size = scale(instance.size, 0.5 * app.scale);
+                const size = scale(instance.size, 0.5);
                 const origin = [0, 0, 0];
                 const centre = applyTransform(origin, instance.origin);
                 const radius = Math.hypot(...size);
@@ -4985,9 +4935,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * 'Hide' the unselected item(s).
          */
         function hideOthers() {
-            app.boxes.filter((box) => !box.selected)
-                .forEach((box) => box.hidden = !box.hidden);
             app.boxes.forEach((box) => {
+                box.hidden = !box.path.some((box) => box.selected);
                 const node = app.nodeMap.get(box)[0];
                 if (box.hidden) {
                     node.classList.add('hidden');
