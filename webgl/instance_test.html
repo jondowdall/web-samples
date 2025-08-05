@@ -1827,19 +1827,20 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
-            selected.filter((box) => app.text[box.name]).forEach((box) => {
-                const text = app.text[box.name];
-                const position = box.labelPosition ?? [0.0, 0.0, 0.0];
-                const scale = box.labelScale ?? 1;
-                const size = [scale * text.size[0], scale * text.size[1]];
-                const colour = box.labelColour ?? [1, 1, 1, 1];
-                data.push(...position);
-                data.push(size[0] / gl.canvas.clientWidth, size[1] / gl.canvas.clientHeight); // image size
-                data.push(size[0] / text.canvas.width, size[1] / text.canvas.height);  // Texture Size
-                data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
-                data.push(...colour);
-                data.push(...box.origin);
-            });
+            selected.filter((box) => app.text[box.name])
+                .forEach((box) => {
+                    const text = app.text[box.name];
+                    const position = box.labelPosition ?? [0.0, 0.0, 0.0];
+                    const scale = box.labelScale ?? 1;
+                    const size = [scale * text.size[0], scale * text.size[1]];
+                    const colour = box.labelColour ?? [1, 1, 1, 1];
+                    data.push(...position);
+                    data.push(size[0] / gl.canvas.clientWidth, size[1] / gl.canvas.clientHeight); // image size
+                    data.push(size[0] / text.canvas.width, size[1] / text.canvas.height);  // Texture Size
+                    data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
+                    data.push(...colour);
+                    data.push(...box.origin);
+                });
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
@@ -2402,12 +2403,62 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             }
         }
 
+        /**
+         * Base class for 3D Transformations.
+         */
+        class Transform {
+            constructor(reference, offset = [0, 0, 0], angle = 0, axis = [0, 1, 0], scale = [1, 1, 1]) {
+                this.reference = reference;
+
+                this.offset = offset;
+                this.scale = scale;
+                this.angle = angle;
+                this.axis = normalised((axis) || [0, 1, 0]);
+
+                this.state = {};
+            }
+
+            /**
+             * Calculate the local transform from the offset, orientation and scale
+             */
+            get local() {
+                const translation = [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    this.offset[0],
+                    this.offset[1],
+                    this.offset[2], 1
+                ];
+                this.rotation = getRotation(this.angle, this.axis);
+
+                return multiply(this.rotation, translation)
+            }
+            /**
+             * Calculate the transform from local to world co-ordinates
+             */
+            get world() {
+                if (this._world) {
+                    return this._world;
+                }
+                const reference = this.reference ? this.reference.world : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+                this._world = multiply(this.local, reference);
+                return this._world;
+            }
+            get path() {
+                if (this.reference) {
+                    return [...this.reference.path, this];
+                }
+                return [this];
+            }
+        }
 
         /**
          * Base class for 3D shapes.
          */
-        class Shape {
-            constructor(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data = {}) {
+        class Shape extends Transform {
+            constructor(parent, name, position, size, angle, axis, offset, colour, opacity, specular, data = {}) {
+                super(parent, position, angle, axis, [1, 1, 1]);
                 this.parent = parent;
                 const ancestors = [];
                 let modelParent = data;
@@ -2424,23 +2475,18 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
                 this.position = evaluate(resolve(position) || [0, 0, 0]);
                 this.size = evaluate(resolve(size) || [1, 1, 1]);
+                this.offset = offset;
                 this.angle = evaluate(resolve(angle) || 0);
                 this.axis = normalised(evaluate(resolve(axis) || [0, 1, 0]));
                 this.colour = evaluate(resolve(colour) || [1, 1, 0.5]);
                 this.opacity = evaluate(resolve(opacity) || 0.8);
                 this.specular = evaluate(resolve(specular) || 10);
                 this.data = data;
+                this.labelPosition = product(this.size, offset);
 
-                if (app.adjustOrigin) {
-                    this.position = sum(this.position, scale(this.size, 0.5));
-                    if (this.parent) {
-                        this.position = sum(this.position, scale(this.parent.size, -0.5));
-                    }
-                }
                 this.origin = Array(16);
                 this.content = [];
                 this.rate = 0;
-                this.offset = 0;
                 this.setTransform();
                 this.state = {};
             }
@@ -2547,8 +2593,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 this.origin = multiply(rotationTranslate, origin);
             }
             get transform() {
+                const offset = getTranslation(product(this.size, this.offset));
                 const scaleMatrix = getScale(this.size);
-                return multiply(scaleMatrix, this.origin);
+                return multiply(scaleMatrix, multiply(offset, this.origin));
             }
             apply(action) {
                 action(this);
@@ -2720,13 +2767,13 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 }
             }
             intersects(line) {
-                const size = scale(this.size, 0.5);
-                const origin = [0, 0, 0];
-                const centre = applyTransform(origin, instance.origin);
-                const radius = Math.hypot(...size);
+                const transform = this.transform;
+                const radius = Math.hypot(...this.size);
+
+                const centre = applyTransform([0, 0, 0], transform);
 
                 if (radius === 0) {
-                    return instance.content.filter((child) => test(child)).length > 0;
+                    return this.content.filter((child) => child.intersects(line)).length > 0;
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
@@ -2734,9 +2781,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
-                        const corner1 = applyTransform(scale(size, -1), instance.origin);
-                        const corner2 = applyTransform(size, instance.origin);
-                        const rotation = extractRotation(instance.transform);
+                        const corner1 = applyTransform([-0.5, -0.5, -0.5], transform);
+                        const corner2 = applyTransform([0.5, 0.5, 0.5], transform);
+                        const rotation = extractRotation(transform);
                         const planes = [
                             { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
                             { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
@@ -2749,17 +2796,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         if (points) {
                             const p1 = sum(line.point, scale(line.direction, points[0]));
                             const p2 = sum(line.point, scale(line.direction, points[1]));
-                            //app.points.push({ position: p1 }, { position: p2 });
-                            instance.points = [p1, p2];
 
-                            if (app.solid && !instance.state.transparent) {
-                                hits.push(instance);
-                            } else {
-                                const content = instance.content.filter((child) => test(child));
-                                if (all || content.length === 0) {
-                                    hits.push(instance);
-                                }
-                            }
+                            this.points = [p1, p2];
                             return true;
                         }
                     }
@@ -2777,16 +2815,16 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     node[meta].name[0],
                     getAttribute(node, 'position') || [0, 0, 0],
                     getAttribute(node, 'size') || [1, 1, 1],
-                    getAttribute(node, 'offset') || [0, 0, 0],
                     getAttribute(node, 'angle') || 0,
                     getAttribute(node, 'axis') || [0, 1, 0],
+                    getAttribute(node, 'offset') || [0, 0, 0],
                     getAttribute(node, 'colour'),
                     getAttribute(node, 'opacity'),
                     getAttribute(node, 'specular'),
                     node);
             }
-            constructor(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data = {}) {
-                super(parent, name, position, size, offset, angle, axis, colour, opacity, specular, data);
+            constructor(parent, name, position, size, angle, axis, offset, colour, opacity, specular, data = {}) {
+                super(parent, name, position, size, angle, axis, offset, colour, opacity, specular, data);
             }
             asString() {
                 const getVector = (vector, places = 2) => vector.map((v) => v.toFixed(places)).join(', ');
@@ -2887,14 +2925,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 const rotationTranslate = multiply(this.rotation, translation);
                 this.origin = multiply(rotationTranslate, origin);
             }
-            get transform() {
-                const scaleMatrix = getScale(this.size);
-                return multiply(scaleMatrix, this.origin);
-            }
-            apply(action) {
-                action(this);
-                this.content.forEach((child) => child.apply(action));
-            }
             update(child) {
                 for (let i = 0; i < 16; ++i) {
                     this.matrix[i] = this.transform[i];
@@ -2974,6 +3004,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     && (position[2] <= (otherPosition[2] + other.size[2]));
             }
             highlightFace(line) {
+                return;
                 const local = invert(this.origin);
                 const local2 = invert(this.rotation);
                 // Convert the line to local space
@@ -3109,16 +3140,16 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     getAttribute(node, 'position'),
                     getAttribute(node, 'height'),
                     getAttribute(node, 'radius'),
-                    getAttribute(node, 'offset') || [0, 0, 0],
                     getAttribute(node, 'angle') || 0,
                     getAttribute(node, 'axis') || [0, 1, 0],
+                    getAttribute(node, 'offset') || [0, 0, 0],
                     getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
                     getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
                     getAttribute(node, 'specular') ?? parent?.specular ?? 10,
                     node);
             }
-            constructor(parent, name, position, height, radius, offset, angle, axis, colour, opacity, specular, data = {}) {
-                super(parent, name, position, [radius, height, radius], offset, angle, axis, colour, opacity, specular, data);
+            constructor(parent, name, position, height, radius, angle, axis, offset, colour, opacity, specular, data = {}) {
+                super(parent, name, position, [radius, height / 2, radius], angle, axis, offset, colour, opacity, specular, data);
             }
             highlightFace(line) {
 
@@ -3743,11 +3774,11 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 app.far = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             },
-            origin(value) {
-                app.adjustOrigin = true;
+            transform(value) {
+                app.transform = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
             },
             background(value) {
-                const colour = value.split(/,/g).map((v) => parseFloat(v));
+                const colour = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
                 gl.clearColor(...colour, 1.0);
             }
         }
@@ -3970,6 +4001,19 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     if (!parent && commands[command]) {
                         commands[command](value);
                     }
+                } else if (line.value.startsWith('?')) {
+                    const testStr = line.value.replace(/^\?\s*/, '');
+                    try {
+                        const instance = node[meta].instance;
+                        const attrs = instance.filter((instance) => instance.label);
+                        attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+                        const test = new Function(...attrs.map((attr) => attr.label), `return ${testStr};`);
+                        if (test(...attrs.map((attr) => attr.name))) {
+                            line.content.forEach((child) => evaluate(child));
+                        }
+                    } catch (error) {
+                        report(`${line.lineNumber + 1}: ${error.message}`);
+                    }
                 } else {
                     // Options
                     // 1 component
@@ -4168,9 +4212,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         string.replace(/<([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.name ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0]?.index ?? match)
                             .replace(/<([^>]+)>/g, (match, val) => instanceVariables[val] ?? match)
-                            .replace(/\{([^\}]+)\}/g, (match, p1) => {
+                            .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
-                                    func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${p1};`);
+                                    const func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${expr};`);
                                     return func(zeroPad, ...attrs.map((attr) => attr.name));
                                 } catch (err) {
                                     report(err.message);
@@ -4213,9 +4257,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                                 node[meta].name,
                                 getAttribute(node, 'position'),
                                 [0, 0, 0],
-                                [0, 0, 0],
                                 0,
                                 [0, 1, 0],
+                                [0, 0, 0],
                                 [1, 0, 1],
                                 0.1,
                                 10,
@@ -4328,14 +4372,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         });
                     }
                 });
-                const adjustOrigin = (node, offset = [0, 0, 0]) => {
-                    if (app.cornerOrigin) {
-                        node.position = sum(node.position, scale(node.size, 0.5), offset);
-                        node.content.filter((child) => child.position).forEach((child) => adjustOrigin(child, scale(node.size, -0.5)));
-                    }
-                }
-
-                source.forEach((node) => adjustOrigin(node));
 
                 const addNode = (parent, node) => {
                     if (node[meta].name[0].startsWith('~')) {
@@ -4751,11 +4787,24 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 if (instance.hidden) {
                     return;
                 }
+
+                if (instance.intersects(line)) {
+                    if (app.solid && !instance.state.transparent) {
+                        hits.push(instance);
+                    } else {
+                        const content = instance.content.filter((child) => test(child));
+                        if (all || content.length === 0) {
+                            hits.push(instance);
+                        }
+                    }
+                    return true;
+                }
+                /*
                 const size = scale(instance.size, 0.5);
                 const origin = [0, 0, 0];
                 const centre = applyTransform(origin, instance.origin);
                 const radius = Math.hypot(...size);
-
+    
                 if (radius === 0) {
                     return instance.content.filter((child) => test(child)).length > 0;
                 } else {
@@ -4782,7 +4831,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             const p2 = sum(line.point, scale(line.direction, points[1]));
                             //app.points.push({ position: p1 }, { position: p2 });
                             instance.points = [p1, p2];
-
+    
                             if (app.solid && !instance.state.transparent) {
                                 hits.push(instance);
                             } else {
@@ -4795,6 +4844,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         }
                     }
                 }
+                    */
             };
 
             app.roots.forEach((instance) => test(instance));
