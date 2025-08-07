@@ -251,7 +251,6 @@
             <summary>View Control</summary>
             <div id="projection-control">
                 Field of View<input id="field-of-view" type="number" />
-                Aspect<input id="aspect" type="number" />
                 Near<input id="near" type="number" />
                 Far<input id="far" type="number" />
             </div>
@@ -446,6 +445,96 @@
     }
     </script>
 
+
+    <script type="x-shader/x-vertex" id="shaded-texture-vertex-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform mat4 projection;
+    uniform mat4 view;
+
+    in vec3 position;
+    in vec3 normal;
+    in mat4 model;
+    in vec3 ambientColour;
+    in vec3 diffuseColour;
+    in vec3 specularColour;
+    in float specularIntensity;
+    in float opacity;
+
+    out vec4 v_vertex;
+    out vec4 v_normal;
+    out vec3 v_ambientColour;
+    out vec3 v_diffuseColour;
+    out vec3 v_specularColour;
+    out float v_opacity;
+    out float v_specularIntensity;
+
+    void main() {
+        v_vertex = model * vec4(position, 1.0);
+        gl_Position = projection * view * v_vertex;
+        v_normal = model * vec4(normal, 0.0);
+        v_ambientColour = ambientColour;
+        v_diffuseColour = diffuseColour;
+        v_specularColour = specularColour;
+        v_opacity = opacity;
+        v_specularIntensity = specularIntensity;
+
+        gl_PointSize = 5.0;//50.0 * model[0][0];
+
+        if (opacity < 1.0) {
+            gl_Position.z = gl_Position.w;
+        }
+    }
+    </script>
+    <script type="x-shader/x-fragment" id="shaded-texture-fragment-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform vec3 lightPosition1;
+    uniform vec3 lightPosition2;
+    uniform vec3 lightPosition3;
+    uniform vec3 cameraPosition;
+
+    in vec4 v_vertex;
+    in vec4 v_normal;
+    in vec3 v_ambientColour;
+    in vec3 v_diffuseColour;
+    in vec3 v_specularColour;
+    in float v_specularIntensity;
+    in float v_opacity;
+
+    out vec4 fragmentColour;
+
+    void main() {
+        vec3 toLight1 = normalize(lightPosition1 - v_vertex.xyz);
+        vec3 toLight2 = normalize(lightPosition2 - v_vertex.xyz);
+        vec3 toLight3 = normalize(lightPosition3 - v_vertex.xyz);
+        vec3 normal = normalize(v_normal.xyz);
+
+        float df = max(0.0, dot(normal, toLight1)) + 0.2 * max(0.0, dot(normal, toLight2)) + 0.1 * max(0.0, dot(normal, toLight3));
+
+        vec3 reflection1 = normalize(2.0 * dot(normal, toLight1) * normal - toLight1);
+        vec3 reflection2 = normalize(2.0 * dot(normal, toLight2) * normal - toLight2);
+        vec3 reflection3 = normalize(2.0 * dot(normal, toLight3) * normal - toLight3);
+        vec3 toEye = normalize(cameraPosition - v_vertex.xyz);
+        float sf = clamp(dot(reflection1, toEye), 0.0, 1.0) + 0.2 * clamp(dot(reflection2, toEye), 0.0, 1.0) + 0.1 * clamp(dot(reflection3, toEye), 0.0, 1.0);
+        sf = pow(sf, v_specularIntensity);
+
+        vec3 colour = v_ambientColour + v_diffuseColour * df + v_specularColour * sf;
+        fragmentColour = vec4(colour, v_opacity);
+
+        /*
+        if (v_opacity > 0.0 && dot(normal, toEye) > -0.1) {
+            discard;
+            return;
+        }
+        fragmentColour = vec4(colour, 1.0);
+        */
+    }
+    </script>
+
+
     <script>
         const CYLINDER_SIDES = 24;
         /**
@@ -489,8 +578,6 @@
         function projectionControl() {
             const fov = document.getElementById('field-of-view');
             fov.value = app.initial.fov;
-            const aspect = document.getElementById('aspect');
-            aspect.value = app.initial.aspect;
             const near = document.getElementById('near');
             near.value = app.initial.near;
             const far = document.getElementById('far');
@@ -498,13 +585,13 @@
 
             const update = () => {
                 app.fov = fov.valueAsNumber;
-                app.aspect = aspect.valueAsNumber;
                 app.near = near.valueAsNumber;
                 app.far = far.valueAsNumber;
+                app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
             }
             fov.addEventListener('change', (event) => update());
-            aspect.addEventListener('change', (event) => update());
             near.addEventListener('change', (event) => update());
             far.addEventListener('change', (event) => update());
             update();
@@ -872,6 +959,7 @@
          * App object to minimise global namespace polution.
          */
         const app = {
+            mode: 'view',
             camera: {
                 position: [0, 0, 15],
                 lookAt: [0, 0, 0],
@@ -912,6 +1000,10 @@
         const textShaderSource = {
             vertex: document.querySelector("#text-vertex-shader").innerHTML,
             fragment: document.querySelector("#text-fragment-shader").innerHTML,
+        }
+        const shadedTextShaderSource = {
+            vertex: document.querySelector("#shaded-texture-vertex-shader").innerHTML,
+            fragment: document.querySelector("#shaded-texture-fragment-shader").innerHTML,
         }
 
         /**
@@ -1254,6 +1346,17 @@
 
             return texture;
         }
+
+        /**
+         * Get a texture, loading it if necessary.
+         */
+        const textures = {};
+        function getTexture(url) {
+            const texture = textures[url] || loadTexture(url);
+            textures[url] = texture;
+            return texture;
+        }
+
 
         /**
          * Process data in wavefront mtl file format.
@@ -2250,7 +2353,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
                 gl.uniform3fv(app.shader.lightPosition1, [5000, 5000, 5000]);
                 gl.uniform3fv(app.shader.lightPosition2, [500, -500, 5000]);
-                gl.uniform3fv(app.shader.lightPosition3, [1000, 15000, 1000]);
+                gl.uniform3fv(app.shader.lightPosition3, [10000, 1000, 1000]);
 
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
@@ -2341,19 +2444,20 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * Evaluate the element passed in.
          */
         function evaluate(item) {
+            return item;
             if (Array.isArray(item)) {
                 return item.map((element) => evaluate(element));
             }
             if (typeof item === 'string') {
                 item = item.replace(/^\s*\{/, '').replace(/}\s*$/, '');
-                const func = new Function(...Object.keys(mathFunctions), `return ${item};`);
-                return func(...Object.values(mathFunctions));
+                const func = makeFunction([], item);
+                return func();
             }
             const num = Number(item);
             if (isNaN(num)) {
                 item = item.replace(/^\s*\{/, '').replace(/}\s*$/, '');
-                const func = new Function(...Object.keys(mathFunctions), `return ${item};`);
-                return func(...Object.values(mathFunctions));
+                const func = makeFunction([], item);
+                return func();
             }
             return num;
         }
@@ -2467,20 +2571,16 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     modelParent = modelParent[meta].parent;
                 }
                 const context = Object.assign({}, ...ancestors);
-                const resolve = (string) =>
-                    string?.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.name ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => data[meta].instance[parseInt(num) || 0]?.index ?? match) : string;
 
-                this.name = name ? resolve(name) : `Block ${app.boxes.length + 1}`;
-                this.position = evaluate(resolve(position) || [0, 0, 0]);
-                this.size = evaluate(resolve(size) || [1, 1, 1]);
-                this.offset = offset;
-                this.angle = evaluate(resolve(angle) || 0);
-                this.axis = normalised(evaluate(resolve(axis) || [0, 1, 0]));
-                this.colour = evaluate(resolve(colour) || [1, 1, 0.5]);
-                this.opacity = evaluate(resolve(opacity) || 0.8);
-                this.specular = evaluate(resolve(specular) || 10);
+                this.name = name ?? `Block ${app.boxes.length + 1}`;
+                this.position = position || [0, 0, 0];
+                this.size = size || [1, 1, 1];
+                this.offset = offset || [0, 0, 0];
+                this.angle = angle || 0;
+                this.axis = normalised(axis || [0, 1, 0]);
+                this.colour = colour || [1, 1, 0.5];
+                this.opacity = opacity ?? 0.8;
+                this.specular = specular ?? 10;
                 this.data = data;
                 this.labelPosition = product(this.size, offset);
 
@@ -2767,7 +2867,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     this.update();
                 }
             }
-            intersects(line) {
+            intersects(line, all) {
                 const transform = this.transform;
                 const radius = Math.hypot(...this.size);
 
@@ -2794,7 +2894,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
                         ];
                         const points = convexHullIntercept(line, planes);
-                        if (points) {
+                        if (points && (all || points[0] > 0 || points[1] > 0)) {
                             const p1 = sum(line.point, scale(line.direction, points[0]));
                             const p2 = sum(line.point, scale(line.direction, points[1]));
 
@@ -3161,6 +3261,26 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * Manage quads.
          */
         class Quad extends Shape {
+            static make(parent, node) {
+                return new Quad(
+                    parent,
+                    node[meta].name,
+                    getAttribute(node, 'position'),
+                    getAttribute(node, 'width'),
+                    getAttribute(node, 'height'),
+                    getAttribute(node, 'angle') || 0,
+                    getAttribute(node, 'axis') || [0, 1, 0],
+                    getAttribute(node, 'offset') || [0, 0, 0],
+                    getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
+                    getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
+                    getAttribute(node, 'specular') ?? parent?.specular ?? 10,
+                    getAttribute(node, 'image') ?? parent?.image,
+                    node);
+            }
+            constructor(parent, name, position, width, height, angle, axis, offset, colour, opacity, specular, image, data = {}) {
+                super(parent, name, position, [width, height, 1], angle, axis, offset, colour, opacity, specular, data);
+                this.texture = getTexture(image);
+            }
         }
 
         /**
@@ -3295,12 +3415,12 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             if (hits.length > 0) {
                 hits[0].highlightFace(line);
                 app.showName = hits[0];
+                report(hits[0].data[meta].name[0]);
             } else {
                 app.showName = null;
             }
             updateTextBuffer();
         }
-
 
         /**
          * End a mouse movement and store change in history.
@@ -3759,21 +3879,19 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 app.initial.fov = parseFloat(value);
                 app.fov = app.initial.fov;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
-            },
-            aspect(value) {
-                app.initial.aspect = parseFloat(value);
-                app.aspect = app.initial.aspect;
-                app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
+                document.getElementById('field-of-view').valueAsNumber = app.fov;
             },
             near(value) {
                 app.initial.near = parseFloat(value);
-                app.near = app.initial.far;
+                app.near = app.initial.near;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
+                document.getElementById('near').valueAsNumber = app.near;
             },
             far(value) {
                 app.initial.far = parseFloat(value);
                 app.far = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
+                document.getElementById('far').valueAsNumber = app.far;
             },
             transform(value) {
                 app.transform = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
@@ -3858,10 +3976,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
 
             const lines = text.split(/\r?\n/g);
             const roots = [];
-            const stack = [{
-                level: -1,
-                action(obj) { roots.push(obj) }
-            }];
+            const stack = [];
 
             const getLevel = (line) => {
                 let level = 0;
@@ -3876,26 +3991,23 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             }
 
             let process = true;
+            // Create a tree structure based on indentation
             lines.forEach((line, lineNumber) => {
                 if (line === '!stop') {
                     process = false;
                 }
                 if (process && line.trim() !== '' && !/^\s*#/.test(line)) {
                     const level = getLevel(line);
-                    while (level <= stack.at(-1).level) {
+                    while (stack.length && level <= stack.at(-1).level) {
                         stack.pop();
                     }
-                    const item = { line, lineNumber, content: [] };
-                    stack.at(-1).action(item);
-                    stack.push({
-                        level,
-                        item,
-                        lineNumber,
-                        action(item) {
-                            item.parent = this.item;
-                            this.item.content.push(item);
-                        },
-                    });
+                    const item = { line, lineNumber, level, parent: stack.at(-1), content: [], functions: {} };
+                    if (stack.length) {
+                        stack.at(-1).content.push(item);
+                    } else {
+                        roots.push(item);
+                    }
+                    stack.push(item);
                 }
             });
 
@@ -3923,6 +4035,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                                 name: [],
                                 type: [],
                                 inherited: {},
+                                common: item,
                             },
                             [content]: [],
                         }));
@@ -3936,6 +4049,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             name: [],
                             type: [],
                             inherited: {},
+                            common: item,
                         },
                         [content]: [],
                     };
@@ -3959,10 +4073,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             }
 
             const named = {};
-            function zeroPad(string, chars) {
-                return (string + '').padStart(chars, '0');
-            }
-
             const customFunctions = {
                 zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
             }
@@ -4008,7 +4118,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         const instance = node[meta].instance;
                         const attrs = instance.filter((instance) => instance.label);
                         attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
-                        const test = new Function(...attrs.map((attr) => attr.label), `return ${testStr};`);
+                        const test = line.common.functions[testStr] || makeFunction(attrs.map((attr) => attr.label), testStr);
+                        line.common.functions[testStr] = test;
                         if (test(...attrs.map((attr) => attr.name))) {
                             line.content.forEach((child) => evaluate(child));
                         }
@@ -4045,7 +4156,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             const [name, value] = component.split(/\s*=>\s*/);
                             const expr = value.replace(/<([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.name')
                                 .replace(/<n([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.index');
-                            const func = new Function('context', expr);
+                            const func = makeFunction([], expr);
                             const [target, arg] = getTarget(name);
 
                             Object.defineProperties(target, arg, {
@@ -4215,8 +4326,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                             .replace(/<([^>]+)>/g, (match, val) => instanceVariables[val] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
-                                    const func = new Function('zeroPad', ...attrs.map((attr) => attr.label), `return ${expr};`);
-                                    return func(zeroPad, ...attrs.map((attr) => attr.name));
+                                    const func = node[meta].common.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                    node[meta].common.functions[expr] = func;
+                                    return func(...attrs.map((attr) => attr.name));
                                 } catch (err) {
                                     report(err.message);
                                     return `${err.message}: ${match}`;
@@ -4346,6 +4458,25 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             context[key] = Math[key];
             return context;
         }, {});
+
+        function zeroPad(string, chars) {
+            return (string + '').padStart(chars, '0');
+        }
+
+        /**
+         * Create a function from the given string include math functions.
+         */
+        const exprFunctions = [...Object.keys(mathFunctions), 'zeroPad'];
+        const exprParameters = [...Object.values(mathFunctions), zeroPad];
+        function makeFunction(args, expr) {
+            try {
+                const func = new Function(...exprFunctions, ...args, `return ${expr};`);
+                return (...args) =>
+                    func(...exprParameters, ...args);
+            } catch (error) {
+                report(error.message);
+            }
+        }
 
 
         /**
@@ -5089,7 +5220,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 }
                 action.selected = null;
                 action.moved = false;
-                if (hits) {
+                if (event.button === 0 && hits) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     action.selected = hits[0];
@@ -5116,23 +5247,25 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         const selected = app.boxes.filter((instance) => instance.selected);
                         selected.forEach((instance) =>
                             instance.apply((instance) => instance.start = extractTranslation(instance.origin)));
-                        action.move = (event) => {
-                            app.boxes.forEach((instance) => instance.state.ghost = true);
-                            action.selected.siblings.forEach((instance) => instance.state.constraint = true);
-                            action.selected.state.moving = true;
+                        if (app.mode === 'edit') {
+                            action.move = (event) => {
+                                app.boxes.forEach((instance) => instance.state.ghost = true);
+                                action.selected.siblings.forEach((instance) => instance.state.constraint = true);
+                                action.selected.state.moving = true;
 
-                            action.moved = true;
-                            const mouseLine = getRay(event.clientX, event.clientY);
-                            const n = planeIntercept(mouseLine, action.plane);
-                            const point = sum(mouseLine.point, scale(mouseLine.direction, n));
-                            const delta = subtract(point, action.plane.point);
+                                action.moved = true;
+                                const mouseLine = getRay(event.clientX, event.clientY);
+                                const n = planeIntercept(mouseLine, action.plane);
+                                const point = sum(mouseLine.point, scale(mouseLine.direction, n));
+                                const delta = subtract(point, action.plane.point);
 
-                            selected.forEach((selected) => {
-                                selected.statusColour = null;
-                                selected.move(delta);
-                                selected.update();
-                            });
-                        };
+                                selected.forEach((selected) => {
+                                    selected.statusColour = null;
+                                    selected.move(delta);
+                                    selected.update();
+                                });
+                            };
+                        }
                         action.end = endMove;
                     }
                 } else {
@@ -5316,6 +5449,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
+            app.shadedTextShader = makeProgram(shadedTextShaderSource, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
 
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
