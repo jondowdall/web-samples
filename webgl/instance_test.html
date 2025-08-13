@@ -67,6 +67,12 @@
             align-items: end;
         }
 
+        #bottom-right {
+            position: absolute;
+            right: 1em;
+            bottom: 1em;
+        }
+
         #movement {
             position: fixed;
             bottom: 1em;
@@ -164,7 +170,7 @@
 
         #info {
             position: fixed;
-            bottom: 1em;
+            bottom: 3em;
             right: 1em;
             color: yellow;
             background-color: rgb(80, 80, 30, 0.8);
@@ -304,6 +310,9 @@
         <button id="move-forward">&#8634;</button>
         <button id="move-down">&#8595;</button>
         <button id="move-backwards">&#8634;</button>
+    </div>
+    <div id="bottom-right">
+        <button id="save">&#x1F4BE;</button>
     </div>
     <div id="state"></div>
     <div id="info" class="hide"></div>
@@ -562,13 +571,13 @@
 
         // GGX / Trowbridge-Reitz Normal Distribution Vector
         float Distribution(float alpha, vec3 normal, vec3 halfVector) {
-            float numerator = pow(alpha, 2.0);
+            float a2 = alpha * alpha;
 
-            float NdotH = max(dot(normal, halfVector), 0.0);
-            float denominator = PI * pow((pow(NdotH, 2.0) * pow(alpha, 2.0) - 1.0) + 1.0, 2.0);
+            float NdotH = dot(normal, halfVector);
+            float denominator = PI * pow(NdotH * NdotH * (a2 - 1.0) + 1.0, 2.0);
             denominator = max(denominator, 0.000001);
 
-            return numerator / denominator;
+            return a2 / denominator;
         }
 
         // Schlick-Beckmann Geometry Shadowing Function
@@ -599,7 +608,8 @@
             vec3 Ks = Fresnel(reflectivity, viewVector, halfVector);
             vec3 Kd = (vec3(1.0) - Ks) * (1.0 - metallic);
 
-            vec3 numerator = Distribution(alpha, normal, halfVector) * Geometry(alpha, normal, viewVector, lightVector) * Ks;
+            //vec3 numerator = Distribution(alpha, normal, halfVector) * Geometry(alpha, normal, viewVector, lightVector) * Ks;
+            vec3 numerator = vec3(1.0, 0.3, 0.7);
             float denominator = 4.0 *  max(dot(viewVector, normal), 0.0) * max(dot(lightVector, normal), 0.0);
             denominator = max(denominator, 0.000001);
 
@@ -613,11 +623,13 @@
             vec3 lightVector1 = normalize(lightPosition1);
 
             vec3 light2 = lightPosition2 - v_position;
-            float intensity2 = 1.0 / (length(light2) * length(light2));
+            float dist2 = length(light2);
+            float intensity2 = 1.0 / (dist2 * dist2);
             vec3 lightVector2 = normalize(light2);
 
             vec3 light3 = lightPosition3 - v_position;
-            float intensity3 = 1.0 / (length(light3) * length(light3));
+            float dist3 = length(light3);
+            float intensity3 = 1.0 / (dist3 * dist3);
             vec3 lightVector3 = normalize(light3);
 
             float alpha = v_roughness * v_roughness;
@@ -629,7 +641,7 @@
             vec3 BRDF3 = BRDF(alpha, lambert, normal, viewVector, lightVector3, v_baseReflectivity, v_metallic);
 
             fragmentColour = vec4(v_emissivityColour
-                + BRDF1 * lightColour1 * max(dot(lightVector1, normal), 0.0) * 0.1
+                + BRDF1 * lightColour1 * max(dot(lightVector1, normal), 0.0) * 0.5
                 + BRDF2 * lightColour2 * max(dot(lightVector2, normal), 0.0) * intensity2
                 + BRDF3 * lightColour3 * max(dot(lightVector3, normal), 0.0) * intensity3,
                 v_opacity);
@@ -763,6 +775,49 @@
             return sign + result.join('');
         }
 
+
+        /**
+         * Get a timestamp suitable for file names
+         */
+        function timestamp() {
+            const now = new Date();
+            const year = now.getFullYear(); 
+            const month = ('' + (now.getMonth() + 1)).padStart(2, '0');
+            const day = ('' + now.getDate()).padStart(2, '0');
+            const hours = now.getHours();
+            const minutes = now.getMinutes();
+            return `${year}-${month}-${day}_${hours}${minutes}`;
+        }
+
+
+        /**
+         * Save a canvas as png
+         */
+        function savePNG(canvas) {
+            const videoCanvas = document.createElement('canvas');
+            //videoCanvas.classList.add('hidden');
+            document.body.append(videoCanvas);
+            const vctx = videoCanvas.getContext('2d');
+            vctx.drawImage(canvas, 0, 0); 
+            const capturedImage = videoCanvas.toDataURL();
+
+            const data = canvas.toDataURL('image/png');
+            //.replace(/^data:image\/[^;]*/, 'data:application/octet-stream');
+            //.replace(/^data:image\/[^;]*/, 'data:application/octet-stream;headers=Content-Disposition%3A%20attachment%3B%20filename=canvas.png');
+
+            // Create an anchor, and set the href value to our data URL
+            const link = document.createElement('a');
+            link.href = data;
+
+            // This is the name of our downloaded file
+            link.download = `system-view-${timestamp()}`;
+
+            // Click the download button, causing a download, and then remove it
+            link.click();
+            link.remove();
+        }
+
+
         /**
          * Create matrix control.
          */
@@ -808,7 +863,7 @@
             app.lightColour1 = [1, 1, 1];
             app.lightPosition2 = [5, 5, 20];
             app.lightColour2 = [10, 10, 10];
-            app.lightPosition3 = [-50, -5000, -5000];
+            app.lightPosition3 = [-50, 50, -50];
             app.lightColour3 = [1, 1, 1];
 
             const container = document.getElementById('top-right');
@@ -822,18 +877,21 @@
                 x.type = 'range';
                 x.min = light.directional ? -1 : -30;
                 x.max = light.directional ? 1 : 30;
+                x.step = light.directional ? 0.1 : 1;
                 x.value = light.position[0];
                 x.addEventListener('input', (event) => light.position[0] = x.valueAsNumber);
                 const y = document.createElement('input');
                 y.type = 'range';
                 y.min = light.directional ? -1 : -30;
                 y.max = light.directional ? 1 : 30;
+                y.step = light.directional ? 0.1 : 1;
                 y.value = light.position[1];
                 y.addEventListener('input', (event) => light.position[1] = y.valueAsNumber);
                 const z = document.createElement('input');
                 z.type = 'range';
                 z.min = light.directional ? -1 : -30;
                 z.max = light.directional ? 1 : 30;
+                z.step = light.directional ? 0.1 : 1;
                 z.value = light.position[2];
                 z.addEventListener('input', (event) => light.position[2] = z.valueAsNumber);
                 container.append(x, document.createElement('br'), y, document.createElement('br')  , z);
@@ -1916,7 +1974,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.vertexAttrib1f(app.pbrShader.roughness, patch.material.roughness ?? 0.5);
 
                     gl.disableVertexAttribArray(app.pbrShader.reflectivity);
-                    gl.vertexAttrib3f(app.pbrShader.reflectivity, ...patch.material.reflectivity ?? [0.1, 0.1, 0.1]);
+                    gl.vertexAttrib3f(app.pbrShader.reflectivity, ...patch.material.reflectivity ?? [0.04, 0.04, 0.04]);
 
                     gl.disableVertexAttribArray(app.pbrShader.opacity);
                     gl.vertexAttrib1f(app.pbrShader.opacity, patch.material.opacity ?? 1);
@@ -2757,6 +2815,10 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 glErrors();
             } else {
                 start = time;
+            }
+            if (app.savePNG) {
+                savePNG(canvas);
+                app.savePNG = false;
             }
             requestAnimationFrame(render);
         }
@@ -5842,6 +5904,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     loadFile(file);
                 }
             });
+            const save = document.getElementById('save');
+            save.addEventListener('click', (event) => app.savePNG = true);
         }
 
         /**
