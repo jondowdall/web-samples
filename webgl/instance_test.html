@@ -3684,39 +3684,51 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     points.push(normalised([x2, -y, z2]));
 
                     edges.push({ p1: 0, p2: 2 + i * 2 });
-                    edges.push({ p1: 2, p2: 3 + i * 2 });
-                    edges.push({ p1: 2 + i * 2, p2: 3 + i * 2 });
-                    edges.push({ p1: 2 + i * 2, p2: 3 + i * 2 });
+                    edges.push({ p1: 1, p2: 3 + i * 2 });
 
-                    edges.push({ p1: 2 + i * 2, p2: 2 + (i % 5) * 2 });
-                    edges.push({ p1: 3 + i * 2, p2: 3 + (i % 5) * 2 });
+                    edges.push({ p1: 2 + i * 2, p2: 3 + i * 2 });
+                    edges.push({ p1: 2 + ((i + 1) % 5) * 2, p2: 3 + i * 2 });
+
+                    edges.push({ p1: 2 + i * 2, p2: 2 + ((i + 1) % 5) * 2 });
+                    edges.push({ p1: 3 + i * 2, p2: 3 + ((i + 1) % 5) * 2 });
                 }
 
                 for (let i = 0; i < 5; ++i) {
                     const n = i * 6;
                     faces.push([edges[n + 0], edges[n + 4], edges[(n + 6) % 30]]);
                     faces.push([edges[n + 1], edges[n + 5], edges[(n + 7) % 30]]);
-                    faces.push([edges[n + 2], edges[n + 3], edges[(n + 6) % 30]]);
-                    faces.push([edges[n + 3], edges[n + 5], edges[(n + 9) % 30]]);
+                    faces.push([edges[n + 2], edges[n + 3], edges[n + 4]]);
+                    faces.push([edges[n + 3], edges[n + 5], edges[(n + 8) % 30]]);
                 }
 
                 function divideFace(face) {
                     const faces = [];
-                    const newEdges = [
+                    const newFace = [
                         { p1: face[0].midpoint, p2: face[1].midpoint },
                         { p1: face[1].midpoint, p2: face[2].midpoint },
                         { p1: face[2].midpoint, p2: face[0].midpoint },
                     ];
-
-                    faces.push([face[0].split[0], newEdges[2], face[2].split[1]]);
-                    faces.push([face[1].split[0], newEdges[0], face[0].split[1]]);
-                    faces.push([face[2].split[0], newEdges[1], face[1].split[1]]);
-                    faces.push(newEdges);
+                    edges.push(...newFace);
+                    const points = Array.from(new Set(face.flatMap((edge) => [edge.p1, edge.p2])));
+                    const splits = face.flatMap((edge) => edge.split);
+                    faces.push(...points.map((point) => {
+                        const s = splits.filter((split) => split.p1 === point || split.p2 === point);
+                        const p1 = s[0].p1 === point ? s[0].p2 : s[0].p1;
+                        const p2 = s[1].p1 === point ? s[1].p2 : s[1].p1;
+                        s.push(newFace.find((edge) => ((edge.p1 === p1) || (edge.p1 === p2)) && ((edge.p2 === p1) || (edge.p2 === p2))));
+                        return s;
+                    }));
+                    /*
+                    faces.push([face[0].split[0], newFace[2], face[2].split[1]]);
+                    faces.push([face[1].split[0], newFace[0], face[0].split[1]]);
+                    faces.push([face[2].split[0], newFace[1], face[1].split[1]]);
+                    */
+                    faces.push(newFace);
                     return faces;
                 }
 
                 for (let i = 0; i < subdivisions; ++i) {
-                    edges = edges.forEach((edge) => divideEdge(edge));
+                    edges = edges.flatMap((edge) => divideEdge(edge));
                     faces = faces.flatMap((face) => divideFace(face));
                 }
 
@@ -3729,9 +3741,11 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.vertices);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-                const indices = faces.flatMap((face) => [face[0].p1, face[1].p1, face[2].p2]);
+                const indices = faces.flatMap((face) => Array.from(new Set(face.flatMap((edge) => [edge.p1, edge.p2]))));
+                //const indices = edges.flatMap((edge) => [edge.p1, edge.p2]);
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+                Icosphere.numPoints = indices.length;
 
                 const matrix = identityMatrix();
                 matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
@@ -3775,8 +3789,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 12, 0);
                     gl.enableVertexAttribArray(app.shader.position);
 
-                    gl.disableVertexAttribArray(app.shader.normal);
-                    gl.vertexAttrib3f(app.shader.normal, 0, 0, 1);
+                    gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 12, 0);
+                    gl.enableVertexAttribArray(app.shader.normal);
 
                     gl.disableVertexAttribArray(app.shader.model);
                     gl.disableVertexAttribArray(app.shader.model + 1);
@@ -3788,21 +3802,26 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.vertexAttrib4f(app.shader.model + 3, 0, 0, 0, 1);
 
                     gl.disableVertexAttribArray(app.shader.specularIntensity);
-                    gl.vertexAttrib1f(app.shader.specularIntensity, 1);
+                    gl.vertexAttrib1f(app.shader.specularIntensity, 10);
 
                     gl.disableVertexAttribArray(app.shader.opacity);
                     gl.vertexAttrib1f(app.shader.opacity, 1);
 
                     gl.disableVertexAttribArray(app.shader.ambientColour);
-                    gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
+                    gl.vertexAttrib3f(app.shader.ambientColour, 0.1, 0.1, 0.1);
 
                     gl.disableVertexAttribArray(app.shader.diffuseColour);
-                    gl.vertexAttrib3f(app.shader.diffuseColour, 1, 1, 1);
+                    gl.vertexAttrib3f(app.shader.diffuseColour, 1, 0.1, 0.3);
 
                     gl.disableVertexAttribArray(app.shader.specularColour);
                     gl.vertexAttrib3f(app.shader.specularColour, 1, 1, 1);
   
-                    gl.drawArrays(gl.POINTS, 0, 12);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
+
+                    gl.drawElements(gl.TRIANGLES, Icosphere.numPoints, gl.UNSIGNED_SHORT, 0);
+                    //gl.drawElements(gl.LINES, Icosphere.numPoints, gl.UNSIGNED_SHORT, 0);
+
+                    //gl.drawElements(gl.LINES, 0, Icosphere.numPoints);
                 }
                 gl.useProgram(app.pbrShader.program);
 
@@ -3830,6 +3849,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.instances);
+                return;
 
                 // Matrices are passed as 4 vertex attributes
                 for (let j = 0; j < 10; ++j) {
@@ -3868,9 +3888,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.disableVertexAttribArray(app.pbrShader.metallic);
                 gl.vertexAttrib1f(app.pbrShader.metallic, material.metallic ?? 0);
 
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
-                gl.drawElements(gl.TRIANGLES, 60, gl.UNSIGNED_SHORT, 0);
-                gl.drawArrays(gl.TRIANGLES, 0, 60);
+                //gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
+                //gl.drawElements(gl.TRIANGLES, 60, gl.UNSIGNED_SHORT, 0);
+                //gl.drawArrays(gl.TRIANGLES, 0, 60);
                 //gl.drawArraysInstanced(gl.POINTS, 0, 12, 1);
 
             }
@@ -6116,7 +6136,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             initialiseBoxes();
             initialiseCylinders();
 
-            Icosphere.getFaces(0);
+            Icosphere.getFaces(5);
             app.icosphere = new Icosphere(undefined, 'icosphere', [1, 1, 1], 1, 0, [0, 1, 0], [0, 0, 0], [1, 0, 1], 1, 1, { [meta]: {} });
 
             const fileSelection = document.getElementById('load-file');
