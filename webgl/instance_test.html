@@ -573,7 +573,7 @@
         float Distribution(float alpha, vec3 normal, vec3 halfVector) {
             float a2 = alpha * alpha;
 
-            float NdotH = dot(normal, halfVector);
+            float NdotH = max(dot(normal, halfVector), 0.0);
             float f = NdotH * NdotH * (a2 - 1.0) + 1.0;
 
             return a2 / (PI * f * f);
@@ -597,18 +597,19 @@
         
         // Fresnel-Schlick function
         vec3 Fresnel(vec3 reflectivity, vec3 view, vec3 halfVector) {
-            return reflectivity + (vec3(1.0) - reflectivity) * pow(clamp(1.0 - dot(view, halfVector), 0.0, 1.0), 5.0);
+            float VdotH = max(dot(view, halfVector), 0.0);
+            return reflectivity + (vec3(1.0) - reflectivity) * pow(1.0 - VdotH, 5.0);
         }
 
         // Cook-Torrance based BRDF function
         vec3 BRDF(float alpha, vec3 lambert, vec3 normal, vec3 viewVector, vec3 lightVector, vec3 reflectivity, float metallic) {
             vec3 halfVector = normalize(lightVector + viewVector);
 
-            vec3 Ks = Fresnel(reflectivity, viewVector, halfVector);
+            vec3 Ks = Fresnel(reflectivity, viewVector, lightVector);
             vec3 Kd = (vec3(1.0) - Ks) * (1.0 - metallic);
 
-            //vec3 numerator = Distribution(alpha, normal, halfVector) * Geometry(alpha, normal, viewVector, lightVector) * Ks;
-            vec3 numerator = vec3(1.0, 0.3, 0.7);
+            vec3 numerator = Distribution(alpha, normal, halfVector) * Geometry(alpha, normal, viewVector, lightVector) * Ks;
+            //vec3 numerator = vec3(1.0, 0.3, 0.7);
             float denominator = 4.0 *  max(dot(viewVector, normal), 0.0) * max(dot(lightVector, normal), 0.0);
             denominator = max(denominator, 0.000001);
 
@@ -620,6 +621,7 @@
             vec3 viewVector = normalize(cameraPosition - v_position);
 
             vec3 lightVector1 = normalize(lightPosition1);
+            float intensity1 = 0.6;
 
             vec3 light2 = lightPosition2 - v_position;
             float dist2 = length(light2);
@@ -640,11 +642,11 @@
             vec3 BRDF3 = BRDF(alpha, lambert, normal, viewVector, lightVector3, v_baseReflectivity, v_metallic);
 
             fragmentColour = vec4(v_emissivityColour
-                + BRDF1 * lightColour1 * max(dot(lightVector1, normal), 0.0) * 0.5
+                + BRDF1 * lightColour1 * max(dot(lightVector1, normal), 0.0) * intensity1
                 + BRDF2 * lightColour2 * max(dot(lightVector2, normal), 0.0) * intensity2
                 + BRDF3 * lightColour3 * max(dot(lightVector3, normal), 0.0) * intensity3,
                 v_opacity);
-            fragmentColour = vec4(1.0, 0.2, 0.8, 1.0);
+            //fragmentColour = vec4(normal, 1.0);
         }
     </script>
 
@@ -855,12 +857,12 @@
          * Add Light controls
          */
         function addLightControls() {
-            app.lightPosition1 = [0.5, 0.5, 0.5];
+            app.lightPosition1 = normalised([0.1, 0.1, 0.5]);
             app.lightColour1 = [1, 1, 1];
-            app.lightPosition2 = [5, 5, 20];
-            app.lightColour2 = [10, 10, 10];
-            app.lightPosition3 = [-50, 50, -50];
-            app.lightColour3 = [1, 1, 1];
+            app.lightPosition2 = [3, 3, 3];
+            app.lightColour2 = [0.5, 1, 0.5];
+            app.lightPosition3 = [-2, 1, 3];
+            app.lightColour3 = [1, 0.5, 0.5];
 
             const container = document.getElementById('top-right');
 
@@ -1915,14 +1917,14 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * (16 + 12), i * 16);
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * (16 + 9), 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * (16 + 12), i * 12);
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * (16 + 9), 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
@@ -2003,6 +2005,31 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             if (response.ok) {
                 const content = await response.text();
                 Object.assign(obj, processOBJ(content, url, obj));
+                obj.scale(size);
+            }
+            app.objs.push(obj);
+        }
+
+        /**
+         * Process data from a gltf
+         * Loading any additional resources
+         */
+        async function processGLTF(json, url, obj) {
+            console.log(json);
+
+        }
+
+
+        /**
+         * Load data from a gltf
+         */
+        async function loadGLTF(url) {
+            const size = [1, 1, 1];
+            const obj = { scale(...scale) { size.push(...scale) }, render() { }, };
+            const response = await fetch(url);
+            if (response.ok) {
+                const content = await response.json();
+                Object.assign(obj, processGLTF(content, url, obj));
                 obj.scale(size);
             }
             app.objs.push(obj);
@@ -3709,7 +3736,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         { p1: face[2].midpoint, p2: face[0].midpoint },
                     ];
                     edges.push(...newFace);
-                    const points = Array.from(new Set(face.flatMap((edge) => [edge.p1, edge.p2])));
+                    const points = [face[0].p1, face[0].p2];
+                    points.push(points.includes(face[1].p1) ? face[1].p2 : face[1].p1);
                     const splits = face.flatMap((edge) => edge.split);
                     faces.push(...points.map((point) => {
                         const s = splits.filter((split) => split.p1 === point || split.p2 === point);
@@ -3718,11 +3746,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         s.push(newFace.find((edge) => ((edge.p1 === p1) || (edge.p1 === p2)) && ((edge.p2 === p1) || (edge.p2 === p2))));
                         return s;
                     }));
-                    /*
-                    faces.push([face[0].split[0], newFace[2], face[2].split[1]]);
-                    faces.push([face[1].split[0], newFace[0], face[0].split[1]]);
-                    faces.push([face[2].split[0], newFace[1], face[1].split[1]]);
-                    */
                     faces.push(newFace);
                     return faces;
                 }
@@ -3737,18 +3760,30 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     indices: gl.createBuffer(),
                     instances: gl.createBuffer(),
                 }
+                Icosphere.vao = gl.createVertexArray();
                 const positions = points.flatMap((point) => point);
                 gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.vertices);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-                const indices = faces.flatMap((face) => Array.from(new Set(face.flatMap((edge) => [edge.p1, edge.p2]))));
-                //const indices = edges.flatMap((edge) => [edge.p1, edge.p2]);
+                const indices = faces.flatMap((face) => {
+                    const points = [face[0].p1, face[0].p2];
+                    points.push(points.includes(face[1].p1) ? face[1].p2 : face[1].p1);
+                    return points;
+                });
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
                 Icosphere.numPoints = indices.length;
 
-                const matrix = identityMatrix();
-                matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
+                //const matrix = identityMatrix();
+                //matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
+                const matrix = [];
+                for(let i = 0; i < 16; ++i) {
+                    matrix.push(...identityMatrix());
+                    matrix[matrix.length - 4] = 2 * ((i % 4) - 2);
+                    matrix[matrix.length - 3] = 2 * (Math.floor(i / 4) - 2);
+                    matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
+                    matrix.push(i / 16);
+                }
                 gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrix), gl.DYNAMIC_DRAW);
 
@@ -3776,53 +3811,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
 
             }
             render() {
-                {
-                    gl.useProgram(app.shader.program);
-                    gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
-                    gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                    gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                    gl.uniform3fv(app.shader.lightPosition1, app.lightPosition1);
-                    gl.uniform3fv(app.shader.lightPosition2, app.lightPosition2);
-                    gl.uniform3fv(app.shader.lightPosition3, app.lightPosition3);
-
-                    gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.vertices);
-                    gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 12, 0);
-                    gl.enableVertexAttribArray(app.shader.position);
-
-                    gl.vertexAttribPointer(app.shader.normal, 3, gl.FLOAT, false, 12, 0);
-                    gl.enableVertexAttribArray(app.shader.normal);
-
-                    gl.disableVertexAttribArray(app.shader.model);
-                    gl.disableVertexAttribArray(app.shader.model + 1);
-                    gl.disableVertexAttribArray(app.shader.model + 2);
-                    gl.disableVertexAttribArray(app.shader.model + 3);
-                    gl.vertexAttrib4f(app.shader.model, 1, 0, 0, 0);
-                    gl.vertexAttrib4f(app.shader.model + 1, 0, 1, 0, 0);
-                    gl.vertexAttrib4f(app.shader.model + 2, 0, 0, 1, 0);
-                    gl.vertexAttrib4f(app.shader.model + 3, 0, 0, 0, 1);
-
-                    gl.disableVertexAttribArray(app.shader.specularIntensity);
-                    gl.vertexAttrib1f(app.shader.specularIntensity, 10);
-
-                    gl.disableVertexAttribArray(app.shader.opacity);
-                    gl.vertexAttrib1f(app.shader.opacity, 1);
-
-                    gl.disableVertexAttribArray(app.shader.ambientColour);
-                    gl.vertexAttrib3f(app.shader.ambientColour, 0.1, 0.1, 0.1);
-
-                    gl.disableVertexAttribArray(app.shader.diffuseColour);
-                    gl.vertexAttrib3f(app.shader.diffuseColour, 1, 0.1, 0.3);
-
-                    gl.disableVertexAttribArray(app.shader.specularColour);
-                    gl.vertexAttrib3f(app.shader.specularColour, 1, 1, 1);
-  
-                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
-
-                    gl.drawElements(gl.TRIANGLES, Icosphere.numPoints, gl.UNSIGNED_SHORT, 0);
-                    //gl.drawElements(gl.LINES, Icosphere.numPoints, gl.UNSIGNED_SHORT, 0);
-
-                    //gl.drawElements(gl.LINES, 0, Icosphere.numPoints);
-                }
+                gl.bindVertexArray(Icosphere.vao);
                 gl.useProgram(app.pbrShader.program);
 
                 gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
@@ -3849,51 +3838,77 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.buffers.instances);
-                return;
 
                 // Matrices are passed as 4 vertex attributes
                 for (let j = 0; j < 10; ++j) {
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * (16 + 12), i * 16);
-                        //gl.vertexAttribDivisor(location, 1);
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * (16 + 9 + 1), 4 * (i * 4));
+                        gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * (16 + 12), i * 12);
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * (16 + 9 + 1), 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * (16 + 9 + 1), 4 * (16 + 9));
+                gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
+                gl.enableVertexAttribArray(app.pbrShader.roughness);
+
+                //gl.disableVertexAttribArray(app.pbrShader.roughness);
+                //gl.vertexAttrib1f(app.pbrShader.roughness, pbrMaterial.roughness ?? 0.5);
 
                 const material = {};
                 gl.disableVertexAttribArray(app.pbrShader.colour);
-                gl.vertexAttrib3f(app.pbrShader.colour, ...material.colour ?? [0.8, 0.1, 0.7]);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...pbrMaterial.colour ?? [0.8, 0.1, 0.7]);
 
                 gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
-                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...material.emissivityColour ?? [0, 0, 0]);
-
-                gl.disableVertexAttribArray(app.pbrShader.roughness);
-                gl.vertexAttrib1f(app.pbrShader.roughness, material.roughness ?? 0.5);
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...pbrMaterial.emissivityColour ?? [0, 0, 0]);
 
                 gl.disableVertexAttribArray(app.pbrShader.reflectivity);
-                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...material.reflectivity ?? [0.04, 0.04, 0.04]);
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...pbrMaterial.reflectivity ?? [0.04, 0.04, 0.04]);
 
                 gl.disableVertexAttribArray(app.pbrShader.opacity);
-                gl.vertexAttrib1f(app.pbrShader.opacity, material.opacity ?? 1);
+                gl.vertexAttrib1f(app.pbrShader.opacity, pbrMaterial.opacity ?? 1);
 
                 gl.disableVertexAttribArray(app.pbrShader.metallic);
-                gl.vertexAttrib1f(app.pbrShader.metallic, material.metallic ?? 0);
+                gl.vertexAttrib1f(app.pbrShader.metallic, pbrMaterial.metallic ?? 0);
 
-                //gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
-                //gl.drawElements(gl.TRIANGLES, 60, gl.UNSIGNED_SHORT, 0);
-                //gl.drawArrays(gl.TRIANGLES, 0, 60);
-                //gl.drawArraysInstanced(gl.POINTS, 0, 12, 1);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.buffers.indices);
 
+                gl.drawElementsInstanced(gl.TRIANGLES, Icosphere.numPoints, gl.UNSIGNED_SHORT, 0, 16);
             }
+        }
+
+        /*
+        Material	F0  (Linear)	F0 (sRGB)	Color
+Water	(0.02, 0.02, 0.02)	 (0.15, 0.15, 0.15)  	
+Plastic / Glass (Low)	(0.03, 0.03, 0.03)	(0.21, 0.21, 0.21)	
+Plastic High	(0.05, 0.05, 0.05)	(0.24, 0.24, 0.24)	
+Glass (high) / Ruby	(0.08, 0.08, 0.08)	(0.31, 0.31, 0.31)	
+Diamond	(0.17, 0.17, 0.17)	(0.45, 0.45, 0.45)	
+Iron	(0.56, 0.57, 0.58)	(0.77, 0.78, 0.78)	
+Copper	(0.95, 0.64, 0.54)	(0.98, 0.82, 0.76)	
+Gold	(1.00, 0.71, 0.29)	(1.00, 0.86, 0.57)	
+Aluminium	(0.91, 0.92, 0.92)	(0.96, 0.96, 0.97)	
+Silver	(0.95, 0.93, 0.88)	(0.98, 0.97, 0.95)
+
+https://learnopengl.com/PBR/Theory
+*/
+
+
+        const pbrMaterial = {
+            colour: [0.98, 0.82, 0.76],
+            emissivityColour: [0, 0, 0],
+            roughness: 0.5,
+            reflectivity: [0.98, 0.82, 0.76],
+            opacity: 1,
+            metallic: 0.8,
         }
 
         /**
@@ -4991,6 +5006,9 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                         if (getAttribute(node, 'obj')) {
                             node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
                             item = node[meta].representation;
+                        } else if (getAttribute(node, 'gltf')) {
+                            node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
+                            item = node[meta].representation;
                         } else if (getAttribute(node, 'size')) {
                             const box = Box.make(parent, node);
                             parent.content.push(box);
@@ -5037,6 +5055,8 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     if (getAttribute(node, 'obj')) {
                         loadOBJ(getAttribute(node, 'obj'));
                         //node[meta].representation = root;
+                     } else if (getAttribute(node, 'gltf')) {
+                        loadGLTF(getAttribute(node, 'gltf'));
                     } else if (getAttribute(node, 'size')) {
                         root = Box.make(parent, node);
                         app.boxes.push(root);
@@ -6136,7 +6156,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
             initialiseBoxes();
             initialiseCylinders();
 
-            Icosphere.getFaces(5);
+            Icosphere.getFaces(4);
             app.icosphere = new Icosphere(undefined, 'icosphere', [1, 1, 1], 1, 0, [0, 1, 0], [0, 0, 0], [1, 0, 1], 1, 1, { [meta]: {} });
 
             const fileSelection = document.getElementById('load-file');
