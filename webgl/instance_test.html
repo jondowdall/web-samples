@@ -581,13 +581,12 @@
 
         // Schlick-Beckmann Geometry Shadowing Function
         float G1(float alpha, vec3 normal, vec3 vector) {
-            float numerator = max(dot(normal, vector), 0.0);
+            float NdotV = max(dot(normal, vector), 0.0);
 
             float k = alpha / 2.0;
-            float denominator = max(dot(normal, vector), 0.0) * (1.0 - k) + k;
-            denominator = max(denominator, 0.000001);
+            float denominator = max(NdotV * (1.0 - k) + k, 0.000001);
 
-            return numerator / denominator;
+            return NdotV / denominator;
         }
 
         // Smith Model
@@ -1595,7 +1594,7 @@
         /**
          * Load a texture from a url.
          */
-        function loadTexture(url) {
+        function loadTexture(url, parameters) {
             const texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
 
@@ -1636,7 +1635,17 @@
                     image,
                 );
                 gl.generateMipmap(gl.TEXTURE_2D);
-            };
+                if (parameters) {
+                    const mapping = {
+                        magFilter: gl.TEXTURE_MAG_FILTER,
+                        minFilter: gl.TEXTURE_MIN_FILTER,
+                        wrapS: gl.TEXTURE_WRAP_S,
+                        wrapT: TEXTURE_WRAP_T,
+                    };
+                    Object.entries.forEach(([parameter, value]) =>
+                        gl.texParameteri(gl.TEXTURE_2D, mapping[parameter], value));
+                };
+            }
             image.src = url;
 
             return texture;
@@ -1937,17 +1946,17 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.disableVertexAttribArray(app.shader.ambientColour);
                     //gl.vertexAttrib3f(app.shader.ambientColour, ...scale(patch.material.ambientColour, 0.1));
                     gl.vertexAttrib3f(app.shader.ambientColour, ...patch.material.diffuseColour);
-
-
+ 
+ 
                     gl.disableVertexAttribArray(app.shader.diffuseColour);
                     gl.vertexAttrib3f(app.shader.diffuseColour, ...patch.material.diffuseColour);
-
+ 
                     gl.disableVertexAttribArray(app.shader.specularColour);
                     gl.vertexAttrib3f(app.shader.specularColour, ...patch.material.specularColour);
-
+ 
                     gl.disableVertexAttribArray(app.shader.specularIntensity);
                     gl.vertexAttrib1f(app.shader.specularIntensity, patch.material.specularExponent ?? 20);
-
+ 
                     gl.disableVertexAttribArray(app.shader.opacity);
                     gl.vertexAttrib1f(app.shader.opacity, patch.material.opacity ?? 1);
                     */
@@ -1992,7 +2001,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 ]
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(transform), gl.DYNAMIC_DRAW);
-            }
+            };
         }
 
         /**
@@ -2014,9 +2023,90 @@ norm          # normal map (RGB components represent XYZ components of the surfa
          * Process data from a gltf
          * Loading any additional resources
          */
-        async function processGLTF(json, url, obj) {
-            console.log(json);
+        async function processGLTF(gltf, url, obj) {
+            const path = url.split('/').slice(0, -1).join('/');
 
+            gltf.buffers.filter((buffer) => buffer.uri).map((buffer) => buffer.promise = fetch(path + '/' + buffer.uri));
+            gltf.textures.forEach((texture) => texture.texture = loadTexture(gltf.images[texture.source].uri, gltf.samplers[texture.sampler]));
+
+            const sceneIndex = gltf.scene || 0;
+
+            const roots = gltf.scenes[sceneIndex].nodes.map((index) => gltf.nodes[index]);
+
+            gltf.nodes.forEach((node) => {
+                if (node.children) {
+                    node.children = node.children.map((index) => gltf.nodes[index]);
+                }
+                if (node.mesh !== undefined) {
+                    node.mesh = gltf.meshes[node.mesh];
+                }
+                if (node.camera !== undefined) {
+                    node.camera = gltf.cameras[node.camera];
+                }
+            });
+
+            gltf.meshes.forEach((mesh) => {
+                mesh.primitives.forEach((primitive) => {
+                    primitive.indices = gltf.accessors[primitive.indices];
+                    Object.entries(primitive.attributes).forEach(([name, value]) =>
+                        primitive.attributes[name] = gltf.accessors[value]);
+                });
+            });
+
+            gltf.buffers.forEach((buffer) =>
+                buffer.promise.then((response) => buffer.promise = response.arrayBuffer()));
+
+            await Promise.all(gltf.buffers.map((buffer) => buffer.promise));
+            gltf.buffers.forEach((buffer) =>
+                buffer.promise.then((array) => {
+                    buffer.array = array;
+                }));
+
+            gltf.bufferViews.forEach((view) => {
+                view.gl = gl.createBuffer();
+                const type = view.target === 34963 ? gl.ELEMENT_ARRAY_BUFFER : gl.ARRAY_BUFFER;
+                gl.bindBuffer(type, view.gl);
+                gl.bufferData(type, gltf.buffers[view.buffer], gl.DYNAMIC_DRAW);
+
+            });
+
+            return {
+                render() {
+                    return segments.forEach((patch) => {
+                        gl.bindVertexArray(patch.objBuffer);
+
+                        gl.disableVertexAttribArray(app.pbrShader.colour);
+                        gl.vertexAttrib3f(app.pbrShader.colour, ...patch.material.colour ?? [0.8, 0.1, 0.7]);
+
+                        gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
+                        gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...patch.material.emissivityColour ?? [0, 0, 0]);
+
+                        gl.disableVertexAttribArray(app.pbrShader.roughness);
+                        gl.vertexAttrib1f(app.pbrShader.roughness, patch.material.roughness ?? 0.5);
+
+                        gl.disableVertexAttribArray(app.pbrShader.reflectivity);
+                        gl.vertexAttrib3f(app.pbrShader.reflectivity, ...patch.material.reflectivity ?? [0.04, 0.04, 0.04]);
+
+                        gl.disableVertexAttribArray(app.pbrShader.opacity);
+                        gl.vertexAttrib1f(app.pbrShader.opacity, patch.material.opacity ?? 1);
+
+                        gl.disableVertexAttribArray(app.pbrShader.metallic);
+                        gl.vertexAttrib1f(app.pbrShader.metallic, patch.material.metallic ?? 0);
+
+                        gl.drawArraysInstanced(gl.TRIANGLES, patch.offset, patch.points, this.instances);
+                    })
+                },
+                scale(scale) {
+                    const transform = [
+                        scale[0], 0, 0, 0,
+                        0, scale[1], 0, 0,
+                        0, 0, scale[2], 0,
+                        0, 0, 0, 1
+                    ];
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(transform), gl.DYNAMIC_DRAW);
+                },
+            };
         }
 
 
@@ -3777,7 +3867,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 //const matrix = identityMatrix();
                 //matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
                 const matrix = [];
-                for(let i = 0; i < 16; ++i) {
+                for (let i = 0; i < 16; ++i) {
                     matrix.push(...identityMatrix());
                     matrix[matrix.length - 4] = 2 * ((i % 4) - 2);
                     matrix[matrix.length - 3] = 2 * (Math.floor(i / 4) - 2);
@@ -3897,7 +3987,7 @@ Copper	(0.95, 0.64, 0.54)	(0.98, 0.82, 0.76)
 Gold	(1.00, 0.71, 0.29)	(1.00, 0.86, 0.57)	
 Aluminium	(0.91, 0.92, 0.92)	(0.96, 0.96, 0.97)	
 Silver	(0.95, 0.93, 0.88)	(0.98, 0.97, 0.95)
-
+ 
 https://learnopengl.com/PBR/Theory
 */
 
@@ -5055,7 +5145,7 @@ https://learnopengl.com/PBR/Theory
                     if (getAttribute(node, 'obj')) {
                         loadOBJ(getAttribute(node, 'obj'));
                         //node[meta].representation = root;
-                     } else if (getAttribute(node, 'gltf')) {
+                    } else if (getAttribute(node, 'gltf')) {
                         loadGLTF(getAttribute(node, 'gltf'));
                     } else if (getAttribute(node, 'size')) {
                         root = Box.make(parent, node);
