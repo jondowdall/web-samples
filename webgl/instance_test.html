@@ -737,6 +737,85 @@
         fragmentColour = v_emissivityColour + BRDF * lightColour1 * max(dot(lightVector1, normal), 0.0);
     }
     </script>
+    <script type="x-shader/x-fragment" id="skybox-vertex-shader">
+        #version 300 es
+
+        in vec4 position;
+        out vec4 v_position;
+
+        void main() {
+            v_position = position;
+            gl_Position = position;
+            gl_Position.z = 1.0;
+        }
+    </script>
+    <script type="x-shader/x-fragment" id="skybox-fragment-shader">
+        #version 300 es
+        precision highp float;
+
+        uniform samplerCube skybox;
+        uniform mat4 viewDirectionProjectionInverse;
+        
+        in vec4 v_position;
+        
+        // we need to declare an output for the fragment shader
+        out vec4 outColor;
+        
+        void main() {
+            vec4 t = viewDirectionProjectionInverse * v_position;
+            outColor = texture(skybox, normalize(t.xyz / t.w));
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="mirror-vertex-shader">
+
+        #version 300 es
+
+        uniform mat4 projection;
+        uniform mat4 view;
+
+        in mat4 model;
+        in mat3 normalMatrix;
+
+        in vec3 position;
+        in vec3 normal;
+
+        out vec3 v_worldPosition;
+        out vec3 v_worldNormal;
+
+        void main() {
+            vec4 worldPosition = model * vec4(position, 1.0);
+            gl_Position = projection * view * worldPosition;
+            v_worldPosition = worldPosition.xyz;
+            v_worldNormal = normalMatrix * normal;
+        }
+    </script>
+    <script type="x-shader/x-fragment" id="mirror-fragment-shader">
+        #version 300 es
+        precision highp float;
+
+        // Passed in from the vertex shader.
+        in vec3 v_worldPosition;
+        in vec3 v_worldNormal;
+
+        // The texture.
+        uniform samplerCube envTexture;
+
+        // The position of the camera
+        uniform vec3 cameraPosition;
+
+        // we need to declare an output for the fragment shader
+        out vec4 outColor;
+
+        void main() {
+            vec3 worldNormal = normalize(v_worldNormal);
+            vec3 eyeToSurfaceDir = normalize(v_worldPosition - cameraPosition);
+            vec3 direction = reflect(eyeToSurfaceDir, worldNormal);
+
+            outColor = texture(envTexture, direction);
+            outColor = vec4(1.0, 1.0, 0.6, 1.0);
+        }
+</script>
 
 
     <script>
@@ -1298,6 +1377,10 @@
         const pbrShaderSource = {
             vertex: document.querySelector("#pbr-vertex-shader").innerHTML,
             fragment: document.querySelector("#pbr-fragment-shader").innerHTML,
+        }
+        const mirrorShaderSource = {
+            vertex: document.querySelector("#mirror-vertex-shader").innerHTML,
+            fragment: document.querySelector("#mirror-fragment-shader").innerHTML,
         }
 
         /**
@@ -2126,6 +2209,100 @@ norm          # normal map (RGB components represent XYZ components of the surfa
         }
 
         /**
+         * Load a cube map as a texture
+         */
+        function loadCubeMap(images) {
+            // Create a texture.
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+
+            const targets = [
+                gl.TEXTURE_CUBE_MAP_POSITIVE_X,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+                gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+                gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+            ];
+            targets.forEach((target, index) => {
+                // setup each face so it's immediately renderable
+                gl.texImage2D(target, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+                // Asynchronously load an image
+                const image = new Image();
+                image.src = images[index];
+                image.addEventListener('load', function () {
+                    // Now that the image has loaded upload it to the texture.
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+                    gl.texImage2D(target, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                    gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+                });
+            });
+            gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+            gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+            return texture;
+        }
+
+
+        /**
+         * Make a sky box from the given images.
+         */
+        function skybox(images) {
+            if (app.skybox) {
+                report('Skybox already created, ignoring further requests');
+                return;
+            }
+            const texture = loadCubeMap(images);
+            app.envTexture = texture;
+
+            const shaderSource = {
+                vertex: document.querySelector("#skybox-vertex-shader").innerHTML,
+                fragment: document.querySelector("#skybox-fragment-shader").innerHTML,
+            }
+
+            const shader = makeProgram(shaderSource, ['position'], ['skybox', 'viewDirectionProjectionInverse']);
+
+            const vao = gl.createVertexArray();
+
+            gl.bindVertexArray(vao);
+
+            const skybox = gl.createBuffer();
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, skybox);
+            const positions = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1,]);
+
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            gl.vertexAttribPointer(shader.position, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(shader.position);
+
+            app.skybox = () => {
+                gl.depthFunc(gl.LEQUAL);
+                gl.useProgram(shader.program);
+                gl.bindVertexArray(vao);
+
+                const viewMatrix = [...app.viewMatrix];
+
+                // We only care about direction so remove the translation
+                viewMatrix[12] = 0;
+                viewMatrix[13] = 0;
+                viewMatrix[14] = 0;
+
+                // Set the uniforms
+                gl.uniformMatrix4fv(
+                    shader.viewDirectionProjectionInverse, false,
+                    invert(multiply(viewMatrix, app.projectionMatrix)));
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+
+                gl.uniform1i(shader.skybox, 0);
+                gl.drawArrays(gl.TRIANGLES, 0, 1 * 6);
+
+            }
+        }
+
+
+        /**
          * Update the gl buffers used to define the base object used for instancing.
          */
         function updateObject() {
@@ -2862,6 +3039,44 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                                     }
                                 }
                 */
+                {
+
+                    gl.useProgram(app.mirrorShader.program);
+
+                    gl.uniformMatrix4fv(app.mirrorShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.mirrorShader.view, false, app.viewMatrix);
+                    gl.uniform3fv(app.mirrorShader.cameraPosition, app.camera.position);
+
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                    gl.uniform1i(app.mirrorShader.envTexture, 0);
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
+                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
+                    gl.vertexAttribPointer(app.mirrorShader.position, 3, gl.FLOAT, false, 24, 0);
+                    gl.enableVertexAttribArray(app.mirrorShader.position);
+
+                    gl.vertexAttribPointer(app.mirrorShader.normal, 3, gl.FLOAT, false, 24, 12);
+                    gl.enableVertexAttribArray(app.mirrorShader.normal);
+
+                    gl.disableVertexAttribArray(app.mirrorShader.model);
+                    gl.disableVertexAttribArray(app.mirrorShader.model + 1);
+                    gl.disableVertexAttribArray(app.mirrorShader.model + 2);
+                    gl.disableVertexAttribArray(app.mirrorShader.model + 3);
+                    gl.vertexAttrib4f(app.mirrorShader.model, 1, 0, 0, 0);
+                    gl.vertexAttrib4f(app.mirrorShader.model + 1, 0, 1, 0, 0);
+                    gl.vertexAttrib4f(app.mirrorShader.model + 2, 0, 0, 1, 0);
+                    gl.vertexAttrib4f(app.mirrorShader.model + 3, 0, 0, 0, 1);
+                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix);
+                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix + 1);
+                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix + 2);
+                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix, 1, 0, 0);
+                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix + 1, 0, 1, 0);
+                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix + 2, 0, 0, 1);
+
+                    gl.drawArrays(gl.TRIANGLES, 0, 36, app.boxCount);
+                }
+
                 if (app.icosphere) {
                     app.icosphere.render();
                 }
@@ -2928,6 +3143,10 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.drawArrays(gl.POINTS, 0, app.points.length);
                 }
                 gl.enable(gl.DEPTH_TEST);
+
+                if (app.skybox) {
+                    app.skybox();
+                }
 
                 glErrors();
             } else {
@@ -3949,9 +4168,6 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * (16 + 9 + 1), 4 * (16 + 9));
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
-
-                //gl.disableVertexAttribArray(app.pbrShader.roughness);
-                //gl.vertexAttrib1f(app.pbrShader.roughness, pbrMaterial.roughness ?? 0.5);
 
                 const material = {};
                 gl.disableVertexAttribArray(app.pbrShader.colour);
@@ -6203,10 +6419,14 @@ https://learnopengl.com/PBR/Theory
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
 
-
             app.pbrShader = makeProgram(pbrShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic'],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition']
+            );
+
+            app.mirrorShader = makeProgram(mirrorShaderSource,
+                ['model', 'normalMatrix', 'position', 'normal'],
+                ['projection', 'view', 'envTexture', 'cameraPosition']
             );
 
             gl.enable(gl.BLEND);
@@ -6270,6 +6490,17 @@ https://learnopengl.com/PBR/Theory
                 const source = location?.hash.replace(/^#/, '') || 'start.txt';
                 loadFile(source);
             });
+
+
+            skybox([
+                'images/pos-x.jpg',
+                'images/neg-x.jpg',
+                'images/pos-y.jpg',
+                'images/neg-y.jpg',
+                'images/pos-z.jpg',
+                'images/neg-z.jpg',
+            ]);
+
         }
 
         /**
