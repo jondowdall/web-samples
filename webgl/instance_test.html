@@ -557,6 +557,8 @@
 
         uniform vec3 cameraPosition;
 
+        uniform samplerCube envTexture;
+
         in vec3 v_position;
         in vec3 v_normal;
         in vec3 v_colour;
@@ -604,11 +606,10 @@
         vec3 BRDF(float alpha, vec3 lambert, vec3 normal, vec3 viewVector, vec3 lightVector, vec3 reflectivity, float metallic) {
             vec3 halfVector = normalize(lightVector + viewVector);
 
-            vec3 Ks = Fresnel(reflectivity, viewVector, lightVector);
+            vec3 Ks = Fresnel(reflectivity, viewVector, halfVector);
             vec3 Kd = (vec3(1.0) - Ks) * (1.0 - metallic);
 
             vec3 numerator = Distribution(alpha, normal, halfVector) * Geometry(alpha, normal, viewVector, lightVector) * Ks;
-            //vec3 numerator = vec3(1.0, 0.3, 0.7);
             float denominator = 4.0 *  max(dot(viewVector, normal), 0.0) * max(dot(lightVector, normal), 0.0);
             denominator = max(denominator, 0.000001);
 
@@ -640,12 +641,17 @@
             vec3 BRDF2 = BRDF(alpha, lambert, normal, viewVector, lightVector2, v_baseReflectivity, v_metallic);
             vec3 BRDF3 = BRDF(alpha, lambert, normal, viewVector, lightVector3, v_baseReflectivity, v_metallic);
 
+            vec3 eyeToSurfaceDir = normalize(v_position - cameraPosition);
+            vec3 direction = reflect(eyeToSurfaceDir, normal);
+
+            vec3 envBRDF = BRDF(alpha, lambert, normal, viewVector, direction, v_baseReflectivity, v_metallic);
+
             fragmentColour = vec4(v_emissivityColour
+                + envBRDF * texture(envTexture, direction).rgb *  max(dot(direction, normal), 0.0) * 0.01
                 + BRDF1 * lightColour1 * max(dot(lightVector1, normal), 0.0) * intensity1
                 + BRDF2 * lightColour2 * max(dot(lightVector2, normal), 0.0) * intensity2
                 + BRDF3 * lightColour3 * max(dot(lightVector3, normal), 0.0) * intensity3,
                 v_opacity);
-            //fragmentColour = vec4(normal, 1.0);
         }
     </script>
 
@@ -3058,7 +3064,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
                 }
 
-                if (0 && app.icosphere) {
+                if (app.icosphere) {
                     app.icosphere.render();
                 }
 
@@ -4104,6 +4110,10 @@ norm          # normal map (RGB components represent XYZ components of the surfa
                 gl.bindVertexArray(Icosphere.vao);
                 gl.useProgram(app.pbrShader.program);
 
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                gl.uniform1i(app.pbrShader.envTexture, 0);
+
                 gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
                 gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
 
@@ -4152,7 +4162,7 @@ norm          # normal map (RGB components represent XYZ components of the surfa
 
                 const material = {};
                 gl.disableVertexAttribArray(app.pbrShader.colour);
-                gl.vertexAttrib3f(app.pbrShader.colour, ...pbrMaterial.colour ?? [0.8, 0.1, 0.7]);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...pbrMaterial.colour ?? [0.8, 1.0, 0.7]);
 
                 gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
                 gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...pbrMaterial.emissivityColour ?? [0, 0, 0]);
@@ -6402,7 +6412,7 @@ https://learnopengl.com/PBR/Theory
 
             app.pbrShader = makeProgram(pbrShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic'],
-                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition']
+                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture']
             );
 
             app.mirrorShader = makeProgram(mirrorShaderSource,
