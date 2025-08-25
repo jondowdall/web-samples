@@ -4033,32 +4033,6 @@
             }
         }
 
-        /**
-         * Manage a box.
-         */
-        class Cylinder extends Shape {
-            static make(parent, node) {
-                return new Cylinder(
-                    parent,
-                    node[meta].name,
-                    getAttribute(node, 'position'),
-                    getAttribute(node, 'height'),
-                    getAttribute(node, 'radius'),
-                    getAttribute(node, 'angle') || 0,
-                    getAttribute(node, 'axis') || [0, 1, 0],
-                    getAttribute(node, 'offset') || [0, 0, 0],
-                    getAttribute(node, 'colour') || parent?.colour || [1, 0, 1],
-                    getAttribute(node, 'opacity') ?? parent?.opacity ?? 1,
-                    getAttribute(node, 'specular') ?? parent?.specular ?? 10,
-                    node);
-            }
-            constructor(parent, name, position, height, radius, angle, axis, offset, colour, opacity, specular, data = {}) {
-                super(parent, name, position, [radius, height / 2, radius], angle, axis, offset, colour, opacity, specular, data);
-            }
-            highlightFace(line) {
-
-            }
-        }
 
         /**
          * Manage Icospheres
@@ -4279,8 +4253,380 @@
             }
             highlightFace(line) {
             }
+            showInfo() {
+            }
         }
 
+        /**
+         * Manage Icospheres
+         */
+        class Cylinder {
+            static representations = [];
+            static make(sides) {
+                const triangles = [];
+                for (let i = 0; i < sides; ++i) {
+                    const angle1 = Math.PI * 2 * i / sides;
+                    const angle2 = Math.PI * 2 * (i + 0.5) / sides;
+                    const angle3 = Math.PI * 2 * (i + 1) / sides;
+                    const angle4 = Math.PI * 2 * (i + 1.5) / sides;
+                    triangles.push(
+                        0, -1, 0, 0, -1, 0,
+                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0,
+                        Math.sin(angle3), -1, Math.cos(angle3), 0, -1, 0,
+
+                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2),
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), 0, Math.cos(angle1),
+                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3),
+
+                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3),
+                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2),
+                        Math.sin(angle4), 1, Math.cos(angle4), Math.sin(angle4), 0, Math.cos(angle4),
+
+                        0, 1, 0, 0, 1, 0,
+                        Math.sin(angle2), 1, Math.cos(angle2), 0, 1, 0,
+                        Math.sin(angle4), 1, Math.cos(angle4), 0, 1, 0,
+                    );
+                }
+
+                const current = {
+                    instances: [],
+                    buffers: {
+                        vertices: gl.createBuffer(),
+                        instances: gl.createBuffer(),
+                        vao: gl.createVertexArray(),
+                    },
+                    points: triangles.length / 6,
+                };
+
+                Cylinder.representations[sides] = current;
+
+                gl.bindVertexArray(current.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.vertices);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
+
+                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
+                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 24, 0);
+                gl.enableVertexAttribArray(app.pbrShader.position);
+
+                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
+                gl.enableVertexAttribArray(app.pbrShader.normal);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.instances);
+                /*
+                transform                  offset:  0, size: 16
+                orientation                offset: 16, size: 9
+                material.roughness         offset: 25, size: 1
+                material.colour            offset: 26, size: 3
+                material.emissivityColour  offset: 29, size: 3
+                material.reflectivity      offset: 32, size: 3
+                material.opacity           offset: 35, size: 1
+                material.metallic          offset: 36, size: 1
+                */
+
+                // Matrices are passed as 4 vertex attributes
+                for (let j = 0; j < 10; ++j) {
+                    for (let i = 0; i < 4; ++i) {
+                        const location = app.pbrShader.model + i;
+                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribDivisor(location, 1);
+                        gl.enableVertexAttribArray(location);
+                    }
+                    for (let i = 0; i < 3; ++i) {
+                        const location = app.pbrShader.normalMatrix + i;
+                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribDivisor(location, 1);
+                        gl.enableVertexAttribArray(location);
+                    }
+                }
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
+                gl.enableVertexAttribArray(app.pbrShader.roughness);
+
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.colour);
+
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
+                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
+                gl.enableVertexAttribArray(app.pbrShader.opacity);
+
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
+                gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                app.scene.renderQueue.push(() => Cylinder.render(current));
+                gl.bindVertexArray(null);
+            }
+            static render(current) {
+                gl.bindVertexArray(current.buffers.vao);
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, current.points, Block.instances.length);
+            }
+            constructor(sides = 12) {
+                if (Cylinder.representations[sides] === undefined) {
+                    Cylinder.make(sides);
+                }
+                this.content = [];
+                this.name = `cylinder (${sides}:${Cylinder.representations[sides].instances.length})`;
+                this.origin = [0, 0, 0];
+                this.data = { [meta]: { name: [this.name] } };
+                this.transform = identityMatrix();
+                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+                this.material = {
+                    roughness: 0.1,
+                    colour: [1, 0.1, 0.1],
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.5, 0.5, 0.5],
+                    opacity: 1,
+                    metallic: 0.5,
+                };
+
+                this.representation = Cylinder.representations[sides];
+                Cylinder.representations[sides].instances.push(this);
+                this.updateInstances();
+            }
+            updateInstances() {
+                // Create an array with the data for all instances
+                const data = [];
+                this.representation.instances.forEach((instance) => {
+                    data.push(...instance.transform);           // offset:  0, size: 16
+                    data.push(...instance.orientation);         // offset: 16, size: 9
+                    data.push(instance.material.roughness);     // offset: 25, size: 1
+                    data.push(...instance.material.colour);           // offset: 26, size: 3
+                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
+                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
+                    data.push(instance.material.opacity);             // offset: 35, size: 1
+                    data.push(instance.material.metallic);            // offset: 36, size: 1
+                });
+                // Convert to a typed array and pass to gl
+                const buffer = new Float32Array(data);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+
+                // Update each instances reference to the buffer
+                this.representation.instances.forEach((instance, index) =>
+                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
+            }
+            updateInstanceData() {
+                this.buffer.set(this.transform);                  // offset:  0, size: 16
+                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
+                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
+                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
+                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
+                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
+            }
+            intersects(line) {
+                // Allow for non-uniform scaling by converting the line to Cylinder space
+                const toLocal = invert(this.transform);
+                const point = applyTransform(line.point, toLocal);
+                const direction = applyTransform(line.direction, toLocal);
+                const dist = 2;
+
+                return dist <= 1;
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
+            }
+        }
+
+        /**
+         * Manage conic Frustums
+         */
+        class Frustum {
+            static representations = [];
+            static make(ratio, sides) {
+                const triangles = [];
+                for (let i = 0; i < sides; ++i) {
+                    const angle1 = Math.PI * 2 * i / sides;
+                    const angle2 = Math.PI * 2 * (i + 1) / sides;
+                    const ny = Math.sin(Math.atan(1 - ratio, 2));
+                    triangles.push(
+                        0, -1, 0, 0, -1, 0,
+                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0,
+                        Math.sin(angle2), -1, Math.cos(angle2), 0, -1, 0,
+
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
+                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
+
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
+                        Math.sin(angle2), -1, Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
+
+                        0, 1, 0, 0, 1, 0,
+                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), 0, 1, 0,
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), 0, 1, 0,
+                    );
+                }
+
+                const current = {
+                    instances: [],
+                    buffers: {
+                        vertices: gl.createBuffer(),
+                        instances: gl.createBuffer(),
+                        vao: gl.createVertexArray(),
+                    },
+                    points: triangles.length / 6,
+                };
+
+                Frustum.representations[sides] = current;
+
+                gl.bindVertexArray(current.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.vertices);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
+
+                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
+                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 24, 0);
+                gl.enableVertexAttribArray(app.pbrShader.position);
+
+                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
+                gl.enableVertexAttribArray(app.pbrShader.normal);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.instances);
+                /*
+                transform                  offset:  0, size: 16
+                orientation                offset: 16, size: 9
+                material.roughness         offset: 25, size: 1
+                material.colour            offset: 26, size: 3
+                material.emissivityColour  offset: 29, size: 3
+                material.reflectivity      offset: 32, size: 3
+                material.opacity           offset: 35, size: 1
+                material.metallic          offset: 36, size: 1
+                */
+
+                // Matrices are passed as 4 vertex attributes
+                for (let j = 0; j < 10; ++j) {
+                    for (let i = 0; i < 4; ++i) {
+                        const location = app.pbrShader.model + i;
+                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribDivisor(location, 1);
+                        gl.enableVertexAttribArray(location);
+                    }
+                    for (let i = 0; i < 3; ++i) {
+                        const location = app.pbrShader.normalMatrix + i;
+                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribDivisor(location, 1);
+                        gl.enableVertexAttribArray(location);
+                    }
+                }
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
+                gl.enableVertexAttribArray(app.pbrShader.roughness);
+
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.colour);
+
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
+                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
+                gl.enableVertexAttribArray(app.pbrShader.opacity);
+
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
+                gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                app.scene.renderQueue.push(() => Frustum.render(current));
+                gl.bindVertexArray(null);
+            }
+            static render(current) {
+                gl.bindVertexArray(current.buffers.vao);
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, current.points, Block.instances.length);
+            }
+            constructor(ratio, sides = 12) {
+                if (Frustum.representations[sides] === undefined) {
+                    Frustum.make(ratio, sides);
+                }
+                this.content = [];
+                this.name = `frustum (${sides}:${Frustum.representations[sides].instances.length})`;
+                this.origin = [0, 0, 0];
+                this.data = { [meta]: { name: [this.name] } };
+                this.transform = identityMatrix();
+                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+                this.material = {
+                    roughness: 0.1,
+                    colour: [1, 0.1, 0.1],
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.9, 0.5, 0.5],
+                    opacity: 1,
+                    metallic: 0.1,
+                };
+
+                this.representation = Frustum.representations[sides];
+                Frustum.representations[sides].instances.push(this);
+                this.updateInstances();
+            }
+            updateInstances() {
+                // Create an array with the data for all instances
+                const data = [];
+                this.representation.instances.forEach((instance) => {
+                    data.push(...instance.transform);           // offset:  0, size: 16
+                    data.push(...instance.orientation);         // offset: 16, size: 9
+                    data.push(instance.material.roughness);     // offset: 25, size: 1
+                    data.push(...instance.material.colour);           // offset: 26, size: 3
+                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
+                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
+                    data.push(instance.material.opacity);             // offset: 35, size: 1
+                    data.push(instance.material.metallic);            // offset: 36, size: 1
+                });
+                // Convert to a typed array and pass to gl
+                const buffer = new Float32Array(data);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+
+                // Update each instances reference to the buffer
+                this.representation.instances.forEach((instance, index) =>
+                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
+            }
+            updateInstanceData() {
+                this.buffer.set(this.transform);                  // offset:  0, size: 16
+                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
+                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
+                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
+                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
+                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
+            }
+            intersects(line) {
+                // Allow for non-uniform scaling by converting the line to Frustum space
+                const toLocal = invert(this.transform);
+                const point = applyTransform(line.point, toLocal);
+                const direction = applyTransform(line.direction, toLocal);
+                const dist = 2;
+
+                return dist <= 1;
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
+            }
+        }
 
         /**
          * Manage Icospheres
@@ -4385,7 +4731,7 @@
                 }
 
                 const level = Icosphere.level[subdivisions];
-                gl.bindVertexArray(level.vao);
+                gl.bindVertexArray(level.buffers.vao);
                 gl.bindBuffer(gl.ARRAY_BUFFER, level.buffers.vertices);
 
                 // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
@@ -4406,7 +4752,6 @@
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
                 */
-
 
                 // Matrices are passed as 4 vertex attributes
                 for (let j = 0; j < 10; ++j) {
@@ -4454,7 +4799,7 @@
                 app.scene.renderQueue.push(() => Icosphere.render(level));
             }
             static render(level) {
-                gl.bindVertexArray(level.vao);
+                gl.bindVertexArray(level.buffers.vao);
                 gl.drawElementsInstanced(gl.TRIANGLES, level.points, gl.UNSIGNED_SHORT, 0, level.instances.length);
             }
             constructor(subdivisions = 0) {
@@ -4462,7 +4807,7 @@
                     Icosphere.make(subdivisions);
                 }
                 this.content = [];
-                this.name = `icoshere(${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
+                this.name = `icoshere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
                 this.origin = [0, 0, 0];
                 this.data = { [meta]: { name: [this.name] } };
                 this.transform = identityMatrix();
@@ -4534,7 +4879,8 @@
                 return dist <= 1.0;
             }
             highlightFace(line) {
-
+            }
+            showInfo() {
             }
         }
 
@@ -6882,6 +7228,19 @@ https://learnopengl.com/PBR/Theory
             block.updateInstanceData();
             app.roots.push(block);
 
+            const cylinder = new Cylinder(60);
+            cylinder.transform[12] = -3;
+            cylinder.transform[13] = 3;
+            cylinder.updateInstanceData();
+            app.roots.push(cylinder);
+
+            const frustum = new Frustum(0.5, 24);
+            frustum.transform[12] = -3;
+            frustum.transform[13] = 3;
+            frustum.transform[14] = 3;
+            frustum.updateInstanceData();
+            app.roots.push(frustum);
+
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
                 function loadFile(file) {
@@ -6904,9 +7263,7 @@ https://learnopengl.com/PBR/Theory
                 loadFile(source);
             });
 
-
             skybox('images/Yokohama2/');
-
         }
 
         /**
