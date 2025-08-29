@@ -2438,12 +2438,14 @@
          */
         function updateColours() {
             const colourBuffer = [];
-            const setTransparency = (box) => {
-                if (box.state === undefined) return;
-                box.state.transparent = box.content.reduce((result, box) => result || (setSelected(box)), 1);
-                return box.state.transparent || box.selected;
+            const setTransparency = (item) => {
+                if (item.state === undefined) return;
+                item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
+                item.material.opacity = item.state.transparent ? 0.5 : 1;
+                item.updateInstanceData();
+                return item.state.transparent || item.selected;
             }
-            app.roots.forEach((box) => setTransparency(box));
+            app.roots.forEach((item) => setTransparency(item));
             app.boxes.filter((box) => !box.hidden).toReversed().forEach((box, index) => {
                 if (box.state.ghost) {
                     colourBuffer.push(0.3, 0.3, 0.3);
@@ -4084,13 +4086,56 @@
                 this.node = node;
                 this.parent = parent;
 
+                this.origin = [0, 0, 0];
+                this.transform = identityMatrix();
+                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
                 name = this.node[meta].name[0] || name;
                 this.name = name;
                 this.node[meta].name[0] = name;
                 this.state = {};
+
+                this.move(getAttribute(node, 'position') || [0, 0, 0]);
+                this.scale(getAttribute(node, 'size') || [1, 1, 1]);
+                this.rotate(getAttribute(node, 'angle') || 0,
+                    getAttribute(node, 'axis') || [0, 1, 0]);
+                this.offset(getAttribute(node, 'offset') || [0, 0, 0]);
+                //getAttribute(node, 'colour'));
+                //getAttribute(node, 'opacity'));
+                //getAttribute(node, 'specular'));
+            }
+            move(offset) {
+                this.transform[12] += offset[0];
+                this.transform[13] += offset[1];
+                this.transform[14] += offset[2];
+            }
+            scale(size) {
+                const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
+                this.transform = multiply(scale, this.transform);
+            }
+            rotate(angle, axis) {
+                const rotation = getRotation(angle, axis);
+                this.transform = multiply(rotation, this.transform);
+            }
+            offset(offset) {
+                const size = getAttribute(this.node, 'size') || [1, 1, 1];
+                this.transform[12] += size[0] * offset[0];
+                this.transform[13] += size[1] * offset[1];
+                this.transform[14] += size[2] * offset[2];
+            }
+            updateInstanceData() {
+                this.instanceBuffer.set(this.transform);                  // offset:  0, size: 16
+                this.instanceBuffer.set(this.orientation, 16);            // offset: 16, size: 9
+                this.instanceBuffer.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.instanceBuffer.set(this.material.colour, 26);              // offset: 26, size: 3
+                this.instanceBuffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
+                this.instanceBuffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                //this.instanceBuffer.set(this.material.opacity, 35);             // offset: 35, size: 1
+                this.instanceBuffer.set(0.5, 35);             // offset: 35, size: 1
+                this.instanceBuffer.set(this.material.metallic, 36);            // offset: 36, size: 1
+                this.representation.updateInstances = true;
             }
         }
-
 
         /**
          * Manage blocks
@@ -4245,6 +4290,10 @@
             }
             static render() {
                 gl.bindVertexArray(Block.buffers.vao);
+                if (Block.updateInstances) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
+                }
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, Block.instances.length);
                 }
@@ -4259,18 +4308,16 @@
                     Block.make();
                 }
                 this.content = [];
-                this.origin = [0, 0, 0];
-                this.transform = identityMatrix();
-                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
                 this.material = {
                     roughness: 0.1,
-                    colour: [1, 0.1, 0.1],
+                    colour: [1, 0.9, 0.1],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.9, 0.5, 0.5],
                     opacity: 1,
                     metallic: 0.1,
                 };
                 Block.instances.push(this);
+                this.representation = Block;
                 this.updateInstances();
             }
             updateInstances() {
@@ -4288,24 +4335,15 @@
                 });
                 // Convert to a typed array and pass to gl
                 const buffer = new Float32Array(data);
-                gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
 
                 // Update each instances reference to the buffer
-                Block.instances.forEach((instance, index) =>
-                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
-            }
-            updateInstanceData() {
-                this.buffer.set(this.transform);                  // offset:  0, size: 16
-                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
-                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
-                gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
+                Block.instances.forEach((instance, index) => {
+                    instance.instanceBuffer = new Float32Array(buffer, index * 37 * 4, 37);
+                    console.log(instance.instanceBuffer.byteOffset);
+            });
+
             }
             intersects(line, all) {
                 let size;
@@ -4476,9 +4514,6 @@
                 }
                 this.content = [];
                 this.name = `cylinder (${sides}:${Cylinder.representations[sides].instances.length})`;
-                this.origin = [0, 0, 0];
-                this.transform = identityMatrix();
-                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
                 this.material = {
                     roughness: 0.1,
                     colour: [1, 0.1, 0.1],
@@ -4490,6 +4525,8 @@
 
                 this.representation = Cylinder.representations[sides];
                 Cylinder.representations[sides].instances.push(this);
+                this.buffers = this.representation.buffers;
+
                 this.updateInstances();
             }
             updateInstances() {
@@ -4512,8 +4549,9 @@
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
+                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
             }
+            /*
             updateInstanceData() {
                 this.buffer.set(this.transform);                  // offset:  0, size: 16
                 this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
@@ -4524,8 +4562,9 @@
                 this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
                 this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceBuffer.byteOffset, this.instanceBuffer);
             }
+                */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
                 const toLocal = invert(this.transform);
@@ -4536,8 +4575,8 @@
                 const point = applyTransform(line.point, toLocal);
                 const direction = applyTransform(line.direction, orientation);
 
-                const segment = {point: [0, -1, 0], direction: [0, 1, 0]};
-                const [t, s] = shortestLine(segment, {point, direction});
+                const segment = { point: [0, -1, 0], direction: [0, 1, 0] };
+                const [t, s] = shortestLine(segment, { point, direction });
                 const t1 = Math.max(0, Math.min(1, t));
                 const p1 = sum(segment.point, scale(segment.direction, t1));
                 const p2 = sum(point, scale(direction, s));
@@ -4676,9 +4715,6 @@
                 this.ratio = ratio;
                 this.content = [];
                 this.name = `frustum (${sides}:${Frustum.representations[sides].instances.length})`;
-                this.origin = [0, 0, 0];
-                this.transform = identityMatrix();
-                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
                 this.material = {
                     roughness: 0.1,
                     colour: [1, 0.1, 0.1],
@@ -4690,6 +4726,8 @@
 
                 this.representation = Frustum.representations[sides];
                 Frustum.representations[sides].instances.push(this);
+                this.buffers = this.representation.buffers;
+
                 this.updateInstances();
             }
             updateInstances() {
@@ -4712,8 +4750,9 @@
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
+                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
             }
+            /*
             updateInstanceData() {
                 this.buffer.set(this.transform);                  // offset:  0, size: 16
                 this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
@@ -4726,6 +4765,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
                 gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
             }
+            */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
                 const toLocal = invert(this.transform);
@@ -4736,8 +4776,8 @@
                 const point = applyTransform(line.point, toLocal);
                 const direction = applyTransform(line.direction, orientation);
 
-                const segment = {point: [0, -1, 0], direction: [0, 1, 0]};
-                const [t, s] = shortestLine(segment, {point, direction});
+                const segment = { point: [0, -1, 0], direction: [0, 1, 0] };
+                const [t, s] = shortestLine(segment, { point, direction });
                 const t1 = Math.max(0, Math.min(1, t));
                 const p1 = sum(segment.point, scale(segment.direction, t1));
                 const p2 = sum(point, scale(direction, s));
@@ -4749,7 +4789,8 @@
                 this.points = [s1, s2];
                 report(Math.hypot(...subtract(p1, p2)));
                 const dist = 1 - (1 - this.ratio) * t1;
-                return Math.hypot(...subtract(p1, p2)) <= dist;            }
+                return Math.hypot(...subtract(p1, p2)) <= dist;
+            }
             highlightFace(line) {
             }
             showInfo() {
@@ -4937,9 +4978,6 @@
                 }
                 this.content = [];
                 this.name = `icoshere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
-                this.origin = [0, 0, 0];
-                this.transform = identityMatrix();
-                this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
                 this.material = {
                     roughness: 0.1,
                     colour: [1, 0.1, 0.1],
@@ -4951,6 +4989,7 @@
 
                 this.level = Icosphere.level[subdivisions];
                 Icosphere.level[subdivisions].instances.push(this);
+                this.buffers = this.level.buffers;
                 this.updateInstances();
             }
             updateInstances() {
@@ -4973,20 +5012,22 @@
 
                 // Update each instances reference to the buffer
                 this.level.instances.forEach((instance, index) =>
-                    instance.buffer = new Float32Array(buffer, index * 16 * 4, 16));
+                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
             }
+            /*
             updateInstanceData() {
-                this.buffer.set(this.transform);                  // offset:  0, size: 16
-                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
-                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
+                this.instanceData.set(this.transform);                  // offset:  0, size: 16
+                this.instanceData.set(this.orientation, 16);            // offset: 16, size: 9
+                this.instanceData.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
+                this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
+                this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
+                this.instanceData.set(this.material.metallic, 36);            // offset: 36, size: 1
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.level.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceData.byteOffset, this.instanceData);
             }
+                */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
                 const toLocal = invert(this.transform);
@@ -6139,8 +6180,9 @@ https://learnopengl.com/PBR/Theory
                         node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
                         //item = node[meta].representation;
                     } else if (getAttribute(node, 'size')) {
-                        item = Box.make(parent, node);
-                        app.boxes.push(item);
+                        item = new Block(node, parent);
+                        //item = Box.make(parent, node);
+                        //app.boxes.push(item);
                         node[meta].representation = item;
                     } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
                         item = Cylinder.make(parent, node);
@@ -6150,6 +6192,8 @@ https://learnopengl.com/PBR/Theory
                         const subdivisions = getAttribute(node, 'subdivisions') ?? 2;
                         item = Icosphere.make();
                     } else {
+                        item = new Block(node, parent);
+                        /*
                         item = new Box(parent,
                             node[meta].name,
                             getAttribute(node, 'position'),
@@ -6161,6 +6205,7 @@ https://learnopengl.com/PBR/Theory
                             0.1,
                             10,
                             node);
+                            */
                     }
                     if (parent) {
                         parent.content.push(item);
