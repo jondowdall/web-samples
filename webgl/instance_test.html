@@ -4124,15 +4124,15 @@
                 this.transform[14] += size[2] * offset[2];
             }
             updateInstanceData() {
-                this.instanceBuffer.set(this.transform);                  // offset:  0, size: 16
-                this.instanceBuffer.set(this.orientation, 16);            // offset: 16, size: 9
-                this.instanceBuffer.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.instanceBuffer.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.instanceBuffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.instanceBuffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                //this.instanceBuffer.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.instanceBuffer.set(0.5, 35);             // offset: 35, size: 1
-                this.instanceBuffer.set(this.material.metallic, 36);            // offset: 36, size: 1
+                this.instanceData.set(this.transform);                  // offset:  0, size: 16
+                this.instanceData.set(this.orientation, 16);            // offset: 16, size: 9
+                this.instanceData.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
+                this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
+                this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                //this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
+                this.instanceData.set(0.5, 35);             // offset: 35, size: 1
+                this.instanceData.set(this.material.metallic, 36);            // offset: 36, size: 1
                 this.representation.updateInstances = true;
             }
         }
@@ -4293,6 +4293,7 @@
                 if (Block.updateInstances) {
                     gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
                     gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
+                    Block.updateInstances = false;
                 }
                 if (!app.wireframe) {
                     gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, Block.instances.length);
@@ -4333,17 +4334,17 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+                const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
-                const buffer = new Float32Array(data);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+                Block.instanceData = new Float32Array(buffer, 0, data.length);
+                Block.instanceData.set(data);
+                //const buffer = new Float32Array(data);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
 
                 // Update each instances reference to the buffer
-                Block.instances.forEach((instance, index) => {
-                    instance.instanceBuffer = new Float32Array(buffer, index * 37 * 4, 37);
-                    console.log(instance.instanceBuffer.byteOffset);
-            });
-
+                Block.instances.forEach((instance, index) =>
+                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
             intersects(line, all) {
                 let size;
@@ -4503,9 +4504,15 @@
                 app.scene.renderQueue.push(() => Cylinder.render(current));
                 gl.bindVertexArray(null);
             }
-            static render(current) {
-                gl.bindVertexArray(current.buffers.vao);
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, current.points, Block.instances.length);
+            static render(representation) {
+                if (representation.updateInstances) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, representation.buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, representation.instanceData, gl.DYNAMIC_DRAW);
+                    representation.updateInstances = false;
+                }
+
+                gl.bindVertexArray(representation.buffers.vao);
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, representation.points, representation.instances.length);
             }
             constructor(node, parent, sides = 12) {
                 super(node, parent, 'cylinder');
@@ -4542,14 +4549,18 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+
+                const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
-                const buffer = new Float32Array(data);
+                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
+                this.representation.instanceData.set(data);
+                //const buffer = new Float32Array(data);
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
+                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
             /*
             updateInstanceData() {
@@ -4562,7 +4573,7 @@
                 this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
                 this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceBuffer.byteOffset, this.instanceBuffer);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceData.byteOffset, this.instanceData);
             }
                 */
             intersects(line, all) {
@@ -4703,9 +4714,15 @@
                 app.scene.renderQueue.push(() => Frustum.render(current));
                 gl.bindVertexArray(null);
             }
-            static render(current) {
-                gl.bindVertexArray(current.buffers.vao);
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, current.points, Block.instances.length);
+            static render(representation) {
+                if (representation.updateInstances) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, representation.buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, representation.instanceData, gl.DYNAMIC_DRAW);
+                    representation.updateInstances = false;
+                }
+
+                gl.bindVertexArray(representation.buffers.vao);
+                gl.drawArraysInstanced(gl.TRIANGLES, 0, representation.points, representation.instances.length);
             }
             constructor(node, parent, ratio, sides = 12) {
                 super(node, parent);
@@ -4743,14 +4760,17 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+                const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
-                const buffer = new Float32Array(data);
+                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
+                this.representation.instanceData.set(data);
+                //const buffer = new Float32Array(data);
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
+                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
             /*
             updateInstanceData() {
@@ -4968,6 +4988,11 @@
                 app.scene.renderQueue.push(() => Icosphere.render(level));
             }
             static render(level) {
+                if (level.updateInstances) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, level.buffers.instances);
+                    gl.bufferData(gl.ARRAY_BUFFER, level.instanceData, gl.DYNAMIC_DRAW);
+                    level.updateInstances = false;
+                }
                 gl.bindVertexArray(level.buffers.vao);
                 gl.drawElementsInstanced(gl.TRIANGLES, level.points, gl.UNSIGNED_SHORT, 0, level.instances.length);
             }
@@ -4988,6 +5013,7 @@
                 };
 
                 this.level = Icosphere.level[subdivisions];
+                this.representation = Icosphere.level[subdivisions];
                 Icosphere.level[subdivisions].instances.push(this);
                 this.buffers = this.level.buffers;
                 this.updateInstances();
@@ -5005,14 +5031,17 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+                const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
-                const buffer = new Float32Array(data);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.level.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.DYNAMIC_DRAW);
+                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
+                this.representation.instanceData.set(data);
+                //const buffer = new Float32Array(data);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
+                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
 
                 // Update each instances reference to the buffer
-                this.level.instances.forEach((instance, index) =>
-                    instance.instanceBuffer = new Float32Array(buffer, index * 16 * 4, 16));
+                this.representation.instances.forEach((instance, index) =>
+                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
             /*
             updateInstanceData() {
