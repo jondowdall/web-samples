@@ -640,7 +640,7 @@
             vec3 envBRDF = vec3(1.0);//F * D / (4.0 * NdotV);
 
             vec3 lo = v_emissivityColour
-                + pow(1.0 - alpha, 20.0) * F * F * texture(envTexture, direction, (pow(alpha, 1.0)) * 20.0).rgb
+                + pow(1.0 - alpha, 10.0) * F * F * texture(envTexture, direction, (pow(alpha, 3.0)) * 20.0).rgb
                 + BRDF1 * lightColour1 * intensity1
                 + BRDF2 * lightColour2 * intensity2
                 + BRDF3 * lightColour3 * intensity3;
@@ -2169,7 +2169,12 @@
         async function processGLTF(gltf, url, obj) {
             const path = url.split('/').slice(0, -1).join('/');
 
-            gltf.buffers.filter((buffer) => buffer.uri).map((buffer) => buffer.promise = fetch(path + '/' + buffer.uri));
+            const loadBuffer = async (buffer) => {
+                const response = await fetch(path + '/' + buffer.uri);
+                buffer.content = await response.arrayBuffer();
+            }
+
+            const bufferPromises = gltf.buffers.filter((buffer) => buffer.uri).map((buffer) => loadBuffer(buffer.uri));
             gltf.textures.forEach((texture) => texture.texture = loadTexture(gltf.images[texture.source].uri, gltf.samplers[texture.sampler]));
 
             const sceneIndex = gltf.scene || 0;
@@ -2188,30 +2193,49 @@
                 }
             });
 
+            const map = {
+                [gl.BYTE]: Int8Array,             // 5120
+                [gl.UNSIGNED_BYTE]: Uint8Array,   // 5121
+                [gl.SHORT]: Int16Array,           // 5122
+                [gl.UNSIGNED_SHORT]: Uint16Array, // 5123
+                [gl.UNSIGNED_INT]: Uint32Array,   // 5125
+                [gl.FLOAT]: Float32Array,         // 5126
+            };
+
+            await Promise.all(bufferPromises);
+
+            gltf.accessors.forEach((accessor) => {
+                const view = gltf.bufferViews[accessor.bufferView];
+                const buffer = gltf.buffers[view.buffer];
+                const bufferType = map[accessor.componentType];
+
+                view.typedView = new bufferType(buffer.content, view.byteOffset, view.byteLength);
+            });
+
+
+            const primitives = [];
             gltf.meshes.forEach((mesh) => {
                 mesh.primitives.forEach((primitive) => {
-                    primitive.indices = gltf.accessors[primitive.indices];
-                    Object.entries(primitive.attributes).forEach(([name, value]) =>
-                        primitive.attributes[name] = gltf.accessors[value]);
+                    primitive.vao = gl.createVertexArray();
+                    gl.bindVertexArray(primitive.vao);
+                    const accessor = gltf.accessors[primitive.indices];
+                    const view = gltf.bufferViews[accessor.bufferView];
+                    view.buffer = view.buffer || gl.createBuffer()
+                    gl.bindBuffer(view.target, view.buffer);
+                    gl.bufferData(view.target, view.typedView, gl.STATIC_DRAW);
+
+                    Object.entries(primitive.attributes).forEach(([name, value]) => {
+                        //primitive.attributes[name] = gltf.accessors[value]);
+                        const accessor = gltf.accessors[primitive.indices];
+                        const view = gltf.bufferViews[accessor.bufferView];
+                        view.buffer = view.buffer || gl.createBuffer()
+                        gl.bindBuffer(view.target, view.buffer);
+                        gl.bufferData(view.target, view.typedView, gl.STATIC_DRAW);
+                    });
                 });
             });
 
-            gltf.buffers.forEach((buffer) =>
-                buffer.promise.then((response) => buffer.promise = response.arrayBuffer()));
 
-            await Promise.all(gltf.buffers.map((buffer) => buffer.promise));
-            gltf.buffers.forEach((buffer) =>
-                buffer.promise.then((array) => {
-                    buffer.array = array;
-                }));
-
-            gltf.bufferViews.forEach((view) => {
-                view.gl = gl.createBuffer();
-                const type = view.target === 34963 ? gl.ELEMENT_ARRAY_BUFFER : gl.ARRAY_BUFFER;
-                gl.bindBuffer(type, view.gl);
-                gl.bufferData(type, gltf.buffers[view.buffer], gl.DYNAMIC_DRAW);
-
-            });
 
             return {
                 render() {
@@ -2441,8 +2465,8 @@
             const setTransparency = (item) => {
                 if (item.state === undefined) return;
                 item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
-                item.material.opacity = item.state.transparent ? 0.5 : 1;
-                item.updateInstanceData();
+                //item.material.opacity = item.state.transparent ? 0.5 : 1;
+                //item.updateInstanceData();
                 return item.state.transparent || item.selected;
             }
             app.roots.forEach((item) => setTransparency(item));
@@ -4104,6 +4128,12 @@
                 //getAttribute(node, 'opacity'));
                 //getAttribute(node, 'specular'));
             }
+            get path() {
+                if (this.parent) {
+                    return [...this.parent.path, this];
+                }
+                return [this];
+            }
             move(offset) {
                 this.transform[12] += offset[0];
                 this.transform[13] += offset[1];
@@ -4130,8 +4160,7 @@
                 this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
                 this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
                 this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                //this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.instanceData.set(0.5, 35);             // offset: 35, size: 1
+                this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
                 this.instanceData.set(this.material.metallic, 36);            // offset: 36, size: 1
                 this.representation.updateInstances = true;
             }
@@ -4334,11 +4363,13 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+                // Create a buffer
                 const buffer = new ArrayBuffer(data.length * 4);
-                // Convert to a typed array and pass to gl
+                // Add a flaot 32 view
                 Block.instanceData = new Float32Array(buffer, 0, data.length);
+                // Load the data using the view
                 Block.instanceData.set(data);
-                //const buffer = new Float32Array(data);
+
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
 
@@ -4562,20 +4593,6 @@
                 this.representation.instances.forEach((instance, index) =>
                     instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
-            /*
-            updateInstanceData() {
-                this.buffer.set(this.transform);                  // offset:  0, size: 16
-                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
-                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceData.byteOffset, this.instanceData);
-            }
-                */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
                 const toLocal = invert(this.transform);
@@ -4772,20 +4789,6 @@
                 this.representation.instances.forEach((instance, index) =>
                     instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
-            /*
-            updateInstanceData() {
-                this.buffer.set(this.transform);                  // offset:  0, size: 16
-                this.buffer.set(this.orientation, 16);            // offset: 16, size: 9
-                this.buffer.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.buffer.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.buffer.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.buffer.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.buffer.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.buffer.set(this.material.metallic, 36);            // offset: 36, size: 1
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.buffer.byteOffset, this.buffer);
-            }
-            */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
                 const toLocal = invert(this.transform);
@@ -5043,20 +5046,6 @@
                 this.representation.instances.forEach((instance, index) =>
                     instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
             }
-            /*
-            updateInstanceData() {
-                this.instanceData.set(this.transform);                  // offset:  0, size: 16
-                this.instanceData.set(this.orientation, 16);            // offset: 16, size: 9
-                this.instanceData.set(this.material.roughness, 25);     // offset: 25, size: 1
-                this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
-                this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.instanceData.set(this.material.metallic, 36);            // offset: 36, size: 1
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.level.buffers.instances);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.instanceData.byteOffset, this.instanceData);
-            }
-                */
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
                 const toLocal = invert(this.transform);
@@ -6214,27 +6203,19 @@ https://learnopengl.com/PBR/Theory
                         //app.boxes.push(item);
                         node[meta].representation = item;
                     } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
-                        item = Cylinder.make(parent, node);
-                        app.cylinders.push(item);
+                        const sides = getAttribute(node, 'sides') ?? 12;
+                        item = new Cylinder(node, parent, sides);
+                        node[meta].representation = item;
+                    } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
+                        const sides = getAttribute(node, 'sides') ?? 12;
+                        const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
+                        item = new Frustum(node, parent, ratio, sides);
                         node[meta].representation = item;
                     } else if (getAttribute(node, 'radius')) {
                         const subdivisions = getAttribute(node, 'subdivisions') ?? 2;
-                        item = Icosphere.make();
+                        item = new Icosphere(node, parent, subdivisions);
                     } else {
                         item = new Block(node, parent);
-                        /*
-                        item = new Box(parent,
-                            node[meta].name,
-                            getAttribute(node, 'position'),
-                            [0, 0, 0],
-                            0,
-                            [0, 1, 0],
-                            [0, 0, 0],
-                            [1, 0, 1],
-                            0.1,
-                            10,
-                            node);
-                            */
                     }
                     if (parent) {
                         parent.content.push(item);
@@ -6254,89 +6235,7 @@ https://learnopengl.com/PBR/Theory
                 });
             }
             graph[content].forEach((node) => addItem(node));
-            /*
-                        const addItems = (parent, node) => {
-                            node[content].forEach((node) => {
-                                const getAttribute = (node, attribute) => node[attribute] || node[meta].inherited[attribute];
-                                let item = parent;
-                                if (getAttribute(node, 'position')) {
-                                    if (getAttribute(node, 'obj')) {
-                                        node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
-                                        item = node[meta].representation;
-                                    } else if (getAttribute(node, 'gltf')) {
-                                        node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
-                                        item = node[meta].representation;
-                                    } else if (getAttribute(node, 'size')) {
-                                        const box = Box.make(parent, node);
-                                        parent.content.push(box);
-                                        app.boxes.push(box);
-                                        node[meta].representation = box;
-                                        item = box;
-                                    } else if (getAttribute(node, 'radius')) {
-                                        const cylinder = Cylinder.make(parent, node);
-                                        parent.content.push(cylinder);
-                                        app.cylinders.push(cylinder);
-                                        node[meta].representation = cylinder;
-                                        item = cylinder;
-                                    } else {
-                                        const shape = new Box(parent,
-                                            node[meta].name,
-                                            getAttribute(node, 'position'),
-                                            [0, 0, 0],
-                                            0,
-                                            [0, 1, 0],
-                                            [0, 0, 0],
-                                            [1, 0, 1],
-                                            0.1,
-                                            10,
-                                            node);
-                                        //parent.content.push(shape);
-                                        item = shape;
-                                    }
-                                    if (parent) {
-                                        parent.content.push(item);
-                                    } else {
-                                        app.roots.push(item);
-                                    }
-                                }
-                                addItems(item, node);
-                            });
-                            (node.connections || []).forEach((connection) => {
-                                if (connection.start && connection.end) {
-                                    const start = node[content].find((node) => node[meta].name.includes(connection.start));
-                                    const end = node[content].find((node) => node[meta].name.includes(connection.end));
-                                    if (start && end) {
-                                        app.connections.push(new Connection(start[meta].representation, end[meta].representation));
-                                    }
-                                }
-                            });
-                        }
-                        graph[content].forEach((node) => {
-                            if (node.position) {
-                                let root;
-                                if (getAttribute(node, 'obj')) {
-                                    loadOBJ(getAttribute(node, 'obj'));
-                                    //node[meta].representation = root;
-                                } else if (getAttribute(node, 'gltf')) {
-                                    loadGLTF(getAttribute(node, 'gltf'));
-                                } else if (getAttribute(node, 'size')) {
-                                    root = Box.make(parent, node);
-                                    app.boxes.push(root);
-                                } else if (getAttribute(node, 'radius')) {
-                                    root = Cylinder.make(parent, node);
-                                    app.cylinders.push(root);
-                                }
-                                if (parent) {
-                                    parent.content.push(root);
-                                }
-                                if (root) {
-                                    node[meta].representation = root;
-                                    app.roots.push(root);
-                                    addItems(root, node);
-                                }
-                            }
-                        });
-                        */
+
             showModel(graph);
             initialiseBoxes();
             initialiseCylinders();
@@ -7426,31 +7325,31 @@ https://learnopengl.com/PBR/Theory
             }
             initialiseBoxes();
             initialiseCylinders();
-
-            app.roots.push(new Icosphere({ [meta]: { name: [] } }, null, 4));
-            const sphere2 = new Icosphere({ [meta]: { name: [] } }, null, 4);
-            sphere2.transform[13] = 3;
-            sphere2.updateInstanceData();
-            app.roots.push(sphere2);
-
-            const block = new Block({ [meta]: { name: [] } }, null);
-            block.transform[12] = -3;
-            block.updateInstanceData();
-            app.roots.push(block);
-
-            const cylinder = new Cylinder({ [meta]: { name: [] } }, null, 60);
-            cylinder.transform[12] = -3;
-            cylinder.transform[13] = 3;
-            cylinder.updateInstanceData();
-            app.roots.push(cylinder);
-
-            const frustum = new Frustum({ [meta]: { name: [] } }, null, 0.5, 24);
-            frustum.transform[12] = -3;
-            frustum.transform[13] = 3;
-            frustum.transform[14] = 3;
-            frustum.updateInstanceData();
-            app.roots.push(frustum);
-
+            /*
+                        app.roots.push(new Icosphere({ [meta]: { name: [] } }, null, 4));
+                        const sphere2 = new Icosphere({ [meta]: { name: [] } }, null, 4);
+                        sphere2.transform[13] = 3;
+                        sphere2.updateInstanceData();
+                        app.roots.push(sphere2);
+            
+                        const block = new Block({ [meta]: { name: [] } }, null);
+                        block.transform[12] = -3;
+                        block.updateInstanceData();
+                        app.roots.push(block);
+            
+                        const cylinder = new Cylinder({ [meta]: { name: [] } }, null, 60);
+                        cylinder.transform[12] = -3;
+                        cylinder.transform[13] = 3;
+                        cylinder.updateInstanceData();
+                        app.roots.push(cylinder);
+            
+                        const frustum = new Frustum({ [meta]: { name: [] } }, null, 0.5, 24);
+                        frustum.transform[12] = -3;
+                        frustum.transform[13] = 3;
+                        frustum.transform[14] = 3;
+                        frustum.updateInstanceData();
+                        app.roots.push(frustum);
+            */
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
                 function loadFile(file) {
