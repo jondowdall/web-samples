@@ -612,6 +612,11 @@
             vec3 normal = normalize(v_normal);
             vec3 viewVector = normalize(cameraPosition - v_position);
 
+            if (v_opacity < 1.0 && dot(normal, viewVector) > 0.0) {
+                discard;
+                return;
+            }
+
             vec3 lightVector1 = normalize(lightPosition1);
             float intensity1 = 1.0;
 
@@ -648,11 +653,6 @@
             fragmentColour = vec4(lo, v_opacity);
             //fragmentColour = vec4(F * texture(envTexture, direction, (pow(alpha, 1.0)) * 20.0).rgb, v_opacity);
             //fragmentColour = vec4(F, v_opacity);
-
-            if (v_opacity < 1.0) {
-                gl_FragDepth = -1.0;
-            }
-
         }
     </script>
 
@@ -1074,7 +1074,7 @@
                 app.roots.push(box);
             }
             initialiseBoxes()
-            app.colourUpdate = true;
+            app.updateColours = true;
             updateText();
             showStructure();
         }
@@ -1113,7 +1113,7 @@
                 selected.selected = false;
             });
             initialiseBoxes();
-            app.colourUpdate = true;
+            app.updateColours = true;
             updateText();
             showStructure();
         }
@@ -1128,7 +1128,7 @@
             });
             app.boxes = app.boxes.filter((instance) => !selected.includes(instance));
             initialiseBoxes()
-            app.colourUpdate = true;
+            app.updateColours = true;
             updateText();
             showStructure();
         }
@@ -2420,7 +2420,7 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.boxes);
             gl.bufferData(gl.ARRAY_BUFFER, app.modelMatrix.byteLength, gl.DYNAMIC_DRAW);
 
-            app.colourUpdate = true;
+            app.updateColours = true;
 
             app.boxesChanged = true;
             app.boxCount = reversed.length;
@@ -2441,7 +2441,7 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.cylinders);
             gl.bufferData(gl.ARRAY_BUFFER, app.cylinderData, gl.DYNAMIC_DRAW);
 
-            app.colourUpdate = true;
+            app.updateColours = true;
 
             app.cylindersChanged = true;
             app.cylinderCount = reversed.length;
@@ -2458,7 +2458,7 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
 
-            app.colourUpdate = true;
+            app.updateColours = true;
             app.quadsChanged = true;
         }
 
@@ -2469,53 +2469,14 @@
             const colourBuffer = [];
             const setTransparency = (item) => {
                 if (item.state === undefined) return;
-                item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
-                //item.state.transparent = item.content.length > 0;
-                item.material.opacity = item.state.transparent ? 0.5 : 1;
+                //item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
+                item.state.transparent = item.content.length > 0;
+                item.material.opacity = item.content.length > 0 ? 0.5 : 1;
                 item.updateInstanceData();
                 item.content.forEach((item) => setTransparency(item));
                 return item.state.transparent || item.selected;
             }
             app.roots.forEach((item) => setTransparency(item));
-            /*
-            app.boxes.filter((box) => !box.hidden).toReversed().forEach((box, index) => {
-                if (box.state.ghost) {
-                    colourBuffer.push(0.3, 0.3, 0.3);
-                    colourBuffer.push(0.3, 0.3, 0.3);
-                    colourBuffer.push(0.1, 0.1, 0.1);
-                    colourBuffer.push(box.specular);
-                    colourBuffer.push(0.05);
-                } else if (box.state.set) {
-                    colourBuffer.push(0.3, 0.0, 0.0);
-                    colourBuffer.push(0.3, 0.0, 0.0);
-                    colourBuffer.push(0.1, 0.0, 0.0);
-                    colourBuffer.push(box.specular);
-                    colourBuffer.push(0.1);
-                } else if (box.state.constraint) {
-                    colourBuffer.push(0.3, 1.0, 0.3);
-                    colourBuffer.push(0.3, 1.0, 0.3);
-                    colourBuffer.push(0.1, 1.0, 0.1);
-                    colourBuffer.push(box.specular);
-                    colourBuffer.push(0.1);
-                } else if (box.state.hit) {
-                    colourBuffer.push(1.0, 0.0, 0.0);
-                    colourBuffer.push(1.0, 0.0, 0.0);
-                    colourBuffer.push(1.0, 0.0, 0.0);
-                    colourBuffer.push(box.specular);
-                    colourBuffer.push(1.0);
-                } else {
-                    const colour = box.selected ? [1, 1, 1] : (box.statusColour ?? box.colour);
-                    colourBuffer.push(...colour.map((v) => v * 0.3));
-                    colourBuffer.push(...colour.map((v) => v * 0.3));
-                    colourBuffer.push(...colour.map((v) => v * 1.0));
-                    colourBuffer.push(box.specular);
-                    const opacity = ((app.solid && !box.state.transparent) || box.state.moving) ? 1 : app.wireframe ? 0.1 : box.content.length > 0 ? 0.5 : 1;
-                    colourBuffer.push(opacity);
-                }
-            });
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colourBuffer), gl.STATIC_DRAW);
-            */
         }
 
         /**
@@ -2715,7 +2676,7 @@
                     data.push(size[0] / text.canvas.width, size[1] / text.canvas.height);  // Texture Size
                     data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
                     data.push(...colour);
-                    data.push(...box.referenceFrame.multiply(box.transform));
+                    data.push(...multiply(box.transform, box.world));
                 });
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
@@ -2779,7 +2740,7 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
 
-            //app.colourUpdate = true;
+            //app.updateColours = true;
             //app.quadsChanged = true;
 
         }
@@ -2788,7 +2749,7 @@
          * Update the object definition and the instances if required.
          */
         function updateBuffers(time) {
-            if (app.colourUpdate) {
+            if (app.updateColours) {
                 updateColours();
                 app.updateColours = false;
             }
@@ -3133,64 +3094,6 @@
                 gl.uniform3fv(app.shader.lightPosition2, app.lightPosition2);
                 gl.uniform3fv(app.shader.lightPosition3, app.lightPosition3);
 
-                if (!app.wireframe) {
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
-                }
-                if (app.wireframe || !app.solid) {
-                    gl.drawArraysInstanced(gl.LINES, 36, 24, app.boxCount);
-                }
-                if (!app.wireframe) {
-                    gl.bindVertexArray(app.cylinderVertexArray);
-                    gl.drawArraysInstanced(gl.TRIANGLES, 60, 12 * CYLINDER_SIDES, app.cylinderCount);
-                }
-                /*
-                                if (app.quads.length > 0) {
-                                    gl.bindVertexArray(app.quadVertexArray);
-                                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.quads.length);
-                                    if (app.wireframe || !app.solid) {
-                                        //gl.drawArraysInstanced(gl.LINES_STRIP, 5, 24, app.quadCount);
-                                    }
-                                }
-                */
-                if (0) {
-
-                    gl.useProgram(app.mirrorShader.program);
-                    gl.bindVertexArray(null);
-
-                    gl.uniformMatrix4fv(app.mirrorShader.projection, false, app.projectionMatrix);
-                    gl.uniformMatrix4fv(app.mirrorShader.view, false, app.viewMatrix);
-                    gl.uniform3fv(app.mirrorShader.cameraPosition, app.camera.position);
-
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
-                    gl.uniform1i(app.mirrorShader.envTexture, 0);
-
-                    gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
-                    gl.vertexAttribPointer(app.mirrorShader.position, 3, gl.FLOAT, false, 24, 0);
-                    gl.enableVertexAttribArray(app.mirrorShader.position);
-
-                    gl.vertexAttribPointer(app.mirrorShader.normal, 3, gl.FLOAT, false, 24, 12);
-                    gl.enableVertexAttribArray(app.mirrorShader.normal);
-
-                    gl.disableVertexAttribArray(app.mirrorShader.model);
-                    gl.disableVertexAttribArray(app.mirrorShader.model + 1);
-                    gl.disableVertexAttribArray(app.mirrorShader.model + 2);
-                    gl.disableVertexAttribArray(app.mirrorShader.model + 3);
-                    gl.vertexAttrib4f(app.mirrorShader.model + 0, 1, 0, 0, 0);
-                    gl.vertexAttrib4f(app.mirrorShader.model + 1, 0, 1, 0, 0);
-                    gl.vertexAttrib4f(app.mirrorShader.model + 2, 0, 0, 1, 0);
-                    gl.vertexAttrib4f(app.mirrorShader.model + 3, 0, 0, 0, 1);
-                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix);
-                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix + 1);
-                    gl.disableVertexAttribArray(app.mirrorShader.normalMatrix + 2);
-                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix + 0, 1, 0, 0);
-                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix + 1, 0, 1, 0);
-                    gl.vertexAttrib3f(app.mirrorShader.normalMatrix + 2, 0, 0, 1);
-
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, app.boxCount);
-                }
-
                 app.scene.render();
 
                 if (app.connections.length > 0) {
@@ -3255,7 +3158,6 @@
                     gl.drawArrays(gl.POINTS, 0, app.points.length);
                 }
                 gl.enable(gl.DEPTH_TEST);
-
 
                 glErrors();
             } else {
@@ -3548,7 +3450,7 @@
                 app.boxesChanged = true;
                 this.updateNodes();
                 if (!child) {
-                    app.colourUpdate = true;
+                    app.updateColours = true;
                     updateTextBuffer();
                 }
             }
@@ -3660,7 +3562,7 @@
                 });
 
                 this.update();
-                app.colourUpdate = true;
+                app.updateColours = true;
             }
             promote() {
                 if (this.parent) {
@@ -3915,7 +3817,7 @@
                 app.boxesChanged = true;
                 this.updateNodes();
                 if (!child) {
-                    app.colourUpdate = true;
+                    app.updateColours = true;
                     updateTextBuffer();
                 }
             }
@@ -4064,7 +3966,7 @@
                 });
 
                 this.update();
-                app.colourUpdate = true;
+                app.updateColours = true;
             }
             promote() {
                 if (this.parent) {
@@ -4173,7 +4075,7 @@
                     this.toWorld = this.parent.referenceFrame.multiply(this.referenceFrame.matrix);
                 } else {
                     this.toWorld = this.referenceFrame.matrix;
-                } 
+                }
             }
             get world() {
                 if (this.parent) {
@@ -4433,10 +4335,10 @@
             }
             intersects(line, all) {
                 let size;
-                const transform = this.referenceFrame.multiply(this.transform);
+                const transform = multiply(this.transform, this.world);
                 // ToDo: fix this mess...
                 {
-                    const { translation, scale, angle, axis } = decompose(transform);
+                    const { translation, scale, angle, axis } = decompose(this.transform);
                     size = scale;
                 }
                 const radius = Math.hypot(...size);
@@ -4650,7 +4552,8 @@
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
-                const toLocal = invert(this.transform);
+                const world = this.world;
+                const toLocal = invert(world);
                 const orientation = [...toLocal];
                 orientation[12] = 0;
                 orientation[13] = 0;
@@ -4666,8 +4569,8 @@
                 if (app.showPoints) {
                     app.points.push({ position: p1 }, { position: p2 });
                 }
-                const s1 = applyTransform(p1, this.transform);
-                const s2 = applyTransform(p2, this.transform);
+                const s1 = applyTransform(p1, world);
+                const s2 = applyTransform(p2, world);
                 this.points = [s1, s2];
                 return Math.hypot(...subtract(p1, p2)) <= 1;
             }
@@ -4846,7 +4749,8 @@
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
-                const toLocal = invert(this.transform);
+                const world = this.world;
+                const toLocal = invert(world);
                 const orientation = [...toLocal];
                 orientation[12] = 0;
                 orientation[13] = 0;
@@ -4862,8 +4766,8 @@
                 if (app.showPoints) {
                     app.points.push({ position: p1 }, { position: p2 });
                 }
-                const s1 = applyTransform(p1, this.transform);
-                const s2 = applyTransform(p2, this.transform);
+                const s1 = applyTransform(p1, world);
+                const s2 = applyTransform(p2, world);
                 this.points = [s1, s2];
                 report(Math.hypot(...subtract(p1, p2)));
                 const dist = 1 - (1 - this.ratio) * t1;
@@ -5103,7 +5007,8 @@
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
-                const toLocal = invert(this.transform);
+                const world = this.world;
+                const toLocal = invert(world);
                 const orientation = [...toLocal];
                 orientation[12] = 0;
                 orientation[13] = 0;
@@ -5118,8 +5023,8 @@
                 if (dist <= 1) {
                     const offset = scale(direction, Math.sqrt(1 - dist * dist));
                     this.points = [
-                        applyTransform(subtract(p, offset), this.transform),
-                        applyTransform(sum(p, offset), this.transform),
+                        applyTransform(subtract(p, offset), world),
+                        applyTransform(sum(p, offset), world),
                     ];
                 }
                 return dist <= 1.0;
@@ -5488,7 +5393,7 @@ https://learnopengl.com/PBR/Theory
                             app.boxes.forEach((instance) => instance.selected = false);
                         }
                         instance.selected = true;
-                        app.colourUpdate = true;
+                        app.updateColours = true;
                     });
 
                     node.addEventListener('blur', (event) => {
@@ -5640,7 +5545,7 @@ https://learnopengl.com/PBR/Theory
                         const string = node.value;
                         const value = [parseInt(string.slice(1, 3), 16) / 255, parseInt(string.slice(3, 5), 16) / 255, parseInt(string.slice(5), 16) / 255];
                         instance[argument] = value;
-                        app.colourUpdate = true;
+                        app.updateColours = true;
                     });
                     return node;
                 }
@@ -6247,15 +6152,14 @@ https://learnopengl.com/PBR/Theory
                 let item = parent;
                 if (getAttribute(node, 'position')) {
                     if (getAttribute(node, 'obj')) {
-                        node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
+                        //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
+                        item = loadOBJ(getAttribute(node, 'obj'));
                         //item = node[meta].representation;
                     } else if (getAttribute(node, 'gltf')) {
                         node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
                         //item = node[meta].representation;
                     } else if (getAttribute(node, 'size')) {
                         item = new Block(node, parent);
-                        //item = Box.make(parent, node);
-                        //app.boxes.push(item);
                         node[meta].representation = item;
                     } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
                         const sides = getAttribute(node, 'sides') ?? 12;
@@ -6277,8 +6181,10 @@ https://learnopengl.com/PBR/Theory
                     } else if (item) {
                         app.roots.push(item);
                     }
+                    node[content].forEach((node) => addItem(node, item));
+                } else if (parent) {
+                    node[content].forEach((node) => addItem(node, item));
                 }
-                node[content].forEach((node) => addItem(node, item));
                 (node.connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
                         const start = node[content].find((node) => node[meta].name.includes(connection.start));
@@ -6890,7 +6796,7 @@ https://learnopengl.com/PBR/Theory
             document.getElementById('info').innerHTML = '';
             document.getElementById('info').classList.add('hide');
             updateTextBuffer();
-            app.colourUpdate = true;
+            app.updateColours = true;
         }
 
         /**
@@ -6917,7 +6823,7 @@ https://learnopengl.com/PBR/Theory
             parents.forEach((instance) => instance.selected = true);
             app.boxesChanged = true;
             updateText();
-            app.colourUpdate = true;
+            app.updateColours = true;
         }
 
         /**
@@ -7049,7 +6955,7 @@ https://learnopengl.com/PBR/Theory
                     f: (event) => setView([0, 0, 1]),
                     h: (event) => hideSelected(event),
                     H: (event) => hideOthers(event),
-                    i: (event) => { app.solid = !app.solid; app.colourUpdate = true; },
+                    i: (event) => { app.solid = !app.solid; app.updateColours = true; },
                     l: (event) => setView([-1, 0, 0]),
                     p: (event) => selectParent(event),
                     q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
@@ -7193,7 +7099,7 @@ https://learnopengl.com/PBR/Theory
                         }
                     }
                 }
-                app.colourUpdate = true;
+                app.updateColours = true;
                 updateTextBuffer();
                 updatePoints();
             };
@@ -7263,7 +7169,7 @@ https://learnopengl.com/PBR/Theory
                         }
                     }
                 }
-                app.colourUpdate = true;
+                app.updateColours = true;
             }
 
             let dragPart = false;
@@ -7284,7 +7190,7 @@ https://learnopengl.com/PBR/Theory
                         instance.state.constraint = instance.parts?.includes(types[0]);
                         instance.state.ghost = true;
                     });
-                    app.colourUpdate = true;
+                    app.updateColours = true;
                 }
             }
 
@@ -7381,31 +7287,7 @@ https://learnopengl.com/PBR/Theory
             }
             initialiseBoxes();
             initialiseCylinders();
-            /*
-                        app.roots.push(new Icosphere({ [meta]: { name: [] } }, null, 4));
-                        const sphere2 = new Icosphere({ [meta]: { name: [] } }, null, 4);
-                        sphere2.transform[13] = 3;
-                        sphere2.updateInstanceData();
-                        app.roots.push(sphere2);
-            
-                        const block = new Block({ [meta]: { name: [] } }, null);
-                        block.transform[12] = -3;
-                        block.updateInstanceData();
-                        app.roots.push(block);
-            
-                        const cylinder = new Cylinder({ [meta]: { name: [] } }, null, 60);
-                        cylinder.transform[12] = -3;
-                        cylinder.transform[13] = 3;
-                        cylinder.updateInstanceData();
-                        app.roots.push(cylinder);
-            
-                        const frustum = new Frustum({ [meta]: { name: [] } }, null, 0.5, 24);
-                        frustum.transform[12] = -3;
-                        frustum.transform[13] = 3;
-                        frustum.transform[14] = 3;
-                        frustum.updateInstanceData();
-                        app.roots.push(frustum);
-            */
+
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
                 function loadFile(file) {
