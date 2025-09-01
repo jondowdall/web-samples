@@ -648,6 +648,11 @@
             fragmentColour = vec4(lo, v_opacity);
             //fragmentColour = vec4(F * texture(envTexture, direction, (pow(alpha, 1.0)) * 20.0).rgb, v_opacity);
             //fragmentColour = vec4(F, v_opacity);
+
+            if (v_opacity < 1.0) {
+                gl_FragDepth = -1.0;
+            }
+
         }
     </script>
 
@@ -2465,11 +2470,14 @@
             const setTransparency = (item) => {
                 if (item.state === undefined) return;
                 item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
-                //item.material.opacity = item.state.transparent ? 0.5 : 1;
-                //item.updateInstanceData();
+                //item.state.transparent = item.content.length > 0;
+                item.material.opacity = item.state.transparent ? 0.5 : 1;
+                item.updateInstanceData();
+                item.content.forEach((item) => setTransparency(item));
                 return item.state.transparent || item.selected;
             }
             app.roots.forEach((item) => setTransparency(item));
+            /*
             app.boxes.filter((box) => !box.hidden).toReversed().forEach((box, index) => {
                 if (box.state.ghost) {
                     colourBuffer.push(0.3, 0.3, 0.3);
@@ -2507,6 +2515,7 @@
             });
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colourBuffer), gl.STATIC_DRAW);
+            */
         }
 
         /**
@@ -2706,7 +2715,7 @@
                     data.push(size[0] / text.canvas.width, size[1] / text.canvas.height);  // Texture Size
                     data.push(text.textureOrigin[0] / text.canvas.width, text.textureOrigin[1] / text.canvas.height); // Texture origin
                     data.push(...colour);
-                    data.push(...box.transform);
+                    data.push(...box.referenceFrame.multiply(box.transform));
                 });
             app.textItemCount = selected.length;
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textItems);
@@ -3339,7 +3348,7 @@
         /**
          * Base class for 3D Transformations.
          */
-        class Transform {
+        class ShapeTransform {
             constructor(reference, offset = [0, 0, 0], angle = 0, axis = [0, 1, 0], scale = [1, 1, 1]) {
                 this.reference = reference;
 
@@ -3389,7 +3398,7 @@
         /**
          * Base class for 3D shapes.
          */
-        class Shape extends Transform {
+        class Shape extends ShapeTransform {
             constructor(parent, name, position, size, angle, axis, offset, colour, opacity, specular, data = {}) {
                 super(parent, position, angle, axis, [1, 1, 1]);
                 this.parent = parent;
@@ -4103,6 +4112,36 @@
         }
 
         /**
+         * Manage cartesian transform matrix
+         */
+        class Transform {
+            constructor(context, initial = identityMatrix()) {
+                this.context = context;
+                if (this.context) {
+                    this.matrix = this.context.referenceFrame.multiply(initial);
+                } else {
+                    this.matrix = [...initial];
+                }
+            }
+            move(offset) {
+                this.matrix[12] += offset[0];
+                this.matrix[13] += offset[1];
+                this.matrix[14] += offset[2];
+            }
+            scale(size) {
+                const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
+                this.matrix = multiply(scale, this.matrix);
+            }
+            rotate(angle, axis) {
+                const rotation = getRotation(angle, axis);
+                this.matrix = multiply(rotation, this.matrix);
+            }
+            multiply(matrix) {
+                return multiply(matrix, this.matrix);
+            }
+        }
+
+        /**
          * Parent class for object visual representations
          */
         class Representation {
@@ -4111,6 +4150,7 @@
                 this.parent = parent;
 
                 this.origin = [0, 0, 0];
+                this.referenceFrame = new Transform();
                 this.transform = identityMatrix();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
@@ -4119,14 +4159,27 @@
                 this.node[meta].name[0] = name;
                 this.state = {};
 
-                this.move(getAttribute(node, 'position') || [0, 0, 0]);
-                this.scale(getAttribute(node, 'size') || [1, 1, 1]);
-                this.rotate(getAttribute(node, 'angle') || 0,
+                this.referenceFrame.move(getAttribute(node, 'position') || [0, 0, 0]);
+                this.referenceFrame.rotate(getAttribute(node, 'angle') || 0,
                     getAttribute(node, 'axis') || [0, 1, 0]);
+
+                //this.move(getAttribute(node, 'position') || [0, 0, 0]);
                 this.offset(getAttribute(node, 'offset') || [0, 0, 0]);
+                this.scale(getAttribute(node, 'size') || [1, 1, 1]);
                 //getAttribute(node, 'colour'));
                 //getAttribute(node, 'opacity'));
                 //getAttribute(node, 'specular'));
+                if (this.parent) {
+                    this.toWorld = this.parent.referenceFrame.multiply(this.referenceFrame.matrix);
+                } else {
+                    this.toWorld = this.referenceFrame.matrix;
+                } 
+            }
+            get world() {
+                if (this.parent) {
+                    return this.parent.referenceFrame.multiply(this.referenceFrame.matrix);
+                }
+                return this.referenceFrame.matrix;
             }
             get path() {
                 if (this.parent) {
@@ -4154,14 +4207,14 @@
                 this.transform[14] += size[2] * offset[2];
             }
             updateInstanceData() {
-                this.instanceData.set(this.transform);                  // offset:  0, size: 16
+                this.instanceData.set(multiply(this.transform, this.world));                  // offset:  0, size: 16
                 this.instanceData.set(this.orientation, 16);            // offset: 16, size: 9
-                this.instanceData.set(this.material.roughness, 25);     // offset: 25, size: 1
+                this.instanceData[25] = this.material.roughness;     // offset: 25, size: 1
                 this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
                 this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
                 this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
-                this.instanceData.set(this.material.opacity, 35);             // offset: 35, size: 1
-                this.instanceData.set(this.material.metallic, 36);            // offset: 36, size: 1
+                this.instanceData[35] = this.material.opacity;             // offset: 35, size: 1
+                this.instanceData[36] = this.material.metallic;            // offset: 36, size: 1
                 this.representation.updateInstances = true;
             }
         }
@@ -4354,7 +4407,8 @@
                 // Create an array with the data for all instances
                 const data = [];
                 Block.instances.forEach((instance) => {
-                    data.push(...instance.transform);           // offset:  0, size: 16
+                    const transform = multiply(instance.transform, this.world);
+                    data.push(...transform);           // offset:  0, size: 16
                     data.push(...instance.orientation);         // offset: 16, size: 9
                     data.push(instance.material.roughness);     // offset: 25, size: 1
                     data.push(...instance.material.colour);           // offset: 26, size: 3
@@ -4379,14 +4433,15 @@
             }
             intersects(line, all) {
                 let size;
+                const transform = this.referenceFrame.multiply(this.transform);
                 // ToDo: fix this mess...
                 {
-                    const { translation, scale, angle, axis } = decompose(this.transform);
+                    const { translation, scale, angle, axis } = decompose(transform);
                     size = scale;
                 }
                 const radius = Math.hypot(...size);
 
-                const centre = applyTransform([0, 0, 0], this.transform);
+                const centre = applyTransform([0, 0, 0], transform);
 
                 if (radius === 0) {
                     return this.content.filter((child) => child.intersects(line)).length > 0;
@@ -4397,9 +4452,9 @@
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
-                        const corner1 = applyTransform([-0.5, -0.5, -0.5], this.transform);
-                        const corner2 = applyTransform([0.5, 0.5, 0.5], this.transform);
-                        const rotation = extractRotation(this.transform);
+                        const corner1 = applyTransform([-0.5, -0.5, -0.5], transform);
+                        const corner2 = applyTransform([0.5, 0.5, 0.5], transform);
+                        const rotation = extractRotation(transform);
                         const planes = [
                             { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
                             { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
@@ -6234,7 +6289,7 @@ https://learnopengl.com/PBR/Theory
                     }
                 });
             }
-            graph[content].forEach((node) => addItem(node));
+            graph[content].forEach((node) => addItem(node, parent));
 
             showModel(graph);
             initialiseBoxes();
@@ -6242,6 +6297,7 @@ https://learnopengl.com/PBR/Theory
             updateText();
             showStructure();
             showStock();
+            updateColours();
         }
 
         /**
