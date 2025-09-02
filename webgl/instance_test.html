@@ -309,6 +309,36 @@
     <div id="state"></div>
     <div id="info" class="hide"></div>
 
+    <script type="x-shader/x-vertex" id="overlay-vertex-shader">
+    #version 300 es
+    precision highp float;
+
+    in vec2 position;
+
+    out vec2 v_textureCoordinate;
+
+    void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+        v_textureCoordinate = (position + 1.0) / 2.0;
+    }
+    </script>
+    <script type="x-shader/x-fragment" id="overlay-fragment-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform sampler2D source;
+
+    in vec2 v_textureCoordinate;
+
+    out vec4 fragmentColour;
+
+    void main() {
+        fragmentColour = texture(source, v_textureCoordinate);
+    }
+    
+
+    </script>
+
     <script type="x-shader/x-vertex" id="vertex-shader">
     #version 300 es
     precision highp float;
@@ -421,6 +451,7 @@
     <script type="x-shader/x-fragment" id="text-fragment-shader">
     #version 300 es
     precision highp float;
+
     uniform sampler2D source;
 
     in vec2 v_textureCoordinate;
@@ -541,6 +572,8 @@
 
         uniform vec3 cameraPosition;
 
+        uniform int pass;
+
         uniform samplerCube envTexture;
 
         in vec3 v_position;
@@ -604,8 +637,8 @@
             vec3 normal = normalize(v_normal);
             vec3 viewVector = normalize(cameraPosition - v_position);
 
-            //if (v_opacity < 1.0 && dot(normal, viewVector) > 0.0) {
-            if (v_opacity < 1.0) {
+            //if (v_opacity < 0.8 && dot(normal, viewVector) > 0.0) {
+            if (((pass == 0) && v_opacity < 0.99) || ((pass == 1 && v_opacity > 0.9))) {
                 discard;
                 return;
             }
@@ -644,8 +677,6 @@
                 + BRDF3 * lightColour3 * intensity3;
             lo = pow(lo, vec3(1.0 / 2.2));
             fragmentColour = vec4(lo, v_opacity);
-            //fragmentColour = vec4(F * texture(envTexture, direction, (pow(alpha, 1.0)) * 20.0).rgb, v_opacity);
-            //fragmentColour = vec4(F, v_opacity);
         }
     </script>
 
@@ -818,7 +849,6 @@
 
 
     <script>
-        const CYLINDER_SIDES = 24;
         /**
          * Update report display.
          */
@@ -1304,7 +1334,7 @@
          * This script manages a single gl context so intialise here for simplicity.
          */
         const canvas = document.getElementById('main-canvas');
-        const gl = canvas.getContext('webgl2');
+        const gl = canvas.getContext('webgl2', { antialias: false });
 
         /**
          * Utility function to parse and report errors
@@ -1385,7 +1415,44 @@
                 gl.uniform3fv(app.pbrShader.lightPosition3, app.lightPosition3);
                 gl.uniform3fv(app.pbrShader.lightColour3, app.lightColour3);
 
+                gl.uniform1i(app.pbrShader.pass, 0);
+
+                /*
+                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
+                gl.clearColor(...app.background, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                */
+
                 this.renderQueue.forEach((item) => item());
+
+                const width = canvas.width;
+                const height = canvas.height;
+                /*
+                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, app.renderTarget);
+                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+                */
+                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBuffer);
+                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+
+                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderTarget);
+
+                gl.clearColor(1.0, 1.0, 1.0, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
+
+                gl.uniform1i(app.pbrShader.pass, 1);
+                this.renderQueue.forEach((item) => item());
+
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+                if (app.drawOverlay) {
+                    app.drawOverlay();
+                }
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             }
             addNode(node) {
 
@@ -1408,6 +1475,7 @@
                 near: 1,
                 far: 10000,
             },
+            background: [0,0,0],
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
@@ -1439,6 +1507,10 @@
         const pbrShaderSource = {
             vertex: document.querySelector("#pbr-vertex-shader").innerHTML,
             fragment: document.querySelector("#pbr-fragment-shader").innerHTML,
+        }
+        const overlayShaderSource = {
+            vertex: document.querySelector("#overlay-vertex-shader").innerHTML,
+            fragment: document.querySelector("#overlay-fragment-shader").innerHTML,
         }
         const mirrorShaderSource = {
             vertex: document.querySelector("#mirror-vertex-shader").innerHTML,
@@ -1800,10 +1872,30 @@
          * Create a texture to use as a render target
          */
         function createRenderTarget(width, height) {
-            const targetTextureWidth = 256;
-            const targetTextureHeight = 256;
-            const targetTexture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+            // Create a quad for rendering
+            const quadData = new Float32Array([
+                -1.0, -1.0,
+                -1.0, 1.0,
+                1.0, -1.0,
+                1.0, 1.0,
+            ]);
+            const buffer = gl.createBuffer();
+            const vao = gl.createVertexArray();
+
+            const shader = makeProgram(overlayShaderSource, ['position'], ['source']);
+
+            gl.bindVertexArray(vao);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW);
+
+            // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
+            gl.vertexAttribPointer(shader.position, 2, gl.FLOAT, false, 8, 0);
+            gl.enableVertexAttribArray(shader.position);
+
+            gl.bindVertexArray(null);
+
+            app.targetTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, app.targetTexture);
 
             // define size and format of level 0
             // level = 0, internalFormat = gl.RGBA, border = 0, format = gl.RGBA, type = gl.UNSIGNED_BYTE, data = null;
@@ -1815,12 +1907,41 @@
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
             // Create and bind the framebuffer
+            app.renderBuffer = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
+
+            const renderBuffer = gl.createRenderbuffer();
+            gl.bindRenderbuffer(gl.RENDERBUFFER, renderBuffer);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+
+            const depthBuffer = gl.createRenderbuffer();
+            gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, renderBuffer);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+
+            // Create and bind the framebuffer
             const fb = gl.createFramebuffer();
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-            
+
             // attach the texture as the first color attachment
             const attachmentPoint = gl.COLOR_ATTACHMENT0;
-            gl.framebufferTexture2D(gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, targetTexture, 0);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, app.targetTexture, 0);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, app.targetTexture);
+
+            app.drawOverlay = () => {
+                gl.useProgram(shader.program);
+                gl.uniform1i(shader.source, 1);
+                gl.bindVertexArray(vao);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.bindVertexArray(null);
+            }
 
             return fb;
         }
@@ -2190,6 +2311,16 @@
         }
 
         /**
+         * Load data from a wavefront obj file
+         */
+        function getOBJ(url) {
+            const obj = {content: []};
+            loadOBJ(url).then((result) => {
+                obj.loaded = true;
+            });
+        }
+
+        /**
          * Process data from a gltf
          * Loading any additional resources
          */
@@ -2493,7 +2624,7 @@
                 if (item.state === undefined) return;
                 //item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
                 item.state.transparent = item.content.length > 0;
-                item.material.opacity = item.content.length > 0 ? 0.5 : 1;
+                item.material.opacity = item.content.length > 0 ? 0.5 : item.material.opacity;
                 item.updateInstanceData();
                 item.content.forEach((item) => setTransparency(item));
                 return item.state.transparent || item.selected;
@@ -3057,7 +3188,10 @@
         let start;
         function render(time) {
             // render to the canvas
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
+                //gl.clearColor(...app.background, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
             gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
             app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
@@ -4538,7 +4672,7 @@
                     colour: [1, 0.1, 0.1],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.5, 0.5, 0.5],
-                    opacity: 1,
+                    opacity: node.opacity || 1,
                     metallic: 0.5,
                 };
 
@@ -5725,6 +5859,7 @@ https://learnopengl.com/PBR/Theory
             },
             background(value) {
                 const colour = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                app.background = colour;
                 gl.clearColor(...colour, 1.0);
             }
         }
@@ -6177,7 +6312,7 @@ https://learnopengl.com/PBR/Theory
                 if (getAttribute(node, 'position')) {
                     if (getAttribute(node, 'obj')) {
                         //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
-                        item = loadOBJ(getAttribute(node, 'obj'));
+                        item = getOBJ(getAttribute(node, 'obj'));
                         //item = node[meta].representation;
                     } else if (getAttribute(node, 'gltf')) {
                         node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
@@ -6195,7 +6330,7 @@ https://learnopengl.com/PBR/Theory
                         item = new Frustum(node, parent, ratio, sides);
                         node[meta].representation = item;
                     } else if (getAttribute(node, 'radius')) {
-                        const subdivisions = getAttribute(node, 'subdivisions') ?? 2;
+                        const subdivisions = getAttribute(node, 'subdivisions') ?? 4;
                         item = new Icosphere(node, parent, subdivisions);
                     } else {
                         item = new Block(node, parent);
@@ -7267,7 +7402,7 @@ https://learnopengl.com/PBR/Theory
 
             app.pbrShader = makeProgram(pbrShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic'],
-                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture']
+                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
             );
 
             app.mirrorShader = makeProgram(mirrorShaderSource,
@@ -7291,13 +7426,14 @@ https://learnopengl.com/PBR/Theory
             };
             app.textTexture = gl.createTexture();
             initialiseText();
-
+/*
             const shape = makeCube();
             shape.push(...makeCylinder(CYLINDER_SIDES));
             shape.push(...makeQuad());
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+            */
             setBoxAttributes();
             setCylinderAttributes();
             setQuadAttributes();
@@ -7334,7 +7470,7 @@ https://learnopengl.com/PBR/Theory
                 loadFile(source);
             });
 
-            app.target = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
+            app.renderTarget = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
             skybox('images/Yokohama2/');
         }
 
