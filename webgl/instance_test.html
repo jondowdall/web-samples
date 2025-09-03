@@ -1340,18 +1340,20 @@
          * Utility function to parse and report errors
          */
         function glErrors(context = '') {
-            const err = gl.getError();
+            if (1 || app.reportErrors) {
+                const err = gl.getError();
 
-            if (err) {
-                const errors = [];
-                errors[gl.INVALID_ENUM] = `An unacceptable value has been specified for an enumerated argument. The command is ignored and the error flag is set.`;
-                errors[gl.INVALID_VALUE] = `A numeric argument is out of range. The command is ignored and the error flag is set.`;
-                errors[gl.INVALID_OPERATION] = 'The specified command is not allowed for the current state. The command is ignored and the error flag is set.';
-                errors[gl.INVALID_FRAMEBUFFER_OPERATION] = 'The currently bound framebuffer is not framebuffer complete when trying to render to or to read from it.';
-                errors[gl.OUT_OF_MEMORY] = 'Not enough memory is left to execute the command.';
-                errors[gl.CONTEXT_LOST_WEBGL] = 'If the WebGL context is lost, this error is returned on the first call to getError. Afterwards and until the context has been restored, it returns gl.NO_ERROR.';
-                console.trace();
-                console.log(context, errors[err]);
+                if (err) {
+                    const errors = [];
+                    errors[gl.INVALID_ENUM] = `An unacceptable value has been specified for an enumerated argument. The command is ignored and the error flag is set.`;
+                    errors[gl.INVALID_VALUE] = `A numeric argument is out of range. The command is ignored and the error flag is set.`;
+                    errors[gl.INVALID_OPERATION] = 'The specified command is not allowed for the current state. The command is ignored and the error flag is set.';
+                    errors[gl.INVALID_FRAMEBUFFER_OPERATION] = 'The currently bound framebuffer is not framebuffer complete when trying to render to or to read from it.';
+                    errors[gl.OUT_OF_MEMORY] = 'Not enough memory is left to execute the command.';
+                    errors[gl.CONTEXT_LOST_WEBGL] = 'If the WebGL context is lost, this error is returned on the first call to getError. Afterwards and until the context has been restored, it returns gl.NO_ERROR.';
+                    console.trace();
+                    console.log(context, errors[err]);
+                }
             }
         }
 
@@ -1417,41 +1419,43 @@
 
                 gl.uniform1i(app.pbrShader.pass, 0);
 
-                /*
-                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
-                gl.clearColor(...app.background, 1.0);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
+                //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-                */
 
                 this.renderQueue.forEach((item) => item());
 
                 const width = canvas.width;
                 const height = canvas.height;
-                /*
-                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+
+                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
                 gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, app.renderTarget);
-                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
-                */
-                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBuffer);
+                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+
+                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
                 gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+                //gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.LINEAR);
 
                 gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderTarget);
 
-                gl.clearColor(1.0, 1.0, 1.0, 1.0);
-                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.uniform1i(app.pbrShader.pass, 1);
+
+                gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
 
                 gl.enable(gl.BLEND);
                 gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
 
-                gl.uniform1i(app.pbrShader.pass, 1);
+                gl.depthMask(false);
                 this.renderQueue.forEach((item) => item());
 
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                //gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
                 if (app.drawOverlay) {
                     app.drawOverlay();
                 }
+
+                gl.depthMask(true);
                 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             }
             addNode(node) {
@@ -1475,7 +1479,7 @@
                 near: 1,
                 far: 10000,
             },
-            background: [0,0,0],
+            background: [0, 0, 0],
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
@@ -1906,31 +1910,36 @@
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-            // Create and bind the framebuffer
-            app.renderBuffer = gl.createFramebuffer();
-            gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
+            // Create and bind the framebuffer for MSAA rendering
+            app.renderBufferFBO = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
+
+            const samples = gl.getParameter(gl.MAX_SAMPLES);
 
             const renderBuffer = gl.createRenderbuffer();
             gl.bindRenderbuffer(gl.RENDERBUFFER, renderBuffer);
-            gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+            gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, width, height);
+            //gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, renderBuffer);
 
             const depthBuffer = gl.createRenderbuffer();
             gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
-            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
-
-            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, renderBuffer);
+            gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT16, width, height);
+            //gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
             gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
 
-
-            // Create and bind the framebuffer
+            // Create and bind the framebuffer for the texture rendering
             const fb = gl.createFramebuffer();
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+
+            const textureDepthBuffer = gl.createRenderbuffer();
+            gl.bindRenderbuffer(gl.RENDERBUFFER, textureDepthBuffer);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
 
             // attach the texture as the first color attachment
             const attachmentPoint = gl.COLOR_ATTACHMENT0;
             gl.framebufferTexture2D(gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, app.targetTexture, 0);
-            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
-
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, textureDepthBuffer);
 
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, app.targetTexture);
@@ -2314,7 +2323,7 @@
          * Load data from a wavefront obj file
          */
         function getOBJ(url) {
-            const obj = {content: []};
+            const obj = { content: [] };
             loadOBJ(url).then((result) => {
                 obj.loaded = true;
             });
@@ -3188,10 +3197,12 @@
         let start;
         function render(time) {
             // render to the canvas
-            //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBuffer);
-                //gl.clearColor(...app.background, 1.0);
-                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.clearBufferfv(gl.COLOR, 0, [...app.background, 1.0]);
+            
+            //gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
+            //gl.clearColor(...app.background, 1.0);
+            //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
             gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
             app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
@@ -3295,6 +3306,7 @@
                 });
 
                 if (app.textItemCount > 0) {
+                    gl.blendFunc(gl.ONE, gl.ZERO);
                     gl.colorMask(true, true, true, false);
 
                     gl.useProgram(app.textShader.program);
@@ -4452,10 +4464,10 @@
                 }
                 this.content = [];
                 this.material = {
-                    roughness: 0.1,
+                    roughness: 0.5,
                     colour: [1, 0.9, 0.1],
                     emissivityColour: [0, 0, 0],
-                    reflectivity: [0.9, 0.5, 0.5],
+                    reflectivity: [0.2, 0.2, 0.2],
                     opacity: 1,
                     metallic: 0.1,
                 };
@@ -4465,6 +4477,7 @@
             }
             updateInstances() {
                 // Create an array with the data for all instances
+
                 const data = [];
                 Block.instances.forEach((instance) => {
                     const transform = multiply(instance.transform, this.world);
@@ -4477,6 +4490,7 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                 });
+
                 // Create a buffer
                 const buffer = new ArrayBuffer(data.length * 4);
                 // Add a flaot 32 view
@@ -4487,9 +4501,12 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
 
+                //const buffer = new ArrayBuffer(Block.instances.length * 37 * 4);
+
                 // Update each instances reference to the buffer
                 Block.instances.forEach((instance, index) =>
                     instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                Block.updateInstances = true;
             }
             intersects(line, all) {
                 let size;
@@ -7426,14 +7443,14 @@ https://learnopengl.com/PBR/Theory
             };
             app.textTexture = gl.createTexture();
             initialiseText();
-/*
-            const shape = makeCube();
-            shape.push(...makeCylinder(CYLINDER_SIDES));
-            shape.push(...makeQuad());
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
-            */
+            /*
+                        const shape = makeCube();
+                        shape.push(...makeCylinder(CYLINDER_SIDES));
+                        shape.push(...makeQuad());
+            
+                        gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.vertex);
+                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+                        */
             setBoxAttributes();
             setCylinderAttributes();
             setQuadAttributes();
