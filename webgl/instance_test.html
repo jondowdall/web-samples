@@ -60,10 +60,8 @@
             max-width: 80vw;
         }
 
-        #projection-control {
+        .window {
             position: fixed;
-            left: 10%;
-            top: 10%;
 
             color: yellow;
             background-color: rgb(80, 80, 30, 0.8);
@@ -72,18 +70,53 @@
             padding: 0.5em;
         }
 
-        #projection-control h2 {
+        .window h2 {
             margin: 0;
             margin-bottom: 0.5em;
         }
 
-        #projection-control div {
+        #view-control {
+            left: 5%;
+            top: 5%;
+        }
+
+        #light-controls {
+            left: 5%;
+            top: 10%;
+        }
+
+        .light-control {
             display: grid;
+            grid-template-columns: 1fr 4em;
+        }
+
+        .light-control .colour-value {
+            grid-column: 2;
+            grid-row: span 4;
+            border-radius: 3px;
+        }
+
+        .light-control .gradient {
+            width: 100%;
+            height: 100%;
+            border-radius: 3px;
+        }
+
+
+        #camera-control {
+            right: 0;
+            top: 0;
+        }
+
+        #view-control div {
+            display: grid;
+            grid-column-gap: 0.5em;
+            grid-row-gap: 0.5em;
             grid-template-columns: repeat(2, max-content);
             grid-template-rows: repeat(4, max-content);
         }
 
-        #projection-control label {
+        #view-control label {
             text-align: end;
         }
 
@@ -116,7 +149,7 @@
             background-color: white;
         }
 
-        #view-vectors {
+        #camera-control div {
             display: grid;
             grid-template-columns: repeat(3, max-content);
             grid-template-rows: repeat(3, max-content);
@@ -302,7 +335,7 @@
 
 <body>
     <canvas id="main-canvas" tabindex="1">HTML canvas not supported!</canvas>
-    <div id="projection-control" open>
+    <div id="view-control" class="window">
         <h2>View Control</h2>
         <div>
             <label>Field of View</label><input id="field-of-view" type="number" />
@@ -344,9 +377,13 @@
         </details>
 
     </div>
+    <div id="camera-control" class="window">
+        <h2>Camera Control</h2>
+        <div></div>
+    </div>
+
     <div id="top-right">
         <input type="file" id="load-file" multiple />
-        <div id="view-vectors"></div>
         <div id="stock"></div>
     </div>
     <div id="movement">
@@ -588,6 +625,7 @@
         in vec3 reflectivity;
         in float opacity;
         in float metallic;
+        in float mirror;
 
         out vec3 v_position;
         out vec3 v_normal;
@@ -597,6 +635,7 @@
         out vec3 v_baseReflectivity;
         out float v_opacity;
         out float v_metallic;
+        out float v_mirror;
 
         void main() {            
             vec4 worldPosition = model * vec4(position, 1.0);
@@ -610,6 +649,7 @@
             v_baseReflectivity = reflectivity;
             v_opacity = opacity;
             v_metallic = metallic;
+            v_mirror = mirror;
         }
     </script>
 
@@ -643,6 +683,7 @@
 
         in float v_opacity;
         in float v_metallic;
+        in float v_mirror;
 
         out vec4 fragmentColour;
 
@@ -729,7 +770,7 @@
             vec3 F = Fresnel(v_baseReflectivity, NdotV);
             
             vec3 lo = v_emissivityColour
-                + pow(1.0 - alpha, 10.0) * F * F * texture(envTexture, direction, (pow(alpha, 3.0)) * 20.0).rgb
+                + pow(1.0 - alpha, 10.0) * F * F * texture(envTexture, direction, (pow(alpha, 3.0)) * 20.0).rgb * v_mirror
                 + BRDF1 * lightColour1 * intensity1
                 + BRDF2 * lightColour2 * intensity2
                 + BRDF3 * lightColour3 * intensity3;
@@ -1158,6 +1199,9 @@
             near.addEventListener('change', (event) => update());
             far.addEventListener('change', (event) => update());
             update();
+            const main = document.getElementById('view-control');
+            const title = main.querySelector('h2');
+            addMoveControl(main, title);
         }
 
         /**
@@ -1176,48 +1220,143 @@
          * Add Light controls
          */
         function addLightControls() {
-            app.lightPosition1 = normalised([0.1, 0.1, 0.5]);
-            app.lightColour1 = [1, 1, 1];
-            app.lightPosition2 = [3000, 3000, 30000];
-            app.lightColour2 = [0.5, 1, 0.5];
-            app.lightPosition3 = [-20000, 1000, 30000];
-            app.lightColour3 = [10000, 50000, 50000];
+            app.lights = [
+                {
+                    name: 'Light 1',
+                    directional: true,
+                    position: normalised([0.1, 0.1, 0.5]),
+                    colour: [1, 1, 1],
+                    intensity: 1,
+                },
+                {
+                    name: 'Light 2',
+                    position: [-1, 0.1, 1],
+                    colour: [1, 1, 1],
+                    intensity: 1,
+                },
+                {
+                    name: 'Light 3',
+                    position: [2, 1, 3],
+                    colour: [1, 1, 1],
+                    intensity: 1,
+                },
+            ];
 
-            const container = document.getElementById('top-right');
+            const container = document.createElement('div');
+            container.classList.add('window');
+            container.id = 'light-controls';
+            document.body.append(container);
+            const title = document.createElement('h2');
+            container.append(title);
+            title.innerHTML = 'Light Controls';
 
             const addControls = (light) => {
-                const details = document.createElement('details');
-                details.style.backgroundColor = 'white';
-                details.innerHTML = `<summary>${light.name}</summary><div></div>`;
-                const container = details.lastElementChild;
-                const x = document.createElement('input');
-                x.type = 'range';
-                x.min = light.directional ? -1 : -30;
-                x.max = light.directional ? 1 : 30;
-                x.step = light.directional ? 0.1 : 1;
-                x.value = light.position[0];
-                x.addEventListener('input', (event) => light.position[0] = x.valueAsNumber);
-                const y = document.createElement('input');
-                y.type = 'range';
-                y.min = light.directional ? -1 : -30;
-                y.max = light.directional ? 1 : 30;
-                y.step = light.directional ? 0.1 : 1;
-                y.value = light.position[1];
-                y.addEventListener('input', (event) => light.position[1] = y.valueAsNumber);
-                const z = document.createElement('input');
-                z.type = 'range';
-                z.min = light.directional ? -1 : -30;
-                z.max = light.directional ? 1 : 30;
-                z.step = light.directional ? 0.1 : 1;
-                z.value = light.position[2];
-                z.addEventListener('input', (event) => light.position[2] = z.valueAsNumber);
-                container.append(x, document.createElement('br'), y, document.createElement('br'), z);
+
+                const slider = (obj, parameter, min, max, step) => {
+                    const slider = document.createElement('input');
+                    slider.type = 'range';
+                    slider.min = min;
+                    slider.max = max;
+                    slider.step = step;
+                    slider.value = obj[parameter];
+                    slider.classList.add('all-columns');
+                    slider.addEventListener('input', (event) => obj[parameter] = slider.valueAsNumber);
+                    return slider;
+                };
+
+                const vectorControl = (parameter) =>
+                    parameter.map((value, index) => {
+                        const input = document.createElement('input');
+                        input.type = 'number';
+                        input.value = value;
+                        input.id = `${name}-${index}`;
+                        input.classList.add('matrix-input');
+                        input.addEventListener('input', (event) => {
+                            parameter[index] = input.valueAsNumber;
+                        });
+                        return input;
+                    });
+
+                const getColour = (colour) => `rgb(${colour[0] * 255} ${colour[1] * 255} ${colour[2] * 255})`;
+                const gradients = [
+                    (colour) => `linear-gradient(90deg, rgb(0 ${colour[1] * 255} ${colour[2] * 255}), rgb(255 ${colour[1] * 255} ${colour[2] * 255}))`,
+                    (colour) => `linear-gradient(90deg, rgb(${colour[0] * 255} 0 ${colour[2] * 255}), rgb(${colour[0] * 255} 255 ${colour[2] * 255}))`,
+                    (colour) => `linear-gradient(90deg, rgb(${colour[0] * 255} ${colour[1] * 255} 0), rgb(${colour[0] * 255} ${colour[1] * 255} 255))`,
+                ];
+
+                const colourSlider = (parameter, index) => {
+                    const background = document.createElement('div')
+                    background.style.background = gradients[index](parameter);
+                    background.classList.add('gradient');
+
+                    const slider = document.createElement('input');
+                    background.append(slider);
+                    slider.type = 'range';
+                    slider.min = 0;
+                    slider.max = 1;
+                    slider.step = 0.01;
+                    slider.value = parameter[index];
+                    return [slider, background];
+                }
+
+                const colourControl = (parameter, labelText) => {
+                    const label = document.createElement('span');
+                    label.innerHTML = labelText;
+                    label.classList.add('all-columns');
+
+                    const value = document.createElement('div');
+                    value.style.background = getColour(parameter);
+                    value.classList.add('colour-value');
+
+                    const [red, redBackground] = colourSlider(parameter, 0);
+                    const [green, greenBackground] = colourSlider(parameter, 1);
+                    const [blue, blueBackground] = colourSlider(parameter, 2);
+
+                    red.addEventListener('input', (event) => {
+                        parameter[0] = red.valueAsNumber;
+                        greenBackground.style.background = gradients[1](parameter);
+                        blueBackground.style.background = gradients[2](parameter);
+                        value.style.background = getColour(parameter);
+                    });
+
+                    green.addEventListener('input', (event) => {
+                        parameter[1] = green.valueAsNumber;
+                        redBackground.style.background = gradients[0](parameter);
+                        blueBackground.style.background = gradients[2](parameter);
+                        value.style.background = getColour(parameter);
+                    });
+
+                    blue.addEventListener('input', (event) => {
+                        parameter[2] = blue.valueAsNumber;
+                        redBackground.style.background = gradients[0](parameter);
+                        greenBackground.style.background = gradients[1](parameter);
+                        value.style.background = getColour(parameter);
+                    });
+                    return [label, value, redBackground, greenBackground, blueBackground];
+                }
+
+                const details = document.createElement('div');
+                details.innerHTML = `<span class="all-columns">${light.name}</span>`;
+                details.classList.add('light-control');
+
+                const label = document.createElement('span');
+                label.innerHTML = light.directional ? 'Direction:' : 'Position:';
+                label.classList.add('all-columns');
+                details.append(label);
+                const position = document.createElement('div');
+                position.append(...vectorControl(light.position));
+                position.classList.add('all-columns');
+                details.append(position);
+                details.append(...colourControl(light.colour, 'Colour'));
+
+                details.append(slider(light, 'intensity', 0.1, 100, 0.1));
+
                 return details;
             }
 
-            container.append(addControls({ name: 'Light 1 (directional)', directional: true, position: app.lightPosition1, colour: app.lightColour1 }));
-            container.append(addControls({ name: 'Light 2 (point)', position: app.lightPosition2, colour: app.lightColour2 }));
-            container.append(addControls({ name: 'Light 3 (point)', position: app.lightPosition3, colour: app.lightColour3 }));
+            container.append(...app.lights.map((light) => addControls(light)));
+
+            addMoveControl(container, title);
         }
 
 
@@ -1493,7 +1632,10 @@
          * Create matrix control.
          */
         function viewControl() {
-            const container = document.getElementById('view-vectors');
+            const main = document.getElementById('camera-control');
+            const title = main.querySelector('h2');
+            addMoveControl(main, title);
+            const container = main.querySelector('div');
 
             const update = () => {
                 const { xAxis, yAxis, zAxis, distance } = viewVectors();
@@ -1621,14 +1763,14 @@
 
                 gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
-                gl.uniform3fv(app.pbrShader.lightPosition1, app.lightPosition1);
-                gl.uniform3fv(app.pbrShader.lightColour1, app.lightColour1);
+                gl.uniform3fv(app.pbrShader.lightPosition1, app.lights[0].position);
+                gl.uniform3fv(app.pbrShader.lightColour1, scale(app.lights[0].colour, app.lights[0].intensity));
 
-                gl.uniform3fv(app.pbrShader.lightPosition2, app.lightPosition2);
-                gl.uniform3fv(app.pbrShader.lightColour2, app.lightColour2);
+                gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
+                gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
 
-                gl.uniform3fv(app.pbrShader.lightPosition3, app.lightPosition3);
-                gl.uniform3fv(app.pbrShader.lightColour3, app.lightColour3);
+                gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
+                gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
                 gl.uniform1i(app.pbrShader.pass, 0);
 
@@ -1672,14 +1814,14 @@
 
                 gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lightPosition1);
-                gl.uniform3fv(app.pbrClearShader.lightColour1, app.lightColour1);
+                gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
+                gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lightPosition2);
-                gl.uniform3fv(app.pbrClearShader.lightColour2, app.lightColour2);
+                gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
+                gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lightPosition3);
-                gl.uniform3fv(app.pbrClearShader.lightColour3, app.lightColour3);
+                gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
+                gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
 
                 gl.uniform1i(app.pbrClearShader.pass, 1);
 
@@ -2539,6 +2681,9 @@
                     gl.disableVertexAttribArray(app.pbrShader.metallic);
                     gl.vertexAttrib1f(app.pbrShader.metallic, patch.material.metallic ?? 0);
 
+                    gl.disableVertexAttribArray(app.pbrShader.mirror);
+                    gl.vertexAttrib1f(app.pbrShader.mirror, patch.material.mirror ?? 0);
+
                     gl.drawArraysInstanced(gl.TRIANGLES, patch.offset, patch.points, this.instances);
                 })
             };
@@ -2676,6 +2821,9 @@
 
                         gl.disableVertexAttribArray(app.pbrShader.metallic);
                         gl.vertexAttrib1f(app.pbrShader.metallic, patch.material.metallic ?? 0);
+
+                        gl.disableVertexAttribArray(app.pbrShader.mirror);
+                        gl.vertexAttrib1f(app.pbrShader.mirror, patch.material.mirror ?? 0);
 
                         gl.drawArraysInstanced(gl.TRIANGLES, patch.offset, patch.points, this.instances);
                     })
@@ -3513,9 +3661,9 @@
                 gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
                 gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
                 gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                gl.uniform3fv(app.shader.lightPosition1, app.lightPosition1);
-                gl.uniform3fv(app.shader.lightPosition2, app.lightPosition2);
-                gl.uniform3fv(app.shader.lightPosition3, app.lightPosition3);
+                gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
+                gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
+                gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
 
                 app.scene.render();
 
@@ -3524,41 +3672,7 @@
                     app.connections.forEach((connection) =>
                         gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
                 }
-                /*
-                                if (app.objs.length > 0) {
-                                    gl.useProgram(app.pbrShader.program);
-                
-                                    gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
-                                    gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
-                                    gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
-                
-                                    gl.uniform3fv(app.pbrShader.lightPosition1, app.lightPosition1);
-                                    gl.uniform3fv(app.pbrShader.lightColour1, app.lightColour1);
-                
-                                    gl.uniform3fv(app.pbrShader.lightPosition2, app.lightPosition2);
-                                    gl.uniform3fv(app.pbrShader.lightColour2, app.lightColour2);
-                
-                                    gl.uniform3fv(app.pbrShader.lightPosition3, app.lightPosition3);
-                                    gl.uniform3fv(app.pbrShader.lightColour3, app.lightColour3);
-                
-                                    app.objs.forEach((item) => item.render());
-                                }
-                
-                                gl.disable(gl.DEPTH_TEST);
-                
-                                app.boxes.forEach((box) => {
-                                    if (box.highlight) {
-                                        gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.colour);
-                                        gl.disableVertexAttribArray(app.shader.ambientColour);
-                                        gl.vertexAttrib3f(app.shader.ambientColour, 1, 1, 1);
-                                        gl.drawArraysInstanced(gl.TRIANGLES, 6 * (box.highlight - 1), 6, app.faceCount);
-                
-                                        gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 4 * (3 * 3 + 2), 0);
-                                        gl.enableVertexAttribArray(app.shader.ambientColour);
-                                        gl.vertexAttribDivisor(app.shader.ambientColour, 1);
-                                    }
-                                });
-                */
+
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
 
@@ -4436,28 +4550,15 @@
             }
         }
 
+
         /**
-         * Dimsplay controls for a material
+         * Add event to make element moveable with the mouse.
+         * 
+         * Assumes the element position is 'fixed'
          */
-        function materialControl(material, objects = []) {
-            const main = document.createElement('div');
-            main.classList.add('material-controls');
-            const initial = {
-                roughness: material.roughness,
-                colour: [...material.colour],
-                emissivityColour: [...material.emissivityColour],
-                reflectivity: [...material.reflectivity],
-                opacity: material.opacity,
-                metallic: material.metallic,
-            };
-
-            const title = document.createElement('div');
-            main.append(title);
-            title.classList.add('title');
-            title.innerHTML = `Material (${objects[0].name})`;
-
-            title.addEventListener('mousedown', (event) => {
-                const box = main.getBoundingClientRect();
+        function addMoveControl(element, control) {
+            control.addEventListener('mousedown', (event) => {
+                const box = element.getBoundingClientRect();
                 action.initial = {
                     window: {
                         x: box.left,
@@ -4473,14 +4574,63 @@
                         x: event.clientX - action.initial.mouse.x,
                         y: event.clientY - action.initial.mouse.y,
                     };
-                    main.style.left = `${action.initial.window.x + delta.x}px`;
-                    main.style.top = `${action.initial.window.y + delta.y}px`;
+                    element.style.left = `${action.initial.window.x + delta.x}px`;
+                    element.style.top = `${action.initial.window.y + delta.y}px`;
                 };
                 action.end = (event) => {
                     action.move = highlightFace;
                 };
             });
+        }
 
+
+        /**
+         * Display controls for a material
+         */
+        function materialControl(material, objects = []) {
+            const main = document.createElement('div');
+            main.classList.add('material-controls');
+            const initial = {
+                roughness: material.roughness,
+                colour: [...material.colour],
+                emissivityColour: [...material.emissivityColour],
+                reflectivity: [...material.reflectivity],
+                opacity: material.opacity,
+                metallic: material.metallic,
+                mirror: material.mirror,
+            };
+
+            const title = document.createElement('div');
+            main.append(title);
+            title.classList.add('title');
+            title.innerHTML = `Material (${objects[0].name})`;
+            addMoveControl(main, title);
+            /*
+                        title.addEventListener('mousedown', (event) => {
+                            const box = main.getBoundingClientRect();
+                            action.initial = {
+                                window: {
+                                    x: box.left,
+                                    y: box.top,
+                                },
+                                mouse: {
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                },
+                            }
+                            action.move = (event) => {
+                                const delta = {
+                                    x: event.clientX - action.initial.mouse.x,
+                                    y: event.clientY - action.initial.mouse.y,
+                                };
+                                main.style.left = `${action.initial.window.x + delta.x}px`;
+                                main.style.top = `${action.initial.window.y + delta.y}px`;
+                            };
+                            action.end = (event) => {
+                                action.move = highlightFace;
+                            };
+                        });
+            */
             const controls = document.createElement('div');
             main.append(controls);
             controls.classList.add('main');
@@ -4598,6 +4748,7 @@
                 colourSlider(material.reflectivity, 'Reflectivity:'),
                 numberSlider('opacity', 'Opacity:');
             numberSlider('metallic', 'Metallic:');
+            numberSlider('mirror', 'Mirror:');
 
             const buttons = document.createElement('div');
             main.append(buttons);
@@ -4710,14 +4861,15 @@
             }
             updateInstanceData() {
                 if (this.instanceData) {
-                    this.instanceData.set(multiply(this.transform, this.world));                  // offset:  0, size: 16
-                    this.instanceData.set(this.orientation, 16);            // offset: 16, size: 9
-                    this.instanceData[25] = this.material.roughness;     // offset: 25, size: 1
-                    this.instanceData.set(this.material.colour, 26);              // offset: 26, size: 3
-                    this.instanceData.set(this.material.emissivityColour, 29);    // offset: 29, size: 3
-                    this.instanceData.set(this.material.reflectivity, 32);        // offset: 32, size: 3
+                    this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
+                    this.instanceData.set(this.orientation, 16);               // offset: 16, size: 9
+                    this.instanceData[25] = this.material.roughness;           // offset: 25, size: 1
+                    this.instanceData.set(this.material.colour, 26);           // offset: 26, size: 3
+                    this.instanceData.set(this.material.emissivityColour, 29); // offset: 29, size: 3
+                    this.instanceData.set(this.material.reflectivity, 32);     // offset: 32, size: 3
                     this.instanceData[35] = this.material.opacity;             // offset: 35, size: 1
                     this.instanceData[36] = this.material.metallic;            // offset: 36, size: 1
+                    this.instanceData[37] = this.material.mirror;              // offset: 37, size: 1
                     this.representation.updateInstances = true;
                 }
             }
@@ -4825,6 +4977,7 @@
                 material.reflectivity      offset: 32, size: 3
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
+                material.mirror            offset: 37, size: 1
                 */
 
                 // Matrices are passed as 4 vertex attributes
@@ -4832,41 +4985,45 @@
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
 
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
                 gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.opacity);
 
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
                 gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
                 gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                gl.enableVertexAttribArray(app.pbrShader.mirror);
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Block.buffers.indices);
 
@@ -4887,6 +5044,7 @@
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
+                    data.push(instance.material.mirror);            // offset: 36, size: 1
                 });
 
                 // Create a buffer
@@ -4901,7 +5059,7 @@
 
                 // Update each instances reference to the buffer
                 Block.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
                 Block.updateInstances = true;
             }
             static render() {
@@ -4936,6 +5094,7 @@
                     reflectivity: [0.2, 0.2, 0.2],
                     opacity: 1,
                     metallic: 0.1,
+                    mirror: 0.3,
                 };
                 Block.instances.push(this);
                 this.representation = Block;
@@ -5105,6 +5264,7 @@
                 material.reflectivity      offset: 32, size: 3
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
+                material.mirror          offset: 37, size: 1
                 */
 
                 // Matrices are passed as 4 vertex attributes
@@ -5112,41 +5272,45 @@
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
 
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
                 gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.opacity);
 
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
                 gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
                 gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                gl.enableVertexAttribArray(app.pbrShader.mirror);
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, BevelledBlock.buffers.indices);
 
@@ -5182,6 +5346,7 @@
                     reflectivity: [0.2, 0.2, 0.2],
                     opacity: 1,
                     metallic: 0.1,
+                    mirror: 0.3,
                 };
                 BevelledBlock.instances.push(this);
                 this.representation = BevelledBlock;
@@ -5201,6 +5366,7 @@
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
+                    data.push(instance.material.mirror);              // offset: 37, size: 1
                 });
 
                 // Create a buffer
@@ -5213,11 +5379,9 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, BevelledBlock.instanceData, gl.DYNAMIC_DRAW);
 
-                //const buffer = new ArrayBuffer(BevelledBlock.instances.length * 37 * 4);
-
                 // Update each instances reference to the buffer
                 BevelledBlock.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
                 BevelledBlock.updateInstances = true;
             }
             intersects(line, all) {
@@ -5333,6 +5497,7 @@
                 material.reflectivity      offset: 32, size: 3
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
+                material.mirror            offset: 37, size: 1
                 */
 
                 // Matrices are passed as 4 vertex attributes
@@ -5340,41 +5505,45 @@
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
 
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
                 gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.opacity);
 
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
                 gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
                 gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                gl.enableVertexAttribArray(app.pbrShader.mirror);
 
                 app.scene.renderQueue.push(() => Cylinder.render(current));
                 gl.bindVertexArray(null);
@@ -5403,6 +5572,7 @@
                     reflectivity: [0.5, 0.5, 0.5],
                     opacity: node.opacity || 1,
                     metallic: 0.5,
+                    mirror: 0.3,
                 };
 
                 this.representation = Cylinder.representations[sides];
@@ -5423,6 +5593,7 @@
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
+                    data.push(instance.material.mirror);              // offset: 37, size: 1
                 });
 
                 const buffer = new ArrayBuffer(data.length * 4);
@@ -5435,7 +5606,7 @@
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
@@ -5531,6 +5702,7 @@
                 material.reflectivity      offset: 32, size: 3
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
+                material.mirror            offset: 37, size: 1
                 */
 
                 // Matrices are passed as 4 vertex attributes
@@ -5538,41 +5710,45 @@
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
 
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
                 gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.opacity);
 
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
                 gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
                 gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                gl.enableVertexAttribArray(app.pbrShader.mirror);
 
                 app.scene.renderQueue.push(() => Frustum.render(current));
                 gl.bindVertexArray(null);
@@ -5602,6 +5778,7 @@
                     reflectivity: [0.9, 0.5, 0.5],
                     opacity: 1,
                     metallic: 0.1,
+                    mirror: 0.3,
                 };
 
                 this.representation = Frustum.representations[sides];
@@ -5622,6 +5799,7 @@
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
+                    data.push(instance.material.mirror);              // offset: 37, size: 1
                 });
                 const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
@@ -5633,7 +5811,7 @@
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
@@ -5790,6 +5968,7 @@
                 material.reflectivity      offset: 32, size: 3
                 material.opacity           offset: 35, size: 1
                 material.metallic          offset: 36, size: 1
+                material.mirror            offset: 37, size: 1
                 */
 
                 // Matrices are passed as 4 vertex attributes
@@ -5797,41 +5976,45 @@
                     for (let i = 0; i < 4; ++i) {
                         const location = app.pbrShader.model + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 37, 4 * (i * 4));
+                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                     for (let i = 0; i < 3; ++i) {
                         const location = app.pbrShader.normalMatrix + i;
                         // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 37, 4 * (16 + i * 3));
+                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
                         gl.vertexAttribDivisor(location, 1);
                         gl.enableVertexAttribArray(location);
                     }
                 }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 37, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
                 gl.enableVertexAttribArray(app.pbrShader.roughness);
 
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 37, 4 * 26);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 37, 4 * 29);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 37, 4 * 32);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 37, 4 * 35);
+                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
                 gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.opacity);
 
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 37, 4 * 36);
+                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
                 gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
                 gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                gl.enableVertexAttribArray(app.pbrShader.mirror);
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, level.buffers.indices);
 
@@ -5860,6 +6043,7 @@
                     reflectivity: [0.9, 0.5, 0.5],
                     opacity: 1,
                     metallic: 0.1,
+                    mirror: 0.3,
                 };
 
                 this.level = Icosphere.level[subdivisions];
@@ -5880,6 +6064,7 @@
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
+                    data.push(instance.material.mirror);            // offset: 36, size: 1
                 });
                 const buffer = new ArrayBuffer(data.length * 4);
                 // Convert to a typed array and pass to gl
@@ -5891,7 +6076,7 @@
 
                 // Update each instances reference to the buffer
                 this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 37 * 4, 37));
+                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
@@ -5947,6 +6132,7 @@ https://learnopengl.com/PBR/Theory
             reflectivity: [0.98, 0.82, 0.76],
             opacity: 1,
             metallic: 0.0,
+            mirror: 0.3,
         }
 
         /**
@@ -8113,7 +8299,7 @@ https://learnopengl.com/PBR/Theory
             addMovementControls();
             projectionControl();
             addLightControls();
-            viewControl(document.getElementById('view-vectors'));
+            viewControl(document.getElementById('camera-control'));
             addCanvasEvents(canvas);
 
             // Set clear color to black, fully opaque
@@ -8132,12 +8318,12 @@ https://learnopengl.com/PBR/Theory
                 ['projection', 'view', 'texture']);
 
             app.pbrShader = makeProgram(pbrShaderSource,
-                ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic'],
+                ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic', 'mirror'],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
             );
 
             app.pbrClearShader = makeProgram(pbrClearShaderSource,
-                ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic'],
+                ['model', 'normalMatrix', 'position', 'normal', 'colour', 'emissivityColour', 'roughness', 'reflectivity', 'opacity', 'metallic', 'mirror'],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
             );
 
