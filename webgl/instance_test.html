@@ -2763,25 +2763,26 @@
         /**
          * Load data from a wavefront obj file
          */
-        async function loadOBJ(url) {
-            const size = [1, 1, 1];
-            const obj = { scale(...scale) { size.push(...scale) }, render() { }, };
+        async function loadOBJ(url, obj) {
             const response = await fetch(url);
             if (response.ok) {
                 const content = await response.text();
                 Object.assign(obj, processOBJ(content, url, obj));
-                obj.scale(size);
             }
-            app.objs.push(obj);
         }
 
         /**
          * Load data from a wavefront obj file
          */
         function getOBJ(url) {
-            const obj = { content: [] };
-            loadOBJ(url).then((result) => {
+            const obj = { content: [],
+                scale() { },
+                render() { },
+            };
+            loadOBJ(url, obj).then((result) => {
                 obj.loaded = true;
+                obj.scale(1, 1, 1);
+                app.scene.renderQueue.push(() => obj.render());
             });
         }
 
@@ -3093,7 +3094,7 @@
                 //item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
                 item.state.transparent = item.content.length > 0;
                 item.material.opacity = item.content.length > 0 ? 0.4 : item.material.opacity;
-                item.updateInstanceData();
+                item.representation.updateInstances = true;
                 item.content.forEach((item) => setTransparency(item));
                 return item.state.transparent || item.selected;
             }
@@ -4881,6 +4882,8 @@
                     instances: gl.createBuffer(),
                     vao: gl.createVertexArray(),
                 };
+                this.triangles = 0;
+                this.lines = 0;
             }
             initialiseInstances() {
                 // Create an array with the data for all instances
@@ -4919,19 +4922,24 @@
                 gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW);
             }
             render() {
-                gl.bindVertexArray(this.buffers.vao);
-                if (this.initialise) {
-                    this.initialiseInstances();
-                    this.initialise = false;
-                } else if (this.updateInstances) {
-                    this.updateInstanceData();
-                    this.updateInstances = false;
-                }
-                if (!app.wireframe) {
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, this.instances.length);
-                }
-                if (app.wireframe || !app.solid) {
-                    gl.drawArraysInstanced(gl.LINES, 36, 24, this.instances.length);
+                if (this.instances.length > 0) {
+                    gl.bindVertexArray(this.buffers.vao);
+                    if (this.initialise) {
+                        this.initialiseInstances();
+                        this.initialise = false;
+                    } else if (this.updateInstances) {
+                        this.updateInstanceData();
+                        this.updateInstances = false;
+                    }
+                    if (this.triangles > 0 && !app.wireframe) {
+                        gl.drawArraysInstanced(gl.TRIANGLES, 0, this.triangles * 3, this.instances.length);
+                    }
+                    if (this.lines > 0 && (app.wireframe || !app.solid)) {
+                        gl.drawArraysInstanced(gl.LINES, this.triangles * 3, this.lines * 2, this.instances.length);
+                    }
+                    if (this.buffers.indices && this.points > 0) {
+                        gl.drawElementsInstanced(gl.TRIANGLES, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
+                    }
                 }
             }
         }
@@ -4991,51 +4999,6 @@
                 this.transform[12] += size[0] * offset[0];
                 this.transform[13] += size[1] * offset[1];
                 this.transform[14] += size[2] * offset[2];
-            }
-            static initialiseInstances(representation) {
-                // Create an array with the data for all instances
-                const data = [];
-                representation.instances.forEach((instance) => {
-                    const transform = multiply(instance.transform, instance.world);
-                    data.push(...transform);                          // offset:  0, size: 16
-                    data.push(...instance.orientation);               // offset: 16, size: 9
-                    data.push(instance.material.roughness);           // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);              // offset: 36, size: 1
-                });
-
-                // Create a buffer
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Add a flaot 32 view
-                representation.instanceData = new Float32Array(buffer, 0, data.length);
-                // Load the data using the view
-                representation.instanceData.set(data);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, representation.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
-                representation.updateInstances = true;
-            }
-            updateInstanceData() {
-                if (this.instanceData) {
-                    this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
-                    this.instanceData.set(this.orientation, 16);               // offset: 16, size: 9
-                    this.instanceData[25] = this.material.roughness;           // offset: 25, size: 1
-                    this.instanceData.set(this.material.colour, 26);           // offset: 26, size: 3
-                    this.instanceData.set(this.material.emissivityColour, 29); // offset: 29, size: 3
-                    this.instanceData.set(this.material.reflectivity, 32);     // offset: 32, size: 3
-                    this.instanceData[35] = this.material.opacity;             // offset: 35, size: 1
-                    this.instanceData[36] = this.material.metallic;            // offset: 36, size: 1
-                    this.instanceData[37] = this.material.mirror;              // offset: 37, size: 1
-                    this.representation.updateInstances = true;
-                }
             }
         }
 
@@ -5114,14 +5077,9 @@
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
                 const collection = new Collection();
-                /*
-                Block.instances = [];
-                Block.buffers = {
-                    vertices: gl.createBuffer(),
-                    instances: gl.createBuffer(),
-                    vao: gl.createVertexArray(),
-                };
-                */
+                Block.collection = collection;
+                collection.triangles = 12;
+                collection.lines = 12;
 
                 gl.bindVertexArray(collection.buffers.vao);
                 gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
@@ -5196,62 +5154,12 @@
 
                 app.scene.renderQueue.push(() => collection.render());
                 gl.bindVertexArray(null);
-            }
-            static initialiseInstances() {
-                // Create an array with the data for all instances
-                const data = [];
-                Block.instances.forEach((instance) => {
-                    const transform = multiply(instance.transform, instance.world);
-                    data.push(...transform);                          // offset:  0, size: 16
-                    data.push(...instance.orientation);               // offset: 16, size: 9
-                    data.push(instance.material.roughness);           // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);              // offset: 36, size: 1
-                });
-
-                // Create a buffer
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Add a flaot 32 view
-                Block.instanceData = new Float32Array(buffer, 0, data.length);
-                // Load the data using the view
-                Block.instanceData.set(data);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                Block.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
-                Block.updateInstances = true;
-            }
-            static render() {
-                gl.bindVertexArray(Block.buffers.vao);
-                if (Block.initialise) {
-                    Block.initialiseInstances();
-                    Block.initialise = false;
-                }
-                if (Block.updateInstances) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, Block.buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, Block.instanceData, gl.DYNAMIC_DRAW);
-                    Block.updateInstances = false;
-                }
-                if (!app.wireframe) {
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, Block.instances.length);
-                }
-                if (app.wireframe || !app.solid) {
-                    gl.drawArraysInstanced(gl.LINES, 36, 24, Block.instances.length);
-                }
+                return collection;
             }
             constructor(node, parent) {
                 super(node, parent, `block`);
 
-                if (Block.instances === undefined) {
-                    Block.make();
-                }
+                this.representation = Block.collecion || Block.make();
                 this.content = [];
                 this.material = {
                     roughness: 0.1,
@@ -5262,9 +5170,8 @@
                     metallic: 0.1,
                     mirror: 0.3,
                 };
-                Block.instances.push(this);
-                this.representation = Block;
-                Block.initialise = true;
+                this.representation.instances.push(this);
+                this.representation.initialise = true;
             }
             intersects(line, all) {
                 let size;
@@ -5351,11 +5258,11 @@
                  *    | /          \ |
                  *    2 ------------ 3
                  */
-                const bevelData = {
-                    bevel,
-                    data: new Collection(),
-                };
-                BevelledBlock.bevels.push(bevelData);
+                const collection = new Collection();
+                collection.key = bevel;
+                BevelledBlock.bevels.push(collection);
+                collection.triangles = 44;
+                collection.lines = 12;
 
                 const faces = [
                     [1 - bevel[0], 1 - bevel[1], 1],
@@ -5448,8 +5355,8 @@
                 const shape = [...triangles.flatMap((t) => [...t.p1, ...normalised(t.n), ...t.p2, ...normalised(t.n), ...t.p3, ...normalised(t.n)]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                gl.bindVertexArray(bevelData.data.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, bevelData.data.buffers.vertices);
+                gl.bindVertexArray(collection.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
 
                 // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
@@ -5459,7 +5366,7 @@
                 gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
-                gl.bindBuffer(gl.ARRAY_BUFFER, bevelData.data.buffers.instances);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
 
                 // Matrices are passed as 4 vertex attributes
                 for (let j = 0; j < 10; ++j) {
@@ -5506,33 +5413,12 @@
                 gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
                 gl.enableVertexAttribArray(app.pbrShader.mirror);
 
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bevelData.data.buffers.indices);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
 
-                app.scene.renderQueue.push(() => bevelData.data.render());
+                app.scene.renderQueue.push(() => collection.render());
                 gl.bindVertexArray(null);
-                return bevelData;
+                return collection;
             }
-            /*
-            static render(bevelData) {
-                gl.bindVertexArray(bevelData.buffers.vao);
-                if (bevelData.initialise) {
-                    BevelledBlock.initialiseInstances(bevelData);
-                    bevelData.initialise = false;
-                }
-
-                if (bevelData.updateInstances) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, bevelData.buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, bevelData.instanceData, gl.DYNAMIC_DRAW);
-                    bevelData.updateInstances = false;
-                }
-                if (!app.wireframe) {
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 132, bevelData.instances.length);
-                }
-                if (app.wireframe || !app.solid) {
-                    gl.drawArraysInstanced(gl.LINES, 132, 24, bevelData.instances.length);
-                }
-            }
-                */
             constructor(node, parent) {
                 super(node, parent, `BevelledBlock`);
 
@@ -5549,8 +5435,8 @@
                 const shortest = Math.min(...size) || 1;
                 const scaledBevel = size.map((length, index) => bevel[index] * shortest / (length || 1));
 
-                this.representation = BevelledBlock.bevels.find((data) =>
-                    data.bevel.every((value, index) => value === scaledBevel[index]));
+                this.representation = BevelledBlock.bevels.find((collection) =>
+                    collection.key.every((value, index) => value === scaledBevel[index]));
 
                 if (this.representation === undefined) {
                     this.representation = BevelledBlock.make(scaledBevel);
@@ -5565,43 +5451,9 @@
                     metallic: 0.1,
                     mirror: 0.3,
                 };
-                this.representation.data.instances.push(this);
-                this.representation.data.initialise = true;
+                this.representation.instances.push(this);
+                this.representation.initialise = true;
             }
-            /*
-            updateInstances() {
-                // Create an array with the data for all instances
-
-                const data = [];
-                BevelledBlock.instances.forEach((instance) => {
-                    const transform = multiply(instance.transform, this.world);
-                    data.push(...transform);           // offset:  0, size: 16
-                    data.push(...instance.orientation);         // offset: 16, size: 9
-                    data.push(instance.material.roughness);     // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);              // offset: 37, size: 1
-                });
-
-                // Create a buffer
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Add a flaot 32 view
-                BevelledBlock.instanceData = new Float32Array(buffer, 0, data.length);
-                // Load the data using the view
-                BevelledBlock.instanceData.set(data);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, BevelledBlock.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                BevelledBlock.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
-                BevelledBlock.updateInstances = true;
-            }
-                */
             intersects(line, all) {
                 let size;
                 const transform = multiply(this.transform, this.world);
@@ -5682,20 +5534,13 @@
                     );
                 }
 
-                const current = {
-                    instances: [],
-                    buffers: {
-                        vertices: gl.createBuffer(),
-                        instances: gl.createBuffer(),
-                        vao: gl.createVertexArray(),
-                    },
-                    points: triangles.length / 6,
-                };
+                const collection = new Collection();
+                collection.key = sides;
+                collection.triangles = triangles.length / 6;
+                Cylinder.representations[sides] = collection;
 
-                Cylinder.representations[sides] = current;
-
-                gl.bindVertexArray(current.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.vertices);
+                gl.bindVertexArray(collection.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
 
                 // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
@@ -5705,7 +5550,7 @@
                 gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
-                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.instances);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
 
                 // Matrices are passed as 4 vertex attributes
                 for (let j = 0; j < 10; ++j) {
@@ -5752,26 +5597,9 @@
                 gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
                 gl.enableVertexAttribArray(app.pbrShader.mirror);
 
-                app.scene.renderQueue.push(() => Cylinder.render(current));
+                app.scene.renderQueue.push(() => collection.render());
                 gl.bindVertexArray(null);
-                return current;
-            }
-            static render(representation) {
-
-                gl.bindVertexArray(representation.buffers.vao);
-                if (representation.initialise) {
-                    Cylinder.initialiseInstances(representation);
-                    representation.initialise = false;
-                }
-
-                if (representation.updateInstances) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, representation.buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, representation.instanceData, gl.DYNAMIC_DRAW);
-                    representation.updateInstances = false;
-                }
-
-                gl.bindVertexArray(representation.buffers.vao);
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, representation.points, representation.instances.length);
+                return collection;
             }
             constructor(node, parent, sides = 12) {
                 super(node, parent, 'cylinder');
@@ -5792,34 +5620,6 @@
                 this.representation.instances.push(this);
                 this.buffers = this.representation.buffers;
                 this.representation.initialise = true;
-            }
-            updateInstances() {
-                // Create an array with the data for all instances
-                const data = [];
-                this.representation.instances.forEach((instance) => {
-                    const transform = multiply(instance.transform, instance.world);
-                    data.push(...transform);                          // offset:  0, size: 16
-                    data.push(...instance.orientation);               // offset: 16, size: 9
-                    data.push(instance.material.roughness);           // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);              // offset: 37, size: 1
-                });
-
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Convert to a typed array and pass to gl
-                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
-                this.representation.instanceData.set(data);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
@@ -5882,20 +5682,14 @@
                     );
                 }
 
-                const current = {
-                    instances: [],
-                    buffers: {
-                        vertices: gl.createBuffer(),
-                        instances: gl.createBuffer(),
-                        vao: gl.createVertexArray(),
-                    },
-                    points: triangles.length / 6,
-                };
+                const collection = new Collection();
+                collection.key = [ratio, sides];
+                collection.triangles = triangles.length / 6;
 
-                Frustum.representations[sides] = current;
+                Frustum.representations[sides] = collection;
 
-                gl.bindVertexArray(current.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.vertices);
+                gl.bindVertexArray(collection.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
 
                 // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
@@ -5905,7 +5699,7 @@
                 gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
-                gl.bindBuffer(gl.ARRAY_BUFFER, current.buffers.instances);
+                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
                 /*
                 transform                  offset:  0, size: 16
                 orientation                offset: 16, size: 9
@@ -5963,18 +5757,9 @@
                 gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
                 gl.enableVertexAttribArray(app.pbrShader.mirror);
 
-                app.scene.renderQueue.push(() => Frustum.render(current));
+                app.scene.renderQueue.push(() => collection.render());
                 gl.bindVertexArray(null);
-            }
-            static render(representation) {
-                if (representation.updateInstances) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, representation.buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, representation.instanceData, gl.DYNAMIC_DRAW);
-                    representation.updateInstances = false;
-                }
-
-                gl.bindVertexArray(representation.buffers.vao);
-                gl.drawArraysInstanced(gl.TRIANGLES, 0, representation.points, representation.instances.length);
+                return collection;
             }
             constructor(node, parent, ratio, sides = 12) {
                 super(node, parent);
@@ -5996,35 +5781,8 @@
 
                 this.representation = Frustum.representations[sides];
                 Frustum.representations[sides].instances.push(this);
-                this.buffers = this.representation.buffers;
 
-                this.updateInstances();
-            }
-            updateInstances() {
-                // Create an array with the data for all instances
-                const data = [];
-                this.representation.instances.forEach((instance) => {
-                    data.push(...instance.transform);           // offset:  0, size: 16
-                    data.push(...instance.orientation);         // offset: 16, size: 9
-                    data.push(instance.material.roughness);     // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);              // offset: 37, size: 1
-                });
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Convert to a typed array and pass to gl
-                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
-                this.representation.instanceData.set(data);
-                //const buffer = new Float32Array(data);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
+                this.representation.initialise = true;
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
@@ -6134,15 +5892,11 @@
                 let i = 0;
                 while (i <= subdivisions) {
                     if (Icosphere.level[i] === undefined) {
-                        Icosphere.level[i] = { instances: [] };
-                        Icosphere.level[i].buffers = {
-                            vertices: gl.createBuffer(),
-                            indices: gl.createBuffer(),
-                            instances: gl.createBuffer(),
-                            vao: gl.createVertexArray(),
-                        }
+                        const collection = new Collection();
+                        Icosphere.level[i] = collection;
+                        collection.buffers.indices = gl.createBuffer();
                         const positions = points.flatMap((point) => point);
-                        gl.bindBuffer(gl.ARRAY_BUFFER, Icosphere.level[i].buffers.vertices);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
                         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
                         const indices = faces.flatMap((face) => {
@@ -6150,103 +5904,96 @@
                             points.push(points.includes(face[1].p1) ? face[1].p2 : face[1].p1);
                             return points;
                         });
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Icosphere.level[i].buffers.indices);
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
                         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
-                        Icosphere.level[i].points = indices.length;
-                    }
-                    edges = edges.flatMap((edge) => divideEdge(edge));
-                    faces = faces.flatMap((face) => divideFace(face));
+                        collection.points = indices.length;
 
+                        edges = edges.flatMap((edge) => divideEdge(edge));
+                        faces = faces.flatMap((face) => divideFace(face));
+
+                        collection.key = i;
+                        //collection.triangles = faces.length;
+                        gl.bindVertexArray(collection.buffers.vao);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
+
+                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
+                        gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 12, 0);
+                        gl.enableVertexAttribArray(app.pbrShader.position);
+
+                        gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 12, 0);
+                        gl.enableVertexAttribArray(app.pbrShader.normal);
+
+                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
+                        /*
+                        transform                  offset:  0, size: 16
+                        orientation                offset: 16, size: 9
+                        material.roughness         offset: 25, size: 1
+                        material.colour            offset: 26, size: 3
+                        material.emissivityColour  offset: 29, size: 3
+                        material.reflectivity      offset: 32, size: 3
+                        material.opacity           offset: 35, size: 1
+                        material.metallic          offset: 36, size: 1
+                        material.mirror            offset: 37, size: 1
+                        */
+
+                        // Matrices are passed as 4 vertex attributes
+                        for (let j = 0; j < 10; ++j) {
+                            for (let i = 0; i < 4; ++i) {
+                                const location = app.pbrShader.model + i;
+                                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                                gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
+                                gl.vertexAttribDivisor(location, 1);
+                                gl.enableVertexAttribArray(location);
+                            }
+                            for (let i = 0; i < 3; ++i) {
+                                const location = app.pbrShader.normalMatrix + i;
+                                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                                gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
+                                gl.vertexAttribDivisor(location, 1);
+                                gl.enableVertexAttribArray(location);
+                            }
+                        }
+                        gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
+                        gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.roughness);
+
+                        gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
+                        gl.vertexAttribDivisor(app.pbrShader.colour, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.colour);
+
+                        gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
+                        gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+
+                        gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
+                        gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+
+                        gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
+                        gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.opacity);
+
+                        gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
+                        gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.metallic);
+
+                        gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
+                        gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
+                        gl.enableVertexAttribArray(app.pbrShader.mirror);
+
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
+
+                        app.scene.renderQueue.push(() => collection.render());
+                    }
                     ++i;
                 }
-
-                const level = Icosphere.level[subdivisions];
-                gl.bindVertexArray(level.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, level.buffers.vertices);
-
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 12, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 12, 0);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, level.buffers.instances);
-                /*
-                transform                  offset:  0, size: 16
-                orientation                offset: 16, size: 9
-                material.roughness         offset: 25, size: 1
-                material.colour            offset: 26, size: 3
-                material.emissivityColour  offset: 29, size: 3
-                material.reflectivity      offset: 32, size: 3
-                material.opacity           offset: 35, size: 1
-                material.metallic          offset: 36, size: 1
-                material.mirror            offset: 37, size: 1
-                */
-
-                // Matrices are passed as 4 vertex attributes
-                for (let j = 0; j < 10; ++j) {
-                    for (let i = 0; i < 4; ++i) {
-                        const location = app.pbrShader.model + i;
-                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                        gl.vertexAttribDivisor(location, 1);
-                        gl.enableVertexAttribArray(location);
-                    }
-                    for (let i = 0; i < 3; ++i) {
-                        const location = app.pbrShader.normalMatrix + i;
-                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                        gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                        gl.vertexAttribDivisor(location, 1);
-                        gl.enableVertexAttribArray(location);
-                    }
-                }
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.roughness, 1);
-                gl.enableVertexAttribArray(app.pbrShader.roughness);
-
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 26);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 29);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 32);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 4 * 38, 4 * 35);
-                gl.vertexAttribDivisor(app.pbrShader.opacity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.opacity);
-
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 4 * 38, 4 * 36);
-                gl.vertexAttribDivisor(app.pbrShader.metallic, 1);
-                gl.enableVertexAttribArray(app.pbrShader.metallic);
-
-                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 4 * 38, 4 * 37);
-                gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
-                gl.enableVertexAttribArray(app.pbrShader.mirror);
-
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, level.buffers.indices);
-
-                app.scene.renderQueue.push(() => Icosphere.render(level));
-            }
-            static render(level) {
-                if (level.updateInstances) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, level.buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, level.instanceData, gl.DYNAMIC_DRAW);
-                    level.updateInstances = false;
-                }
-                gl.bindVertexArray(level.buffers.vao);
-                gl.drawElementsInstanced(gl.TRIANGLES, level.points, gl.UNSIGNED_SHORT, 0, level.instances.length);
+                return Icosphere.level[subdivisions];
             }
             constructor(node, parent, subdivisions = 0) {
                 super(node, parent, 'icoshpere');
-                if (Icosphere.level[subdivisions] === undefined) {
-                    Icosphere.make(subdivisions);
-                }
+                this.representation = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
+                this.representation.instances.push(this);
+
                 this.content = [];
                 this.name = `icoshere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
                 this.material = {
@@ -6259,37 +6006,7 @@
                     mirror: 0.3,
                 };
 
-                this.level = Icosphere.level[subdivisions];
-                this.representation = Icosphere.level[subdivisions];
-                Icosphere.level[subdivisions].instances.push(this);
-                this.buffers = this.level.buffers;
-                this.updateInstances();
-            }
-            updateInstances() {
-                // Create an array with the data for all instances
-                const data = [];
-                this.level.instances.forEach((instance) => {
-                    data.push(...instance.transform);           // offset:  0, size: 16
-                    data.push(...instance.orientation);         // offset: 16, size: 9
-                    data.push(instance.material.roughness);     // offset: 25, size: 1
-                    data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
-                    data.push(...instance.material.reflectivity);     // offset: 32, size: 3
-                    data.push(instance.material.opacity);             // offset: 35, size: 1
-                    data.push(instance.material.metallic);            // offset: 36, size: 1
-                    data.push(instance.material.mirror);            // offset: 36, size: 1
-                });
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Convert to a typed array and pass to gl
-                this.representation.instanceData = new Float32Array(buffer, 0, data.length);
-                this.representation.instanceData.set(data);
-                //const buffer = new Float32Array(data);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.representation.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, this.representation.instanceData, gl.DYNAMIC_DRAW);
-
-                // Update each instances reference to the buffer
-                this.representation.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 38 * 4, 38));
+                this.representation.initialise = true;
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
