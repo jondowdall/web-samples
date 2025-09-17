@@ -1477,10 +1477,10 @@
         /**
          * Get a unique name for a new block
          */
-        function getUniqueName(base = 'block') {
+        function getUniqueName(base = 'item') {
             let index = 1;
             let name = `${base} ${index++}`;
-            while (app.boxes.find((box) => box.name === name)) {
+            while (app.items.find((item) => item.name === name)) {
                 name = `${base} ${index++}`;
             }
             return name
@@ -1490,7 +1490,7 @@
          * Add a new block
          */
         function newBlock(offset) {
-            const selected = app.boxes.filter((box) => box.selected);
+            const selected = app.items.filter((item) => item.selected);
             if (selected.length) {
 
             } else {
@@ -1503,10 +1503,9 @@
                 }
 
                 const box = Box.make(null, definition);
-                app.boxes.push(box);
+                app.items.push(box);
                 app.roots.push(box);
             }
-            initialiseBoxes()
             app.updateColours = true;
             updateText();
             showStructure();
@@ -1516,7 +1515,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.boxes.filter((box) => box.selected);
+            const selected = app.items.filter((item) => item.selected);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -1534,18 +1533,17 @@
                 };
                 if (selected.parent) {
                     const newBox = Box.make(selected.parent, attributes);
-                    app.boxes.push(newBox);
+                    app.items.push(newBox);
                     selected.parent.push(newBox);
                     newBox.selected = true;
                 } else {
                     const newBox = Box.make(null, ...attributes);
-                    app.boxes.push(newBox);
+                    app.items.push(newBox);
                     app.roots.push(newBox);
                     newBox.selected = true;
                 }
                 selected.selected = false;
             });
-            initialiseBoxes();
             app.updateColours = true;
             updateText();
             showStructure();
@@ -1555,12 +1553,9 @@
          * Add a block next to the current block
          */
         function deleteBlocks(offset) {
-            const selected = app.boxes.filter((instance) => instance.selected);
-            selected.forEach((selected) => {
-                selected.delete();
-            });
-            app.boxes = app.boxes.filter((instance) => !selected.includes(instance));
-            initialiseBoxes()
+            const selected = app.items.filter((item) => item.selected);
+            selected.forEach((selected) => selected.delete());
+            app.items = app.items.filter((item) => !selected.includes(item));
             app.updateColours = true;
             updateText();
             showStructure();
@@ -1571,12 +1566,13 @@
          */
         function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
             // Use the initial position to determine the desired distance from viewpoint
-            const selected = app.boxes.filter((box) => box.selected);
+            const selected = app.items.filter((item) => item.selected);
 
             if (selected.length) {
-                selected.forEach((box) => box.setWorldPosition());
-                const lookAt = scale(sum(...selected.map((box) => box.transforms.translation)), 1 / selected.length);
-                const size = Math.max(...selected.map((box) => Math.hypot(...subtract(sum(box.transforms.translation, box.size), lookAt))));
+                //selected.forEach((item) => item.setWorldPosition());
+                const transforms = selected.map((item) => multiply(item.transform, item.world));
+                const lookAt = scale(sum(...transforms.map((matrix) => extractTranslation(matrix))), 1 / transforms.length);
+                const size = Math.max(...transforms.map((matrix) => Math.hypot(...subtract(sum(extractTranslation(matrix), extractScale(matrix)), lookAt))));
                 const dist = size / Math.tan(180 * app.fov / Math.PI);
                 const position = sum(lookAt, scale(direction, dist));
                 moveCamera(position, lookAt, up);
@@ -1710,7 +1706,8 @@
                     input.id = `${name}-${index}`;
                     input.classList.add('matrix-input');
                     input.addEventListener('input', (event) => {
-                        app.camera[attribute][index] = input.valueAsNumber;
+                        app.camera[attribute][index] = input.valueAsNumber ?? 0;
+                        app.camera[attribute][index] = isNaN(app.camera[attribute][index]) ? 0 : app.camera[attribute][index];
                         update();
                     });
                     input.addEventListener('focus', (event) => app.editingViewControls = true);
@@ -1744,7 +1741,7 @@
         }
 
         /**
-         * This script manages a single gl context so intialise here for simplicity.
+         * This script manages a single gl context so initialise here for simplicity.
          */
         const canvas = document.getElementById('main-canvas');
         const gl = canvas.getContext('webgl2', { antialias: false });
@@ -1930,16 +1927,14 @@
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            boxes: [],
-            cylinders: [],
-            quads: [],
-            objs: [],
+            items: [],
             stock: {},
             nodes: [],
             points: [],
             connections: [],
             text: [],
             roots: [],
+            solid: true,
             wireframe: false,
             cullFaces: true,
             cornerOrigin: true,
@@ -2660,7 +2655,6 @@
                     } else if (face.length === 4) {
                         return [[face[0], face[1], face[2]], [face[2], face[3], face[0]]];
                     }
-
                     const points = face.map((vertex) => positions[vertex.positionIndex]);
                     const tessellation = tessellate(points);
                     return tessellation.indices.map((triangle) => triangle.map((index) => face[index]));
@@ -2775,7 +2769,8 @@
          * Load data from a wavefront obj file
          */
         function getOBJ(url) {
-            const obj = { content: [],
+            const obj = {
+                content: [],
                 scale() { },
                 render() { },
             };
@@ -2858,8 +2853,6 @@
                     });
                 });
             });
-
-
 
             return {
                 render() {
@@ -3029,7 +3022,7 @@
 
         /**
          * Initialise Boxes
-         */
+         *
         function initialiseBoxes() {
             const matrices = [];
             const reversed = app.boxes.filter((box) => !box.hidden).toReversed();
@@ -3050,7 +3043,7 @@
 
         /**
          * Initialise Cylinders
-         */
+         *
         function initialiseCylinders() {
             const matrices = [];
             const reversed = app.cylinders.filter((cylinder) => !cylinder.hidden).toReversed();
@@ -3282,8 +3275,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const visible = app.boxes.filter((box) => !box.hidden);
-            const selected = app.showNames ? visible : visible.filter((box) => box.selected);
+            const selected = app.items.filter((item) => item.selected);
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
@@ -3353,7 +3345,7 @@
 
         /**
          * Update the gl buffers used to define each instance of an object.
-         */
+         *
         function updateQuads(time) {
             const matrices = [];
             const boxes = app.boxes.filter((box) => box.highlight)
@@ -3383,7 +3375,7 @@
                 updateBoxes(time);
                 app.boxesChanged = false;
             }
-            updateQuads(time);
+            //updateQuads(time);
             updateLines(time);
         }
 
@@ -3904,7 +3896,7 @@
 
         /**
          * Base class for 3D shapes.
-         */
+         *
         class Shape extends ShapeTransform {
             constructor(parent, name, position, size, angle, axis, offset, colour, opacity, specular, data = {}) {
                 super(parent, position, angle, axis, [1, 1, 1]);
@@ -3997,7 +3989,7 @@
              * Set the transform of a shape based on its position, rotation and scale.
              * 
              * Calculate the origin for content of the shape
-             */
+             *
             setTransform() {
                 const parent = this.parent || { origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
                 const origin = parent.origin;
@@ -4296,7 +4288,7 @@
 
         /**
          * Manage boxes.
-         */
+         *
         class Box extends Shape {
             static make(parent, node) {
                 return new Box(
@@ -4373,7 +4365,7 @@
              * Set the transform of a shape based on its position, rotation and scale.
              * 
              * Calculate the origin for content of the shape
-             */
+             *
             setTransform() {
                 const parent = this.parent || { origin: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
                 const origin = parent.origin;
@@ -4969,6 +4961,20 @@
                 this.offset(getAttribute(node, 'offset') || [0, 0, 0]);
                 this.scale(getAttribute(node, 'size') || [1, 1, 1]);
             }
+            updateInstanceData() {
+                if (this.instanceData) {
+                    this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
+                    this.instanceData.set(this.orientation, 16);                 // offset: 16, size: 9
+                    this.instanceData[25] = this.material.roughness;             // offset: 25, size: 1
+                    this.instanceData.set(this.material.colour, 26);             // offset: 26, size: 3
+                    this.instanceData.set(this.material.emissivityColour, 29);   // offset: 29, size: 3
+                    this.instanceData.set(this.material.reflectivity, 32);       // offset: 32, size: 3
+                    this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
+                    this.instanceData[36] = this.material.metallic;              // offset: 36, size: 1
+                    this.instanceData[37] = this.material.mirror;                // offset: 37, size: 1
+                    this.representation.updateInstances = true;
+                }
+            }
             get world() {
                 if (this.parent) {
                     return multiply(this.referenceFrame.matrix, this.parent.world);
@@ -4980,6 +4986,10 @@
                     return [...this.parent.path, this];
                 }
                 return [this];
+            }
+            apply(action) {
+                action(this);
+                this.content.forEach((child) => child.apply(action));
             }
             move(offset) {
                 this.transform[12] += offset[0];
@@ -5462,11 +5472,11 @@
                     const { translation, scale, angle, axis } = decompose(this.transform);
                     size = scale;
                 }
-                const radius = Math.hypot(...size);
+                this.radius = Math.hypot(...size);
 
                 const centre = applyTransform([0, 0, 0], transform);
 
-                if (radius === 0) {
+                if (this.radius === 0) {
                     return this.content.filter((child) => child.intersects(line)).length > 0;
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
@@ -5474,7 +5484,7 @@
                     const p = sum(line.point, scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
-                    if (dist < radius) {
+                    if (dist < this.radius) {
                         const corner1 = applyTransform([-0.5, -0.5, -0.5], transform);
                         const corner2 = applyTransform([0.5, 0.5, 0.5], transform);
                         const rotation = extractRotation(transform);
@@ -6067,7 +6077,7 @@
 
         /**
          * Manage quads.
-         */
+         *
         class Quad extends Shape {
             static make(parent, node) {
                 return new Quad(
@@ -6218,7 +6228,7 @@
          */
         function highlightFace(event) {
             const line = getRay(event.clientX, event.clientY);
-            app.boxes.forEach((box) => box.highlight = 0);
+            app.items.forEach((item) => item.highlight = 0);
             const hits = sortSelection(getIntersection(line));
             if (hits.length > 0) {
                 hits[0].highlightFace(line);
@@ -6235,29 +6245,25 @@
          */
         function endMove(event) {
             if (action.moved) {
-                const instances = new Set();
-                app.boxes.filter((instance) => instance.selected)
-                    .forEach((instance) => instance.apply((instance) => instances.add(instance)));
-                const undo = Array.from(instances).map((instance) => ({
-                    instance, start: [...instance.start],
+                const items = new Set();
+                app.items.filter((item) => item.selected)
+                    .forEach((item) => item.apply((item) => items.add(item)));
+                const undo = Array.from(items).map((item) => ({
+                    item, start: [...item.start],
                 }));
-                const redo = Array.from(instances).map((instance) => ({
-                    instance, end: extractTranslation(action.selected.origin),
+                const redo = Array.from(items).map((item) => ({
+                    item, end: extractTranslation(action.selected.origin),
                 }));
                 const start = [...action.selected.start];
-                const end = extractTranslation(action.selected.origin);
+                const end = [...action.selected.referenceFrame.matrix];
                 history.push({
                     undo: () =>
                         undo.forEach((action) => {
-                            action.instance.origin[12] = action.start[0];
-                            action.instance.origin[13] = action.start[1];
-                            action.instance.origin[14] = action.start[2];
+                            action.instance.referenceFrame.matrix = action.start;
                             action.instance.update();
                         }),
                     redo: () => redo.forEach((action) => {
-                        action.instance.origin[12] = action.end[0];
-                        action.instance.origin[13] = action.end[1];
-                        action.instance.origin[14] = action.end[2];
+                        action.instance.referenceFrame.matrix = action.end;
                         action.instance.update();
                     }),
                 });
@@ -6276,9 +6282,7 @@
             }
             action.move = highlightFace;
             historyPosition = null;
-            app.boxes.forEach((instance) => {
-                instance.state = {};
-            });
+            app.items.forEach((item) => item.state = {});
         }
 
         const completeAction = (event) => {
@@ -6392,7 +6396,7 @@
                     node.contentEditable = true;
                     node.addEventListener('focus', (event) => {
                         if (!event.shiftKey) {
-                            app.boxes.forEach((instance) => instance.selected = false);
+                            app.items.forEach((item) => item.selected = false);
                         }
                         instance.selected = true;
                         app.updateColours = true;
@@ -6416,15 +6420,7 @@
                         if (event.key === 'Enter') {
                             event.preventDefault();
                             if (event.shiftKey) {
-                                const definition = {
-                                    [meta]: { name: [getUniqueName()] },
-                                    position: [0, 0, 0],
-                                    size: scale(instance.size, 0.5),
-                                }
-                                const box = Box.make(instance, definition);
-                                app.boxes.push(box);
-                                instance.content.push(box);
-                                initialiseBoxes();
+                                // ToDo: add element?
                                 showStructure();
                             } else {
                                 if (isNaN(Number(node.innerText))) {
@@ -6775,7 +6771,7 @@
          */
         function processText(text, parent, replace) {
             if (replace) {
-                app.boxes = [];
+                app.items = [];
                 app.roots = [];
                 app.stock = {};
             }
@@ -7179,6 +7175,7 @@
                     } else {
                         item = new Block(node, parent);
                     }
+                    app.items.push(item);
                     if (parent) {
                         parent.content.push(item);
                     } else if (item) {
@@ -7201,8 +7198,8 @@
             graph[content].forEach((node) => addItem(node, parent));
 
             showModel(graph);
-            initialiseBoxes();
-            initialiseCylinders();
+            //            initialiseBoxes();
+            //            initialiseCylinders();
             updateText();
             showStructure();
             showStock();
@@ -7268,60 +7265,12 @@
          */
         function makeGraph(source, replace) {
             if (source) {
-                if (replace) {
-                    app.boxes = [];
-                    app.roots = [];
-                    app.stock = {};
-                }
-                app.nodes.forEach((node) => {
-                    const items = node.content.filter((child) => child[meta].name[0].startsWith('#'));
-                    if (items.length) {
-                        app.stock[node[meta].name[0]] = app.stock[node[meta].name[0]] || new Map();
-
-                        items.forEach((item) => {
-                            const [name, loc] = item[meta].name[0].replace(/^#\s*/, '').split(/\s*->\s*/);
-                            if (app.stock[node[meta].name[0]].has(name) && loc !== app.stock[node[meta].name[0]].get(name)) {
-                                report(`Warning part ${name} in two locations (${app.stock[node[meta].name[0]].get(name)} and ${loc})!`);
-                            } else {
-                                app.stock[node[meta].name[0]].set(name, loc);
-                            }
-                        });
-                    }
-                });
-
-                const addNode = (parent, node) => {
-                    if (node[meta].name[0].startsWith('~')) {
-                        parent.parts = parent.parts || [];
-                        parent.parts.push(node[meta].name[0].replace(/^~\s*/, '').toLowerCase());
-                    } else {
-                        const box = Box.make(parent, node);
-                        parent.content.push(box);
-                        app.boxes.push(box);
-                        node.content.forEach((node) => addNode(box, node));
-                    }
-                }
-                source.forEach((node) => {
-                    const root = Box.make(undefined, node);
-                    app.boxes.add(root);
-                    app.roots.add(root);
-                    node.content.forEach((child) => addNode(root, child));
-                });
-                initialiseBoxes();
-                initialiseCylinders();
+                processDefinition(source, replace);
             } else {
-                const root = Box.make({
-                    [meta]: { name: ['cube'] },
-                    [content]: [],
-                    name: 'cube',
-                    position: [0, 0, 0],    // Position
-                    size: [1, 1, 1]
-                });
+                const root = new Icosphere();
                 app.boxes.push(root);
                 app.roots.push(root);
             }
-
-            //app.quads.push(new Quad(undefined, 'Quad', [0, 0, 0], [1, 2, 0]));
-            initialiseQuads();
             showStructure();
             updateText();
         }
@@ -7708,23 +7657,23 @@
          * 
          */
         function getIntersection(line, all = false) {
-            // Check whether a line passes within the radius of the bounding sphere
             const hits = [];
-            const test = (instance) => {
-                if (instance.intersects(line)) {
-                    if (!instance.hidden && app.solid && !instance.state.transparent) {
-                        hits.push(instance);
+            const test = (item) => {
+                if (item.intersects(line)) {
+
+                    if (this.radius > 0 && !item.hidden && app.solid && !item.state.transparent) {
+                        hits.push(item);
                     } else {
-                        const content = instance.content.filter((child) => test(child));
-                        if (!instance.hidden && (all || content.length === 0)) {
-                            hits.push(instance);
+                        const content = item.content.filter((child) => test(child));
+                        if (!item.hidden && (all || content.length === 0)) {
+                            hits.push(item);
                         }
                     }
                     return true;
                 }
             };
 
-            app.roots.forEach((instance) => test(instance));
+            app.roots.forEach((item) => test(item));
             return hits;
         }
 
@@ -7763,11 +7712,11 @@
                         hits[0].selected = true;
                     }
                 } else {
-                    app.boxes.forEach((shape) => shape.selected = shape === hits[0]);
+                    app.items.forEach((item) => item.selected = item === hits[0]);
                 }
                 return hits;
             }
-            app.boxes.forEach((shape) => shape.selected = false);
+            app.items.forEach((item) => item.selected = false);
         }
 
         /**
@@ -7806,7 +7755,7 @@
          * Clear Selection
          */
         function clearSelection() {
-            app.boxes.forEach((instance) => instance.selected = false);
+            app.items.forEach((item) => item.selected = false);
             document.getElementById('info').innerHTML = '';
             document.getElementById('info').classList.add('hide');
             updateTextBuffer();
@@ -7817,12 +7766,12 @@
          * Rotate the selected item
          */
         function rotateSelected(angle, axis, local) {
-            app.boxes.filter((instance) => instance.selected)
-                .forEach((instance) => {
+            app.items.filter((item) => item.selected)
+                .forEach((item) => {
                     if (local) {
-                        axis = applyTransform(axis, extractRotation(instance.origin));
+                        axis = applyTransform(axis, extractRotation(item.origin));
                     }
-                    instance.rotate(angle, axis);
+                    item.rotate(angle, axis);
                 });
         }
 
@@ -7830,11 +7779,11 @@
          * Selected item(s) parent.
          */
         function selectParent() {
-            const parents = app.boxes.flatMap((instance) => instance.selected ? (instance.parent ?? []) : []);
+            const parents = app.items.flatMap((item) => item.selected ? (item.parent ?? []) : []);
             if (!event.shiftKey) {
-                app.boxes.forEach((instance) => instance.selected = false);
+                app.items.forEach((item) => item.selected = false);
             }
-            parents.forEach((instance) => instance.selected = true);
+            parents.forEach((item) => item.selected = true);
             app.boxesChanged = true;
             updateText();
             app.updateColours = true;
@@ -7844,48 +7793,42 @@
          * 'Hide' the selected item(s).
          */
         function hideSelected() {
-            app.boxes.filter((box) => box.selected)
-                .forEach((box) => box.hidden = !box.hidden);
-            app.boxes.forEach((box) => {
-                const node = app.nodeMap.get(box)[0];
-                if (box.hidden) {
+            app.items.filter((item) => item.selected)
+                .forEach((item) => item.hidden = !item.hidden);
+            app.items.forEach((item) => {
+                const node = app.nodeMap.get(item)[0];
+                if (item.hidden) {
                     node.classList.add('hidden');
                 } else {
                     node.classList.remove('hidden');
                 }
             });
-            initialiseBoxes();
-            initialiseCylinders();
         }
 
         /**
          * 'Hide' the unselected item(s).
          */
         function hideOthers() {
-            app.boxes.forEach((box) => {
-                box.hidden = !box.path.some((box) => box.selected);
-                const node = app.nodeMap.get(box)[0];
-                if (box.hidden) {
+            app.items.forEach((item) => {
+                item.hidden = !item.path.some((item) => item.selected);
+                const node = app.nodeMap.get(item)[0];
+                if (item.hidden) {
                     node.classList.add('hidden');
                 } else {
                     node.classList.remove('hidden');
                 }
             });
-            initialiseBoxes();
-            initialiseCylinders();
         }
 
         /**
          * 'Hide' the selected item(s).
          */
         function showAll() {
-            app.boxes.forEach((box) => box.hidden = false);
-            app.boxes.forEach((box) => {
-                const node = app.nodeMap.get(box)[0];
+            app.items.forEach((item) => item.hidden = false);
+            app.items.forEach((item) => {
+                const node = app.nodeMap.get(item)[0];
                 node.classList.remove('hidden');
             });
-            initialiseBoxes();
-            initialiseCylinders();
         }
 
         /**
@@ -8043,23 +7986,23 @@
                         if (app.nodeMap.get(action.selected)) {
                             app.nodeMap.get(action.selected).forEach((node) => node.classList.add('selected'));
                         }
-                        action.plane = { point: action.selected.points[0] };
-                        if (Math.abs(dot(app.camera.up, [0, 1, 0])) > 0.9) {
-                            action.plane.normal = zAxis;
-                        } else {
-                            action.plane.normal = [0, 1, 0];
-                        }
-                        const apply = (instance, action) => {
-                            action(instance);
-                            instance.content.forEach((child) => apply(child, action));
-                        }
-                        const selected = app.boxes.filter((instance) => instance.selected);
-                        selected.forEach((instance) =>
-                            instance.apply((instance) => instance.start = extractTranslation(instance.origin)));
                         if (app.mode === 'edit') {
+                            action.plane = { point: action.selected.points[0] };
+                            if (Math.abs(dot(app.camera.up, [0, 1, 0])) > 0.9) {
+                                action.plane.normal = zAxis;
+                            } else {
+                                action.plane.normal = [0, 1, 0];
+                            }
+                            const apply = (item, action) => {
+                                action(item);
+                                item.content.forEach((child) => apply(child, action));
+                            }
+                            const selected = app.items.filter((item) => item.selected);
+                            selected.forEach((item) =>
+                                item.apply((item) => item.start = [...item.referenceFrame.matrix]));
                             action.move = (event) => {
-                                app.boxes.forEach((instance) => instance.state.ghost = true);
-                                action.selected.siblings.forEach((instance) => instance.state.constraint = true);
+                                app.items.forEach((item) => item.state.ghost = true);
+                                action.selected.siblings.forEach((item) => item.state.constraint = true);
                                 action.selected.state.moving = true;
 
                                 action.moved = true;
@@ -8074,8 +8017,66 @@
                                     selected.update();
                                 });
                             };
+                            action.end = endMove;
+                        } else {
+                            const start = {
+                                position: [...app.camera.position],
+                                lookAt: [...app.camera.lookAt],
+                                up: [...app.camera.up],
+                                x: event.clientX,
+                                y: event.clientY,
+                                length: Math.hypot(...subtract(hits[0].points[0], app.camera.position)),
+                            };
+                            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+                            const sightLine = subtract(app.camera.lookAt, app.camera.position);
+                            hits.forEach((item) =>
+                                item.apply((item) => item.start = [...item.referenceFrame.matrix]));
+
+                            // Rotate the view
+                            action.move = (event) => {
+                                action.moved = true;
+                                const deltaX = start.x - event.clientX;
+                                const deltaY = start.y - event.clientY;
+
+                                if (event.shiftKey) {
+                                    const dist = 1 * Math.tan(app.fov * Math.PI / 180);
+                                    const movement = sum(scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
+                                        scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
+                                    app.camera.position = sum(start.position, movement);
+                                    app.camera.lookAt = sum(start.lookAt, movement);
+                                } else {
+                                    // Determine angle based on proportion of the field of view represented by the delta
+                                    const xAngle = deltaX * app.fov / canvas.height;
+                                    const yAngle = deltaY * app.fov / canvas.height;
+
+                                    const xRotation = getRotation(xAngle, yAxis);
+                                    const yRotation = getRotation(yAngle, xAxis);
+                                    const rotation = multiply(yRotation, xRotation);
+
+                                    app.camera.lookAt = sum(app.camera.position, applyTransform(sightLine, rotation));
+                                    //app.camera.up = applyTransform(app.camera.up, rotation);
+                                }
+                                app.viewMatrix = viewMatrix(app.camera.position, app.camera.lookAt, app.camera.up);
+                                app.camera.updateViewControls();
+                            };
+                            action.end = endMove;
+                            /*
+                                                        action.end = () => {
+                                                            action.move = highlightFace;
+                                                            const end = {
+                                                                position: [...app.camera.position],
+                                                                lookAt: [...app.camera.lookAt],
+                                                                up: [...app.camera.up],
+                                                            };
+                                                            if (action.moved) {
+                                                                history.push({
+                                                                    undo: () => moveCamera(start.position, start.lookAt, start.up),
+                                                                    redo: () => moveCamera(end.position, end.lookAt, end.up),
+                                                                });
+                                                            }
+                                                        }
+                                                            */
                         }
-                        action.end = endMove;
                     }
                 } else {
                     // Rotate the view
@@ -8150,7 +8151,7 @@
              */
             function dropHandler(event) {
                 dragPart = false;
-                app.boxes.forEach((instance) => instance.state = {});
+                app.items.forEach((item) => item.state = {});
 
                 event.preventDefault();
                 const replace = event.shiftKey;
@@ -8203,16 +8204,16 @@
                 const types = event.dataTransfer.types;
                 if (types.length) {
                     const mouseLine = getRay(event.clientX, event.clientY);
-                    const hits = getIntersection(mouseLine).filter((instance) => instance.parts?.includes(types[0]));
+                    const hits = getIntersection(mouseLine).filter((item) => item.parts?.includes(types[0]));
                     if (hits.length) {
                         const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                         hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                     }
-                    app.boxes.forEach((instance) => {
-                        instance.state.highlight = instance === hits[0];
-                        instance.state.hasPart = instance.serialNumber;
-                        instance.state.constraint = instance.parts?.includes(types[0]);
-                        instance.state.ghost = true;
+                    app.items.forEach((item) => {
+                        item.state.highlight = item === hits[0];
+                        item.state.hasPart = item.serialNumber;
+                        item.state.constraint = item.parts?.includes(types[0]);
+                        item.state.ghost = true;
                     });
                     app.updateColours = true;
                 }
@@ -8315,8 +8316,6 @@
             } else {
                 makeGraph();
             }
-            initialiseBoxes();
-            initialiseCylinders();
 
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
