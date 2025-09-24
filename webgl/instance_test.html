@@ -1793,6 +1793,60 @@
                 this.camera = camera;
                 this.renderQueue = [];
             }
+            update(graph) {
+                const addItem = (node, parent) => {
+                    const getAttribute = (node, attribute) => node[attribute] || node[meta].inherited[attribute];
+                    let item = parent;
+                    if (getAttribute(node, 'position')) {
+                        if (getAttribute(node, 'obj')) {
+                            //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
+                            item = getOBJ(node, parent);
+                            //item = node[meta].representation;
+                        } else if (getAttribute(node, 'gltf')) {
+                            node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
+                            //item = node[meta].representation;
+                        } else if (getAttribute(node, 'size')) {
+                            //item = new BevelledBlock(node, parent);
+                            item = new BevelledBlock(node, parent);
+                            node[meta].representation = item;
+                        } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
+                            const sides = getAttribute(node, 'sides') ?? 12;
+                            node.size = [getAttribute(node, 'radius'), getAttribute(node, 'height'), getAttribute(node, 'radius')]
+                            item = new Cylinder(node, parent, sides);
+                            node[meta].representation = item;
+                        } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
+                            const sides = getAttribute(node, 'sides') ?? 12;
+                            const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
+                            item = new Frustum(node, parent, ratio, sides);
+                            node[meta].representation = item;
+                        } else if (getAttribute(node, 'radius')) {
+                            const subdivisions = getAttribute(node, 'subdivisions') ?? 4;
+                            item = new Icosphere(node, parent, subdivisions);
+                        } else {
+                            item = new Block(node, parent);
+                        }
+                        app.items.push(item);
+                        if (parent) {
+                            parent.content.push(item);
+                        } else if (item) {
+                            app.roots.push(item);
+                        }
+                        node[content].forEach((node) => addItem(node, item));
+                    } else if (parent) {
+                        node[content].forEach((node) => addItem(node, item));
+                    }
+                    (node.connections || []).forEach((connection) => {
+                        if (connection.start && connection.end) {
+                            const start = node[content].find((node) => node[meta].name.includes(connection.start));
+                            const end = node[content].find((node) => node[meta].name.includes(connection.end));
+                            if (start && end) {
+                                app.connections.push(new Connection(start[meta].representation, end[meta].representation));
+                            }
+                        }
+                    });
+                }
+                graph[content].forEach((node) => addItem(node, parent));
+            }
             render() {
                 /* The models will normally consist of multiple instances of similar objects.
                  * The objects are defined by a node that sets the transform for meshes.
@@ -3150,7 +3204,7 @@
 
             }
         }
- 
+
         /**
          * Initialise Quads
          */
@@ -3175,11 +3229,9 @@
                 if (item.state === undefined) return;
                 //item.state.transparent = item.content.reduce((result, item) => result || (setSelected(item)), 1);
                 item.state.transparent = item.content.length > 0;
-                item.material.opacity = item.content.length > 0 ? 0.4 : item.material.opacity;
-                item.representation.updateInstances = true;
-                item.material.emissivityColour = item.selected ? item.material.colour : [0, 0, 0];
+                item.opacity = item.content.length > 0 ? 0.4 : item.material.opacity;
+                item.emissivityColour = item.selected ? item.material.colour : [0, 0, 0];
                 item.content.forEach((item) => setTransparency(item));
-                item.updateInstanceData();
                 return item.state.transparent || item.selected;
             }
             app.roots.forEach((item) => setTransparency(item));
@@ -3934,8 +3986,8 @@
                 }
             }
         }
- 
- 
+
+
         /**
          * Add event to make element moveable with the mouse.
          * 
@@ -4274,6 +4326,8 @@
                 this.transform = identityMatrix();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
+                this.instanceData = new Float32Array(38);
+
                 name = this.node[meta].name[0] || name;
                 this.name = name;
                 this.node[meta].name[0] = name;
@@ -4286,19 +4340,27 @@
                 this.offset(getAttribute(node, 'offset') || [0, 0, 0]);
                 this.scale(getAttribute(node, 'size') || [1, 1, 1]);
             }
+            set opacity(value) {
+                this.material.opacity = value;
+                this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
+                this.representation.updateInstances = true;
+            }
+            set emissivityColour(value) {
+                this.material.emissivityColour = value;
+                this.instanceData.set(this.material.emissivityColour, 29);   // offset: 29, size: 3
+                this.representation.updateInstances = true;
+            }
             updateInstanceData() {
-                if (this.instanceData) {
-                    this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
-                    this.instanceData.set(this.orientation, 16);                 // offset: 16, size: 9
-                    this.instanceData[25] = this.material.roughness;             // offset: 25, size: 1
-                    this.instanceData.set(this.material.colour, 26);             // offset: 26, size: 3
-                    this.instanceData.set(this.material.emissivityColour, 29);   // offset: 29, size: 3
-                    this.instanceData.set(this.material.reflectivity, 32);       // offset: 32, size: 3
-                    this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
-                    this.instanceData[36] = this.material.metallic;              // offset: 36, size: 1
-                    this.instanceData[37] = this.material.mirror;                // offset: 37, size: 1
-                    this.representation.updateInstances = true;
-                }
+                this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
+                this.instanceData.set(this.orientation, 16);                 // offset: 16, size: 9
+                this.instanceData[25] = this.material.roughness;             // offset: 25, size: 1
+                this.instanceData.set(this.material.colour, 26);             // offset: 26, size: 3
+                this.instanceData.set(this.material.emissivityColour, 29);   // offset: 29, size: 3
+                this.instanceData.set(this.material.reflectivity, 32);       // offset: 32, size: 3
+                this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
+                this.instanceData[36] = this.material.metallic;              // offset: 36, size: 1
+                this.instanceData[37] = this.material.mirror;                // offset: 37, size: 1
+                this.representation.updateInstances = true;
             }
             get world() {
                 if (this.parent) {
