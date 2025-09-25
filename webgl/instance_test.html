@@ -1477,7 +1477,7 @@
         function getUniqueName(base = 'item') {
             let index = 1;
             let name = `${base} ${index++}`;
-            while (app.items.find((item) => item.name === name)) {
+            while (app.scene.items.find((item) => item.name === name)) {
                 name = `${base} ${index++}`;
             }
             return name
@@ -1487,7 +1487,7 @@
          * Add a new block
          */
         function newBlock(offset) {
-            const selected = app.items.filter((item) => item.selected);
+            const selected = app.scene.items.filter((item) => item.selected);
             if (selected.length) {
 
             } else {
@@ -1500,8 +1500,8 @@
                 }
 
                 const box = Box.make(null, definition);
-                app.items.push(box);
-                app.roots.push(box);
+                app.scene.items.push(box);
+                app.scene.roots.push(box);
             }
             app.updateColours = true;
             updateText();
@@ -1512,7 +1512,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.items.filter((item) => item.selected);
+            const selected = app.scene.items.filter((item) => item.selected);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -1530,13 +1530,13 @@
                 };
                 if (selected.parent) {
                     const newBox = Box.make(selected.parent, attributes);
-                    app.items.push(newBox);
+                    app.scene.items.push(newBox);
                     selected.parent.push(newBox);
                     newBox.selected = true;
                 } else {
                     const newBox = Box.make(null, ...attributes);
-                    app.items.push(newBox);
-                    app.roots.push(newBox);
+                    app.scene.items.push(newBox);
+                    app.scene.roots.push(newBox);
                     newBox.selected = true;
                 }
                 selected.selected = false;
@@ -1550,9 +1550,9 @@
          * Add a block next to the current block
          */
         function deleteBlocks(offset) {
-            const selected = app.items.filter((item) => item.selected);
+            const selected = app.scene.items.filter((item) => item.selected);
             selected.forEach((selected) => selected.delete());
-            app.items = app.items.filter((item) => !selected.includes(item));
+            app.scene.items = app.scene.items.filter((item) => !selected.includes(item));
             app.updateColours = true;
             updateText();
             showStructure();
@@ -1563,7 +1563,7 @@
          */
         function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
             // Use the initial position to determine the desired distance from viewpoint
-            const selected = app.items.filter((item) => item.selected);
+            const selected = app.scene.items.filter((item) => item.selected);
 
             if (selected.length) {
                 const lookAt = scale(sum(...selected.map((item) => extractTranslation(item.world))), 1 / selected.length);
@@ -1744,7 +1744,7 @@
          * Utility function to parse and report errors
          */
         function glErrors(context = '') {
-            if (1 || app.reportErrors) {
+            if (app.reportErrors) {
                 const err = gl.getError();
 
                 if (err) {
@@ -1793,8 +1793,9 @@
                 this.camera = camera;
                 this.renderQueue = [];
                 this.items = [];
+                this.roots = [];
             }
-            update(graph) {
+            update(graph, parent) {
                 this.items = [];
                 const addItem = (node, parent) => {
                     const getAttribute = (node, attribute) => node[attribute] || node[meta].inherited[attribute];
@@ -3004,6 +3005,16 @@
                 highlightFace(line) { },
                 showInfo() { },
             });
+            Object.defineProperties(instance, {
+                opacity: {
+                    enumerable: true,
+                    set(value) { },
+                },
+                emissivityColour: {
+                    enumerable: true,
+                    set(value) { },
+                }
+            });
             loadedObjs[url].updateMaterials();
             Object.defineProperties(instance, {
                 transform: {
@@ -3278,7 +3289,7 @@
                 item.content.forEach((item) => setTransparency(item));
                 return item.state.transparent || item.selected;
             }
-            app.roots.forEach((item) => setTransparency(item));
+            app.scene.roots.forEach((item) => setTransparency(item));
         }
 
         /**
@@ -3383,7 +3394,7 @@
                 labels.add(item.name);
                 item.content.forEach(addLabel);
             };
-            app.roots.forEach(addLabel);
+            app.scene.roots.forEach(addLabel);
 
             // Determine size of canvas required
             labels.forEach((label) => {
@@ -3462,7 +3473,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = app.items.filter((item) => item.selected);
+            const selected = app.scene.items.filter((item) => item.selected);
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
@@ -5654,7 +5665,7 @@
          */
         function highlightFace(event) {
             const line = getRay(event.clientX, event.clientY);
-            app.items.forEach((item) => item.highlight = 0);
+            app.scene.items.forEach((item) => item.highlight = 0);
             const hits = sortSelection(getIntersection(line));
             if (hits.length > 0) {
                 hits[0].highlightFace(line);
@@ -5672,7 +5683,7 @@
         function endMove(event) {
             if (action.moved) {
                 const items = new Set();
-                app.items.filter((item) => item.selected)
+                app.scene.items.filter((item) => item.selected)
                     .forEach((item) => item.apply((item) => items.add(item)));
                 const undo = Array.from(items).map((item) => ({
                     item, start: [...item.start],
@@ -5693,22 +5704,10 @@
                         action.instance.update();
                     }),
                 });
-            } else if (action.selected.node.url) {
-                if (action.selected.node.click === 'load page') {
-                    location = action.selected.node.url;
-                } else if (action.selected.node.click === 'reset') {
-                    load(action.selected.node.url, undefined, true);
-                    updateText();
-                    showStructure();
-                    showStock();
-                } else if (event.crtlKey || action.selected?.node.load !== true) {
-                    load(action.selected.node.url, action.selected, event.shiftKey);
-                    action.selected.node.load = true;
-                }
             }
             action.move = highlightFace;
             historyPosition = null;
-            app.items.forEach((item) => item.state = {});
+            app.scene.items.forEach((item) => item.state = {});
         }
 
         const completeAction = (event) => {
@@ -5822,7 +5821,7 @@
                     node.contentEditable = true;
                     node.addEventListener('focus', (event) => {
                         if (!event.shiftKey) {
-                            app.items.forEach((item) => item.selected = false);
+                            app.scene.items.forEach((item) => item.selected = false);
                         }
                         instance.selected = true;
                         app.updateColours = true;
@@ -6043,7 +6042,7 @@
                     instance.content.map((child) => addInstance(child, level));
                 }
             }
-            app.roots.forEach((child) => addInstance(child));
+            app.scene.roots.forEach((child) => addInstance(child));
         }
 
         /**
@@ -6198,8 +6197,8 @@
          */
         function processText(text, parent, replace) {
             if (replace) {
-                app.items = [];
-                app.roots = [];
+                app.scene.items = [];
+                app.scene.roots = [];
                 app.stock = {};
             }
 
@@ -6602,11 +6601,11 @@
                     } else {
                         item = new Block(node, parent);
                     }
-                    app.items.push(item);
+                    app.scene.items.push(item);
                     if (parent) {
                         parent.content.push(item);
                     } else if (item) {
-                        app.roots.push(item);
+                        app.scene.roots.push(item);
                     }
                     node[content].forEach((node) => addItem(node, item));
                 } else if (parent) {
@@ -6622,8 +6621,9 @@
                     }
                 });
             }
-            app.graph[content].forEach((node) => addItem(node, parent));
+            //app.graph[content].forEach((node) => addItem(node, parent));
 
+            app.scene.update(app.graph, parent);
             showModel(app.graph);
             //            initialiseBoxes();
             //            initialiseCylinders();
@@ -6696,7 +6696,7 @@
             } else {
                 const root = new Icosphere();
                 app.boxes.push(root);
-                app.roots.push(root);
+                app.scene.roots.push(root);
             }
             showStructure();
             updateText();
@@ -7095,7 +7095,6 @@
             const hits = [];
             const test = (item) => {
                 if (item.intersects(line)) {
-
                     if (this.radius > 0 && !item.hidden && app.solid && !item.state.transparent) {
                         hits.push(item);
                     } else {
@@ -7108,7 +7107,7 @@
                 }
             };
 
-            app.roots.forEach((item) => test(item));
+            app.scene.roots.forEach((item) => test(item));
             return hits;
         }
 
@@ -7147,11 +7146,11 @@
                         hits[0].selected = true;
                     }
                 } else {
-                    app.items.forEach((item) => item.selected = item === hits[0]);
+                    app.scene.items.forEach((item) => item.selected = item === hits[0]);
                 }
                 return hits;
             }
-            app.items.forEach((item) => item.selected = false);
+            app.scene.items.forEach((item) => item.selected = false);
         }
 
         /**
@@ -7182,7 +7181,7 @@
                 lines.push(`${''.padStart(level * 2, ' ')}${instance.asString()}`);
                 instance.content.forEach((child) => addInstance(child, level + 1));
             };
-            app.roots.forEach((root) => addInstance(root));
+            app.scene.roots.forEach((root) => addInstance(root));
             downloadText(lines.join('\n'));
         }
 
@@ -7190,7 +7189,7 @@
          * Clear Selection
          */
         function clearSelection() {
-            app.items.forEach((item) => item.selected = false);
+            app.scene.items.forEach((item) => item.selected = false);
             document.getElementById('info').innerHTML = '';
             document.getElementById('info').classList.add('hide');
             updateTextBuffer();
@@ -7201,7 +7200,7 @@
          * Rotate the selected item
          */
         function rotateSelected(angle, axis, local) {
-            app.items.filter((item) => item.selected)
+            app.scene.items.filter((item) => item.selected)
                 .forEach((item) => {
                     if (local) {
                         axis = applyTransform(axis, extractRotation(item.origin));
@@ -7214,9 +7213,9 @@
          * Selected item(s) parent.
          */
         function selectParent() {
-            const parents = app.items.flatMap((item) => item.selected ? (item.parent ?? []) : []);
+            const parents = app.scene.items.flatMap((item) => item.selected ? (item.parent ?? []) : []);
             if (!event.shiftKey) {
-                app.items.forEach((item) => item.selected = false);
+                app.scene.items.forEach((item) => item.selected = false);
             }
             parents.forEach((item) => item.selected = true);
             app.boxesChanged = true;
@@ -7228,9 +7227,9 @@
          * 'Hide' the selected item(s).
          */
         function hideSelected() {
-            app.items.filter((item) => item.selected)
+            app.scene.items.filter((item) => item.selected)
                 .forEach((item) => item.hidden = !item.hidden);
-            app.items.forEach((item) => {
+            app.scene.items.forEach((item) => {
                 const node = app.nodeMap.get(item)[0];
                 if (item.hidden) {
                     node.classList.add('hidden');
@@ -7244,7 +7243,7 @@
          * 'Hide' the unselected item(s).
          */
         function hideOthers() {
-            app.items.forEach((item) => {
+            app.scene.items.forEach((item) => {
                 item.hidden = !item.path.some((item) => item.selected);
                 const node = app.nodeMap.get(item)[0];
                 if (item.hidden) {
@@ -7259,8 +7258,8 @@
          * 'Hide' the selected item(s).
          */
         function showAll() {
-            app.items.forEach((item) => item.hidden = false);
-            app.items.forEach((item) => {
+            app.scene.items.forEach((item) => item.hidden = false);
+            app.scene.items.forEach((item) => {
                 const node = app.nodeMap.get(item)[0];
                 node.classList.remove('hidden');
             });
@@ -7288,6 +7287,24 @@
                 historyPosition += 1;
             }
         }
+
+
+        function nodeAction(node) {
+            if (node.url) {
+                if (node.click === 'load page') {
+                    location = node.url;
+                } else if (node.click === 'reset') {
+                    load(node.url, undefined, true);
+                    updateText();
+                    showStructure();
+                    showStock();
+                } else if (event.crtlKey || node.load !== true) {
+                    load(node.url, item, event.shiftKey);
+                    node.load = true;
+                }
+            }
+        }
+
 
         /**
          * Add the event handlers for the canvas.
@@ -7432,11 +7449,11 @@
                                 action(item);
                                 item.content.forEach((child) => apply(child, action));
                             }
-                            const selected = app.items.filter((item) => item.selected);
+                            const selected = app.scene.items.filter((item) => item.selected);
                             selected.forEach((item) =>
                                 item.apply((item) => item.start = [...item.referenceFrame.matrix]));
                             action.move = (event) => {
-                                app.items.forEach((item) => item.state.ghost = true);
+                                app.scene.items.forEach((item) => item.state.ghost = true);
                                 action.selected.siblings.forEach((item) => item.state.constraint = true);
                                 action.selected.state.moving = true;
 
@@ -7495,22 +7512,6 @@
                                 app.camera.updateViewControls();
                             };
                             action.end = endMove;
-                            /*
-                                                        action.end = () => {
-                                                            action.move = highlightFace;
-                                                            const end = {
-                                                                position: [...app.camera.position],
-                                                                lookAt: [...app.camera.lookAt],
-                                                                up: [...app.camera.up],
-                                                            };
-                                                            if (action.moved) {
-                                                                history.push({
-                                                                    undo: () => moveCamera(start.position, start.lookAt, start.up),
-                                                                    redo: () => moveCamera(end.position, end.lookAt, end.up),
-                                                                });
-                                                            }
-                                                        }
-                                                            */
                         }
                     }
                 } else {
@@ -7563,7 +7564,13 @@
                 updateTextBuffer();
                 updatePoints();
             };
-            canvas.addEventListener('dblclick', (event) => report('doubleClick'));
+            canvas.addEventListener('dblclick', (event) => {
+                const mouseLine = getRay(event.clientX, event.clientY);
+                const hits = setSelected(getIntersection(mouseLine));
+                if (hits && hits[0].node) {
+                    nodeAction(hits[0].node);
+                }
+            });
             canvas.addEventListener('mousedown', (event) => mouseDown(event));
             canvas.addEventListener('touchstart', (event) => mouseDown(touch(event)));
             canvas.addEventListener('wheel', (event) => {
@@ -7587,7 +7594,7 @@
              */
             function dropHandler(event) {
                 dragPart = false;
-                app.items.forEach((item) => item.state = {});
+                app.scene.items.forEach((item) => item.state = {});
 
                 event.preventDefault();
                 const replace = event.shiftKey;
@@ -7645,7 +7652,7 @@
                         const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                         hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                     }
-                    app.items.forEach((item) => {
+                    app.scene.items.forEach((item) => {
                         item.state.highlight = item === hits[0];
                         item.state.hasPart = item.serialNumber;
                         item.state.constraint = item.parts?.includes(types[0]);
