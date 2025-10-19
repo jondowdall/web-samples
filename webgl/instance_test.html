@@ -1819,60 +1819,60 @@
                 this.items = [];
                 this.roots = [];
             }
+            addItem(node, parent) {
+                const getAttribute = (node, attribute) => node[attribute];// || node[meta].inherited[attribute];
+                let item = parent;
+                if (getAttribute(node, 'position')) {
+                    if (getAttribute(node, 'obj')) {
+                        //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
+                        item = getOBJ(node, parent);
+                        //item = node[meta].representation;
+                    } else if (getAttribute(node, 'gltf')) {
+                        node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
+                        //item = node[meta].representation;
+                    } else if (getAttribute(node, 'size')) {
+                        //item = new BevelledBlock(node, parent);
+                        item = new BevelledBlock(node, parent);
+                        node[meta].representation = item;
+                    } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
+                        const sides = getAttribute(node, 'sides') ?? 12;
+                        node.size = [getAttribute(node, 'radius'), getAttribute(node, 'height'), getAttribute(node, 'radius')]
+                        item = new Cylinder(node, parent, sides);
+                        node[meta].representation = item;
+                    } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
+                        const sides = getAttribute(node, 'sides') ?? 12;
+                        const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
+                        item = new Frustum(node, parent, ratio, sides);
+                        node[meta].representation = item;
+                    } else if (getAttribute(node, 'radius')) {
+                        const subdivisions = getAttribute(node, 'subdivisions') ?? 4;
+                        item = new Icosphere(node, parent, subdivisions);
+                    } else {
+                        item = new Block(node, parent);
+                    }
+                    this.items.push(item);
+                    if (parent) {
+                        parent.children.push(item);
+                    } else if (item) {
+                        this.roots.push(item);
+                    }
+                    node[children].forEach((node) => this.addItem(node, item));
+                } else if (parent) {
+                    node[children].forEach((node) => this.addItem(node, item));
+                }
+                (node.connections || []).forEach((connection) => {
+                    if (connection.start && connection.end) {
+                        const start = node[children].find((node) => node[meta].name.includes(connection.start));
+                        const end = node[children].find((node) => node[meta].name.includes(connection.end));
+                        if (start && end) {
+                            app.connections.push(new Connection(start[meta].representation, end[meta].representation));
+                        }
+                    }
+                });
+            }
             update(graph, parent) {
                 this.items = [];
-                const addItem = (node, parent) => {
-                    const getAttribute = (node, attribute) => node[attribute];// || node[meta].inherited[attribute];
-                    let item = parent;
-                    if (getAttribute(node, 'position')) {
-                        if (getAttribute(node, 'obj')) {
-                            //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
-                            item = getOBJ(node, parent);
-                            //item = node[meta].representation;
-                        } else if (getAttribute(node, 'gltf')) {
-                            node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
-                            //item = node[meta].representation;
-                        } else if (getAttribute(node, 'size')) {
-                            //item = new BevelledBlock(node, parent);
-                            item = new BevelledBlock(node, parent);
-                            node[meta].representation = item;
-                        } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
-                            const sides = getAttribute(node, 'sides') ?? 12;
-                            node.size = [getAttribute(node, 'radius'), getAttribute(node, 'height'), getAttribute(node, 'radius')]
-                            item = new Cylinder(node, parent, sides);
-                            node[meta].representation = item;
-                        } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
-                            const sides = getAttribute(node, 'sides') ?? 12;
-                            const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
-                            item = new Frustum(node, parent, ratio, sides);
-                            node[meta].representation = item;
-                        } else if (getAttribute(node, 'radius')) {
-                            const subdivisions = getAttribute(node, 'subdivisions') ?? 4;
-                            item = new Icosphere(node, parent, subdivisions);
-                        } else {
-                            item = new Block(node, parent);
-                        }
-                        this.items.push(item);
-                        if (parent) {
-                            parent.children.push(item);
-                        } else if (item) {
-                            this.roots.push(item);
-                        }
-                        node[children].forEach((node) => addItem(node, item));
-                    } else if (parent) {
-                        node[children].forEach((node) => addItem(node, item));
-                    }
-                    (node.connections || []).forEach((connection) => {
-                        if (connection.start && connection.end) {
-                            const start = node[children].find((node) => node[meta].name.includes(connection.start));
-                            const end = node[children].find((node) => node[meta].name.includes(connection.end));
-                            if (start && end) {
-                                app.connections.push(new Connection(start[meta].representation, end[meta].representation));
-                            }
-                        }
-                    });
-                }
-                graph[children].forEach((node) => addItem(node, parent));
+                graph[children].forEach((node) => this.addItem(node, parent));
             }
             render() {
                 /* The models will normally consist of multiple instances of similar objects.
@@ -6106,7 +6106,6 @@
                 [meta]: { name: '', inherited: {} },
                 [children]: [],
             };
-            const contextStack = [{ object: app.graph, name: 0, defaultParameters: [], }];
 
             const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
             const templatePattern = /\s*\[([^\]]+)\]$/;
@@ -6125,6 +6124,10 @@
                 }
             }
 
+            const findType = (name) => {
+                return named[name];
+            }
+
             const getInheritedAttribute = (node, attribute) => {
                 const stack = [...node[meta].type];
                 while (stack) {
@@ -6136,21 +6139,18 @@
                 }
             };
 
-            const interpretValues = (node) => {
-                const instance = node[meta].context.instance;
+            const interpretValues = (node, context) => {
+                context = Object.assign({}, node[meta].context, context);
+                const instance = context.instance;
                 const attrs = instance.filter((instance) => instance.label);
                 attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
-                const instanceVariables = attrs.reduce((obj, attr) => {
-                    obj[attr.label] = attr.name;
-                    return obj;
-                }, {});
 
                 const resolve = (string) =>
                     string.replace ?
                         string.replace(/<([0-9]*)>/g, (match, num) =>
                             instance[parseInt(num) || 0] ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
-                            .replace(/<([^>]+)>/g, (match, val) => node[meta].context.values[val] ?? match)
+                            .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
                                     const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
@@ -6161,14 +6161,46 @@
                                     return `${err.message}: ${match}`;
                                 }
                             }) : string;
-                Object.getOwnPropertyNames(node).forEach((property) =>
+                Object.keys(node).forEach((property) =>
                     node[property] = interpret(resolve(node[property])));
-                //Object.getOwnPropertyNames(node[meta].inherited).forEach((property) =>
-                //    node[meta].inherited[property] = interpret(resolve(node[meta].inherited[property])));
 
-                //node[children].forEach(interpretValues);
+                node[children].forEach((child) => interpretValues(child, context));
                 node[meta].name[0] = node.name || resolve(node[meta].name[0]);
             };
+
+            /*
+            const resolve = (node, attribute) => {
+                const context = node[meta].context;
+                const value = node[attribute] ?? (() => {
+                    const stack = node[meta].typeNames;
+                    while (stack.length > 0) {
+                        const typeName = stack.shift();
+                        const type = find(typeName);
+                        if (type) {
+                            stack.push(...type[meta].typeNames);
+                            if (type[attribute] !== undefined) {
+                                return type[attribute];
+                            }
+                        }
+                    }
+                });
+                const resolved = value.replace ?
+                    value.replace(/<([0-9]*)>/g, (match, num) => context.instance[parseInt(num) || 0] ?? match)
+                        .replace(/<n([0-9]*)>/g, (match, num) => context.instance[parseInt(num) || 0] ?? match)
+                        .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
+                        .replace(/\{([^\}]+)\}/g, (match, expr) => {
+                            try {
+                                const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                node[meta].cache.functions[expr] = func;
+                                return func(...attrs.map((attr) => attr.name));
+                            } catch (err) {
+                                report(err.message);
+                                return `${err.message}: ${match}`;
+                            }
+                        }) : value;
+                return resolved;
+            };
+            */
 
             /**
              * Parse a line, returning an object or updating the current object and returning an empty array.
@@ -6181,38 +6213,20 @@
                         source: line,
                         context: structuredClone(context),
                         name: [],
-                        type: [],
-                        cache: {},
+                        data: [],
+                        typeNames: [],
+                        cache: { functions: {} },
                     },
                     [children]: [],
                 };
 
-                // Extract the name and types
-                const [name, ...typeNames] = line.components[0].split(/\s*:\s*/g);
-                node.name = name;
-                named[name] = node;
-                node[meta].name.push(name);
-
-                node[meta].type = typeNames.flatMap((typeName) =>
-                    (named[typeName] || find(typeName)) ?? []);
+                node[meta].context.path.push(node);
 
                 if (line.instance !== undefined) {
                     node[meta].context.instance = node[meta].context.instance || [];
                     node[meta].context.instance.push(line.instance);
                 }
                 context.parameters = [...context.defaultParameters];
-
-                // Add the node to the current context object
-                const add = (item) => {
-                    const arg = context.parameter ?? children;
-                    if (Array.isArray(context.object[arg])) {
-                        context.object[arg].push(item);
-                    } else if (context.object[arg] === undefined) {
-                        context.object[arg] = item;
-                    } else {
-                        context.object[arg] = [context.object[arg], item];
-                    }
-                }
 
                 // Options
                 // 1 component
@@ -6280,22 +6294,16 @@
 
                 if (components.length === 1) {
                     if (components[0].endsWith('=')) { // line ends in = parse children as attributes for last parameter
-                        context.parameter = components[0].replace(/\s*=$/, '');
-                        contextStack.at(-1).object[context.parameter] = contextStack.at(-1).object[context.parameter] || [];
-                        contextStack.push(context);
-                        node[children] = line.children.flatMap((item) => item.action(item, context));
-                        contextStack.pop();
+                        const parameter = components[0].replace(/\s*=$/, '');
+                        const parent = node[meta].context.path.at(-2);
+                        parent[parameter] = line.children.flatMap((item) => item.action(item, context));
+                        return [];
                     } else if (line.text.includes(':') && !line.text.includes('=')) {
                         node[meta].parent = context.object;
                         context.object = node;
-                        contextStack.push(context);
-                        node[children] = line.children.flatMap((child) => child.action(child, context));
-                        contextStack.pop();
                     } else if (components[0].includes('--')) {
                         const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
-                        contextStack.push(context);
                         components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
-                        node[children] = line.children.flatMap((item) => item.action(item, context));
                     } else {
                         addComponent(components[0], false, true);
                         node[children] = line.children.flatMap((item) => item.action(item, context));
@@ -6316,52 +6324,80 @@
                         components.pop();
                     }
 
-                    contextStack.push(context);
                     components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
+                }
 
-                    const qualifiedName = node.name ?? components[0];
-
-                    node[children] = line.children.flatMap((item) => item.action(item, context));
-
-                    const [name, ...typeNames] = (qualifiedName + '').split(/\s*:\s*/g);
-                    if (node.name) {
-                        node.name = name;
-                    }
-                    node[meta].name.push(name);
-
-                    node[meta].type = node[meta].type.flatMap((typeName) =>
-                        (named[typeName] || find(typeName)) ?? []);
-
-                    node[meta].type.push(...typeNames.flatMap((typeName) => (named[typeName] || find(typeName)) ?? []));
-                    if (node.type) {
-                        node.type = [node.type].flatMap((type) => type);
-                        node[meta].type.push(...(node.type.flatMap((type) =>
-                            typeof type === 'object' ? type : (named[type] || find(type)) ?? [])));
-                    }
-
-                    /*
-                    node[meta].type.forEach((type) =>
-                        type[children].forEach((typeComponent) =>
-                            evaluate({
-                                [meta]: Object.assign({}, typeComponent[meta], {
-                                    instance: [...typeComponent[meta].instance, ...node[meta].instance],
-                                }), [children]: typeComponent[children]
-                            })));
-                    */
-                    contextStack.pop();
-
-                    named[name] = node;
-
-                    // Add remaining default values
-                    while (context.parameters.length) {
-                        const parameter = context.parameters.shift();
-                        if (parameter.value !== undefined) {
-                            context.object[parameter.name] = parameter.value;
-                        }
+                // Add remaining default values
+                while (context.parameters.length) {
+                    const parameter = context.parameters.shift();
+                    if (parameter.value !== undefined) {
+                        context.object[parameter.name] = parameter.value;
                     }
                 }
 
-                interpretValues(node);
+                // Find the name and types
+                const qualifiedName = node.name || line.components[0];
+                const [name, ...typeNames] = (qualifiedName + '').split(/\s*:\s*/g);
+                node[meta].typeNames.push(...typeNames);
+                if (node.name) {
+                    node.name = name;
+                }
+                node[meta].name.push(name);
+                named[name] = node;
+
+                // Add types identified as parameters
+                if (node.type) {
+                    if (Array.isArray(node.type)) {
+                        typeNames.push(...node.type);
+                    } else {
+                        typeNames.push(node.type);
+                    }
+                }
+                named[name] = node;
+
+
+                if (node.name) {
+                    node[meta].name = [node.name];
+                }
+
+                const instance = context.instance;
+                const attrs = instance.filter((instance) => instance.label);
+                attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+
+                const resolve = (string) =>
+                    string.replace ?
+                        string.replace(/<([0-9]*)>/g, (match, num) =>
+                            instance[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
+                            .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
+                            .replace(/\{([^\}]+)\}/g, (match, expr) => {
+                                try {
+                                    const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                    node[meta].cache.functions[expr] = func;
+                                    return func(...attrs.map((attr) => attr.name));
+                                } catch (err) {
+                                    report(err.message);
+                                    return `${err.message}: ${match}`;
+                                }
+                            }) : string;
+
+                node[meta].types = node[meta].typeNames.map((name) => named[name]);
+                node[meta].types.forEach((type) =>
+                    Object.keys(type).filter((property) => node[property] === undefined)
+                        .forEach((property) =>
+                            node[property] = resolve(type[property])));
+
+                Object.keys(node).forEach((property) =>
+                    node[property] = resolve(node[property]));
+
+                node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+
+                if (node.name === undefined) {
+                    node.name = resolve(components[0]);
+                }
+                node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+
+                node[children] = line.children.flatMap((item) => item.action(item, context));
 
                 return node;
             };
@@ -6501,80 +6537,73 @@
                 }
             });
 
+
+            const expandTypes = (source, context) => {
+
+                // Create the potential object
+                const node = {
+                    [meta]: {
+                        source,
+                        context: structuredClone(context),
+                        name: [],
+                        data: [],
+                        types: [],
+                        cache: { functions: {} },
+                    },
+                    [children]: [],
+                };
+
+                node[meta].types = source[meta].typeNames.map((name) => named[name]);
+
+                if (node.name) {
+                    node[meta].name = [node.name];
+                }
+
+                context = Object.assign({}, source[meta].context, context);
+                const instance = context.instance;
+                const attrs = instance.filter((instance) => instance.label);
+                attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+
+                const resolve = (string) =>
+                    string.replace ?
+                        string.replace(/<([0-9]*)>/g, (match, num) =>
+                            instance[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
+                            .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
+                            .replace(/\{([^\}]+)\}/g, (match, expr) => {
+                                try {
+                                    const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                    node[meta].cache.functions[expr] = func;
+                                    return func(...attrs.map((attr) => attr.name));
+                                } catch (err) {
+                                    report(err.message);
+                                    return `${err.message}: ${match}`;
+                                }
+                            }) : string;
+
+                node[meta].types.forEach((type) =>
+                    Object.keys(type).filter((property) => node[property] === undefined)
+                        .forEach((property) =>
+                            node[property] = interpret(resolve(type[property]))));
+
+                Object.keys(source).forEach((property) =>
+                    node[property] = interpret(resolve(source[property])));
+
+                node[children] = source[children].map((child) => expandTypes(child, context));
+                node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+
+                if (node.name === undefined) {
+                    node.name = resolve(source[meta].source.components[0]);
+                }
+                node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+                return node;
+            }
+
             // Generate the object graph
-            const context = { defaultParameters: [], instance: [], values: {} };
-            app.graph[children] = roots.flatMap((line) => line.action(line, context));
-
-            /*
-            const addInheritedProperties = (node) => {
-                const stack = [node];
-                node[meta].inherited[children] = [];
-                while (stack.length > 0) {
-                    const base = stack.shift();
-                    node[meta].inherited[children].push(...base[children])
-                    stack.push(...base[meta].type);
-                    Object.getOwnPropertyNames(base).forEach((property) =>
-                        node[meta].inherited[property] = node[meta].inherited[property] ?? base[property]);
-                }
-                node[children].forEach((node) => addInheritedProperties(node));
-            }
-            */
-            //app.graph[children].forEach((node) => addInheritedProperties(node));
-
-            //app.graph[children].forEach(interpretValues);
-
-            const addItem = (node, parent) => {
-                const getAttribute = (node, attribute) => node[attribute] ?? getInheritedAttribute(node, attribute);
-                let item = parent;
-                if (getAttribute(node, 'position')) {
-                    if (getAttribute(node, 'obj')) {
-                        //node[meta].representation = loadOBJ(getAttribute(node, 'obj'));
-                        item = getOBJ(node, parent);
-                        //item = node[meta].representation;
-                    } else if (getAttribute(node, 'gltf')) {
-                        node[meta].representation = loadGLTF(getAttribute(node, 'gltf'));
-                        //item = node[meta].representation;
-                    } else if (getAttribute(node, 'size')) {
-                        //item = new BevelledBlock(node, parent);
-                        item = new BevelledBlock(node, parent);
-                        node[meta].representation = item;
-                    } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
-                        const sides = getAttribute(node, 'sides') ?? 12;
-                        node.size = [getAttribute(node, 'radius'), getAttribute(node, 'height'), getAttribute(node, 'radius')]
-                        item = new Cylinder(node, parent, sides);
-                        node[meta].representation = item;
-                    } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
-                        const sides = getAttribute(node, 'sides') ?? 12;
-                        const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
-                        item = new Frustum(node, parent, ratio, sides);
-                        node[meta].representation = item;
-                    } else if (getAttribute(node, 'radius')) {
-                        const subdivisions = getAttribute(node, 'subdivisions') ?? 4;
-                        item = new Icosphere(node, parent, subdivisions);
-                    } else {
-                        item = new Block(node, parent);
-                    }
-                    app.scene.items.push(item);
-                    if (parent) {
-                        parent.children.push(item);
-                    } else if (item) {
-                        app.scene.roots.push(item);
-                    }
-                    node[children].forEach((node) => addItem(node, item));
-                } else if (parent) {
-                    node[children].forEach((node) => addItem(node, item));
-                }
-                (node.connections || []).forEach((connection) => {
-                    if (connection.start && connection.end) {
-                        const start = node[children].find((node) => node[meta].name.includes(connection.start));
-                        const end = node[children].find((node) => node[meta].name.includes(connection.end));
-                        if (start && end) {
-                            app.connections.push(new Connection(start[meta].representation, end[meta].representation));
-                        }
-                    }
-                });
-            }
-            //app.graph[children].forEach((node) => addItem(node, parent));
+            const context = { defaultParameters: [], instance: [], values: {}, path: [] };
+            const objectTree = roots.flatMap((line) => line.action(line, context));
+            //const typedTree = object.flatMap((obj) => getNameAndType(obj));
+            app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
 
             app.scene.update(app.graph, parent);
             showModel(app.graph);
@@ -6582,6 +6611,270 @@
             showStructure();
             showStock();
             updateColours();
+        }
+
+        /**
+         * Parse a line, returning an object or updating the current object and returning an empty array.
+         */
+        function parseLine(line, context) {
+
+            // Create the potential object
+            const node = {
+                [meta]: {
+                    source: line,
+                    context: structuredClone(context),
+                    name: [],
+                    data: [],
+                    typeNames: [],
+                    cache: { functions: {} },
+                },
+                [children]: [],
+            };
+
+            node[meta].context.path.push(node);
+
+            if (line.instance !== undefined) {
+                node[meta].context.instance = node[meta].context.instance || [];
+                node[meta].context.instance.push(line.instance);
+            }
+            context.parameters = [...context.defaultParameters];
+
+            // Options
+            // 1 component
+            //   assignment
+            //     has content
+            //       - assign value as first element of array
+            //     no content
+            //       - assign value to parameter
+            //   value
+            //     has content
+            //       - assign content as elements
+            //     no content
+            //       unused context parameters
+            //         - assign to next content parameter
+            //       no unused parameters
+            //         - assign as specified by context
+            // multiple components
+            //  - create object and update context
+            const components = line.components;
+
+            const addComponent = (component, first, last) => {
+                const getTarget = (name) =>
+                    name.startsWith('&') ?
+                        [context.object[meta], name.replace(/^&\s*/, '')] :
+                        [context.object, name];
+
+                if (component.includes('=>')) {
+                    const [name, value] = component.split(/\s*=>\s*/);
+                    const expr = value.replace(/<([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.name')
+                        .replace(/<n([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.index');
+                    const func = makeFunction([], expr);
+                    const [target, arg] = getTarget(name);
+
+                    Object.defineProperties(target, arg, {
+                        enumerable: true,
+                        get() {
+                            return func(this);
+                        }
+                    });
+                } else if (component.includes('=')) {
+                    const [name, value] = component.split(/\s*=\s*/);
+                    const [target, arg] = getTarget(name);
+                    target[arg] = value;
+                } else {
+                    const name = context.parameters.shift()?.name ?? context.parameter;
+                    if (name) {
+                        const [target, arg] = getTarget(name);
+                        if (Array.isArray(target[arg])) {
+                            target[arg].push(component);
+                        } else if (target[arg] === undefined) {
+                            target[arg] = component;
+                        } else {
+                            target[arg] = [target[arg], component];
+                        }
+                    } else if (first) {
+                        context.object[meta].name.push(component);
+                    } else if (last) {
+                        context.parameter = component;
+                    } else {
+                        const [target, arg] = getTarget(component);
+                        target[arg] = target[arg] ?? true;
+                    }
+                }
+            }
+
+            if (components.length === 1) {
+                if (components[0].endsWith('=')) { // line ends in = parse children as attributes for last parameter
+                    const parameter = components[0].replace(/\s*=$/, '');
+                    const parent = node[meta].context.path.at(-2);
+                    parent[parameter] = line.children.flatMap((item) => item.action(item, context));
+                    return [];
+                } else if (line.text.includes(':') && !line.text.includes('=')) {
+                    node[meta].parent = context.object;
+                    context.object = node;
+                } else if (components[0].includes('--')) {
+                    const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                    components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
+                } else {
+                    addComponent(components[0], false, true);
+                    node[children] = line.children.flatMap((item) => item.action(item, context));
+                }
+            } else if (components.length > 1) {
+                if (components[0].includes('--')) {
+                    context.parameter = 'connections';
+                    context.object.connections = context.object.connections || [];
+                    const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                    node.start = start;
+                    node.end = end;
+                    node.connectionType = type;
+                }
+                node[meta].parent = context.object;
+                context.object = node;
+                if (components.at(-1).endsWith('=')) {
+                    context.parameter = components.at(-1).replace(/\s*=$/, '');
+                    components.pop();
+                }
+
+                components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
+            }
+
+            // Add remaining default values
+            while (context.parameters.length) {
+                const parameter = context.parameters.shift();
+                if (parameter.value !== undefined) {
+                    context.object[parameter.name] = parameter.value;
+                }
+            }
+
+            // Find the name and types
+            const qualifiedName = node.name || line.components[0];
+            const [name, ...typeNames] = (qualifiedName + '').split(/\s*:\s*/g);
+            node[meta].typeNames.push(...typeNames);
+            if (node.name) {
+                node.name = name;
+            }
+            node[meta].name.push(name);
+            //named[name] = node;
+
+            // Add types identified as parameters
+            if (node.type) {
+                if (Array.isArray(node.type)) {
+                    typeNames.push(...node.type);
+                } else {
+                    typeNames.push(node.type);
+                }
+            }
+            //named[name] = node;
+
+
+            if (node.name) {
+                node[meta].name = [node.name];
+            }
+
+            const instance = context.instance;
+            const attrs = instance.filter((instance) => instance.label);
+            attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+
+            const resolve = (string) =>
+                string.replace ?
+                    string.replace(/<([0-9]*)>/g, (match, num) =>
+                        instance[parseInt(num) || 0] ?? match)
+                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
+                        .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
+                        .replace(/\{([^\}]+)\}/g, (match, expr) => {
+                            try {
+                                const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                node[meta].cache.functions[expr] = func;
+                                return func(...attrs.map((attr) => attr.name));
+                            } catch (err) {
+                                report(err.message);
+                                return `${err.message}: ${match}`;
+                            }
+                        }) : string;
+
+            node[meta].types = node[meta].typeNames.map((name) => named[name]);
+            node[meta].types.forEach((type) =>
+                Object.keys(type).filter((property) => node[property] === undefined)
+                    .forEach((property) =>
+                        node[property] = resolve(type[property])));
+
+            Object.keys(node).forEach((property) =>
+                node[property] = resolve(node[property]));
+
+            node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+
+            if (node.name === undefined) {
+                node.name = resolve(components[0]);
+            }
+            node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+
+            node[children] = line.children.flatMap((item) => item.action(item, context));
+
+            return node;
+        };
+
+        /**
+         * Add typed data to the object and interpret the parameters
+         */
+        function expandTypes(source, context) {
+
+            // Create the potential object
+            const node = {
+                [meta]: {
+                    source,
+                    context: structuredClone(context),
+                    name: [],
+                    data: [],
+                    types: [],
+                    cache: { functions: {} },
+                },
+                [children]: [],
+            };
+
+            node[meta].types = source[meta].typeNames.map((name) => named[name]);
+
+            if (node.name) {
+                node[meta].name = [node.name];
+            }
+
+            context = Object.assign({}, source[meta].context, context);
+            const instance = context.instance;
+            const attrs = instance.filter((instance) => instance.label);
+            attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+
+            const resolve = (string) =>
+                string.replace ?
+                    string.replace(/<([0-9]*)>/g, (match, num) =>
+                        instance[parseInt(num) || 0] ?? match)
+                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
+                        .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
+                        .replace(/\{([^\}]+)\}/g, (match, expr) => {
+                            try {
+                                const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                node[meta].cache.functions[expr] = func;
+                                return func(...attrs.map((attr) => attr.name));
+                            } catch (err) {
+                                report(err.message);
+                                return `${err.message}: ${match}`;
+                            }
+                        }) : string;
+
+            node[meta].types.forEach((type) =>
+                Object.keys(type).filter((property) => node[property] === undefined)
+                    .forEach((property) =>
+                        node[property] = interpret(resolve(type[property]))));
+
+            Object.keys(source).forEach((property) =>
+                node[property] = interpret(resolve(source[property])));
+
+            node[children] = source[children].map((child) => expandTypes(child, context));
+            node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+
+            if (node.name === undefined) {
+                node.name = resolve(source[meta].source.components[0]);
+            }
+            node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+            return node;
         }
 
         /**
@@ -7758,17 +8051,38 @@
          * Add a new item to the model
          */
         function addItem(text) {
-            const parameters = text.replace(/new\s+/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+            const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
+            const templatePattern = /\s*\[([^\]]+)\]$/;
 
-            // Process as per loading from a file.
-            const nodes = app.scene.items.filter((items) => items.selected).map((item) => node);
-            if (nodes) {
-                nodes.forEach((node) => node[children].push(makeNode(parameters)));
-            } else {
-                app.graph[children].push(makeNode(parameters));
-            }
+            const group = text.match(groupPattern);
+            const template = text.match(templatePattern);
+            const value = text.replace(groupPattern, '').replace(templatePattern, '');
+            const components = value.split(/\s*[;\|\t\u{1f}]\s*/ug);
+
+            const line = {
+                text,
+                lineNumber: undefined,
+                level: 0,
+                components,
+                parent: undefined,
+                children: [],
+                functions: {},
+                action: parseLine,
+            };
+
+
+            const context = { defaultParameters: [], instance: [], values: {}, path: [] };
+            const objects = [parseLine(line, context)].flatMap((item) => item);
+            const nodes = objects.map((source) => expandTypes(source));
+
+            nodes.forEach((node) => app.scene.addItem(node));
+
+            showModel(app.graph);
+            updateText();
+            showStructure();
+            showStock();
+            updateColours();
         }
-
 
         /**
          * List of coomands
@@ -7851,12 +8165,12 @@
                 action(text) {
                     app.scene.items.forEach((item) => item.selected = true);
                     updateColours();
-                }
+                },
             },
             {
-                name: 'new',
+                name: 'add',
                 description: 'Add a new item to the model',
-                action(text) { addItem(text) }
+                action(text) { addItem(text.replace(/\s*add\s+/, '')) },
             },
             {
                 name: 'action',
@@ -7867,13 +8181,13 @@
                     } else {
                         report('No node selected');
                     }
-                }
+                },
             },
             {
                 name: 'forward',
                 action(text) {
                     const ammount = text;
-                }
+                },
             },
             {
                 name: 'toggle errors',
@@ -7881,7 +8195,7 @@
                 action(text) {
                     app.reportErrors = !app.reportErrors;
                     report(`Error reporting ${app.reportErrors ? 'On' : 'Off'}`)
-                }
+                },
             }
         ];
 
@@ -7892,7 +8206,7 @@
             commands: [],
             position: 0,
             push(command) {
-                if (command) {
+                if (command && command !== this.commands.at(-1)) {
                     this.commands.push(command);
                 }
                 this.position = this.commands.length;
@@ -7910,7 +8224,24 @@
                     this.position = 1;
                 }
                 return this.commands[this.position - 1];
-            }
+            },
+            save() {
+                localStorage.setItem('command-history', JSON.stringify(this));
+            },
+            load() {
+                const history = localStorage.getItem('command-history');
+                if (history) {
+                    this.restore(JSON.parse(history));
+                }
+            },
+            restore(history) {
+                this.commands = history.commands;
+                this.position = history.position;
+            },
+            clear() {
+                this.commands = [];
+                this.position = 0;
+            },
         }
 
 
@@ -7941,8 +8272,9 @@
 
             const processKey = (event) => {
                 if (event.key === 'Enter') {
-                    processCommand(event);
                     commandHistory.push(commandEntry.value);
+                    commandHistory.save();
+                    processCommand(event);
                 } else if (event.key === 'ArrowUp') {
                     event.preventDefault();
                     if (commandHistory.position === commandHistory.length) {
@@ -7959,8 +8291,8 @@
 
             };
 
-            //commandEntry.addEventListener('change', processCommand);
-            //commandEntry.addEventListener('input', processInput);
+            commandHistory.load();
+
             commandEntry.addEventListener('keydown', processKey);
             commandEntry.focus();
         }
