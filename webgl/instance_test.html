@@ -93,9 +93,38 @@
             overflow: hidden;
         }
 
+        .window .close {
+            position: absolute;
+
+            top: 0.1em;
+            right: 0.1em;
+
+            width: 0.8em;
+            height: 0.8em;
+
+            border-radius: 0.4em;
+            border: 1px outset pink;
+
+            background-color: red;
+        }
+
         .window h2 {
             font-size: large;
             margin: 0;
+        }
+
+        .window .list {
+            display: grid;
+            grid-column-gap: 0.1em;
+        }
+
+        .list .header {
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .list .value {
+            text-align: end;
         }
 
         #model-view {
@@ -1193,8 +1222,8 @@
             const year = now.getFullYear();
             const month = ('' + (now.getMonth() + 1)).padStart(2, '0');
             const day = ('' + now.getDate()).padStart(2, '0');
-            const hours = now.getHours();
-            const minutes = now.getMinutes();
+            const hours = ('' + now.getHours()).padStart(2, '0');
+            const minutes = ('' + now.getMinutes()).padStart(2, '0');
             return `${year}-${month}-${day}_${hours}${minutes}`;
         }
 
@@ -1202,7 +1231,7 @@
         /**
          * Save a canvas as png
          */
-        function savePNG(canvas) {
+        function savePNG(canvas, name) {
             const videoCanvas = document.createElement('canvas');
             document.body.append(videoCanvas);
             const videoContext = videoCanvas.getContext('2d');
@@ -1215,7 +1244,8 @@
             const link = document.createElement('a');
             link.href = data;
 
-            link.download = `system-view-${timestamp()}`;
+            name = name || app.snapshotName || system - view;
+            link.download = `${name}-${timestamp()}`;
 
             link.click();
             link.remove();
@@ -1787,7 +1817,7 @@
 
         /**
          * Manage a node within a scene
-         */
+         *
         class Node {
             constructor() {
 
@@ -1798,8 +1828,8 @@
             rotate(angle, axis, context = this) {
 
             }
-
         }
+            */
 
         class Camera {
             constructor(position, lookAt, up) {
@@ -1810,17 +1840,40 @@
         }
 
         /**
+         * Representation of edges in the scene
+         */
+        const edges = {
+            render() {
+                if (app.connections.length > 0) {
+                    /*
+                    gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
+                    gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
+                    gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
+*/
+
+                    gl.bindVertexArray(app.lineVertexArray);
+                    app.connections.forEach((connection) =>
+                        gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
+                }
+            }
+        }
+
+        /**
          * Manage a scene
          */
         class Scene {
             constructor(camera) {
                 this.camera = camera;
-                this.renderQueue = [];
+                this.renderQueue = [edges];
                 this.items = [];
                 this.roots = [];
+                this.named = {};
             }
             addItem(node, parent) {
-                const getAttribute = (node, attribute) => node[attribute];// || node[meta].inherited[attribute];
+                const getAttribute = (node, attribute) => node[attribute];
                 let item = parent;
                 if (getAttribute(node, 'position')) {
                     if (getAttribute(node, 'obj')) {
@@ -1850,6 +1903,8 @@
                     } else {
                         item = new Block(node, parent);
                     }
+                    this.named[node.name] = item;
+
                     this.items.push(item);
                     if (parent) {
                         parent.children.push(item);
@@ -1857,6 +1912,12 @@
                         this.roots.push(item);
                     }
                     node[children].forEach((node) => this.addItem(node, item));
+                } else if (node[meta].source[meta].connection) {
+                    const start = this.named[node.start];
+                    const end = this.named[node.end];
+                    if (start && end) {
+                        app.connections.push(new Connection(start, end));
+                    }
                 } else if (parent) {
                     node[children].forEach((node) => this.addItem(node, item));
                 }
@@ -1875,107 +1936,178 @@
                 graph[children].forEach((node) => this.addItem(node, parent));
             }
             render() {
-                /* The models will normally consist of multiple instances of similar objects.
-                 * The objects are defined by a node that sets the transform for meshes.
-                 * Meshes consist of primitives that define the gl elements required to draw the object.
-                 *
-                 * Use instancing to efficiently draw by setting up instance buffer for each patch type.
-                 */
-                gl.colorMask(true, true, true, true);
+                if (1 || app.useDeferredRender) {
+                    /* The models will normally consist of multiple instances of similar objects.
+                     * The objects are defined by a node that sets the transform for meshes.
+                     * Meshes consist of primitives that define the gl elements required to draw the object.
+                     *
+                     * Use instancing to efficiently draw by setting up instance buffer for each patch type.
+                     */
+                    gl.colorMask(true, true, true, true);
 
-                gl.useProgram(app.pbrShader.program);
+                    gl.useProgram(app.pbrShader.program);
 
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
-                gl.uniform1i(app.pbrShader.envTexture, 0);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                    gl.uniform1i(app.pbrShader.envTexture, 0);
 
-                gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
-                gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
+                    gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
 
-                gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
+                    gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
-                gl.uniform3fv(app.pbrShader.lightPosition1, app.lights[0].position);
-                gl.uniform3fv(app.pbrShader.lightColour1, scale(app.lights[0].colour, app.lights[0].intensity));
+                    gl.uniform3fv(app.pbrShader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.pbrShader.lightColour1, scale(app.lights[0].colour, app.lights[0].intensity));
 
-                gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
-                gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
+                    gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
 
-                gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
-                gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
+                    gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
+                    gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
-                gl.uniform1i(app.pbrShader.pass, 0);
+                    gl.uniform1i(app.pbrShader.pass, 0);
 
-                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
-                //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-                //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
+                    //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-                this.renderQueue.forEach((item) => item.render());
+                    this.renderQueue.forEach((item) => item.render());
 
-                const width = canvas.width;
-                const height = canvas.height;
+                    const width = canvas.width;
+                    const height = canvas.height;
 
-                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
-                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, app.renderTarget);
-                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
+                    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, app.renderTarget);
+                    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
 
-                /*
-                                if (app.drawOverlay) {
-                                    gl.depthMask(false);
-                                    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-                                    //gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-                                    app.drawOverlay();
-                                    gl.depthMask(true);
-                                }
-                /*/
-                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
-                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.LINEAR);
-                //*/
-                gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderTarget);
+                    /*
+                                    if (app.drawOverlay) {
+                                        gl.depthMask(false);
+                                        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                                        //gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+                                        app.drawOverlay();
+                                        gl.depthMask(true);
+                                    }
+                    /*/
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, app.renderBufferFBO);
+                    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+                    gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+                    //*/
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderTarget);
 
-                gl.useProgram(app.pbrClearShader.program);
+                    gl.useProgram(app.pbrClearShader.program);
 
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
-                gl.uniform1i(app.pbrClearShader.envTexture, 0);
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                    gl.uniform1i(app.pbrClearShader.envTexture, 0);
 
-                gl.uniformMatrix4fv(app.pbrClearShader.projection, false, app.projectionMatrix);
-                gl.uniformMatrix4fv(app.pbrClearShader.view, false, app.viewMatrix);
+                    gl.uniformMatrix4fv(app.pbrClearShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.pbrClearShader.view, false, app.viewMatrix);
 
-                gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
+                    gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
-                gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
+                    gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
-                gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
+                    gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
 
-                gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
-                gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
+                    gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
 
-                gl.uniform1i(app.pbrClearShader.pass, 1);
+                    gl.uniform1i(app.pbrClearShader.pass, 1);
 
-                gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
+                    gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
 
-                gl.enable(gl.BLEND);
-                gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
+                    gl.enable(gl.BLEND);
+                    gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
 
-                gl.depthMask(false);  // Don't write to the depth buffer
-                this.renderQueue.forEach((item) => item.render());
+                    gl.depthMask(false);  // Don't write to the depth buffer
+                    this.renderQueue.forEach((item) => item.render());
 
-                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-                if (app.drawOverlay) {
-                    //gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
-                    gl.colorMask(true, true, true, false);
-                    //gl.blendFunc(gl.ONE, gl.ZERO);
-                    app.drawOverlay();
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    if (app.drawOverlay) {
+                        //gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
+                        gl.colorMask(true, true, true, false);
+                        //gl.blendFunc(gl.ONE, gl.ZERO);
+                        app.drawOverlay();
+                    }
+
+                    gl.depthMask(true);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+
+
+
+
+                } else {
+                    gl.useProgram(app.pbrShader.program);
+
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                    gl.uniform1i(app.pbrShader.envTexture, 0);
+
+                    gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
+
+                    gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
+
+                    gl.uniform3fv(app.pbrShader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.pbrShader.lightColour1, scale(app.lights[0].colour, app.lights[0].intensity));
+
+                    gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
+
+                    gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
+                    gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
+
+                    gl.uniform1i(app.pbrShader.pass, 0);
+
+                    //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+                    //gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
+                    //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                    //gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+                    this.renderQueue.forEach((item) => item.render());
+/*
+                    gl.useProgram(app.pbrClearShader.program);
+
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                    gl.uniform1i(app.pbrClearShader.envTexture, 0);
+
+                    gl.uniformMatrix4fv(app.pbrClearShader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.pbrClearShader.view, false, app.viewMatrix);
+
+                    gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
+
+                    gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
+
+                    gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
+
+                    gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
+                    gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
+
+                    gl.uniform1i(app.pbrClearShader.pass, 1);
+
+                    gl.enable(gl.BLEND);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+                    gl.depthMask(false);  // Don't write to the depth buffer
+                    //this.renderQueue.forEach((item) => item.render());
+
+                    gl.depthMask(true);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                    */
                 }
-
-                gl.depthMask(true);
-                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-                gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
             }
             addNode(node) {
 
@@ -1987,6 +2119,7 @@
          */
         const app = {
             mode: 'view',
+            windows: [],
             scene: new Scene(),
             camera: new Camera([0, 0, 15], [0, 0, 0], [0, 1, 0]),
             initial: {
@@ -2924,7 +3057,7 @@
 
                 // Provide reference for each instances to their data
                 obj.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 28, 28));
+                    instance.instanceData = new Float32Array(buffer, index * 25, 25));
 
                 obj.updateInstanceData();
             }
@@ -2988,7 +3121,7 @@
             }
             const indexedName = loadedObjs[url].instances.length ? `${url.split('/').at(-1).replace(/\.obj$/i, '')} ${loadedObjs[url].instances.length}` : name;
             const instance = Object.assign(Object.create(new Representation(node, parent, indexedName)), {
-                content: [],
+                children: [],
                 material: { opacity: 1 },
                 representation: loadedObjs[url],
                 intersects(line, all) {
@@ -3187,14 +3320,14 @@
         /**
          * Load a cube map as a texture
          */
-        function loadCubeMap(images) {
-            // Create a texture.
-            const texture = gl.createTexture();
+        function loadCubeMap(images, texture) {
+            texture = texture || gl.createTexture();
             gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
 
             if (!Array.isArray(images)) {
                 images = ['posx.jpg', 'negx.jpg', 'posy.jpg', 'negy.jpg', 'posz.jpg', 'negz.jpg',].map((name) => `${images}${name}`);
             }
+            skybox.images = images;
 
             const targets = [
                 gl.TEXTURE_CUBE_MAP_POSITIVE_X,
@@ -3232,10 +3365,12 @@
          */
         function skybox(images) {
             if (app.skybox) {
-                report('Skybox already created, ignoring further requests');
+                loadCubeMap(images, app.envTexture);
                 return;
             }
-            const texture = loadCubeMap(images);
+
+            const texture = gl.createTexture();
+            loadCubeMap(images, texture);
             app.envTexture = texture;
 
             const shaderSource = {
@@ -3681,42 +3816,62 @@
         function setLineAttributes() {
             app.lineVertexArray = gl.createVertexArray();
             gl.bindVertexArray(app.lineVertexArray);
+            const shader = app.pbrShader;
 
-            gl.disableVertexAttribArray(app.shader.normal);
-            gl.vertexAttrib3f(app.shader.normal, 0, 0, 1);
+            // model, normalMatrix, position, normal, colour, emissivityColour, roughness, reflectivity, opacity, metallic, mirror
+            gl.disableVertexAttribArray(shader.normal);
+            gl.vertexAttrib3f(shader.normal, 0, 0, 1);
 
-            gl.disableVertexAttribArray(app.shader.model);
-            gl.vertexAttrib4f(app.shader.model, 1, 0, 0, 0);
+            gl.disableVertexAttribArray(shader.model);
+            gl.vertexAttrib4f(shader.model, 1, 0, 0, 0);
 
-            gl.disableVertexAttribArray(app.shader.model + 1);
-            gl.vertexAttrib4f(app.shader.model + 1, 0, 1, 0, 0);
+            gl.disableVertexAttribArray(shader.model + 1);
+            gl.vertexAttrib4f(shader.model + 1, 0, 1, 0, 0);
 
-            gl.disableVertexAttribArray(app.shader.model + 2);
-            gl.vertexAttrib4f(app.shader.model + 2, 0, 0, 1, 0);
+            gl.disableVertexAttribArray(shader.model + 2);
+            gl.vertexAttrib4f(shader.model + 2, 0, 0, 1, 0);
 
-            gl.disableVertexAttribArray(app.shader.model + 3);
-            gl.vertexAttrib4f(app.shader.model + 3, 0, 0, 0, 1);
+            gl.disableVertexAttribArray(shader.model + 3);
+            gl.vertexAttrib4f(shader.model + 3, 0, 0, 0, 1);
 
-            gl.disableVertexAttribArray(app.shader.specularIntensity);
-            gl.vertexAttrib1f(app.shader.specularIntensity, 1);
+            gl.disableVertexAttribArray(shader.normalMatrix);
+            gl.vertexAttrib4f(shader.normalMatrix, 1, 0, 0, 0);
 
-            gl.disableVertexAttribArray(app.shader.opacity);
-            gl.vertexAttrib1f(app.shader.opacity, 1);
+            gl.disableVertexAttribArray(shader.normalMatrix + 1);
+            gl.vertexAttrib4f(shader.normalMatrix + 1, 0, 1, 0, 0);
+
+            gl.disableVertexAttribArray(shader.normalMatrix + 2);
+            gl.vertexAttrib4f(shader.normalMatrix + 2, 0, 0, 1, 0);
+
+            gl.disableVertexAttribArray(shader.normalMatrix + 3);
+            gl.vertexAttrib4f(shader.normalMatrix + 3, 0, 0, 0, 1);
+
+            gl.disableVertexAttribArray(shader.specularIntensity);
+            gl.vertexAttrib1f(shader.roughness, 0);
+
+            gl.disableVertexAttribArray(shader.opacity);
+            gl.vertexAttrib1f(shader.opacity, 1);
+
+            gl.disableVertexAttribArray(shader.metallic);
+            gl.vertexAttrib1f(shader.metallic, 0);
+
+            gl.disableVertexAttribArray(shader.mirror);
+            gl.vertexAttrib1f(shader.mirror, 0);
 
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.lines);
 
             // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4 * 2, offset = 0
-            gl.vertexAttribPointer(app.shader.position, 3, gl.FLOAT, false, 24, 0);
-            gl.enableVertexAttribArray(app.shader.position);
+            gl.vertexAttribPointer(shader.position, 3, gl.FLOAT, false, 24, 0);
+            gl.enableVertexAttribArray(shader.position);
 
-            gl.vertexAttribPointer(app.shader.ambientColour, 3, gl.FLOAT, false, 24, 12);
-            gl.enableVertexAttribArray(app.shader.ambientColour);
+            gl.vertexAttribPointer(shader.colour, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(shader.colour);
 
-            gl.vertexAttribPointer(app.shader.diffuseColour, 3, gl.FLOAT, false, 24, 12);
-            gl.enableVertexAttribArray(app.shader.diffuseColour);
+            gl.vertexAttribPointer(shader.reflectivity, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(shader.reflectivity);
 
-            gl.vertexAttribPointer(app.shader.specularColour, 3, gl.FLOAT, false, 24, 12);
-            gl.enableVertexAttribArray(app.shader.specularColour);
+            gl.vertexAttribPointer(shader.emissivityColour, 3, gl.FLOAT, false, 24, 12);
+            gl.enableVertexAttribArray(shader.emissivityColour);
         }
 
         /**
@@ -3725,9 +3880,13 @@
         let start;
         let last;
         function render(time) {
+            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+            app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
+
             // render to the canvas
-            //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-            //gl.clearBufferfv(gl.COLOR, 0, [...app.background, 1.0]);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.clearBufferfv(gl.COLOR, 0, [...app.background, 1.0]);
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
             gl.colorMask(true, true, true, true);
@@ -3737,11 +3896,6 @@
             gl.clearColor(...app.background, 1.0);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-            app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
-            app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
-
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             if (start) {
                 if (app.movement.state === 'start') {
                     app.movement.start = time;
@@ -3788,24 +3942,35 @@
                 if (app.skybox) {
                     app.skybox();
                 }
-
-                gl.useProgram(app.shader.program);
-                gl.bindVertexArray(app.boxVertexArray);
-
-                gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
-                gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
-                gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
-                gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
-
+                /*
+                                gl.useProgram(app.shader.program);
+                                gl.bindVertexArray(app.boxVertexArray);
+                
+                                gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
+                                gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
+                                gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
+                                gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
+                                gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
+                                gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
+                */
                 app.scene.render();
 
+                /*
                 if (app.connections.length > 0) {
+                    gl.enable(gl.DEPTH_TEST);
+                    gl.useProgram(app.shader.program);
+
+                    gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
+                    gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
+                    gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
+                    gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
+                    gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
+                    gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
+
                     gl.bindVertexArray(app.lineVertexArray);
                     app.connections.forEach((connection) =>
                         gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
-                }
+                }*/
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
@@ -5461,30 +5626,30 @@
                 const endColour = this.selected ? [1, 0.5, 0.5] : (this.endColour ?? this.colour);
                 if (this.points[0].length) {
                     this.points[0].forEach((point) => {
-                        vertices.push(...applyTransform(point, this.start.origin));
+                        vertices.push(...applyTransform(point, this.start.world));
                         vertices.push(...startColour);
                     });
                     this.length += this.points[0].length;
                 } else {
-                    vertices.push(...applyTransform([0, 0, 0], this.start.origin));
+                    vertices.push(...applyTransform([0, 0, 0], this.start.world));
                     vertices.push(...startColour);
                     this.length += 1;
                 }
                 const context = this.context;
                 this.points[1].forEach((point) => {
-                    vertices.push(...applyTransform(point, context.origin));
+                    vertices.push(...applyTransform(point, context.world));
                     vertices.push(...colour);
                 });
                 this.length += this.points[1].length;
 
                 if (this.points[2].length) {
                     this.points[2].forEach((point) => {
-                        vertices.push(...applyTransform(point, this.end.origin));
+                        vertices.push(...applyTransform(point, this.end.world));
                         vertices.push(...endColour);
                     });
                     this.length += this.points[2].length;
                 } else {
-                    vertices.push(...applyTransform([0, 0, 0], this.end.origin));
+                    vertices.push(...applyTransform([0, 0, 0], this.end.world));
                     vertices.push(...endColour);
                     this.length += 1;
                 }
@@ -5968,6 +6133,116 @@
             });
         }
 
+        /**
+         * Emulate desktop windows
+         */
+        class Window {
+            constructor(title, actions) {
+                this.main = document.createElement('div');
+                this.main.classList.add('window');
+                this.title = document.createElement('h2');
+                this.main.append(this.title);
+                this.title.innerText = title;
+                addMoveControl(this.main, this.title);
+                this.content = document.createElement('div');
+                this.main.append(this.content);
+                if (actions) {
+                    this.adActions(actions);
+                }
+
+                this.close = document.createElement('div');
+                this.close.classList.add('close');
+                this.close.addEventListener('click', (event) => {
+                    this.main.remove();
+                    const pos = app.windows.indexOf(this);
+                    if (pos !== -1) {
+                        app.windows.splice(pos, 1);
+                    }
+                });
+                this.main.append(this.close);
+            }
+            addActons(actions) {
+                this.actionBar = document.createElement('div');
+                this.main.append(this.actionBar);
+                actions.forEach((action) => {
+                    const button = document.createElement('button');
+                    button.innerHTML = action.title;
+                    button.addEventListener('click', (event) => action.action(event, this));
+                    if (action.class) {
+                        button.classList.add(...action.class);
+                    }
+                    this.actionBar.append(button);
+                });
+            }
+        }
+
+        /**
+         * Simple window containing a list of attributes for nodes.
+         */
+        class ListWindow extends Window {
+            constructor(nodes, properties) {
+                super('Node List');
+                this.content.classList.add('list');
+                if (properties[0] === '') {
+                    properties = Array.from(nodes.reduce((properties, node) => {
+                        Object.getOwnPropertyNames(node).forEach((name) => properties.add(name));
+                        return properties;
+                    }, new Set()));
+                } else if (properties[0] === '[meta]' || properties[0] === '^') {
+                    properties = Array.from(nodes.reduce((properties, node) => {
+                        Object.getOwnPropertyNames(node[meta]).forEach((name) => properties.add(`^${name}`));
+                        return properties;
+                    }, new Set()));
+                }
+                this.content.style.gridTemplateColumns = `repeat(${properties.length}, minmax(max-content, 1fr)`;
+                properties.forEach((property) => {
+                    const heading = document.createElement('span');
+                    heading.innerText = property;
+                    heading.classList.add('header');
+                    this.content.append(heading);
+                });
+
+                nodes.forEach((node) =>
+                    properties.forEach((property) => {
+                        const value = document.createElement('span');
+                        value.classList.add('value');
+                        const path = property.split(/\./g);
+                        let item = node;
+                        while (item && path.length > 0) {
+                            const property = path.shift();
+                            if (property.startsWith('^')) {
+                                item = item[meta][property.slice(1)];
+                            } else {
+                                item = item[property];
+                            }
+                        }
+                        value.innerText = this.resolve(item);
+                        this.content.append(value);
+                    }));
+                this.main.style.top = '50%';
+                this.main.style.left = '50%';
+                this.main.style.transform = 'translate(-50%, -50%)';
+                this.main.style.resize = 'both';
+                this.main.style.maxWidth = '80%';
+                this.main.style.maxHeight = '80%';
+                document.body.append(this.main);
+            }
+            resolve(item) {
+                if (item === undefined) {
+                    return '';
+                } else if (typeof item === 'string' || item instanceof String) {
+                    return item;
+                } else if (Array.isArray(item)) {
+                    return item.map((item) => this.resolve(item)).join(', ');
+                } else if (item?.name) {
+                    return item.name;
+                } else if (item[meta]?.name) {
+                    return this.resolve(item[meta].name);
+                }
+                return item;
+            }
+        }
+
         const commands = {
             'camera position'(value) {
                 app.initial.position = value.split(/,/g).map((v) => parseFloat(v));
@@ -6098,7 +6373,7 @@
             }
 
             let process = true;
-            const named = {};
+            app.named = {};
             const customFunctions = {
                 zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
             }
@@ -6119,13 +6394,13 @@
                         const name = path.shift();
                         target = target.children.find((child) => child[meta].name.includes(name)) ?? target.attrs[name];
                     } else {
-                        target = named[path.shift()];
+                        target = app.named[path.shift()];
                     }
                 }
             }
 
             const findType = (name) => {
-                return named[name];
+                return app.named[name];
             }
 
             const getInheritedAttribute = (node, attribute) => {
@@ -6167,40 +6442,6 @@
                 node[children].forEach((child) => interpretValues(child, context));
                 node[meta].name[0] = node.name || resolve(node[meta].name[0]);
             };
-
-            /*
-            const resolve = (node, attribute) => {
-                const context = node[meta].context;
-                const value = node[attribute] ?? (() => {
-                    const stack = node[meta].typeNames;
-                    while (stack.length > 0) {
-                        const typeName = stack.shift();
-                        const type = find(typeName);
-                        if (type) {
-                            stack.push(...type[meta].typeNames);
-                            if (type[attribute] !== undefined) {
-                                return type[attribute];
-                            }
-                        }
-                    }
-                });
-                const resolved = value.replace ?
-                    value.replace(/<([0-9]*)>/g, (match, num) => context.instance[parseInt(num) || 0] ?? match)
-                        .replace(/<n([0-9]*)>/g, (match, num) => context.instance[parseInt(num) || 0] ?? match)
-                        .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
-                        .replace(/\{([^\}]+)\}/g, (match, expr) => {
-                            try {
-                                const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
-                                node[meta].cache.functions[expr] = func;
-                                return func(...attrs.map((attr) => attr.name));
-                            } catch (err) {
-                                report(err.message);
-                                return `${err.message}: ${match}`;
-                            }
-                        }) : value;
-                return resolved;
-            };
-            */
 
             /**
              * Parse a line, returning an object or updating the current object and returning an empty array.
@@ -6301,22 +6542,11 @@
                     } else if (line.text.includes(':') && !line.text.includes('=')) {
                         node[meta].parent = context.object;
                         context.object = node;
-                    } else if (components[0].includes('--')) {
-                        const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
-                        components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
-                    } else {
+                    } else if (!components[0].includes('--')) {
                         addComponent(components[0], false, true);
                         node[children] = line.children.flatMap((item) => item.action(item, context));
                     }
                 } else if (components.length > 1) {
-                    if (components[0].includes('--')) {
-                        context.parameter = 'connections';
-                        context.object.connections = context.object.connections || [];
-                        const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
-                        node.start = start;
-                        node.end = end;
-                        node.connectionType = type;
-                    }
                     node[meta].parent = context.object;
                     context.object = node;
                     if (components.at(-1).endsWith('=')) {
@@ -6343,7 +6573,15 @@
                     node.name = name;
                 }
                 node[meta].name.push(name);
-                named[name] = node;
+                app.named[name] = node;
+                if (name.includes('--')) {
+                    context.object.connections = context.object.connections || [];
+                    const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                    node.start = start;
+                    node.end = end;
+                    node.connectionType = type;
+                    node[meta].connection = true;
+                }
 
                 // Add types identified as parameters
                 if (node.type) {
@@ -6353,8 +6591,7 @@
                         typeNames.push(node.type);
                     }
                 }
-                named[name] = node;
-
+                app.named[name] = node;
 
                 if (node.name) {
                     node[meta].name = [node.name];
@@ -6381,7 +6618,7 @@
                                 }
                             }) : string;
 
-                node[meta].types = node[meta].typeNames.map((name) => named[name]);
+                node[meta].types = node[meta].typeNames.map((name) => app.named[name]);
                 node[meta].types.forEach((type) =>
                     Object.keys(type).filter((property) => node[property] === undefined)
                         .forEach((property) =>
@@ -6537,7 +6774,6 @@
                 }
             });
 
-
             const expandTypes = (source, context) => {
 
                 // Create the potential object
@@ -6553,7 +6789,7 @@
                     [children]: [],
                 };
 
-                node[meta].types = source[meta].typeNames.map((name) => named[name]);
+                node[meta].types = source[meta].typeNames.map((name) => app.named[name]);
 
                 if (node.name) {
                     node[meta].name = [node.name];
@@ -6602,7 +6838,6 @@
             // Generate the object graph
             const context = { defaultParameters: [], instance: [], values: {}, path: [] };
             const objectTree = roots.flatMap((line) => line.action(line, context));
-            //const typedTree = object.flatMap((obj) => getNameAndType(obj));
             app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
 
             app.scene.update(app.graph, parent);
@@ -6712,22 +6947,11 @@
                 } else if (line.text.includes(':') && !line.text.includes('=')) {
                     node[meta].parent = context.object;
                     context.object = node;
-                } else if (components[0].includes('--')) {
-                    const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
-                    components.forEach((component, index) => addComponent(component, index === 0, index === components.length - 1));
-                } else {
+                } else if (!components[0].includes('--')) {
                     addComponent(components[0], false, true);
                     node[children] = line.children.flatMap((item) => item.action(item, context));
                 }
             } else if (components.length > 1) {
-                if (components[0].includes('--')) {
-                    context.parameter = 'connections';
-                    context.object.connections = context.object.connections || [];
-                    const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
-                    node.start = start;
-                    node.end = end;
-                    node.connectionType = type;
-                }
                 node[meta].parent = context.object;
                 context.object = node;
                 if (components.at(-1).endsWith('=')) {
@@ -6754,7 +6978,16 @@
                 node.name = name;
             }
             node[meta].name.push(name);
-            //named[name] = node;
+            app.named[name] = node;
+            if (name.includes('--')) {
+                context.object.connections = context.object.connections || [];
+                const [start, type, end] = components[0].split(/\s*([<]?--[>]?)\s*/);
+                node.start = start;
+                node.end = end;
+                node.connectionType = type;
+                node[meta].connection = true;
+            }
+
 
             // Add types identified as parameters
             if (node.type) {
@@ -6764,7 +6997,7 @@
                     typeNames.push(node.type);
                 }
             }
-            //named[name] = node;
+            app.named[name] = node;
 
 
             if (node.name) {
@@ -6792,7 +7025,7 @@
                             }
                         }) : string;
 
-            node[meta].types = node[meta].typeNames.map((name) => named[name]);
+            node[meta].types = node[meta].typeNames.map((name) => app.named[name]);
             node[meta].types.forEach((type) =>
                 Object.keys(type).filter((property) => node[property] === undefined)
                     .forEach((property) =>
@@ -6831,7 +7064,7 @@
                 [children]: [],
             };
 
-            node[meta].types = source[meta].typeNames.map((name) => named[name]);
+            node[meta].types = source[meta].typeNames.map((name) => app.named[name]);
 
             if (node.name) {
                 node[meta].name = [node.name];
@@ -7616,6 +7849,7 @@
                     Escape: (event) => clearSelection(),
                     Delete: (event) => deleteBlocks(event),
                     Tab: (event) => focus(event),
+                    Escape: (event) => document.getElementById('command-entry').focus(),
                     ' ': (event) => stop(event),
                     a: (event) => showAll(event),
                     A: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
@@ -7993,11 +8227,6 @@
             };
             app.textTexture = gl.createTexture();
             initialiseText();
-            /*
-            setBoxAttributes();
-            setCylinderAttributes();
-            setQuadAttributes();
-            */
             setPointAttributes();
             setLineAttributes();
             if (location.protocol === 'http:') {
@@ -8035,9 +8264,7 @@
             addMoveControl(structureView, structureView.querySelector('h2'));
 
             app.renderTarget = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
-            skybox('/images/Yokohama3/');
         }
-
 
         /**
          * Add a node to the graph using the context to resolve references.
@@ -8070,7 +8297,6 @@
                 action: parseLine,
             };
 
-
             const context = { defaultParameters: [], instance: [], values: {}, path: [] };
             const objects = [parseLine(line, context)].flatMap((item) => item);
             const nodes = objects.map((source) => expandTypes(source));
@@ -8089,9 +8315,27 @@
          */
         const userCommands = [
             {
+                name: '?',
+                action(text) {
+                    console.log(userCommands.map((command) => command.name).join(', '));
+                }
+            },
+            {
                 name: 'reset',
                 action(text) {
                     reset();
+                }
+            },
+            {
+                name: 'list',
+                action(text) {
+                    const parameters = text.replace(/^list\s*/, '').split(/\s*,\s*/);
+                    const items = app.scene.items.filter((item) => item.selected);
+                    if (items.length === 0) {
+                        items.push(...app.scene.items);
+                    }
+                    const nodes = items.map((item) => item.node);
+                    app.windows.push(new ListWindow(nodes, parameters));
                 }
             },
             {
@@ -8107,6 +8351,13 @@
                     } else {
                         setView();
                     }
+                }
+            },
+            {
+                name: 'position',
+                action(text) {
+                    const position = text.replace(/^\s*position\s*/, '').split(/\s*,\s*/).map((str) => parseFloat(str));
+                    moveCamera(position, app.camera.lookAt, app.camera.up);
                 }
             },
             {
@@ -8147,7 +8398,10 @@
             },
             {
                 name: 'snapshot',
-                action(text) { app.savePNG = true; },
+                action(text) {
+                    app.snapshotName = text.replace(/^\s*snapshot\s*/, '');
+                    app.savePNG = true;
+                },
             },
             {
                 name: 'top',
@@ -8165,6 +8419,13 @@
                 action(text) {
                     app.scene.items.forEach((item) => item.selected = true);
                     updateColours();
+                },
+            },
+            {
+                name: 'skybox',
+                action(text) {
+                    const images = text.replace(/^\s*skybox\s*/, '');
+                    skybox(images);
                 },
             },
             {
@@ -8244,7 +8505,6 @@
             },
         }
 
-
         /**
          * Add command entry capability.
          */
@@ -8257,15 +8517,16 @@
 
                 commandEntry.value = '';
 
+                userCommands.sort((a, b) => b.name.length - a.name.length);
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
                 if (commands.length === 1) {
                     commands[0].action(fullCommand);
                 } else if (commands.length === 0) {
                     const names = fullCommand.split(/\s*,\s*/);
-                    const select = names.filter((name) => !name.startsWith('-'));
-                    const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1));
-                    app.scene.items.filter((item) => select.includes(item.name)).forEach((item) => item.selected = true);
-                    app.scene.items.filter((item) => deselect.includes(item.name)).forEach((item) => item.selected = false);
+                    const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
+                    const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
+                    app.scene.items.filter((item) => select.find((pattern) => pattern.test(item.name))).forEach((item) => item.selected = true);
+                    app.scene.items.filter((item) => deselect.find(() => pattern.test(item.name))).forEach((item) => item.selected = false);
                     updateColours();
                 }
             };
@@ -8287,8 +8548,10 @@
                         commandHistory.push(commandEntry.value);
                     }
                     commandEntry.value = commandHistory.next();
+                } else if (event.key === 'Escape') {
+                    commandEntry.value = '';
+                    canvas.focus();
                 }
-
             };
 
             commandHistory.load();
