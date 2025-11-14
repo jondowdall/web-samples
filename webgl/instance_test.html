@@ -81,11 +81,11 @@
         .window {
             position: fixed;
 
-            color: yellow;
-            background-color: rgb(80, 80, 30, 0.8);
-            border: 1px solid orange;
+            color: antiquewhite;
+            background-color: rgb(50, 50, 30, 0.8);
+            /*border: 1px solid orange;*/
             border-radius: 0.5em;
-            padding: 0.5em;
+            /*padding: 0.5em;*/
 
             display: grid;
             grid-template-rows: max-content 1fr;
@@ -109,8 +109,15 @@
         }
 
         .window h2 {
-            font-size: large;
+            background-color: rgb(30, 30, 20, 0.8);
+            font-size: 110%;
+            font-weight: 110;
             margin: 0;
+            padding: 0.5em;
+        }
+
+        .window .expandable {
+            margin: 0.5em;
         }
 
         .window .list {
@@ -748,8 +755,6 @@
         uniform vec3 lightColour3;
 
         uniform vec3 cameraPosition;
-
-        uniform int pass;
 
         uniform samplerCube envTexture;
 
@@ -1531,7 +1536,7 @@
         function getUniqueName(base = 'item') {
             let index = 1;
             let name = `${base} ${index++}`;
-            while (app.scene.items.find((item) => item.name === name)) {
+            while (app.view[0].items.find((item) => item.name === name)) {
                 name = `${base} ${index++}`;
             }
             return name
@@ -1541,7 +1546,7 @@
          * Add a new block
          */
         function newBlock(offset) {
-            const selected = app.scene.items.filter((item) => item.selected);
+            const selected = app.view[0].items.filter((item) => item.node.selected);
             if (selected.length) {
 
             } else {
@@ -1554,10 +1559,10 @@
                 }
 
                 const box = Box.make(null, definition);
-                app.scene.items.push(box);
-                app.scene.roots.push(box);
+                app.view[0].items.push(box);
+                app.view[0].roots.push(box);
             }
-            app.updateColours = true;
+            app.updateMaterials = true;
             updateText();
             showStructure();
         }
@@ -1566,7 +1571,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.scene.items.filter((item) => item.selected);
+            const selected = app.view[0].items.filter((item) => item.node.selected);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -1584,30 +1589,30 @@
                 };
                 if (selected.parent) {
                     const newBox = Box.make(selected.parent, attributes);
-                    app.scene.items.push(newBox);
+                    app.view[0].items.push(newBox);
                     selected.parent.push(newBox);
-                    newBox.selected = true;
+                    newBox.node.selected = true;
                 } else {
                     const newBox = Box.make(null, ...attributes);
-                    app.scene.items.push(newBox);
-                    app.scene.roots.push(newBox);
-                    newBox.selected = true;
+                    app.view[0].items.push(newBox);
+                    app.view[0].roots.push(newBox);
+                    newBox.node.selected = true;
                 }
-                selected.selected = false;
+                selected.node.selected = false;
             });
-            app.updateColours = true;
+            app.updateMaterials = true;
             updateText();
             showStructure();
         }
 
         /**
-         * Add a block next to the current block
+         * Delete the selected items
          */
         function deleteBlocks(offset) {
-            const selected = app.scene.items.filter((item) => item.selected);
+            const selected = app.view[0].items.filter((item) => item.node.selected);
             selected.forEach((selected) => selected.delete());
-            app.scene.items = app.scene.items.filter((item) => !selected.includes(item));
-            app.updateColours = true;
+            app.view[0].items = app.view[0].items.filter((item) => !selected.includes(item));
+            app.updateMaterials = true;
             updateText();
             showStructure();
         }
@@ -1617,7 +1622,7 @@
          */
         function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
             // Use the initial position to determine the desired distance from viewpoint
-            const selected = app.scene.items.filter((item) => item.selected);
+            const selected = app.view[0].items.filter((item) => item.node.selected);
 
             if (selected.length) {
                 const lookAt = scale(sum(...selected.map((item) => extractTranslation(item.world))), 1 / selected.length);
@@ -1816,7 +1821,7 @@
         }
 
         /**
-         * Manage a node within a scene
+         * Manage a node within a view
          *
         class Node {
             constructor() {
@@ -1840,9 +1845,10 @@
         }
 
         /**
-         * Representation of edges in the scene
+         * Representation of edges in the view
          */
         const edges = {
+            instances: [],
             render() {
                 if (app.connections.length > 0) {
                     /*
@@ -1862,9 +1868,9 @@
         }
 
         /**
-         * Manage a scene
+         * Manage a view
          */
-        class Scene {
+        class View {
             constructor(camera) {
                 this.camera = camera;
                 this.renderQueue = [edges];
@@ -1933,9 +1939,29 @@
                     }
                 });
             }
-            update(graph, parent) {
-                this.items = [];
-                graph[children].forEach((node) => this.addItem(node, parent, parent===undefined));
+            updateMaterials() {
+                /**
+                 * Update the colour data for the instances.
+                 */
+                const setTransparency = (item) => {
+                    if (item.state === undefined) return;
+                    item.state.transparent = item.children.length > 0;
+                    item.opacity = item.children.length > 0 ? 0.4 : item.material.opacity;
+                    item.emissivityColour = item.node.selected ? item.material.colour : [0, 0, 0];
+                    item.children.forEach((item) => setTransparency(item));
+                }
+                this.roots.forEach((item) => setTransparency(item));
+            }
+
+            update(graph, parent, replace=true) {
+                if (replace) {
+                    this.items = [];
+                    this.renderQueue.forEach((item) => {
+                        item.instances.length = 0;
+                        item.updateInstances = true;
+                    });
+                }
+                graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
             }
             render() {
                 if (1 || app.useDeferredRender) {
@@ -2077,38 +2103,38 @@
                     //gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
                     this.renderQueue.forEach((item) => item.render());
-/*
-                    gl.useProgram(app.pbrClearShader.program);
-
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
-                    gl.uniform1i(app.pbrClearShader.envTexture, 0);
-
-                    gl.uniformMatrix4fv(app.pbrClearShader.projection, false, app.projectionMatrix);
-                    gl.uniformMatrix4fv(app.pbrClearShader.view, false, app.viewMatrix);
-
-                    gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
-
-                    gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
-                    gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
-
-                    gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
-                    gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
-
-                    gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
-                    gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
-
-                    gl.uniform1i(app.pbrClearShader.pass, 1);
-
-                    gl.enable(gl.BLEND);
-                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-
-                    gl.depthMask(false);  // Don't write to the depth buffer
-                    //this.renderQueue.forEach((item) => item.render());
-
-                    gl.depthMask(true);
-                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                    */
+                    /*
+                                        gl.useProgram(app.pbrClearShader.program);
+                    
+                                        gl.activeTexture(gl.TEXTURE0);
+                                        gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
+                                        gl.uniform1i(app.pbrClearShader.envTexture, 0);
+                    
+                                        gl.uniformMatrix4fv(app.pbrClearShader.projection, false, app.projectionMatrix);
+                                        gl.uniformMatrix4fv(app.pbrClearShader.view, false, app.viewMatrix);
+                    
+                                        gl.uniform3fv(app.pbrClearShader.cameraPosition, app.camera.position);
+                    
+                                        gl.uniform3fv(app.pbrClearShader.lightPosition1, app.lights[0].position);
+                                        gl.uniform3fv(app.pbrClearShader.lightColour1, app.lights[0].colour);
+                    
+                                        gl.uniform3fv(app.pbrClearShader.lightPosition2, app.lights[1].position);
+                                        gl.uniform3fv(app.pbrClearShader.lightColour2, app.lights[1].colour);
+                    
+                                        gl.uniform3fv(app.pbrClearShader.lightPosition3, app.lights[2].position);
+                                        gl.uniform3fv(app.pbrClearShader.lightColour3, app.lights[2].colour);
+                    
+                                        gl.uniform1i(app.pbrClearShader.pass, 1);
+                    
+                                        gl.enable(gl.BLEND);
+                                        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+                    
+                                        gl.depthMask(false);  // Don't write to the depth buffer
+                                        //this.renderQueue.forEach((item) => item.render());
+                    
+                                        gl.depthMask(true);
+                                        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                                        */
                 }
             }
             addNode(node) {
@@ -2122,7 +2148,7 @@
         const app = {
             mode: 'view',
             windows: [],
-            scene: new Scene(),
+            view: [new View()],
             camera: new Camera([0, 0, 15], [0, 0, 0], [0, 1, 0]),
             initial: {
                 position: [0, 0, 15],
@@ -3118,7 +3144,7 @@
                 loadOBJ(url, obj).then((result) => {
                     obj.loaded = true;
                     obj.scale(...scale);
-                    app.scene.renderQueue.push(obj);
+                    app.view[0].renderQueue.push(obj);
                 });
             }
             const indexedName = loadedObjs[url].instances.length ? `${url.split('/').at(-1).replace(/\.obj$/i, '')} ${loadedObjs[url].instances.length}` : name;
@@ -3203,9 +3229,9 @@
             const bufferPromises = gltf.buffers.filter((buffer) => buffer.uri).map((buffer) => loadBuffer(buffer.uri));
             gltf.textures.forEach((texture) => texture.texture = loadTexture(gltf.images[texture.source].uri, gltf.samplers[texture.sampler]));
 
-            const sceneIndex = gltf.scene || 0;
+            const viewIndex = gltf.view || 0;
 
-            const roots = gltf.scenes[sceneIndex].nodes.map((index) => gltf.nodes[index]);
+            const roots = gltf.views[viewIndex].nodes.map((index) => gltf.nodes[index]);
 
             gltf.nodes.forEach((node) => {
                 if (node.children) {
@@ -3432,25 +3458,8 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
 
-            app.updateColours = true;
+            app.updateMaterials = true;
             app.quadsChanged = true;
-        }
-
-        /**
-         * Update the colour data for the instances.
-         */
-        function updateColours() {
-            const colourBuffer = [];
-            const setTransparency = (item) => {
-                if (item.state === undefined) return;
-                //item.state.transparent = item.children.reduce((result, item) => result || (setSelected(item)), 1);
-                item.state.transparent = item.children.length > 0;
-                item.opacity = item.children.length > 0 ? 0.4 : item.material.opacity;
-                item.emissivityColour = item.selected ? item.material.colour : [0, 0, 0];
-                item.children.forEach((item) => setTransparency(item));
-                return item.state.transparent || item.selected;
-            }
-            app.scene.roots.forEach((item) => setTransparency(item));
         }
 
         /**
@@ -3555,7 +3564,7 @@
                 labels.add(item.name);
                 item.children.forEach(addLabel);
             };
-            app.scene.roots.forEach(addLabel);
+            app.view[0].roots.forEach(addLabel);
 
             // Determine size of canvas required
             labels.forEach((label) => {
@@ -3634,7 +3643,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = app.scene.items.filter((item) => item.selected);
+            const selected = app.view[0].items.filter((item) => item.node.selected);
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
@@ -3714,7 +3723,7 @@
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
  
-            //app.updateColours = true;
+            //app.updateMaterials = true;
             //app.quadsChanged = true;
  
         }
@@ -3723,9 +3732,9 @@
          * Update the object definition and the instances if required.
          */
         function updateBuffers(time) {
-            if (app.updateColours) {
-                updateColours();
-                app.updateColours = false;
+            if (app.updateMaterials) {
+                app.view[0].updateMaterials();
+                app.updateMaterials = false;
             }
             if (app.objectChanged) {
                 updateObject(time);
@@ -3955,7 +3964,7 @@
                                 gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
                                 gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
                 */
-                app.scene.render();
+                app.view[0].render();
 
                 /*
                 if (app.connections.length > 0) {
@@ -4648,7 +4657,7 @@
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
 
-                app.scene.renderQueue.push(collection);
+                app.view[0].renderQueue.push(collection);
                 gl.bindVertexArray(null);
                 return collection;
             }
@@ -4906,7 +4915,7 @@
 
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
 
-                app.scene.renderQueue.push(collection);
+                app.view[0].renderQueue.push(collection);
                 gl.bindVertexArray(null);
                 return collection;
             }
@@ -5088,7 +5097,7 @@
                 gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
                 gl.enableVertexAttribArray(app.pbrShader.mirror);
 
-                app.scene.renderQueue.push(collection);
+                app.view[0].renderQueue.push(collection);
                 gl.bindVertexArray(null);
                 return collection;
             }
@@ -5248,7 +5257,7 @@
                 gl.vertexAttribDivisor(app.pbrShader.mirror, 1);
                 gl.enableVertexAttribArray(app.pbrShader.mirror);
 
-                app.scene.renderQueue.push(collection);
+                app.view[0].renderQueue.push(collection);
                 gl.bindVertexArray(null);
                 return collection;
             }
@@ -5474,7 +5483,7 @@
 
                         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
 
-                        app.scene.renderQueue.push(collection);
+                        app.view[0].renderQueue.push(collection);
                     }
                     ++i;
                 }
@@ -5709,7 +5718,7 @@
          */
         function highlightFace(event) {
             const line = getRay(event.clientX, event.clientY);
-            app.scene.items.forEach((item) => item.highlight = 0);
+            app.view[0].items.forEach((item) => item.highlight = 0);
             const hits = sortSelection(getIntersection(line));
             if (hits.length > 0) {
                 hits[0].highlightFace(line);
@@ -5727,16 +5736,16 @@
         function endMove(event) {
             if (action.moved) {
                 const items = new Set();
-                app.scene.items.filter((item) => item.selected)
+                app.view[0].items.filter((item) => item.node.selected)
                     .forEach((item) => item.apply((item) => items.add(item)));
                 const undo = Array.from(items).map((item) => ({
                     item, start: [...item.start],
                 }));
                 const redo = Array.from(items).map((item) => ({
-                    item, end: extractTranslation(action.selected.origin),
+                    item, end: extractTranslation(action.item.origin),
                 }));
-                const start = [...action.selected.start];
-                const end = [...action.selected.referenceFrame.matrix];
+                const start = [...action.item.start];
+                const end = [...action.item.referenceFrame.matrix];
                 history.push({
                     undo: () =>
                         undo.forEach((action) => {
@@ -5751,7 +5760,7 @@
             }
             action.move = highlightFace;
             historyPosition = null;
-            app.scene.items.forEach((item) => item.state = {});
+            app.view[0].items.forEach((item) => item.state = {});
         }
 
         const completeAction = (event) => {
@@ -5867,10 +5876,10 @@
                     node.contentEditable = true;
                     node.addEventListener('focus', (event) => {
                         if (!event.shiftKey) {
-                            app.scene.items.forEach((item) => item.selected = false);
+                            app.view[0].items.forEach((item) => item.node.selected = false);
                         }
-                        instance.selected = true;
-                        app.updateColours = true;
+                        instance.node.selected = true;
+                        app.updateMaterials = true;
                     });
 
                     node.addEventListener('blur', (event) => {
@@ -6014,7 +6023,7 @@
                         const string = node.value;
                         const value = [parseInt(string.slice(1, 3), 16) / 255, parseInt(string.slice(3, 5), 16) / 255, parseInt(string.slice(5), 16) / 255];
                         instance[argument] = value;
-                        app.updateColours = true;
+                        app.updateMaterials = true;
                     });
                     return node;
                 }
@@ -6088,7 +6097,7 @@
                     instance.children.map((child) => addInstance(child, level));
                 }
             }
-            app.scene.roots.forEach((child) => addInstance(child));
+            app.view[0].roots.forEach((child) => addInstance(child));
         }
 
         /**
@@ -6341,7 +6350,7 @@
             const content = await response.text();
             processText(content, parent, replace);
             document.body.style.cursor = 'auto';
-            updateColours();
+            app.view.forEach((view) => view.updateMaterials());
         }
 
         const meta = Symbol('meta');
@@ -6353,8 +6362,8 @@
          */
         function processText(text, parent, replace) {
             if (replace) {
-                app.scene.items = [];
-                app.scene.roots = [];
+                app.view[0].items = [];
+                app.view[0].roots = [];
                 app.stock = {};
             }
 
@@ -6664,6 +6673,9 @@
                     const first = trimmed.slice(0, 1);
 
                     const settingsParser = (text) => {
+                        if (parent) {
+                            return;
+                        }
                         const [command, value] = text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
                         if (commands[command]) {
                             commands[command](value);
@@ -6744,7 +6756,7 @@
                             const label = group[2];
                             item.action = (item, context) =>
                                 instances.flatMap((name, index) => {
-                                    context.instance.unshift({name, index});
+                                    context.instance.unshift({ name, index });
                                     context.values[label] = name;
                                     const result = item.children.flatMap((child) => {
                                         //context.instance[0] = {name, index};
@@ -6757,7 +6769,7 @@
                             const instances = getList(template[1]);
                             item.action = (item, context) =>
                                 instances.flatMap((name, index) => {
-                                    context.instance.unshift({index, name});
+                                    context.instance.unshift({ index, name });
                                     const result = parseLine(item, context);
                                     context.instance.shift();
                                     return result;
@@ -6842,12 +6854,12 @@
             const objectTree = roots.flatMap((line) => line.action(line, context));
             app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
 
-            app.scene.update(app.graph, parent);
+            app.view[0].update(app.graph, parent, replace);
             showModel(app.graph);
             updateText();
             showStructure();
             showStock();
-            updateColours();
+            app.view.forEach((view) => view.updateMaterials());
         }
 
         /**
@@ -7175,7 +7187,7 @@
             } else {
                 const root = new Icosphere();
                 app.boxes.push(root);
-                app.scene.roots.push(root);
+                app.view[0].roots.push(root);
             }
             showStructure();
             updateText();
@@ -7586,7 +7598,7 @@
                 }
             };
 
-            app.scene.roots.forEach((item) => test(item));
+            app.view[0].roots.forEach((item) => test(item));
             return hits;
         }
 
@@ -7620,16 +7632,16 @@
                 hits = sortSelection(hits);
                 if (event.shiftKey) {
                     if (event.ctrlKey) {
-                        hits.forEach((shape) => shape.selected = true);
+                        hits.forEach((shape) => shape.node.selected = true);
                     } else {
-                        hits[0].selected = true;
+                        hits[0].node.selected = true;
                     }
                 } else {
-                    app.scene.items.forEach((item) => item.selected = item === hits[0]);
+                    app.view[0].items.forEach((item) => item.node.selected = item === hits[0]);
                 }
                 return hits;
             }
-            app.scene.items.forEach((item) => item.selected = false);
+            app.view[0].items.forEach((item) => item.node.selected = false);
         }
 
         /**
@@ -7660,7 +7672,7 @@
                 lines.push(`${''.padStart(level * 2, ' ')}${instance.asString()}`);
                 instance.children.forEach((child) => addInstance(child, level + 1));
             };
-            app.scene.roots.forEach((root) => addInstance(root));
+            app.view[0].roots.forEach((root) => addInstance(root));
             downloadText(lines.join('\n'));
         }
 
@@ -7668,18 +7680,18 @@
          * Clear Selection
          */
         function clearSelection() {
-            app.scene.items.forEach((item) => item.selected = false);
+            app.view[0].items.forEach((item) => item.node.selected = false);
             document.getElementById('info').innerHTML = '';
             document.getElementById('info').classList.add('hide');
             updateTextBuffer();
-            app.updateColours = true;
+            app.updateMaterials = true;
         }
 
         /**
          * Rotate the selected item
          */
         function rotateSelected(angle, axis, local) {
-            app.scene.items.filter((item) => item.selected)
+            app.view[0].items.filter((item) => item.node.selected)
                 .forEach((item) => {
                     if (local) {
                         axis = applyTransform(axis, extractRotation(item.origin));
@@ -7692,23 +7704,23 @@
          * Selected item(s) parent.
          */
         function selectParent() {
-            const parents = app.scene.items.flatMap((item) => item.selected ? (item.parent ?? []) : []);
+            const parents = app.view[0].items.flatMap((item) => item.node.selected ? (item.parent ?? []) : []);
             if (!event.shiftKey) {
-                app.scene.items.forEach((item) => item.selected = false);
+                app.view[0].items.forEach((item) => item.node.selected = false);
             }
-            parents.forEach((item) => item.selected = true);
+            parents.forEach((item) => item.node.selected = true);
             app.boxesChanged = true;
             updateText();
-            app.updateColours = true;
+            app.updateMaterials = true;
         }
 
         /**
          * 'Hide' the selected item(s).
          */
         function hideSelected() {
-            app.scene.items.filter((item) => item.selected)
+            app.view[0].items.filter((item) => item.node.selected)
                 .forEach((item) => item.hidden = !item.hidden);
-            app.scene.items.forEach((item) => {
+            app.view[0].items.forEach((item) => {
                 const node = app.nodeMap.get(item)[0];
                 if (item.hidden) {
                     node.classList.add('hidden');
@@ -7722,8 +7734,8 @@
          * 'Hide' the unselected item(s).
          */
         function hideOthers() {
-            app.scene.items.forEach((item) => {
-                item.hidden = !item.path.some((item) => item.selected);
+            app.view[0].items.forEach((item) => {
+                item.hidden = !item.path.some((item) => item.node.selected);
                 const node = app.nodeMap.get(item)[0];
                 if (item.hidden) {
                     node.classList.add('hidden');
@@ -7737,8 +7749,8 @@
          * 'Hide' the selected item(s).
          */
         function showAll() {
-            app.scene.items.forEach((item) => item.hidden = false);
-            app.scene.items.forEach((item) => {
+            app.view[0].items.forEach((item) => item.hidden = false);
+            app.view[0].items.forEach((item) => {
                 const node = app.nodeMap.get(item)[0];
                 node.classList.remove('hidden');
             });
@@ -7786,7 +7798,8 @@
                 }
             } else {
                 if (node[children].length > 0 && node[meta].representation.children.length === 0) {
-                    node[children].forEach((child) => app.scene.addItem(child, node[meta].representation));
+                    node[children].forEach((child) => app.view[0].addItem(child, node[meta].representation));
+                    app.view.forEach((view) => view.updateMaterials());
                 }
             }
         }
@@ -7867,7 +7880,7 @@
                     f: (event) => setView([0, 0, 1]),
                     h: (event) => hideSelected(event),
                     H: (event) => hideOthers(event),
-                    i: (event) => { app.solid = !app.solid; app.updateColours = true; },
+                    i: (event) => { app.solid = !app.solid; app.updateMaterials = true; },
                     l: (event) => setView([-1, 0, 0]),
                     p: (event) => selectParent(event),
                     q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
@@ -7907,35 +7920,35 @@
                 for (const node of document.body.querySelectorAll('.selected')) {
                     node.classList.remove('selected');
                 }
-                if (hits && action.selected && event.ctrlKey) {
+                if (hits && action.item && event.ctrlKey) {
                     hits.forEach((hit) =>
-                        app.connections.push(new Connection(action.selected, hit)));
+                        app.connections.push(new Connection(action.item, hit)));
                 }
-                action.selected = null;
+                action.item = null;
                 action.moved = false;
                 if (event.button === 0 && hits) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                    action.selected = hits[0];
-                    action.selected.showInfo();
-                    if (event.shiftKey && action.selected.material) {
-                        materialControl(action.selected.material, [action.selected]);
+                    action.item = hits[0];
+                    action.item.showInfo();
+                    if (event.shiftKey && action.item.material) {
+                        materialControl(action.item.material, [action.item]);
                     }
 
-                    if (action.selected.nodes) {
-                        action.selected.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+                    if (action.item.nodes) {
+                        action.item.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                     }
-                    if (action.selected.serialNumber) {
+                    if (action.item.serialNumber) {
 
                     } else {
-                        action.selected.state.selected = true;
+                        action.item.node.selected = true;
 
-                        report(action.selected.name);
-                        if (app.nodeMap.get(action.selected)) {
-                            app.nodeMap.get(action.selected).forEach((node) => node.classList.add('selected'));
+                        report(action.item.name);
+                        if (app.nodeMap.get(action.item)) {
+                            app.nodeMap.get(action.item).forEach((node) => node.classList.add('selected'));
                         }
                         if (app.mode === 'edit') {
-                            action.plane = { point: action.selected.points[0] };
+                            action.plane = { point: action.item.points[0] };
                             if (Math.abs(dot(app.camera.up, [0, 1, 0])) > 0.9) {
                                 action.plane.normal = zAxis;
                             } else {
@@ -7945,13 +7958,13 @@
                                 action(item);
                                 item.children.forEach((child) => apply(child, action));
                             }
-                            const selected = app.scene.items.filter((item) => item.selected);
+                            const selected = app.view[0].items.filter((item) => item.node.selected);
                             selected.forEach((item) =>
                                 item.apply((item) => item.start = [...item.referenceFrame.matrix]));
                             action.move = (event) => {
-                                app.scene.items.forEach((item) => item.state.ghost = true);
-                                action.selected.siblings.forEach((item) => item.state.constraint = true);
-                                action.selected.state.moving = true;
+                                app.view[0].items.forEach((item) => item.state.ghost = true);
+                                action.item.siblings.forEach((item) => item.state.constraint = true);
+                                action.item.state.moving = true;
 
                                 action.moved = true;
                                 const mouseLine = getRay(event.clientX, event.clientY);
@@ -8056,7 +8069,7 @@
                         }
                     }
                 }
-                app.updateColours = true;
+                app.updateMaterials = true;
                 updateTextBuffer();
                 updatePoints();
             };
@@ -8090,7 +8103,7 @@
              */
             function dropHandler(event) {
                 dragPart = false;
-                app.scene.items.forEach((item) => item.state = {});
+                app.view[0].items.forEach((item) => item.state = {});
 
                 event.preventDefault();
                 const replace = event.shiftKey;
@@ -8133,7 +8146,7 @@
                         }
                     }
                 }
-                app.updateColours = true;
+                app.updateMaterials = true;
             }
 
             let dragPart = false;
@@ -8148,13 +8161,13 @@
                         const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
                         hits.sort((a, b) => dist(app.camera.position, a.points[0]) - dist(app.camera.position, b.points[0]));
                     }
-                    app.scene.items.forEach((item) => {
+                    app.view[0].items.forEach((item) => {
                         item.state.highlight = item === hits[0];
                         item.state.hasPart = item.serialNumber;
                         item.state.constraint = item.parts?.includes(types[0]);
                         item.state.ghost = true;
                     });
-                    app.updateColours = true;
+                    app.updateMaterials = true;
                 }
             }
 
@@ -8310,13 +8323,13 @@
             const objects = [parseLine(line, context)].flatMap((item) => item);
             const nodes = objects.map((source) => expandTypes(source));
 
-            nodes.forEach((node) => app.scene.addItem(node));
+            nodes.forEach((node) => app.view[0].addItem(node));
 
             showModel(app.graph);
             updateText();
             showStructure();
             showStock();
-            updateColours();
+            app.view.forEach((view) => view.updateMaterials());
         }
 
         /**
@@ -8339,9 +8352,9 @@
                 name: 'list',
                 action(text) {
                     const parameters = text.replace(/^list\s*/, '').split(/\s*,\s*/);
-                    const items = app.scene.items.filter((item) => item.selected);
+                    const items = app.view[0].items.filter((item) => item.node.selected);
                     if (items.length === 0) {
-                        items.push(...app.scene.items);
+                        items.push(...app.view[0].items);
                     }
                     const nodes = items.map((item) => item.node);
                     app.windows.push(new ListWindow(nodes, parameters));
@@ -8419,15 +8432,15 @@
             {
                 name: 'none',
                 action(text) {
-                    app.scene.items.forEach((item) => item.selected = false);
-                    updateColours();
+                    app.view[0].items.forEach((item) => item.node.selected = false);
+                    app.view.forEach((view) => view.updateMaterials());
                 }
             },
             {
                 name: 'all',
                 action(text) {
-                    app.scene.items.forEach((item) => item.selected = true);
-                    updateColours();
+                    app.view[0].items.forEach((item) => item.node.selected = true);
+                    app.view.forEach((view) => view.updateMaterials());
                 },
             },
             {
@@ -8445,7 +8458,7 @@
             {
                 name: 'action',
                 action(text) {
-                    const item = app.scene.items.find((item) => item.selected && item.node?.url);
+                    const item = app.view[0].items.find((item) => item.node.selected && item.node?.url);
                     if (item) {
                         nodeAction(item.node);
                     } else {
@@ -8534,9 +8547,9 @@
                     const names = fullCommand.split(/\s*,\s*/);
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
                     const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
-                    app.scene.items.filter((item) => select.find((pattern) => pattern.test(item.name))).forEach((item) => item.selected = true);
-                    app.scene.items.filter((item) => deselect.find(() => pattern.test(item.name))).forEach((item) => item.selected = false);
-                    updateColours();
+                    app.view[0].items.filter((item) => select.find((pattern) => pattern.test(item.name))).forEach((item) => item.node.selected = true);
+                    app.view[0].items.filter((item) => deselect.find(() => pattern.test(item.name))).forEach((item) => item.node.selected = false);
+                    app.view.forEach((view) => view.updateMaterials());
                 }
             };
 
