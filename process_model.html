@@ -46,40 +46,238 @@
             background: white;
             box-shadow: 2px 3px 5px #333;
         }
+
+
+        #process-view {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #output {
+            position: fixed;
+            bottom: 1em;
+            right: 1em;
+            width: 30vw;
+            height: 20vh;
+            background-color: lightgray;
+            border-radius: 0.5em;
+            padding: 0.5em;
+            border: 2px inset white;
+        }
+
+        #selection-window {
+            position: fixed;
+            display: flex;
+            flex-direction: column;
+            top: 3em;
+            right: 1em;
+            width: 30vw;
+            height: 20vh;
+            color: antiquewhite;
+            background-color: rgb(50, 50, 20, 0.8);
+            border-radius: 0.5em;
+            padding: 0.5em;
+            border: 2px inset white;
+        }
+
+        #selection {
+            background-color: rgb(50, 50, 30, 0.8);
+        }
+
+        .window>h2 {
+            margin-top: 0;
+        }
+
+        .selected {
+            stroke: yellow;
+        }
     </style>
 </head>
 
 <body>
+    <svg id="process-view"></svg>
+
+    <div id="selection-window" class="window">
+        <h2>Selection</h2>
+        <div id="selection">
+
+        </div>
+    </div>
     <div id="output">Hello<br></div>
 
     <datalist id="command-list"></datalist>
     <input id="command-input" type="text" list="command-list" autocorrect="off" autocapitalize="off" />
 
-    <script>
-        // Activity States
-        const waiting = new Symbol('waiting');
-        const running = new Symbol('running');
-        const blocked = new Symbol('blocked');
 
+    <script>
+        /**
+         * SVGView component
+         */
+        class SVGView {
+            static ns = 'http://www.w3.org/2000/svg';
+            static namedArributes = Symbol('named attributes');
+            constructor(id, title) {
+                this.svg = document.getElementById(id);
+                this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
+                this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
+                //this.svg.setAttribute("viewBox", "0 0 2000 2000");
+                this.title = title || 'SVG Diagram';
+            }
+            get width() {
+                return this.svg.clientWidth;
+            }
+            get height() {
+                return this.svg.clientHeight;
+            }
+            make(type, attributes, content, classes) {
+                const element = document.createElementNS(SVGView.ns, type);
+                Object.entries(attributes).forEach(([name, value]) =>
+                    name !== 'name' ? element.setAttribute(name, value) : null);
+                if (attributes[SVGView.namedAttributes]) {
+                    Object.entries(attributes[SVGView.namedAttributes]).forEach(([namespace, values]) =>
+                        Object.entries(values).forEach(([name, value]) =>
+                            element.setAttributeNS(namespace, name, value)));
+                }
+                if (content) {
+                    element.append(content);
+                }
+                if (classes) {
+                    element.classList.add(...classes)
+                }
+                return element;
+            }
+            add(type, parent, attributes = {}, content, classes) {
+                parent = parent || this.svg;
+                const element = this.make(type, attributes, content, classes);
+                parent.appendChild(element);
+                return element;
+            }
+            addUnder(type, parent, attributes = {}, content, classes) {
+                parent = parent || this.svg;
+                const element = this.make(type, attributes, content, classes);
+                parent.insertBefore(element, parent.firstElementChild);
+                return element;
+            }
+            updateElement(element, attributes) {
+                Object.entries(attributes).forEach(([name, value]) =>
+                    name !== 'name' ? element.setAttribute(name, value) : null);
+
+                if (attributes[SVGView.namedAttributes]) {
+                    Object.entries(attributes[SVGView.namedAttributes]).forEach(([namespace, values]) =>
+                        Object.entries(values).forEach(([name, value]) =>
+                            element.setAttributeNS(namespace, name, value)));
+                }
+                return element
+            }
+        }
+    </script>
+
+
+    <script>
+        // States
+        const waiting = Symbol('waiting');
+        const running = Symbol('running');
+        const blocked = Symbol('blocked');
+        const paused = Symbol('paused');
+
+        // Activity mode
+        const asap = Symbol('asap');
+        const onDemand = Symbol('on demand');
+
+        // Simulation mode
+        const byTime = Symbol('by time');
+        const byEvent = Symbol('by event');
+
+
+        const Activity = {
+            addInput(name, quantity = 1) {
+                const entity = app.model.entities.find((entity) => entity.name === name);
+                if (entity) {
+                    const state = this.inputs.get(entity);
+                    if (state) {
+                        state.required = quantity;
+                    } else {
+                        this.inputs.set(entity, { required: quantity, current: 0 });
+                    }
+                    appendLine(`Added entity ${name} as input to ${this.name}`);
+                } else {
+                    appendLine(`Warning: entity ${name} not found, ignoring request`);
+                }
+                if (quantity === 0) {
+                    this.inputs.delete(entity);
+                }
+            }
+        };
 
         const app = {
             model: {
                 processes: [],
                 activities: [],
                 entities: [],
+                inputs: new Map(),
                 links: [],
 
-                addActivity(name) {
-                    this.model.activities.push({ name, state: waiting });
+                addActivity(attributes) {
+                    const activity = Object.assign(Object.create(Activity), { state: waiting, inputs: new Map(), }, attributes);
+                    this.activities.push(activity);
+                    return activity;
+                },
+                addInput(name, quantity) {
+                    const entity = this.entities.find((entity) => entity.name === name);
+                    if (entity) {
+                        const input = this.inputs.get(entity);
+                        if (input) {
+                            input.content += parseInt(quantity);
+                            this.links.filter((link) => link.start === input)
+                                .forEach((link) => link.end.update());
+                        } else {
+                            this.inputs.set(entity, { content: quantity });
+                        }
+                    } else {
+                        appendLine(`Warning: entity ${name} not found`);
+                    }
                 },
             },
             simulation: {
-                state: 'paused',
+                state: paused,
             },
 
-            selected: [],
-
+            selected: new Set(),
+            commandHistory: {
+                position: -1,
+                content: [],
+            },
         };
+
+
+        // Source - https://stackoverflow.com/a
+        // Posted by Pawel, modified by community. See post 'Timeline' for change history
+        // Retrieved 2025-11-18, License - CC BY-SA 4.0
+
+        function replacer(key, value) {
+            if (value instanceof Map) {
+                return {
+                    dataType: 'Map',
+                    value: Array.from(value.entries()), // or with spread: value: [...value]
+                };
+            } else {
+                return value;
+            }
+        }
+        // Source - https://stackoverflow.com/a
+        // Posted by Pawel, modified by community. See post 'Timeline' for change history
+        // Retrieved 2025-11-18, License - CC BY-SA 4.0
+
+        function reviver(key, value) {
+            if (typeof value === 'object' && value !== null) {
+                if (value.dataType === 'Map') {
+                    return new Map(value.value);
+                }
+            }
+            return value;
+        }
+
+
 
         /**
          * Utility function to support downloading generated content.
@@ -100,10 +298,10 @@
          * Utility function to support loading a file.
          */
         function load() {
-            const elem = document.createElement('input');
-            elem.type = 'file';
-            elem.accept = '.json';
-            elem.addEventListener('cancel', () => {
+            const tempNode = document.createElement('input');
+            tempNode.type = 'file';
+            tempNode.accept = '.json';
+            tempNode.addEventListener('cancel', () => {
                 console.log('Cancelled.');
             });
 
@@ -112,7 +310,7 @@
                 reader.addEventListener('load', (event) => {
                     const filename = file.name;
                     try {
-                        app.model = JSON.parse(reader.result);
+                        app.model = JSON.parse(reader.result, reviver);
                         appendLine(`Loaded ${filename}`);
                     } catch (error) {
                         appendLine(error.message);
@@ -121,15 +319,15 @@
                 reader.readAsText(file);
             }
 
-            elem.addEventListener('change', () => {
-                if (elem.files.length === 1) {
-                    console.log('File selected: ', elem.files[0]);
-                    for (let i = 0; i < elem.files.length; ++i) {
-                        loadFile(elem.files[i]);
+            tempNode.addEventListener('change', () => {
+                if (tempNode.files.length === 1) {
+                    console.log('File selected: ', tempNode.files[0]);
+                    for (let i = 0; i < tempNode.files.length; ++i) {
+                        loadFile(tempNode.files[i]);
                     }
                 }
             });
-            elem.click();
+            tempNode.click();
         }
 
 
@@ -185,6 +383,38 @@
 
 
         /**
+         * Load the current state from local storage
+         */
+        function loadLocal() {
+            const stateStr = localStorage.getItem('process-model');
+
+            if (stateStr) {
+                const state = JSON.parse(stateStr, reviver);
+                app.model.processes = state.model.processes;
+                state.model.activities.forEach((activity) => app.model.addActivity(activity));
+                app.model.entities = state.model.entities;
+                app.inputs = state.model.inputs;
+
+                app.model.links = state.model.links;
+                if (state.history) {
+                    app.commandHistory.position = state.history.position;
+                    app.commandHistory.content = state.history.content;
+                }
+            }
+        }
+
+        /**
+         * load the current state to local storage
+         */
+        function saveLocally() {
+            const state = {
+                model: app.model,
+                history: app.commandHistory,
+            };
+            localStorage.setItem('process-model', JSON.stringify(state, replacer, 2));
+        }
+
+        /**
          * User commands that can be used in the input box.
          */
         const commands = [
@@ -199,7 +429,7 @@
             {
                 name: 'save',
                 action(str) {
-                    saveText(JSON.stringify(app.model, null, 2), 'process_model.json');
+                    saveText(JSON.stringify(app.model, replacer, 2), 'process_model.json');
                 },
                 reset,
                 parse,
@@ -219,6 +449,8 @@
                     const parameters = str.replace(this.name, '');
                     const name = parameters.trim();
                     app.model.processes.push({ name });
+                    app.selected.add(app.model.processes.at(-1));
+
                     appendLine(`Added process: ${name}`);
                 },
                 reset,
@@ -245,7 +477,7 @@
                 action(str) {
                     const parameters = str.replace(this.name, '');
                     const name = parameters.trim();
-                    app.model.addActivity(name);
+                    app.selected.add(app.model.addActivity({ name }));
                     appendLine(`Added activity: ${name}`);
                 },
                 reset,
@@ -268,11 +500,44 @@
                 parse,
             },
             {
+                name: 'add input',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    const [entity, quantity] = parameters.split(/\s+/);
+                    if (app.selected.size > 0) {
+                        for (const item of app.selected) {
+                            item.addInput(entity, quantity);
+                            appendLine(`Added input of ${entity} to ${item.name}`);
+                        }
+                    } else {
+                        app.model.addInput(entity, quantity);
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'inputs',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    for (const item of app.selected) {
+                        appendLine(item.name);
+                        for (const [entity, state] of item.inputs) {
+                            appendLine(`  ${entity.name} ${state.current}/${state.required}`);
+                        }
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
                 name: 'add entity',
                 action(str) {
                     const parameters = str.replace(this.name, '');
                     const name = parameters.trim();
                     app.model.entities.push({ name });
+                    app.selected.add(app.model.entities.at(-1));
+
                     appendLine(`Added entity: ${name}`);
                 },
                 reset,
@@ -295,12 +560,33 @@
                 parse,
             },
             {
+                name: 'join',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    const name = parameters;
+                    const entity = app.model.entities.find((entity) => entity.name === name);
+                    if (entity) {
+                        const source = app.model.inputs.get(entity);
+                        if (source) {
+                            for (const item of app.selected) {
+                                const destination = item.inputs.get(entity);
+                                if (destination) {
+                                    app.model.links.push([source, destination]);
+                                }
+                            }
+                        }
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
                 name: 'draw',
                 action(str) {
                     const parameters = str.replace(this.name, '');
                     const pattern = parameters.trim();
                     if (pattern === '') {
-                        if (app.selected.length > 0) {
+                        if (app.selected.size > 0) {
                             draw(app.selected);
                         } else {
                             draw([...app.model.processes, ...app.model.activities, ...app.model.entities, ...app.model.links]);
@@ -315,7 +601,7 @@
             {
                 name: 'none',
                 action(str) {
-                    app.model.length = 0;
+                    app.selected.clear();
                 },
                 reset,
                 parse,
@@ -385,15 +671,27 @@
                 const entity = app.model.entities.find((entity) => entity.name === input.value);
 
                 if (process) {
-                    app.selected.push(process);
+                    if (app.selected.has(process)) {
+                        app.selected.delete(process);
+                    } else {
+                        app.selected.add(process);
+                    }
                     appendLine(`Selected process: ${process.name}`);
                 }
                 if (activity) {
-                    app.selected.push(activity);
+                    if (app.selected.has(activity)) {
+                        app.selected.delete(activity);
+                    } else {
+                        app.selected.add(activity);
+                    }
                     appendLine(`Selected activity: ${activity.name}`);
                 }
                 if (entity) {
-                    app.selected.push(entity);
+                    if (app.selected.has(entity)) {
+                        app.selected.delete(entity);
+                    } else {
+                        app.selected.add(entity);
+                    }
                     appendLine(`Selected entity: ${entity.name}`);
                 }
                 const output = document.getElementById('output');
@@ -401,22 +699,18 @@
             }
 
             if (event.ctrlKey) {
-                history.content[history.position++] = input.value;
-                input.value = history.content[history.position] || '';
+                app.commandHistory.content[app.commandHistory.position++] = input.value;
+                input.value = app.commandHistory.content[app.commandHistory.position] || '';
             } else if (event.shiftKey) {
                 input.value = '';
-                history.position = -1;
+                app.commandHistory.position = -1;
             } else {
-                history.content.push(input.value);
-                history.position = -1;
+                app.commandHistory.content.push(input.value);
+                app.commandHistory.position = -1;
                 input.value = '';
             }
         }
 
-        const history = {
-            position: -1,
-            content: [],
-        }
 
         /**
          * Validate the content of the input box.
@@ -426,34 +720,120 @@
 
             if (event.key === 'Enter') {
                 processCommand(event);
+                updateView();
+                saveLocally();
+                updateSelected();
             } else if (event.key === 'Escape') {
                 document.body.focus();
             } else if (event.key === 'ArrowUp') {
-                if (history.position === -1) {
-                    history.position = history.content.length - 1;
-                    history.content.push(input.value);
-                    input.value = history.content[history.position];
+                if (app.commandHistory.position === -1) {
+                    app.commandHistory.position = app.commandHistory.content.length - 1;
+                    app.commandHistory.content.push(input.value);
+                    input.value = app.commandHistory.content[app.commandHistory.position];
                 } else {
-                    history.position = (history.content.length - 1 + history.position) % history.content.length;
-                    input.value = history.content[history.position];
+                    app.commandHistory.position = (app.commandHistory.content.length - 1 + app.commandHistory.position) % app.commandHistory.content.length;
+                    input.value = app.commandHistory.content[app.commandHistory.position];
                 }
             } else if (event.key === 'DownUp') {
-                if (history.position === -1) {
-                    history.content.push(input.value);
+                if (app.commandHistory.position === -1) {
+                    app.commandHistory.content.push(input.value);
                 }
-                history.position = (history.content.length + 1 + history.position) % history.content.length;
-                input.value = history.content[history.position];
+                app.commandHistory.position = (app.commandHistory.content.length + 1 + app.commandHistory.position) % app.commandHistory.content.length;
+                input.value = app.commandHistory.content[app.commandHistory.position];
             }
         }
 
+        const view = new SVGView('process-view', 'Process View');
+        view.map = new Map();
 
+        function updateView() {
+            let cx = 20;
+            let cy = 20;
+            for (const input of app.model.inputs) {
+                const [entity, state] = input;
+                const port = view.map.get(input);
+                if (!port) {
+                    const port = view.add('circle', null, { cx, cy, r: 10, fill: 'none', stroke: 'black' });
+                    const title = view.add('title', port, {}, `${entity.name} (${state.content})`);
+                    view.map.set(input, port);
+                }
+                cy += 50;
+            }
 
+            let x = 50;
+            let y = 30;
+            const width = 100;
+            const horizontalSpace = 100;
+            const height = 50;
+            const verticalSpace = 30;
+            app.model.activities.forEach((activity) => {
+                const classes = app.selected.has(activity) ? ['selected'] : [];
+                const node = view.map.get(activity) || view.add('rect', null, { width, height, rx: 5, ry: 5, fill: 'none', stroke: 'black' }, null, classes);
+                view.map.set(activity, node);
+
+                node.setAttribute('x', x);
+                node.setAttribute('y', y);
+                const label = view.add('text', null, { x: x + width / 2, y: y + 15, 'text-anchor': 'middle' }, activity.name);
+                const step = (height - 10) / activity.inputs.size;
+                let iy = 10 + y + step / 2;
+                for (const input of activity.inputs) {
+                    const [entity, state] = input;
+                    const port = view.map.get(input) || view.add('circle', null, { cx: x, cy: iy, r: 5, fill: 'white', stroke: 'black' });
+                    view.map.set(input, port);
+                    view.add('title', port, {}, `${entity.name} (${state.current}/${state.required})`);
+                    iy += step;
+                }
+
+                y += height + verticalSpace;
+                if (y + 50 > 500) {
+                    y = 10;
+                    x += width + horizontalSpace;
+                }
+            });
+
+            for (const link of app.model.links) {
+                const edge = view.map.get(link);
+                const start = view.map.get(link[0]);
+                const end = view.map.get(link[1]);
+                if (!edge) {
+                    const x1 = start.cx;
+                    const y1 = start.cy;
+                    const x2 = end.cx;
+                    const y2 = end.cy;
+                    const mx = (x1 + x2) / 2;
+                    const d = `M ${x1} ${y1} C ${xm} ${y1} ${xm} ${y2} ${x2} ${y2}`;
+                    const edge = view.add('path', null, { d, fill: 'none', stroke: 'black' });
+                    //const title = view.add('title', edge, {}, `${entity.name} (${state.content})`);
+                    view.map.set(link, edge);
+                }
+            }
+        }
+
+        /**
+         * Update the list of selected items.
+         */
+        function updateSelected() {
+            const node = document.getElementById('selection');
+            node.innerHTML = '';
+            const list = document.createElement('ul');
+            node.append(list);
+            for (let element of app.selected) {
+                const item = document.createElement('li');
+                item.innerHTML = element.name;
+                list.append(item);
+            }
+        }
+
+        loadLocal();
+        updateView();
 
         const input = document.getElementById('command-input');
         //input.addEventListener('change', processCommand);
         input.addEventListener('keydown', processKey);
 
         //updateCommandList();
+
+
 
         input.focus();
     </script>
