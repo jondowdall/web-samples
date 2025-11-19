@@ -40,6 +40,7 @@
             left: 50%;
             transform: translateX(-50%);
             min-width: 20em;
+            padding: 0.2em 0.5em;
             outline: none;
             border: 1px solid gray;
             border-radius: 1em;
@@ -74,22 +75,26 @@
             width: 30vw;
             height: 20vh;
             color: antiquewhite;
-            background-color: rgb(50, 50, 20, 0.8);
+            background-color: rgb(30, 30, 30, 0.8);
             border-radius: 0.5em;
-            padding: 0.5em;
+            /*padding: 0.5em;*/
             border: 2px inset white;
         }
 
         #selection {
-            background-color: rgb(50, 50, 30, 0.8);
+            background-color: rgb(150, 150, 150, 0.9);
+            width: 100%;
+            height: 100%;
         }
 
         .window>h2 {
-            margin-top: 0;
+            padding: 0.5em;
+            margin: 0;
         }
 
         .selected {
             stroke: yellow;
+            filter: drop-shadow(2px 2px 4px rgba(0, 0, 0, 0.5));
         }
     </style>
 </head>
@@ -122,6 +127,7 @@
                 this.svg.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xlink", "http://www.w3.org/1999/xlink");
                 //this.svg.setAttribute("viewBox", "0 0 2000 2000");
                 this.title = title || 'SVG Diagram';
+                this.map = new Map();
             }
             get width() {
                 return this.svg.clientWidth;
@@ -189,54 +195,207 @@
         const byEvent = Symbol('by event');
 
 
-        const Activity = {
+        class Product {
+            static create(attributes) {
+                const product = new Product(attributes.name);
+                product.instances = attributes.instances;
+                return product;
+            }
+            constructor(name) {
+                this.name = name;
+                this.instances = [];
+            }
+            toJSON() {
+                return {
+                    dataType: 'Product',
+                    value: Object.assign({}, this),
+                }
+            }
+
+        }
+
+
+        class Port {
+            static create(attributes) {
+                return new Port(attributes.name, attributes.capacity, attributes.content);
+            }
+
+            constructor(product, capacity = 1, content = []) {
+                this.product = product;
+                this.capacity = capacity;
+                this.content = content;
+            }
+            store(item) {
+                if (item.type !== this.product) {
+                    appendLine(`Warning: Failed to store ${item.name} - item is not required type ${this.product.name}`);
+                    return;
+                }
+                if (this.content.length >= this.capacity) {
+                    appendLine(`Warning: Failed to storing ${item.name} - port is full`);
+                    return;
+                }
+                this.content.push(item);
+            }
+            toJSON() {
+                return {
+                    dataType: 'Port',
+                    value: Object.assign({}, this),
+                }
+            }
+
+        }
+
+        class Input extends Port {
+            static create(attributes) {
+                return new Input(attributes.name, attributes.capacity, attributes.content, attributes.required);
+            }
+
+            constructor(product, capacity = 1, content = [], required = 1) {
+                super(product, capacity, content);
+                this.required = required;
+            }
+            toJSON() {
+                return {
+                    dataType: 'Input',
+                    value: Object.assign({}, this),
+                }
+            }
+        }
+
+        class Process {
+            static create(attributes) {
+                const process = new Process(attributes.name);
+                process.inputs = new Map(attributes.inputs);
+                process.outputs = new Map(attributes.outputs);
+                return process;
+            }
+
+            toJSON() {
+                return {
+                    dataType: 'Process',
+                    value: Object.assign({}, this),
+                }
+            }
+
+        }
+
+        class Activity {
+            static create(attributes) {
+                const activity = new Activity(attributes.name);
+                activity.inputs = new Map(attributes.inputs);
+                activity.outputs = new Map(attributes.outputs);
+                return activity;
+            }
+            constructor(name) {
+                this.name = name;
+                this.state = waiting;
+                this.inputs = new Map();
+                this.outputs = new Map();
+            }
             addInput(name, quantity = 1) {
-                const entity = app.model.entities.find((entity) => entity.name === name);
-                if (entity) {
-                    const state = this.inputs.get(entity);
+                const product = app.model.products.find((product) => product.name === name);
+                if (product) {
+                    const state = this.inputs.get(product);
                     if (state) {
                         state.required = quantity;
                     } else {
-                        this.inputs.set(entity, { required: quantity, current: 0 });
+                        this.inputs.set(product, { required: quantity, current: 0 });
                     }
-                    appendLine(`Added entity ${name} as input to ${this.name}`);
+                    appendLine(`Added product ${name} as input to ${this.name}`);
                 } else {
-                    appendLine(`Warning: entity ${name} not found, ignoring request`);
+                    appendLine(`Warning: product ${name} not found, ignoring request`);
                 }
                 if (quantity === 0) {
-                    this.inputs.delete(entity);
+                    this.inputs.delete(product);
                 }
             }
-        };
+            toJSON() {
+                return {
+                    dataType: 'Activity',
+                    value: Object.assign({}, this),
+                }
+            }
+        }
+
+        class Link {
+            static create(attributes) {
+                const source = app.model.all.find((item) => item.name === attributes.source);
+                const destination = app.model.all.find((item) => item.name === attributes.destination);
+                return new Link(source, destination);
+            }
+            constructor(source, destination) {
+                this.source = source;
+                this.destination = this.destination;
+            }
+            toJSON() {
+                return {
+                    dataType: 'Activity',
+                    value: { source: this.source.name, destination: this.destination.name },
+                }
+            }
+        }
+
+        /**
+         * Revive classes from definitions in objects
+         */
+        function revive(definition) {
+            const item = {
+                Product, Process, Port, Input, Activity, Link,
+            }[definition.dataType].create(definition.value);
+            return item;
+        }
+
 
         const app = {
             model: {
-                processes: [],
-                activities: [],
-                entities: [],
+                all: [],
+                get processes() { return this.all.filter((item) => item instanceof Process) },
+                get activities() { return this.all.filter((item) => item instanceof Activity) },
+                get products() { return this.all.filter((item) => item instanceof Product) },
                 inputs: new Map(),
+                outputs: new Map(),
                 links: [],
 
+                addItem(item, replace = false) {
+                    const pos = this.all.findIndex((existing) => existing.name === item.name);
+                    if (pos !== -1) {
+                        if (replace) {
+                            this.all.splice(pos, 1, item);
+                        } else {
+                            appendLine(`Warning: ${this.all[pos].name} already exists in the model`);
+                        }
+                    } else {
+                        this.all.push(item);
+                    }
+                },
+
                 addActivity(attributes) {
-                    const activity = Object.assign(Object.create(Activity), { state: waiting, inputs: new Map(), }, attributes);
-                    this.activities.push(activity);
+                    const activity = Activity.create(attributes);
+                    //const activity = Object.assign(Object.create(Activity), { state: waiting, inputs: new Map(), }, attributes);
+                    this.all.push(activity);
                     return activity;
                 },
-                addInput(name, quantity) {
-                    const entity = this.entities.find((entity) => entity.name === name);
-                    if (entity) {
-                        const input = this.inputs.get(entity);
+                addInput(name, quantity = 0) {
+                    const product = this.products.find((product) => product.name === name);
+                    if (product) {
+                        const input = this.inputs.get(product);
                         if (input) {
                             input.content += parseInt(quantity);
                             this.links.filter((link) => link.start === input)
                                 .forEach((link) => link.end.update());
                         } else {
-                            this.inputs.set(entity, { content: quantity });
+                            this.inputs.set(product, { content: quantity });
                         }
                     } else {
-                        appendLine(`Warning: entity ${name} not found`);
+                        appendLine(`Warning: product ${name} not found`);
                     }
                 },
+                toJSON() {
+                    return {
+                        all: this.all,
+                        links: this.links,
+                    };
+                }
             },
             simulation: {
                 state: paused,
@@ -260,9 +419,8 @@
                     dataType: 'Map',
                     value: Array.from(value.entries()), // or with spread: value: [...value]
                 };
-            } else {
-                return value;
             }
+            return value;
         }
         // Source - https://stackoverflow.com/a
         // Posted by Pawel, modified by community. See post 'Timeline' for change history
@@ -272,6 +430,8 @@
             if (typeof value === 'object' && value !== null) {
                 if (value.dataType === 'Map') {
                     return new Map(value.value);
+                } else if (value.dataType) {
+                    return revive(value);
                 }
             }
             return value;
@@ -390,9 +550,7 @@
 
             if (stateStr) {
                 const state = JSON.parse(stateStr, reviver);
-                app.model.processes = state.model.processes;
-                state.model.activities.forEach((activity) => app.model.addActivity(activity));
-                app.model.entities = state.model.entities;
+                app.model.all.push(...state.model.all);
                 app.inputs = state.model.inputs;
 
                 app.model.links = state.model.links;
@@ -503,14 +661,14 @@
                 name: 'add input',
                 action(str) {
                     const parameters = str.replace(this.name, '').trim();
-                    const [entity, quantity] = parameters.split(/\s+/);
+                    const [product, quantity] = parameters.split(/\s+/);
                     if (app.selected.size > 0) {
                         for (const item of app.selected) {
-                            item.addInput(entity, quantity);
-                            appendLine(`Added input of ${entity} to ${item.name}`);
+                            item.addInput(product, quantity);
+                            appendLine(`Added input of ${product} to ${item.name}`);
                         }
                     } else {
-                        app.model.addInput(entity, quantity);
+                        app.model.addInput(product, quantity);
                     }
                 },
                 reset,
@@ -522,8 +680,8 @@
                     const parameters = str.replace(this.name, '').trim();
                     for (const item of app.selected) {
                         appendLine(item.name);
-                        for (const [entity, state] of item.inputs) {
-                            appendLine(`  ${entity.name} ${state.current}/${state.required}`);
+                        for (const [product, state] of item.inputs) {
+                            appendLine(`  ${product.name} ${state.current}/${state.required}`);
                         }
                     }
                 },
@@ -531,29 +689,30 @@
                 parse,
             },
             {
-                name: 'add entity',
+                name: 'add product',
                 action(str) {
                     const parameters = str.replace(this.name, '');
                     const name = parameters.trim();
-                    app.model.entities.push({ name });
-                    app.selected.add(app.model.entities.at(-1));
+                    const product = Product.create({ name });
+                    app.model.addItem(product);
+                    app.selected.add(product);
 
-                    appendLine(`Added entity: ${name}`);
+                    appendLine(`Added product: ${name}`);
                 },
                 reset,
                 parse,
             },
             {
-                name: 'entities',
+                name: 'products',
                 action(str) {
                     const parameters = str.replace(this.name, '');
                     const pattern = parameters.trim();
                     if (pattern === '') {
-                        showList(app.model.entities.map((entity) => entity.name));
+                        showList(app.model.products.map((product) => product.name));
                     } else {
                         const expr = new RegExp(pattern);
-                        showList(app.model.entities.filter((entity) => expr.test(entity.name))
-                            .map((entity) => entity.name));
+                        showList(app.model.products.filter((product) => expr.test(product.name))
+                            .map((product) => product.name));
                     }
                 },
                 reset,
@@ -564,18 +723,66 @@
                 action(str) {
                     const parameters = str.replace(this.name, '').trim();
                     const name = parameters;
-                    const entity = app.model.entities.find((entity) => entity.name === name);
-                    if (entity) {
-                        const source = app.model.inputs.get(entity);
+                    const product = app.model.products.find((product) => product.name === name);
+                    if (product) {
+                        const source = app.model.inputs.get(product);
                         if (source) {
                             for (const item of app.selected) {
-                                const destination = item.inputs.get(entity);
+                                const destination = item.inputs.get(product);
                                 if (destination) {
-                                    app.model.links.push([source, destination]);
+                                    app.model.links.push({ source, destination });
                                 }
                             }
                         }
                     }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'links',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    const name = parameters;
+                    const pattern = parameters.trim();
+                    if (pattern === '') {
+                        showList(app.model.links.map((link) => `${link.source.name} -> ${link.destination.name}`));
+                    } else {
+                        const expr = new RegExp(pattern);
+                        showList(app.model.products.filter((product) => expr.test(product.name))
+                            .map((product) => product.name));
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'delete',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    const name = parameters;
+                    const pattern = parameters.trim();
+                    if (pattern === '') {
+                        for (const item of app.selected) {
+                            app.model.processes = app.model.processes.filter((process) => process !== item);
+                            app.model.activities = app.model.activities.filter((activity) => activity !== item);
+                            app.model.products = app.model.products.filter((product) => product !== item);
+                            app.model.links = app.model.links.filter((link) => link.source !== item && link.destination !== item);
+                            item.deleted = true;
+                            appendLine(`${item.name} deleted`);
+                        }
+                        app.selected.clear();
+                    } else {
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'update',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    updateView();
                 },
                 reset,
                 parse,
@@ -589,7 +796,7 @@
                         if (app.selected.size > 0) {
                             draw(app.selected);
                         } else {
-                            draw([...app.model.processes, ...app.model.activities, ...app.model.entities, ...app.model.links]);
+                            draw([...app.model.processes, ...app.model.activities, ...app.model.products, ...app.model.links]);
                         }
                     } else {
 
@@ -666,36 +873,22 @@
             if (validCommands.length === 1) {
                 validCommands[0].action(input.value);
             } else {
-                const process = app.model.processes.find((process) => process.name === input.value);
-                const activity = app.model.activities.find((activity) => activity.name === input.value);
-                const entity = app.model.entities.find((entity) => entity.name === input.value);
+                const pattern = new RegExp(input.value);
+                const items = app.model.all.filter((item) => pattern.test(item.name));
 
-                if (process) {
-                    if (app.selected.has(process)) {
-                        app.selected.delete(process);
-                    } else {
-                        app.selected.add(process);
-                    }
-                    appendLine(`Selected process: ${process.name}`);
+                if (items.length > 0) {
+                    items.forEach((item) => {
+                        if (app.selected.has(item)) {
+                            app.selected.delete(item);
+                            appendLine(`Deselected ${item.name}`);
+                        } else {
+                            app.selected.add(item);
+                            appendLine(`Selected ${item.name}`);
+                        }
+                    });
+                } else {
+                    appendLine(`Warning: unrecognised input "${input.value}"`);
                 }
-                if (activity) {
-                    if (app.selected.has(activity)) {
-                        app.selected.delete(activity);
-                    } else {
-                        app.selected.add(activity);
-                    }
-                    appendLine(`Selected activity: ${activity.name}`);
-                }
-                if (entity) {
-                    if (app.selected.has(entity)) {
-                        app.selected.delete(entity);
-                    } else {
-                        app.selected.add(entity);
-                    }
-                    appendLine(`Selected entity: ${entity.name}`);
-                }
-                const output = document.getElementById('output');
-                output.append(input.value, document.createElement('br'));
             }
 
             if (event.ctrlKey) {
@@ -744,18 +937,28 @@
         }
 
         const view = new SVGView('process-view', 'Process View');
-        view.map = new Map();
 
         function updateView() {
+            // Remove deleted items
+            for (const [item, nodes] of view.map.entries()) {
+                if (item.deleted) {
+                    nodes.forEach((node) => node.remove(node));
+                    view.map.delete(item);
+                }
+            }
+
             let cx = 20;
             let cy = 20;
             for (const input of app.model.inputs) {
-                const [entity, state] = input;
+                const [product, state] = input;
                 const port = view.map.get(input);
-                if (!port) {
-                    const port = view.add('circle', null, { cx, cy, r: 10, fill: 'none', stroke: 'black' });
-                    const title = view.add('title', port, {}, `${entity.name} (${state.content})`);
-                    view.map.set(input, port);
+                const fill = state.content.length > 0 ? 'green' : 'white';
+                if (port) {
+                    port.setAttribute('fill', fill);
+                } else {
+                    const port = view.add('circle', null, { cx, cy, r: 10, fill, stroke: 'black' });
+                    const title = view.add('title', port, {}, `${product.name} (${state.content})`);
+                    view.map.set(input, [port, title]);
                 }
                 cy += 50;
             }
@@ -768,19 +971,33 @@
             const verticalSpace = 30;
             app.model.activities.forEach((activity) => {
                 const classes = app.selected.has(activity) ? ['selected'] : [];
-                const node = view.map.get(activity) || view.add('rect', null, { width, height, rx: 5, ry: 5, fill: 'none', stroke: 'black' }, null, classes);
-                view.map.set(activity, node);
+                const nodes = view.map.get(activity) || [view.add('rect', null, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black' }, null, classes)];
+                nodes[0].addEventListener('click', (event) => {
+                    if (app.selected.has(activity)) {
+                        app.selected.delete(activity);
+                        nodes[0].classList.remove('selected');
+                    } else {
+                        app.selected.add(activity);
+                        nodes[0].classList.add('selected');
+                    }
+                    updateSelected();
+                });
 
-                node.setAttribute('x', x);
-                node.setAttribute('y', y);
-                const label = view.add('text', null, { x: x + width / 2, y: y + 15, 'text-anchor': 'middle' }, activity.name);
+                nodes[0].setAttribute('x', x);
+                nodes[0].setAttribute('y', y);
+                if (nodes.length === 1) {
+                    const label = view.add('text', null, { x: x + width / 2, y: y + 15, 'text-anchor': 'middle' }, activity.name);
+                    nodes.push(label);
+                } else {
+                    nodes[1].innerHTML = activity.name;
+                }
                 const step = (height - 10) / activity.inputs.size;
                 let iy = 10 + y + step / 2;
                 for (const input of activity.inputs) {
-                    const [entity, state] = input;
+                    const [product, state] = input;
                     const port = view.map.get(input) || view.add('circle', null, { cx: x, cy: iy, r: 5, fill: 'white', stroke: 'black' });
-                    view.map.set(input, port);
-                    view.add('title', port, {}, `${entity.name} (${state.current}/${state.required})`);
+                    view.map.set(input, [port]);
+                    view.add('title', port, {}, `${product.name} (${state.current}/${state.required})`);
                     iy += step;
                 }
 
@@ -789,22 +1006,28 @@
                     y = 10;
                     x += width + horizontalSpace;
                 }
+                view.map.set(activity, nodes);
             });
 
             for (const link of app.model.links) {
-                const edge = view.map.get(link);
-                const start = view.map.get(link[0]);
-                const end = view.map.get(link[1]);
-                if (!edge) {
+                const nodes = view.map.get(link);
+                const edge = nodes[0];
+                const start = view.map.get(link.source)[0];
+                const end = view.map.get(link.destination)[0];
+                if (start && end) {
                     const x1 = start.cx;
                     const y1 = start.cy;
                     const x2 = end.cx;
                     const y2 = end.cy;
                     const mx = (x1 + x2) / 2;
                     const d = `M ${x1} ${y1} C ${xm} ${y1} ${xm} ${y2} ${x2} ${y2}`;
-                    const edge = view.add('path', null, { d, fill: 'none', stroke: 'black' });
-                    //const title = view.add('title', edge, {}, `${entity.name} (${state.content})`);
-                    view.map.set(link, edge);
+                    if (!edge) {
+                        const edge = view.add('path', null, { d, fill: 'none', stroke: 'black' });
+                        //const title = view.add('title', edge, {}, `${product.name} (${state.content})`);
+                        view.map.set(link, [edge]);
+                    } else {
+                        edge.setAttribute('d', d);
+                    }
                 }
             }
         }
@@ -821,6 +1044,12 @@
                 const item = document.createElement('li');
                 item.innerHTML = element.name;
                 list.append(item);
+                item.addEventListener('click', (event) => {
+                    if (app.selected.has(element)) {
+                        app.selected.delete(element);
+                        updateSelected();
+                    }
+                });
             }
         }
 
