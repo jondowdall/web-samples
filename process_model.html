@@ -195,8 +195,26 @@
         const byEvent = Symbol('by event');
 
 
+        /**
+         * Evaluate a string to the canonical representation.
+         */
+        function resolve(str) {
+            try {
+                const func = new Function(`return ${str};`);
+                return func();
+            } catch (error) {
+                appendLine(error.message);
+            }
+            return str;
+        }
+
+
         class Product {
             static create(attributes) {
+                const existing = app.model.byName(attributes.name);
+                if (existing && existing instanceof Product) {
+                    return existing;
+                }
                 const product = new Product(attributes.name);
                 product.instances = attributes.instances;
                 return product;
@@ -289,6 +307,7 @@
             constructor(name) {
                 this.name = name;
                 this.state = waiting;
+                this.duration = 1 * 60 * 60 * 1000;
                 this.inputs = new Map();
                 this.outputs = new Map();
             }
@@ -356,6 +375,11 @@
                 outputs: new Map(),
                 links: [],
 
+                byName(name) {
+                    const item = this.all.find((item) => item.name === name);
+                    return item;
+                },
+
                 addItem(item, replace = false) {
                     const pos = this.all.findIndex((existing) => existing.name === item.name);
                     if (pos !== -1) {
@@ -393,6 +417,8 @@
                 toJSON() {
                     return {
                         all: this.all,
+                        inputs: this.inputs,
+                        outputs: this.outputs,
                         links: this.links,
                     };
                 }
@@ -551,7 +577,7 @@
             if (stateStr) {
                 const state = JSON.parse(stateStr, reviver);
                 app.model.all.push(...state.model.all);
-                app.inputs = state.model.inputs;
+                app.model.inputs = new Map(state.model.inputs.entries().map(([key, value]) => [app.model.byName(key.name), value])) || new Map();
 
                 app.model.links = state.model.links;
                 if (state.history) {
@@ -569,7 +595,8 @@
                 model: app.model,
                 history: app.commandHistory,
             };
-            localStorage.setItem('process-model', JSON.stringify(state, replacer, 2));
+            const str = JSON.stringify(state, replacer, 2);
+            localStorage.setItem('process-model', str);
         }
 
         /**
@@ -670,6 +697,16 @@
                     } else {
                         app.model.addInput(product, quantity);
                     }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'add source',
+                action(str) {
+                    const parameters = str.replace(this.name, '').trim();
+                    const [product, quantity] = parameters.split(/\s+/);
+                    app.model.addInput(product, quantity);
                 },
                 reset,
                 parse,
@@ -808,6 +845,29 @@
             {
                 name: 'none',
                 action(str) {
+                    app.selected.clear();
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'set',
+                action(str) {
+                    const suffix = str.replace(this.name, '');
+                    const parameters = suffix.split(/\s+/g);
+                    if (parameters.length === 2) {
+                        const [attribute, str] = parameters;
+                        const value = resolve(str);
+                        app.selected.forEach((item) => item[attribute] = selected);
+                    } else if (parameters.length > 2) {
+                        const value = resolve(parameters.pop());
+                        const attribute = parameters.pop();
+                        const items = parameters.flatMap((str) => {
+                            const pattern = new RegExp(str);
+                            return app.model.all.filter((item) => pattern.test(item.name));
+                        });
+                        items.forEach((item) => item[attribute] = value);
+                    }
                     app.selected.clear();
                 },
                 reset,
