@@ -178,6 +178,17 @@
         }
     </script>
 
+    <script>
+        /**
+         * Generate a V4 UUID
+         */
+        function uuidv4() {
+            return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+                (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+            );
+        }
+    </script>
+
 
     <script>
         // States
@@ -210,18 +221,21 @@
 
 
         class Product {
+            static all = [];
             static create(attributes) {
-                const existing = app.model.byName(attributes.name);
-                if (existing && existing instanceof Product) {
-                    return existing;
-                }
-                const product = new Product(attributes.name);
-                product.instances = attributes.instances;
-                return product;
+                return Product.all.find((existing) => existing.name === attributes.name) ||
+                    new Product(attributes.name, attributes.instances);
             }
-            constructor(name) {
+            static get(name) {
+                return Product.all.find((existing) => existing.name === name) || new Product(name);
+            }
+            constructor(name, instances = []) {
                 this.name = name;
-                this.instances = [];
+                this.instances = instances;
+                Product.all.push(this);
+            }
+            get id() {
+                return this.name;
             }
             toJSON() {
                 return {
@@ -237,11 +251,15 @@
             static create(attributes) {
                 return new Port(attributes.name, attributes.capacity, attributes.content);
             }
+            get id() {
+                return this.uuid;
+            }
 
-            constructor(product, capacity = 1, content = []) {
+            constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
                 this.content = content;
+                this.uuid = uuid || uuidv4();
             }
             store(item) {
                 if (item.type !== this.product) {
@@ -264,13 +282,16 @@
         }
 
         class Input extends Port {
+            static all = [];
             static create(attributes) {
-                return new Input(attributes.name, attributes.capacity, attributes.content, attributes.required);
+                return Input.all.find((input) => input.uuid === attributes.uuid) ||
+                    new Input(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.uuid);
             }
 
-            constructor(product, capacity = 1, content = [], required = 1) {
-                super(product, capacity, content);
+            constructor(product, capacity = 1, content = [], required = 1, uuid) {
+                super(product, capacity, content, uuid);
                 this.required = required;
+                Input.all.push(this);
             }
             toJSON() {
                 return {
@@ -287,6 +308,9 @@
                 process.outputs = new Map(attributes.outputs);
                 return process;
             }
+            get id() {
+                return this.name;
+            }
 
             toJSON() {
                 return {
@@ -302,6 +326,7 @@
                 const activity = new Activity(attributes.name);
                 activity.inputs = new Map(attributes.inputs);
                 activity.outputs = new Map(attributes.outputs);
+                activity.duration = attributes.duration;
                 return activity;
             }
             constructor(name) {
@@ -311,19 +336,18 @@
                 this.inputs = new Map();
                 this.outputs = new Map();
             }
+            get id() {
+                return this.name;
+            }
             addInput(name, quantity = 1) {
-                const product = app.model.products.find((product) => product.name === name);
-                if (product) {
-                    const state = this.inputs.get(product);
-                    if (state) {
-                        state.required = quantity;
-                    } else {
-                        this.inputs.set(product, { required: quantity, current: 0 });
-                    }
-                    appendLine(`Added product ${name} as input to ${this.name}`);
+                const product = Product.get(name);
+                const state = this.inputs.get(product);
+                if (state) {
+                    state.required = quantity;
                 } else {
-                    appendLine(`Warning: product ${name} not found, ignoring request`);
+                    this.inputs.set(product, new Input(product, 1, [], quantity));
                 }
+                appendLine(`Added product ${name} as input to ${this.name}`);
                 if (quantity === 0) {
                     this.inputs.delete(product);
                 }
@@ -338,18 +362,22 @@
 
         class Link {
             static create(attributes) {
-                const source = app.model.all.find((item) => item.name === attributes.source);
-                const destination = app.model.all.find((item) => item.name === attributes.destination);
-                return new Link(source, destination);
+                const from = app.model.all.find((item) => item.id === attributes.from);
+                const to = app.model.all.find((item) => item.id === attributes.to);
+                return new Link(source, to);
             }
-            constructor(source, destination) {
-                this.source = source;
-                this.destination = this.destination;
+            constructor(from, to) {
+                this.from = from;
+                this.to = this.to;
             }
+            get id() {
+                return `${this.from.id}->${this.to.id}`;
+            }
+
             toJSON() {
                 return {
-                    dataType: 'Activity',
-                    value: { source: this.source.name, destination: this.destination.name },
+                    dataType: 'Link',
+                    value: { from: this.from.id, to: this.to.id },
                 }
             }
         }
@@ -375,11 +403,6 @@
                 outputs: new Map(),
                 links: [],
 
-                byName(name) {
-                    const item = this.all.find((item) => item.name === name);
-                    return item;
-                },
-
                 addItem(item, replace = false) {
                     const pos = this.all.findIndex((existing) => existing.name === item.name);
                     if (pos !== -1) {
@@ -393,25 +416,28 @@
                     }
                 },
 
-                addActivity(attributes) {
-                    const activity = Activity.create(attributes);
+                addActivity(name) {
+                    if (name === '') {
+                        let index = 1;
+                        while (this.all.find((item) => (item instanceof Activity) && item.id === `Activity ${index}`)) {
+                            index += 1;
+                        }
+                        name = `Activity ${index}`;
+                    }
+                    const activity = Activity.create({name});
                     //const activity = Object.assign(Object.create(Activity), { state: waiting, inputs: new Map(), }, attributes);
                     this.all.push(activity);
                     return activity;
                 },
                 addInput(name, quantity = 0) {
-                    const product = this.products.find((product) => product.name === name);
-                    if (product) {
-                        const input = this.inputs.get(product);
-                        if (input) {
-                            input.content += parseInt(quantity);
-                            this.links.filter((link) => link.start === input)
-                                .forEach((link) => link.end.update());
-                        } else {
-                            this.inputs.set(product, { content: quantity });
-                        }
+                    const product = Product.get(name);
+                    const input = this.inputs.get(product);
+                    if (input) {
+                        input.content += parseInt(quantity);
+                        this.links.filter((link) => link.start === input)
+                            .forEach((link) => link.end.update());
                     } else {
-                        appendLine(`Warning: product ${name} not found`);
+                        this.inputs.set(product, { content: quantity });
                     }
                 },
                 toJSON() {
@@ -434,6 +460,20 @@
             },
         };
 
+        /**
+         * Find an object by it's id.
+         */
+        function byId(id) {
+            return app.model.all.find((item) => item.id === id);
+        }
+
+        /**
+         * Find an object by it's name.
+         */
+        function byName(name) {
+            const item = app.model.all.find((item) => item.name === name);
+            return item;
+        }
 
         // Source - https://stackoverflow.com/a
         // Posted by Pawel, modified by community. See post 'Timeline' for change history
@@ -457,7 +497,9 @@
                 if (value.dataType === 'Map') {
                     return new Map(value.value);
                 } else if (value.dataType) {
-                    return revive(value);
+                    return {
+                        Product, Process, Port, Input, Activity, Link,
+                    }[value.dataType].create(value.value);
                 }
             }
             return value;
@@ -577,7 +619,7 @@
             if (stateStr) {
                 const state = JSON.parse(stateStr, reviver);
                 app.model.all.push(...state.model.all);
-                app.model.inputs = new Map(state.model.inputs.entries().map(([key, value]) => [app.model.byName(key.name), value])) || new Map();
+                app.model.inputs = new Map(state.model.inputs.entries().map(([key, value]) => [byName(key.name), value])) || new Map();
 
                 app.model.links = state.model.links;
                 if (state.history) {
@@ -660,9 +702,9 @@
             {
                 name: 'add activity',
                 action(str) {
-                    const parameters = str.replace(this.name, '');
-                    const name = parameters.trim();
-                    app.selected.add(app.model.addActivity({ name }));
+                    const suffix = str.replace(this.name, '');
+                    const parameters = suffix.trim().split(/\s+/g);
+                    app.selected.add(app.model.addActivity(...parameters));
                     appendLine(`Added activity: ${name}`);
                 },
                 reset,
@@ -691,8 +733,10 @@
                     const [product, quantity] = parameters.split(/\s+/);
                     if (app.selected.size > 0) {
                         for (const item of app.selected) {
-                            item.addInput(product, quantity);
-                            appendLine(`Added input of ${product} to ${item.name}`);
+                            if (item.addInput) {
+                                item.addInput(product, quantity);
+                                appendLine(`Added input of ${product} to ${item.name}`);
+                            }
                         }
                     } else {
                         app.model.addInput(product, quantity);
@@ -765,9 +809,11 @@
                         const source = app.model.inputs.get(product);
                         if (source) {
                             for (const item of app.selected) {
-                                const destination = item.inputs.get(product);
-                                if (destination) {
-                                    app.model.links.push({ source, destination });
+                                if (item.inputs) {
+                                    const destination = item.inputs.get(product);
+                                    if (destination) {
+                                        app.model.links.push({ source, destination });
+                                    }
                                 }
                             }
                         }
@@ -932,6 +978,13 @@
             }
             if (validCommands.length === 1) {
                 validCommands[0].action(input.value);
+            } else if (input.value.startsWith('$')) {
+                try {
+                    const func = new Function('app', '_', `return ${input.value.slice(1)};`);
+                    appendLine(func(app, byName));
+                } catch (error) {
+                    appendLine(`Error: ${error.message}`);
+                }
             } else {
                 const pattern = new RegExp(input.value);
                 const items = app.model.all.filter((item) => pattern.test(item.name));
@@ -946,6 +999,7 @@
                             appendLine(`Selected ${item.name}`);
                         }
                     });
+
                 } else {
                     appendLine(`Warning: unrecognised input "${input.value}"`);
                 }
@@ -1018,7 +1072,7 @@
                 } else {
                     const port = view.add('circle', null, { cx, cy, r: 10, fill, stroke: 'black' });
                     const title = view.add('title', port, {}, `${product.name} (${state.content})`);
-                    view.map.set(input, [port, title]);
+                    view.map.set(state, [port, title]);
                 }
                 cy += 50;
             }
@@ -1056,7 +1110,7 @@
                 for (const input of activity.inputs) {
                     const [product, state] = input;
                     const port = view.map.get(input) || view.add('circle', null, { cx: x, cy: iy, r: 5, fill: 'white', stroke: 'black' });
-                    view.map.set(input, [port]);
+                    view.map.set(state, [port]);
                     view.add('title', port, {}, `${product.name} (${state.current}/${state.required})`);
                     iy += step;
                 }
@@ -1071,22 +1125,23 @@
 
             for (const link of app.model.links) {
                 const nodes = view.map.get(link);
-                const edge = nodes[0];
-                const start = view.map.get(link.source)[0];
-                const end = view.map.get(link.destination)[0];
-                if (start && end) {
-                    const x1 = start.cx;
-                    const y1 = start.cy;
-                    const x2 = end.cx;
-                    const y2 = end.cy;
+                const startNodes = view.map.get(link.from);
+                const endNodes = view.map.get(link.to);
+                if (startNodes && endNodes) {
+                    const start = startNodes[0];
+                    const end = endNodes[0];
+                    const x1 = start.cx.animVal.value;
+                    const y1 = start.cy.animVal.value;
+                    const x2 = end.cx.animVal.value;
+                    const y2 = end.cy.animVal.value;
                     const mx = (x1 + x2) / 2;
-                    const d = `M ${x1} ${y1} C ${xm} ${y1} ${xm} ${y2} ${x2} ${y2}`;
-                    if (!edge) {
-                        const edge = view.add('path', null, { d, fill: 'none', stroke: 'black' });
+                    const d = `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
+                    if (!nodes) {
+                        const edge = view.addUnder('path', null, { d, fill: 'none', stroke: 'black' });
                         //const title = view.add('title', edge, {}, `${product.name} (${state.content})`);
                         view.map.set(link, [edge]);
                     } else {
-                        edge.setAttribute('d', d);
+                        nodes[0].setAttribute('d', d);
                     }
                 }
             }
@@ -1122,10 +1177,7 @@
 
         //updateCommandList();
 
-
-
         input.focus();
     </script>
 </body>
-
 </html>
