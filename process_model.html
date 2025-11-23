@@ -281,6 +281,19 @@
         }
 
 
+        /**
+         * An instance of a product.
+         */
+        class Asset {
+            constructor(product) {
+                this._id = uuidv4;
+                this.product = product;
+            }
+            get id () {
+                return this._id;
+            }
+        }
+
         class Product {
             static all = [];
             static create(attributes) {
@@ -454,12 +467,7 @@
 
         class Link {
             static create(attributes) {
-                const from = byId(attributes.from);
-                const to = byId(attributes.to);
-                if (from && to) {
-                    return new Link(from, to);
-                }
-                return {}
+                return new Link(attributes.from, attributes.to);
             }
             constructor(from, to) {
                 this.from = from;
@@ -472,7 +480,7 @@
             toJSON() {
                 return {
                     dataType: 'Link',
-                    value: { from: this.from.id, to: this.to.id },
+                    value: { id: this.id, from: this.from, to: this.to },
                 }
             }
         }
@@ -533,7 +541,7 @@
                         this.links.filter((link) => link.start === input)
                             .forEach((link) => link.end.update());
                     } else {
-                        const content = Array(5).fill(1, 0, quantity).map((i) => ({ product }));
+                        const content = Array(5).fill(1, 0, quantity).map((i) => new Asset(product));
                         const input = { content, id: uuidv4() };
                         this.inputs.set(product, input);
                         this.all.push(input);
@@ -597,7 +605,7 @@
         function serialise(item) {
             const serialised = new Set();
             const replacer = (key, value) => {
-                if (value.id && serialised.has(value.id)) {
+                if (value && value.id && serialised.has(value.id)) {
                     return { id: value.id, }
                 }
                 if (value instanceof Map) {
@@ -606,13 +614,14 @@
                         value: Array.from(value.entries()), // or with spread: value: [...value]
                     };
                 }
-                if (value.id) {
+                if (value && value.id) {
                     serialised.add(value.id);
                 }
                 return value;
             }
             return JSON.stringify(item, replacer, 2);
         }
+
         function deserialise(str) {
             const references = new Map();
             const reviver = (key, value) => {
@@ -632,46 +641,14 @@
                         return element;
                     }
                 }
+                if (value.id) {
+                    references.set(value.id, value);
+                }
+
                 return value;
             }
             return JSON.parse(str, reviver);
         }
-
-
-        // Source - https://stackoverflow.com/a
-        // Posted by Pawel, modified by community. See post 'Timeline' for change history
-        // Retrieved 2025-11-18, License - CC BY-SA 4.0
-
-        function replacer(key, value) {
-            if (value instanceof Map) {
-                return {
-                    dataType: 'Map',
-                    value: Array.from(value.entries()), // or with spread: value: [...value]
-                };
-            }
-            return value;
-        }
-        // Source - https://stackoverflow.com/a
-        // Posted by Pawel, modified by community. See post 'Timeline' for change history
-        // Retrieved 2025-11-18, License - CC BY-SA 4.0
-
-        function reviver(key, value) {
-            if (typeof value === 'object' && value !== null) {
-                if (value.dataType === 'Map') {
-                    return new Map(value.value);
-                } else if (value.dataType) {
-                    const element = {
-                        Product, Process, Port, Input, Activity, Link, Input, Output,
-                    }[value.dataType].create(value.value);
-                    if (element.id) {
-                        app.model.ids[element.id] = element;
-                    }
-                    return element;
-                }
-            }
-            return value;
-        }
-
 
 
         /**
@@ -705,7 +682,7 @@
                 reader.addEventListener('load', (event) => {
                     const filename = file.name;
                     try {
-                        app.model = JSON.parse(reader.result, reviver);
+                        app.model = deserialise(reader.result);
                         appendLine(`Loaded ${filename}`);
                     } catch (error) {
                         appendLine(error.message);
@@ -784,18 +761,13 @@
             const stateStr = localStorage.getItem('process-model');
 
             if (stateStr) {
-                const state = deserialise(stateStr); // JSON.parse(stateStr, reviver);
+                const state = deserialise(stateStr);
                 app.model.all.push(...state.model.all);
                 app.model.inputs = state.model.inputs || new Map();
                 app.model.outputs = state.model.outputs || new Map();
 
                 app.model.inputs.values().forEach((input) => input.id = input.id || uuidv4());
                 app.model.outputs.values().forEach((output) => output.id = output.id || uuidv4());
-
-                /*
-                app.model.inputs = new Map(state.model.inputs.entries().map(([key, value]) => [byName(key.name), value])) || new Map();
-                app.model.outputs = new Map(state.model.outputs.entries().map(([key, value]) => [byName(key.name), value])) || new Map();
-                */
 
                 app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
                 if (state.history) {
@@ -814,7 +786,7 @@
                 history: app.commandHistory,
             };
 
-            const str = serialise(state); // JSON.stringify(state, replacer, 2);
+            const str = serialise(state);
             localStorage.setItem('process-model', str);
         }
 
@@ -833,7 +805,7 @@
             {
                 name: 'save',
                 action(str) {
-                    saveText(JSON.stringify(app.model, replacer, 2), 'process_model.json');
+                    saveText(serialise(app.model), 'process_model.json');
                 },
                 reset,
                 parse,
