@@ -285,12 +285,14 @@
          * An instance of a product.
          */
         class Asset {
-            constructor(product) {
-                this._id = uuidv4;
-                this.product = product;
+            static create(attributes) {
+                const asset = new Asset(attributes.product);
+                Object.assign(asset, attributes);
+                return asset;
             }
-            get id () {
-                return this._id;
+            constructor(product) {
+                this.id = uuidv4();
+                this.product = product;
             }
         }
 
@@ -304,6 +306,11 @@
                     }
                     attributes.name = `Product ${index}`;
                 }
+
+                const product = new Product(attributes.product);
+                Object.assign(product, attributes);
+                return product;
+
                 return Product.all.find((existing) => existing.name === attributes.name) ||
                     new Product(attributes.name, attributes.instances);
             }
@@ -312,35 +319,24 @@
             }
             constructor(name, instances = []) {
                 this.name = name;
+                this.id = uuidv4();
                 this.instances = instances;
                 Product.all.push(this);
             }
-            get id() {
-                return this.name;
-            }
-            toJSON() {
-                return {
-                    dataType: 'Product',
-                    value: Object.assign({}, this),
-                }
-            }
-
         }
 
 
         class Port {
             static create(attributes) {
-                return new Port(attributes.name, attributes.capacity, attributes.content);
+                const port = new Port(attributes.name, attributes.capacity, attributes.content);
+                port.id = attributes.id;
+                return port;
             }
-            get id() {
-                return this.uuid;
-            }
-
             constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
                 this.content = content;
-                this.uuid = uuid || uuidv4();
+                this.id = uuid || uuidv4();
             }
             store(item) {
                 if (item.type !== this.product) {
@@ -353,20 +349,13 @@
                 }
                 this.content.push(item);
             }
-            toJSON() {
-                return {
-                    dataType: 'Port',
-                    value: Object.assign({}, { id: this.id }, this),
-                }
-            }
-
         }
 
         class Input extends Port {
             static all = [];
             static create(attributes) {
-                return Input.all.find((input) => input.uuid === attributes.uuid) ||
-                    new Input(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.uuid);
+                const input = new Input(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
+                return input;
             }
             constructor(product, capacity = 1, content = [], required = 1, uuid) {
                 super(product, capacity, content, uuid);
@@ -378,8 +367,8 @@
         class Output extends Port {
             static all = [];
             static create(attributes) {
-                return Output.all.find((output) => output.uuid === attributes.uuid) ||
-                    new Output(attributes.name, attributes.capacity, attributes.content, attributes.provides, attributes.uuid);
+                const output = new Output(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
+                return output;
             }
             constructor(product, capacity = 1, content = [], required = 1, uuid) {
                 super(product, capacity, content, uuid);
@@ -395,39 +384,32 @@
                 process.outputs = new Map(attributes.outputs);
                 return process;
             }
-            get id() {
-                return this.name;
+            constructor(name) {
+                this.name = name;
+                this.id = uuidv4();
             }
-
-            toJSON() {
-                return {
-                    dataType: 'Process',
-                    value: Object.assign({}, this),
-                }
-            }
-
         }
 
         class Activity {
+            static all = [];
             static create(attributes) {
                 const activity = new Activity(attributes.name);
                 activity.inputs = new Map(attributes.inputs);
                 activity.outputs = new Map(attributes.outputs);
                 activity.duration = attributes.duration;
+                activity.id = attributes.id;
                 return activity;
             }
             constructor(name) {
+                this.id = uuidv4();
                 this.name = name;
                 this.state = waiting;
                 this.duration = 1 * 60 * 60 * 1000;
                 this.inputs = new Map();
                 this.outputs = new Map();
+                Activity.all.push(this);
             }
-            get id() {
-                return this.name;
-            }
-            addInput(name, quantity = 1) {
-                const product = Product.get(name);
+            addInput(product, quantity = 1) {
                 const state = this.inputs.get(product);
                 if (state) {
                     state.required = quantity;
@@ -435,9 +417,8 @@
                     const input = new Input(product, 1, [], quantity);
                     input[parent] = this;
                     this.inputs.set(product, input);
-                    app.model.all.push(input);
                 }
-                appendLine(`Added product ${name} as input to ${this.name}`);
+                appendLine(`Added product ${product.name} as input to ${this.name}`);
                 if (quantity === 0) {
                     this.inputs.delete(product);
                 }
@@ -457,42 +438,19 @@
                     this.outputs.delete(product);
                 }
             }
-            toJSON() {
-                return {
-                    dataType: 'Activity',
-                    value: Object.assign({}, this),
-                }
-            }
         }
 
         class Link {
             static create(attributes) {
-                return new Link(attributes.from, attributes.to);
+                const link = new Link(attributes.from, attributes.to);
+                link.id = attributes.id;
+                return link;
             }
             constructor(from, to) {
+                this.id = uuidv4();
                 this.from = from;
                 this.to = to;
             }
-            get id() {
-                return `${this.from.id}->${this.to.id}`;
-            }
-
-            toJSON() {
-                return {
-                    dataType: 'Link',
-                    value: { id: this.id, from: this.from, to: this.to },
-                }
-            }
-        }
-
-        /**
-         * Revive classes from definitions in objects
-         */
-        function revive(definition) {
-            const item = {
-                Product, Process, Port, Input, Activity, Link,
-            }[definition.dataType].create(definition.value);
-            return item;
         }
 
 
@@ -503,7 +461,7 @@
                 ids: {},
                 get processes() { return this.all.filter((item) => item instanceof Process) },
                 get activities() { return this.all.filter((item) => item instanceof Activity) },
-                get products() { return this.all.filter((item) => item instanceof Product) },
+                get products() { return Product.all; },
                 inputs: new Map(),
                 outputs: new Map(),
                 links: [],
@@ -605,8 +563,11 @@
         function serialise(item) {
             const serialised = new Set();
             const replacer = (key, value) => {
-                if (value && value.id && serialised.has(value.id)) {
-                    return { id: value.id, }
+                if (value && value.id) {
+                    if (serialised.has(value.id)) {
+                        return { id: value.id, }
+                    }
+                    serialised.add(value.id);
                 }
                 if (value instanceof Map) {
                     return {
@@ -614,8 +575,11 @@
                         value: Array.from(value.entries()), // or with spread: value: [...value]
                     };
                 }
-                if (value && value.id) {
-                    serialised.add(value.id);
+                if (value && ['Product', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output',].includes(value.constructor.name)) {
+                    return {
+                        dataType: value.constructor.name,
+                        value: Object.assign({}, value, ),
+                    };
                 }
                 return value;
             }
@@ -878,7 +842,8 @@
                 name: 'add input',
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
-                    const [product, quantity] = parameters;
+                    const [productName, quantity] = parameters;
+                    const product = Product.get(productName);
                     if (app.selected.size > 0) {
                         for (const item of app.selected) {
                             if (item.addInput) {
@@ -1241,10 +1206,10 @@
                     representation.bbox = text.getBBox();
                 } else {
                     const outline = view.add('path', null, { fill, stroke: 'black' });
-                    const title = view.add('title', outline, {}, `${product.name} (${state.content})`);
+                    const title = view.add('title', outline, {}, `${product.name} (${state.content.length})`);
 
                     const text = view.add('text', null, textAttrs, `${product.name}`);
-                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content})`);
+                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.length})`);
 
                     const representation = { nodes: [outline, title, text, textTitle], bbox: text.getBBox() };
                     representations.push(representation);
