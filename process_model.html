@@ -216,6 +216,7 @@
 
         // Ensure parent links aren't serialised by using a symbol
         const parent = Symbol('parent');
+        const id = Symbol('id');
 
         /**
          * Evaluate a string to the canonical representation.
@@ -288,10 +289,11 @@
             static create(attributes) {
                 const asset = new Asset(attributes.product);
                 Object.assign(asset, attributes);
+                asset[id] = attributes.id;
                 return asset;
             }
             constructor(product) {
-                this.id = uuidv4();
+                this[id] = uuidv4();
                 this.product = product;
             }
         }
@@ -309,34 +311,43 @@
 
                 const product = new Product(attributes.product);
                 Object.assign(product, attributes);
+                product[id] = attributes.id;
                 return product;
-
-                return Product.all.find((existing) => existing.name === attributes.name) ||
-                    new Product(attributes.name, attributes.instances);
             }
             static get(name) {
                 return Product.all.find((existing) => existing.name === name) || new Product(name);
             }
             constructor(name, instances = []) {
                 this.name = name;
-                this.id = uuidv4();
+                this[id] = uuidv4();
                 this.instances = instances;
                 Product.all.push(this);
             }
         }
 
+        class Source {
+            static create(attributes) {
+                const source = new Source(attributes.content);
+                source[id] = attributes.id;
+                return source;
+            }
+            constructor(content) {
+                this.content = content;
+                this[id] = uuidv4();
+            }
+        }
 
         class Port {
             static create(attributes) {
                 const port = new Port(attributes.name, attributes.capacity, attributes.content);
-                port.id = attributes.id;
+                port[id] = attributes.id;
                 return port;
             }
             constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
                 this.content = content;
-                this.id = uuid || uuidv4();
+                this[id] = uuid || uuidv4();
             }
             store(item) {
                 if (item.type !== this.product) {
@@ -382,11 +393,12 @@
                 const process = new Process(attributes.name);
                 process.inputs = new Map(attributes.inputs);
                 process.outputs = new Map(attributes.outputs);
+                process[id] = attributes.id;
                 return process;
             }
             constructor(name) {
                 this.name = name;
-                this.id = uuidv4();
+                this[id] = uuidv4();
             }
         }
 
@@ -397,11 +409,11 @@
                 activity.inputs = new Map(attributes.inputs);
                 activity.outputs = new Map(attributes.outputs);
                 activity.duration = attributes.duration;
-                activity.id = attributes.id;
+                activity[id] = attributes.id || uuidv4();
                 return activity;
             }
             constructor(name) {
-                this.id = uuidv4();
+                this[id] = uuidv4();
                 this.name = name;
                 this.state = waiting;
                 this.duration = 1 * 60 * 60 * 1000;
@@ -443,11 +455,11 @@
         class Link {
             static create(attributes) {
                 const link = new Link(attributes.from, attributes.to);
-                link.id = attributes.id;
+                link[id] = attributes.id;
                 return link;
             }
             constructor(from, to) {
-                this.id = uuidv4();
+                this[id] = uuidv4();
                 this.from = from;
                 this.to = to;
             }
@@ -491,8 +503,7 @@
                     this.all.push(activity);
                     return activity;
                 },
-                addInput(name, quantity = 0) {
-                    const product = Product.get(name);
+                addInput(product, quantity = 0) {
                     const input = this.inputs.get(product);
                     if (input) {
                         input.content += parseInt(quantity);
@@ -500,7 +511,7 @@
                             .forEach((link) => link.end.update());
                     } else {
                         const content = Array(5).fill(1, 0, quantity).map((i) => new Asset(product));
-                        const input = { content, id: uuidv4() };
+                        const input = new Source(content);
                         this.inputs.set(product, input);
                         this.all.push(input);
                     }
@@ -555,7 +566,6 @@
             return item;
         }
 
-
         /**
          * Manage serialisation and de-serialisation.
          */
@@ -563,23 +573,34 @@
         function serialise(item) {
             const serialised = new Set();
             const replacer = (key, value) => {
-                if (value && value.id) {
-                    if (serialised.has(value.id)) {
-                        return { id: value.id, }
+                if (!value) {
+                    return value;
+                }
+                if (value[id]) {
+                    if (serialised.has(value[id])) {
+                        return { ref: value[id] };
                     }
-                    serialised.add(value.id);
+                    serialised.add(value[id]);
                 }
                 if (value instanceof Map) {
                     return {
                         dataType: 'Map',
                         value: Array.from(value.entries()), // or with spread: value: [...value]
                     };
+                } else if (value instanceof Set) {
+                    return {
+                        dataType: 'Set',
+                        value: Array.from(value),
+                    };
                 }
-                if (value && ['Product', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output',].includes(value.constructor.name)) {
+
+                if (['Product', 'Asset', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output', 'Source'].includes(value.constructor.name)) {
                     return {
                         dataType: value.constructor.name,
-                        value: Object.assign({}, value, ),
+                        value: Object.assign({}, value, { id: value[id], [id]: undefined }),
                     };
+                } else if (value[id]) {
+                    return Object.assign({}, value, { id: value[id], [id]: undefined });
                 }
                 return value;
             }
@@ -587,26 +608,31 @@
         }
 
         function deserialise(str) {
+            const datePattern = /[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{1,4}Z/
             const references = new Map();
             const reviver = (key, value) => {
-                if (value.id && references.has(value.id)) {
-                    return references.get(value.id);
+                if (value && value.ref && references.has(value.ref)) {
+                    return references.get(value.ref);
+                }
+                if (datePattern.test(value)) {
+                    return Date.parse(value);
                 }
                 if (typeof value === 'object' && value !== null) {
                     if (value.dataType === 'Map') {
                         return new Map(value.value);
+                    } else if (value.dataType === 'Set') {
+                        return new Set(value.value);
+                    } else if (value.dataType === 'Date') {
+                        return new Date(value.value);
                     } else if (value.dataType) {
                         const element = {
-                            Product, Process, Port, Input, Activity, Link, Input, Output,
+                            Product, Asset, Process, Port, Input, Activity, Link, Input, Output, Source,
                         }[value.dataType].create(value.value);
-                        if (element.id) {
-                            references.set(element.id, element);
+                        if (element[id]) {
+                            references.set(element[id], element);
                         }
                         return element;
                     }
-                }
-                if (value.id) {
-                    references.set(value.id, value);
                 }
 
                 return value;
@@ -730,8 +756,10 @@
                 app.model.inputs = state.model.inputs || new Map();
                 app.model.outputs = state.model.outputs || new Map();
 
+                /*
                 app.model.inputs.values().forEach((input) => input.id = input.id || uuidv4());
                 app.model.outputs.values().forEach((output) => output.id = output.id || uuidv4());
+                */
 
                 app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
                 if (state.history) {
@@ -848,7 +876,7 @@
                         for (const item of app.selected) {
                             if (item.addInput) {
                                 item.addInput(product, quantity);
-                                appendLine(`Added input of ${product} to ${item.name}`);
+                                appendLine(`Added input of ${product.name} to ${item.name}`);
                             }
                         }
                     } else {
@@ -862,7 +890,8 @@
                 name: 'add source',
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
-                    const [product, quantity] = parameters;
+                    const [productName, quantity] = parameters;
+                    const product = Product.get(productName);
                     app.model.addInput(product, quantity);
                 },
                 reset,
@@ -1033,7 +1062,7 @@
                     if (parameters.length === 2) {
                         const [attribute, str] = parameters;
                         const value = resolve(str);
-                        app.selected.forEach((item) => item[attribute] = selected);
+                        app.selected.forEach((item) => item[attribute] = value);
                     } else if (parameters.length > 2) {
                         const value = resolve(parameters.pop());
                         const attribute = parameters.pop();
@@ -1232,10 +1261,6 @@
                 representation.height = textHeight;
             });
 
-            /*
-            let x = 50;
-            let y = 30;
-            */
             x = textWidth + textHeight + 50;
             y = 30;
             const width = 100;
@@ -1264,14 +1289,18 @@
                     representation.nodes.push(label);
                 } else {
                     representation.nodes[1].innerHTML = activity.name;
+                    representation.nodes[1].setAttribute('x', x + width / 2);
+                    representation.nodes[1].setAttribute('y', y + 15);
                 }
                 const step = (height - 10) / activity.inputs.size;
                 let iy = 10 + y + step / 2;
                 for (const input of activity.inputs) {
                     const [product, state] = input;
-                    const representation = view.map.get(input) || {
-                        nodes: [view.add('circle', null, { cx: x, cy: iy, r: 5, fill: 'white', stroke: 'black' })]
+                    const representation = view.map.get(state) || {
+                        nodes: [view.add('circle', null, { r: 5, fill: 'white', stroke: 'black' })],
                     };
+                    representation.nodes[0].setAttribute('cx', x);
+                    representation.nodes[0].setAttribute('cy', iy);
                     view.map.set(state, representation);
                     representation.x = x - 5;
                     representation.y = iy - 5;
@@ -1287,7 +1316,7 @@
 
                 for (const output of activity.outputs) {
                     const [product, state] = output;
-                    const representation = view.map.get(input) || {
+                    const representation = view.map.get(state) || {
                         nodes: [view.add('circle', null, { cx: x + width, cy: oy, r: 5, fill: 'white', stroke: 'black' })]
                     };
                     view.map.set(state, representation);
