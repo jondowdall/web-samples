@@ -200,6 +200,7 @@
 
     <script>
         // States
+        const ready = Symbol('ready');
         const waiting = Symbol('waiting');
         const running = Symbol('running');
         const blocked = Symbol('blocked');
@@ -295,6 +296,7 @@
             constructor(product) {
                 this[id] = uuidv4();
                 this.product = product;
+                this.product.instances?.add(this);
             }
         }
 
@@ -320,7 +322,7 @@
             constructor(name, instances = []) {
                 this.name = name;
                 this[id] = uuidv4();
-                this.instances = instances;
+                this.instances = new Set(instances);
                 Product.all.push(this);
             }
         }
@@ -334,6 +336,13 @@
             constructor(content) {
                 this.content = content;
                 this[id] = uuidv4();
+            }
+            get available() {
+                return this.content.length;
+            }
+            get(quantity = 1) {
+                quantity = Math.min(quantity, this.content.length);
+                return this.content.splice(0, quantity);
             }
         }
 
@@ -372,6 +381,12 @@
                 super(product, capacity, content, uuid);
                 this.required = required;
                 Input.all.push(this);
+            }
+            get available() {
+                if (this.link) {
+                    return this.content.length + this.link.from.available;
+                }
+                return this.content.length;
             }
         }
 
@@ -415,7 +430,7 @@
             constructor(name) {
                 this[id] = uuidv4();
                 this.name = name;
-                this.state = waiting;
+                this.state = ready;
                 this.duration = 1 * 60 * 60 * 1000;
                 this.inputs = new Map();
                 this.outputs = new Map();
@@ -450,7 +465,49 @@
                     this.outputs.delete(product);
                 }
             }
+            getRemaining() {
+                return getDurationString(this.duration - (app.simulation.now - this.start));
+            }
+            getStateDescription() {
+                const inputs = Array.from(this.inputs.values());
+                return {
+                    [ready]: `Ready`,
+                    //[waiting]: `Waiting for ${inputs.filter((input) => input.available < input.required).map((input) => input.product.name).join(', ')}`,
+                    [waiting]: `Waiting for ${inputs.reduce((sum, input) => sum + (input.required - input.available > 0 ? input.required - input.available : 0), 0)}`,
+                    [running]: `Running (${this.getRemaining()} to go)`,
+                    [blocked]: `Blocked`,
+                    [paused]: `Paused`,
+                }[this.state];
+            }
         }
+
+        /**
+         * Convert a duration in milliseconds into a string.
+         */
+        function getDurationString(duration) {
+            const ms = duration - 1000 * (Math.floor(duration / 1000));
+            const s = Math.floor((duration - (60 * 1000 * Math.floor(duration / (60 * 1000)))) / 1000);
+            const m = Math.floor((duration - (60 * 60 * 1000 * Math.floor(duration / (60 * 60 * 1000)))) / (60 * 1000));
+            const h = Math.floor((duration - (24 * 60 * 60 * 1000 * Math.floor(duration / (24 * 60 * 60 * 1000)))) / (60 * 60 * 1000));
+            const result = [];
+            const append = (value, unit) => {
+                if (value > 1) {
+                    result.push(`${value} ${unit}s`);
+                } else if (value > 0) {
+                    result.push(`${value} ${unit}`);
+                }
+            };
+
+            append(h, 'hour');
+            append(m, 'minute');
+            append(s, 'second');
+            append(ms, 'millisecond');
+            if (result.length > 1) {
+                result.splice(result.length - 1, 0, 'and');
+            }
+            return result.join(' ');
+        }
+
 
         class Link {
             static create(attributes) {
@@ -1271,26 +1328,29 @@
                 const classes = app.selected.has(activity) ? ['selected'] : [];
                 const representation = view.map.get(activity) ||
                     { nodes: [view.add('rect', null, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black' }, null, classes)] };
-                representation.nodes[0].addEventListener('click', (event) => {
-                    if (app.selected.has(activity)) {
-                        app.selected.delete(activity);
-                        representation.nodes[0].classList.remove('selected');
-                    } else {
-                        app.selected.add(activity);
-                        representation.nodes[0].classList.add('selected');
-                    }
-                    updateSelected();
-                });
 
                 representation.nodes[0].setAttribute('x', x);
                 representation.nodes[0].setAttribute('y', y);
+
                 if (representation.nodes.length === 1) {
+                    representation.nodes[0].addEventListener('click', (event) => {
+                        if (app.selected.has(activity)) {
+                            app.selected.delete(activity);
+                            representation.nodes[0].classList.remove('selected');
+                        } else {
+                            app.selected.add(activity);
+                            representation.nodes[0].classList.add('selected');
+                        }
+                        updateSelected();
+                    });
                     const label = view.add('text', null, { x: x + width / 2, y: y + 15, 'text-anchor': 'middle' }, activity.name);
-                    representation.nodes.push(label);
+                    const title = view.add('title', representation.nodes[0], {}, activity.getStateDescription());
+                    representation.nodes.push(label, title);
                 } else {
                     representation.nodes[1].innerHTML = activity.name;
                     representation.nodes[1].setAttribute('x', x + width / 2);
                     representation.nodes[1].setAttribute('y', y + 15);
+                    representation.nodes[2].innerHTML = activity.getStateDescription();
                 }
                 const step = (height - 10) / activity.inputs.size;
                 let iy = 10 + y + step / 2;
@@ -1373,7 +1433,7 @@
             const body = container.lastElementChild;
             Product.all.forEach((product, index) => {
                 const row = document.createElement('tr');
-                row.innerHTML = `<td>${index}</td><td>${product.name}</td><td>${product.instances.length}</td>`;
+                row.innerHTML = `<td>${index}</td><td>${product.name}</td><td>${product.instances.size}</td>`;
                 body.append(row);
             });
         }
