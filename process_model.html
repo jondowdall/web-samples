@@ -62,7 +62,7 @@
             height: 100%;
         }
 
-        #output {
+        #state {
             position: fixed;
             bottom: 1em;
             right: 1em;
@@ -72,6 +72,13 @@
             border-radius: 0.5em;
             padding: 0.5em;
             border: 2px inset white;
+            display: grid;
+            grid-template-rows: 1fr max-content;
+            overflow: hidden;
+        }
+
+        #output {
+            overflow: auto;
         }
 
         #selection-window {
@@ -117,7 +124,11 @@
 
         </div>
     </div>
-    <div id="output">Hello<br></div>
+
+    <div id="state">
+        <div id="output">Hello<br></div>
+        <div id="status"></div>
+    </div>
 
     <datalist id="command-list"></datalist>
     <input id="command-input" type="text" list="command-list" autocorrect="off" autocapitalize="off" />
@@ -333,12 +344,13 @@
                 source[id] = attributes.id;
                 return source;
             }
-            constructor(content) {
-                this.content = content;
+            constructor(content = []) {
+                this.links = [];
+                this.content = new Set(content);
                 this[id] = uuidv4();
             }
             get available() {
-                return this.content.length;
+                return [...this.content].map((asset) => ({asset, from: this}));
             }
             get(quantity = 1) {
                 quantity = Math.min(quantity, this.content.length);
@@ -356,6 +368,7 @@
                 this.product = product;
                 this.capacity = capacity;
                 this.content = content;
+                this.links = [];
                 this[id] = uuid || uuidv4();
             }
             store(item) {
@@ -377,16 +390,17 @@
                 const input = new Input(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
                 return input;
             }
-            constructor(product, capacity = 1, content = [], required = 1, uuid) {
+            constructor(product, capacity = 0, content = [], required = 1, uuid) {
                 super(product, capacity, content, uuid);
                 this.required = required;
                 Input.all.push(this);
             }
             get available() {
-                if (this.link) {
-                    return this.content.length + this.link.from.available;
+                if (this.links) {
+                    const available = this.links.reduce((list, link) => list.concat(link.available), []);
+                    return this.content.map((asset) => ({asset, from: this})).concat(available);
                 }
-                return this.content.length;
+                return this.content.map((asset) => ({asset, from: this}));
             }
         }
 
@@ -396,9 +410,9 @@
                 const output = new Output(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
                 return output;
             }
-            constructor(product, capacity = 1, content = [], required = 1, uuid) {
+            constructor(product, duration = 24 * 60 * 60 * 1000, capacity = 1, content = [], uuid) {
                 super(product, capacity, content, uuid);
-                this.required = required;
+                this.duration = duration;
                 Output.all.push(this);
             }
         }
@@ -465,8 +479,53 @@
                     this.outputs.delete(product);
                 }
             }
+            start() {
+                if (this.state !== running) {
+                    this.startTime = app.simulation.runTime;
+                    this.state = running;
+                }
+            }
+            next() {
+                // Return the duration in milliseconds for the next event
+                const duration = app.simulation.runTime - this.startTime;
+                return Math.min(...this.outputs.values().map((output) => output.duration - duration));
+            }
+            get nextEvent() {
+                if (this.state === running) {
+                    this.startTime + this.duration;
+                }
+                return Infinity;
+            }
             getRemaining() {
                 return getDurationString(this.duration - (app.simulation.now - this.start));
+            }
+            update() {
+                if (this.state === running) {
+                    if ((app.simulation.startTime - this.startTime) >= this.duration) {
+                        this.output.entries().forEach((product, output) => {
+                            asset = new Asset(product);
+                            output.content.push(asset);
+                            output.links.forEach((link) => link.to.update());
+                        });
+                        this.state = ready;
+                    }
+                } else if (this.state === blocked) {
+                    // Check whether outputs are now free
+                    if (this.outputs.values().every((output) =>
+                        output.capacity > output.content.length)) {
+                        this.state === ready;
+                    }
+                }
+                if (this.state === ready || this.state === waiting) {
+                    const inputs = [...this.inputs.values()];
+                    const available = inputs.reduce((list, input) => list.concat(input.available), []);
+                    if (inputs.every((input) => input.available.length >= input.required)) {
+                        available.forEach((entry) => entry.from.content.delete(entry.asset));
+                        this.start();
+                    } else {
+                        this.state = waiting;
+                    }
+                }
             }
             getStateDescription() {
                 const inputs = Array.from(this.inputs.values());
@@ -509,6 +568,33 @@
         }
 
 
+        /**
+         * Convert a duration in milliseconds into a string.
+         */
+        function getSortDurationString(duration) {
+            const s = (duration - (60 * 1000 * Math.floor(duration / (60 * 1000)))) / 1000;
+            const m = Math.floor((duration - (60 * 60 * 1000 * Math.floor(duration / (60 * 60 * 1000)))) / (60 * 1000));
+            const h = Math.floor((duration - (24 * 60 * 60 * 1000 * Math.floor(duration / (24 * 60 * 60 * 1000)))) / (60 * 60 * 1000));
+            const d = Math.floor((duration - (7 * 24 * 60 * 60 * 1000 * Math.floor(duration / (7 * 24 * 60 * 60 * 1000)))) / (24 * 60 * 60 * 1000));
+            const w = Math.floor(duration / (7 * 24 * 60 * 60 * 1000));
+            const result = [];
+            if (w > 1) {
+                result.push(`${w} weeks `)
+            } else if (w > 0) {
+                result.push(`${w} week `)
+            }
+
+            if (d > 1) {
+                result.push(`${d} days `)
+            } else if (d > 0) {
+                result.push(`${d} day `)
+            }
+            const hours = h < 10 ? `0${h}` : h;
+            const minutes = m < 10 ? `0${m}` : m;
+            const seconds = s < 10 ? `0${s.toFixed(2)}` : s.toFixed(2);
+            return result.join('') + `${hours}:${minutes}:${seconds}`;
+        }
+
         class Link {
             static create(attributes) {
                 const link = new Link(attributes.from, attributes.to);
@@ -519,6 +605,11 @@
                 this[id] = uuidv4();
                 this.from = from;
                 this.to = to;
+                from.links?.push(this);
+                to.links?.push(this);
+            }
+            get available() {
+                return this.from.available;
             }
         }
 
@@ -535,6 +626,13 @@
                 outputs: new Map(),
                 links: [],
 
+                reset() {
+                    this.all = [];
+                    this.ids = {};
+                    this.inputs = new Map();
+                    this.outputs = new Map();
+                    this.links = [];
+                },
                 addItem(item, replace = false) {
                     const pos = this.all.findIndex((existing) => existing.name === item.name);
                     if (pos !== -1) {
@@ -596,14 +694,77 @@
             },
             simulation: {
                 state: paused,
+                mode: byTime,
+                rate: 1,
+                reference: 0,
+                eventsPerSecond: 1,
+                reset() {
+                    this.reference = 0;
+                },
+                start(time) {
+                    this.lastTime = Date.now();
+                    this.startTime = Date.parse(time) || this.startTime || Date.now();
+                    this.state = running;
+                    this.events = app.model.activities;
+                    this.events.forEach((event) => event.update());
+                    this.events.sort((a, b) => a.next - b.next);
+                    if (this.events[0].next() < Infinity) {
+                        this.timerId = window.setTimeout(this.tick, this.events[0].next() / this.rate);
+                    }
+                },
+                pause() {
+                    this.state = paused;
+                },
+                stop() {
+                    this.state = paused;
+                    window.clearTimeout(this.timerId);
+                },
+                get active() {
+                    // Determine the time of the next event
+                    const active = app.model.activities.filter((activity) => activity.state === running);
+                    active.sort((a, b) => a.nextEvent - b.nextEvent);
+                    return active;
+                },
+                get runTime() {
+                    const now = Date.now();
+                    const delta = (this.state === running) ? (now - this.lastTime) : 0;
+                    this.lastTime = now;
+                    const runTime = this.reference + delta * this.rate;
+                    this.reference = runTime;
+                    return runTime;
+                },
+                get time() {
+                    return this.startTime + this.runTime;
+                },
+                tick() {
+                    appendLine('tick');
+                },
             },
-
+            timeout: 1000,
             selected: new Set(),
             commandHistory: {
                 position: -1,
                 content: [],
             },
         };
+
+        /**
+         * Global tick function to allow time based updates.
+         */
+        function tick() {
+            if (app.timerId) {
+                window.clearTimeout(app.windowId);
+            }
+            updateStatus();
+            if (app.timeout === 'screen') {
+                window.requestAnimationFrame(tick);
+                app.timerId = null;
+            } else if (app.timeout > 0) {
+                app.timerId = window.setTimeout(tick, app.timeout);
+            }
+        }
+
+
 
         /**
          * Find an object by it's id.
@@ -629,13 +790,13 @@
 
         function serialise(item) {
             const serialised = new Set();
-            const replacer = (key, value) => {
+            function replacer(key, value) {
                 if (!value) {
                     return value;
                 }
                 if (value[id]) {
                     if (serialised.has(value[id])) {
-                        return { ref: value[id] };
+                        return { ref: value[id], key, context: this.id };
                     }
                     serialised.add(value[id]);
                 }
@@ -667,9 +828,13 @@
         function deserialise(str) {
             const datePattern = /[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{1,4}Z/
             const references = new Map();
+            const unresolved = [];
             const reviver = (key, value) => {
                 if (value && value.ref && references.has(value.ref)) {
                     return references.get(value.ref);
+                } else if (value.ref) {
+                    unresolved.push({key, id: value.ref, context: value.context });
+                    //appendLine(`Info: unresolved reference ${value.ref} for key ${key}`);
                 }
                 if (datePattern.test(value)) {
                     return Date.parse(value);
@@ -694,7 +859,15 @@
 
                 return value;
             }
-            return JSON.parse(str, reviver);
+            const structure = JSON.parse(str, reviver);
+            unresolved.forEach((reference) => {
+                const item = references.get(reference.id);
+                const context = references.get(reference.context);
+                if (item && context) {
+                    context[reference.key] = item;
+                }
+            });
+            return structure;
         }
 
 
@@ -859,6 +1032,19 @@
                 reset,
                 parse,
             },
+            /*
+            {
+                name: 'clear model',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    app.simulation.stop();
+                    app.model.reset();
+                    view.svg.innerHTML = '';
+                },
+                reset,
+                parse,
+            },
+            */
             {
                 name: 'clear',
                 action(str) {
@@ -1078,10 +1264,78 @@
                 parse,
             },
             {
+                name: 'rate',
+                description: 'Set the application tick timer',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    const value = Number(parameters[0]);
+                    if (value > 0) {
+                        app.simulation.rate = value;
+                    } else {
+                        appendLine(`Simulation rate = ${app.simulation.rate}`);
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'tick',
+                description: 'Set the application tick timer',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    if (parameters.length === 0) {
+                        app.timeout = 0;
+                    } else {
+                        const value = Number(parameters[0]);
+                        if (isNaN(value)) {
+                            app.timeout = 'screen';
+                        } else {
+                            app.timeout = value;
+                        }
+                    }
+                    tick();
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'start',
+                description: 'Start the simulation',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    app.simulation.start(parameters[0]);
+                    update();
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'stop',
+                description: 'Pause the simulation',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    app.simulation.pause();
+                    update();
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'reset',
+                description: 'Restart the simulation',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    app.simulation.reset();
+                    update();
+                },
+                reset,
+                parse,
+            },
+            {
                 name: 'update',
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
-                    updateView();
+                    update();
                 },
                 reset,
                 parse,
@@ -1242,7 +1496,7 @@
 
             if (event.key === 'Enter') {
                 processCommand(event);
-                updateView();
+                update();
                 saveLocally();
                 updateSelected();
             } else if (event.key === 'Escape') {
@@ -1267,6 +1521,37 @@
 
         const view = new SVGView('process-view', 'Process View');
 
+        /**
+         *
+         */
+        function update() {
+            updateStatus();
+            updateView();
+        }
+
+
+        /**
+         * Update the status line.
+         */
+        function updateStatus() {
+            const node = document.getElementById('status');
+            const modeString = {
+                // Simulation mode
+                [byTime]: `time based (${getSortDurationString(app.simulation.runTime)})`,
+                [byEvent]: 'event based',
+            }[app.simulation.mode];
+            const stateString = {
+                [running]: `Running ${modeString}`,
+                [blocked]: 'Blocked',
+                [paused]: 'Paused',
+            }[app.simulation.state];
+            node.innerHTML = `${stateString}`;
+        }
+
+
+        /**
+         * Update the SVG that represents the current process and its state.
+         */
         function updateView() {
             updateProductList();
             // Remove deleted items
@@ -1284,18 +1569,19 @@
             for (const input of app.model.inputs) {
                 const [product, state] = input;
                 const representation = view.map.get(input);
-                const fill = state.content.length > 0 ? 'lightgreen' : 'white';
+                const fill = state.content.size > 0 ? 'lightgreen' : 'white';
                 if (representation) {
                     representation.nodes[0].setAttribute('fill', fill);
                     representations.push(representation);
                     representation.text.innerHTML = product.name;
                     representation.bbox = text.getBBox();
+                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})`;
                 } else {
                     const outline = view.add('path', null, { fill, stroke: 'black' });
-                    const title = view.add('title', outline, {}, `${product.name} (${state.content.length})`);
+                    const title = view.add('title', outline, {}, `${product.name} (${state.content.size})`);
 
                     const text = view.add('text', null, textAttrs, `${product.name}`);
-                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.length})`);
+                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.size})`);
 
                     const representation = { nodes: [outline, title, text, textTitle], bbox: text.getBBox() };
                     representations.push(representation);
@@ -1394,6 +1680,22 @@
                     y = 10;
                     x += width + horizontalSpace;
                 }
+                if (representation) {
+                    representation.nodes[0].classList.remove('ready');
+                    representation.nodes[0].classList.remove('running');
+                    representation.nodes[0].classList.remove('waiting');
+                    representation.nodes[0].classList.remove('blocked');
+                    representation.nodes[0].classList.remove('paused');
+
+                    representation.nodes[0].classList.add({
+                        [ready]: 'ready',
+                        [running]: 'running',
+                        [waiting]: 'waiting',
+                        [blocked]: 'blocked',
+                        [paused]: 'paused',
+                    }[activity.state]);
+                }
+
                 view.map.set(activity, representation);
             });
 
@@ -1461,7 +1763,8 @@
         }
 
         loadLocal();
-        updateView();
+        update();
+        tick();
 
         const input = document.getElementById('command-input');
         //input.addEventListener('change', processCommand);
