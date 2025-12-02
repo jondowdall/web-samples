@@ -298,16 +298,19 @@
          * An instance of a product.
          */
         class Asset {
+            static all = new Set();
             static create(attributes) {
-                const asset = new Asset(attributes.product);
+                const asset = new Asset(attributes.product, attributes.location);
                 Object.assign(asset, attributes);
                 asset[id] = attributes.id;
                 return asset;
             }
-            constructor(product) {
+            constructor(product, location) {
                 this[id] = uuidv4();
                 this.product = product;
                 this.product.instances?.add(this);
+                this.location = location;
+                Asset.all.add(this);
             }
         }
 
@@ -348,9 +351,10 @@
                 this.links = [];
                 this.content = new Set(content);
                 this[id] = uuidv4();
+                [...this.content].forEach((asset) => asset.location = this);
             }
             get available() {
-                return [...this.content].map((asset) => ({asset, from: this}));
+                return [...this.content].map((asset) => ({ asset, from: this }));
             }
             get(quantity = 1) {
                 quantity = Math.min(quantity, this.content.length);
@@ -367,7 +371,7 @@
             constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
-                this.content = content;
+                this.content = new Set(content);
                 this.links = [];
                 this[id] = uuid || uuidv4();
             }
@@ -380,14 +384,15 @@
                     appendLine(`Warning: Failed to storing ${item.name} - port is full`);
                     return;
                 }
-                this.content.push(item);
+                this.content.add(item);
             }
         }
 
         class Input extends Port {
             static all = [];
             static create(attributes) {
-                const input = new Input(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
+                const input = new Input(attributes.product, attributes.capacity, attributes.content, attributes.required, attributes.id);
+                input.links = attributes.links;
                 return input;
             }
             constructor(product, capacity = 0, content = [], required = 1, uuid) {
@@ -398,19 +403,19 @@
             get available() {
                 if (this.links) {
                     const available = this.links.reduce((list, link) => list.concat(link.available), []);
-                    return this.content.map((asset) => ({asset, from: this})).concat(available);
+                    return [...this.content].map((asset) => ({ asset, from: this })).concat(available);
                 }
-                return this.content.map((asset) => ({asset, from: this}));
+                return [...this.content].map((asset) => ({ asset, from: this }));
             }
         }
 
         class Output extends Port {
             static all = [];
             static create(attributes) {
-                const output = new Output(attributes.name, attributes.capacity, attributes.content, attributes.required, attributes.id);
+                const output = new Output(attributes.product, attributes.duration, attributes.capacity, attributes.content, attributes.id);
                 return output;
             }
-            constructor(product, duration = 24 * 60 * 60 * 1000, capacity = 1, content = [], uuid) {
+            constructor(product, duration = 5000, capacity = 1, content = [], uuid) {
                 super(product, capacity, content, uuid);
                 this.duration = duration;
                 Output.all.push(this);
@@ -448,6 +453,7 @@
                 this.duration = 1 * 60 * 60 * 1000;
                 this.inputs = new Map();
                 this.outputs = new Map();
+                this.content = new Set();
                 Activity.all.push(this);
             }
             addInput(product, quantity = 1) {
@@ -470,7 +476,7 @@
                 if (state) {
                     state.provides = quantity;
                 } else {
-                    const output = new Output(product, 1, [], quantity);
+                    const output = new Output(product, 5000, quantity, []);
                     this.outputs.set(product, output);
                     app.model.all.push(output);
                 }
@@ -501,12 +507,16 @@
             }
             update() {
                 if (this.state === running) {
-                    if ((app.simulation.startTime - this.startTime) >= this.duration) {
-                        this.output.entries().forEach((product, output) => {
-                            asset = new Asset(product);
-                            output.content.push(asset);
-                            output.links.forEach((link) => link.to.update());
-                        });
+                    const duration = app.simulation.runTime - this.startTime;
+                    const outputs = this.outputs.values().filter((output) => !output.done && output.duration < duration);
+                    outputs.forEach((output) => {
+                        const asset = new Asset(output.product, output);
+                        output.content.add(asset);
+                        output.links.forEach((link) => link.to.update());
+                        output.done = true;
+                    });
+                    if (this.outputs.values().every((output) => output.done)) {
+                        this.outputs.values().forEach((output) => output.done = false);
                         this.state = ready;
                     }
                 } else if (this.state === blocked) {
@@ -518,9 +528,17 @@
                 }
                 if (this.state === ready || this.state === waiting) {
                     const inputs = [...this.inputs.values()];
-                    const available = inputs.reduce((list, input) => list.concat(input.available), []);
+                    //const available = inputs.reduce((list, input) => list.concat(input.available), []);
                     if (inputs.every((input) => input.available.length >= input.required)) {
-                        available.forEach((entry) => entry.from.content.delete(entry.asset));
+                        inputs.forEach((input) => {
+                            const available = input.available;
+                            available.length = input.required;
+                            available.forEach((entry) => {
+                                entry.from.content.delete(entry.asset);
+                                this.content.add(entry.asset);
+                                entry.asset.location = this;
+                            });
+                        });
                         this.start();
                     } else {
                         this.state = waiting;
@@ -665,7 +683,7 @@
                         this.links.filter((link) => link.start === input)
                             .forEach((link) => link.end.update());
                     } else {
-                        const content = Array(5).fill(1, 0, quantity).map((i) => new Asset(product));
+                        const content = Array(quantity).fill(1, 0, quantity).map((i) => new Asset(product));
                         const input = new Source(content);
                         this.inputs.set(product, input);
                         this.all.push(input);
@@ -700,8 +718,17 @@
                 eventsPerSecond: 1,
                 reset() {
                     this.reference = 0;
+                    if (this.initial) {
+                        this.initial.forEach(([asset, location]) => {
+                            asset.location.content.delete(asset);
+                            location.content.add(asset);
+                        });
+                    }
                 },
                 start(time) {
+                    if (this.reference === 0) {
+                        this.initial = [...Asset.all].map((asset) => [asset, asset.location]);
+                    }
                     this.lastTime = Date.now();
                     this.startTime = Date.parse(time) || this.startTime || Date.now();
                     this.state = running;
@@ -709,7 +736,7 @@
                     this.events.forEach((event) => event.update());
                     this.events.sort((a, b) => a.next - b.next);
                     if (this.events[0].next() < Infinity) {
-                        this.timerId = window.setTimeout(this.tick, this.events[0].next() / this.rate);
+                        this.timerId = window.setTimeout(this.tick, this.events[0].next() / this.rate, this.events[0]);
                     }
                 },
                 pause() {
@@ -736,7 +763,8 @@
                 get time() {
                     return this.startTime + this.runTime;
                 },
-                tick() {
+                tick(activity) {
+                    activity.update();
                     appendLine('tick');
                 },
             },
@@ -833,7 +861,7 @@
                 if (value && value.ref && references.has(value.ref)) {
                     return references.get(value.ref);
                 } else if (value && value.ref) {
-                    unresolved.push({key, id: value.ref, context: value.context || this });
+                    unresolved.push({ key, id: value.ref, context: value.context || this });
                 }
                 if (datePattern.test(value)) {
                     return Date.parse(value);
@@ -861,7 +889,8 @@
             const structure = JSON.parse(str, reviver);
             unresolved.forEach((reference) => {
                 const item = references.get(reference.id);
-                const context = references.get(reference.context);
+                const context = references.get(reference.context) || reference.context;
+
                 if (item && context) {
                     context[reference.key] = item;
                 } else {
@@ -1205,7 +1234,7 @@
                 parse,
             },
             {
-                name: 'join',
+                name: 'link',
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
                     const name = parameters[0];
@@ -1587,6 +1616,12 @@
                     const representation = { nodes: [outline, title, text, textTitle], bbox: text.getBBox() };
                     representations.push(representation);
                     view.map.set(state, representation);
+                    outline.addEventListener('click', (event) => {
+                        const asset = new Asset(product, state);
+                        state.content.add(asset);
+                        state.links.forEach((link) => link.to.update);
+                        updateView();
+                    });
                 }
                 textAttrs.y += 50;
             }
@@ -1646,6 +1681,13 @@
                     const representation = view.map.get(state) || {
                         nodes: [view.add('circle', null, { r: 5, fill: 'white', stroke: 'black' })],
                     };
+                    if (!view.map.get(state)) {
+                        representation.nodes[0].addEventListener('click', (event) => {
+                            appendLine(`Product: ${product.name}`);
+                            appendLine(`Available: ${state.available.map((available) => available.asset.id).join(', ')}`);
+                        });
+                    }
+
                     representation.nodes[0].setAttribute('cx', x);
                     representation.nodes[0].setAttribute('cy', iy);
                     view.map.set(state, representation);
@@ -1663,16 +1705,25 @@
 
                 for (const output of activity.outputs) {
                     const [product, state] = output;
+                    const fill = state.content.size > 0 ? 'green' : 'white';
                     const representation = view.map.get(state) || {
-                        nodes: [view.add('circle', null, { cx: x + width, cy: oy, r: 5, fill: 'white', stroke: 'black' })]
+                        nodes: [view.add('circle', null, { cx: x + width, cy: oy, r: 5, fill, stroke: 'black' })]
                     };
+                    if (!view.map.get(state)) {
+                        representation.nodes[0].addEventListener('click', (event) => {
+                            appendLine(`duration: ${output.duration}`);
+                        });
+                    }
+                    representation.nodes[0].setAttribute('cx', x + width);
+                    representation.nodes[0].setAttribute('cy', oy);
+                    representation.nodes[0].setAttribute('fill', fill);
                     view.map.set(state, representation);
                     representation.x = x + width - 5;
                     representation.y = oy - 5;
                     representation.width = 10;
                     representation.height = 10;
 
-                    view.add('title', representation.nodes[0], {}, `${product.name} (${state.content.length})`);
+                    view.add('title', representation.nodes[0], {}, `${product.name} (${state.content.size})`);
                     oy += oStep;
                 }
 
