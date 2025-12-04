@@ -300,7 +300,10 @@
         class Asset {
             static all = new Set();
             static create(attributes) {
-                const asset = new Asset(attributes.product, attributes.location);
+                const asset = new Asset(attributes.product);
+                if (attributes?.location?.content) {
+                    asset.move(attributes.location);
+                }
                 Object.assign(asset, attributes);
                 asset[id] = attributes.id;
                 return asset;
@@ -309,7 +312,7 @@
                 this[id] = uuidv4();
                 this.product = product;
                 this.product.instances?.add(this);
-                if (location) {
+                if (location && location.content) {
                     this.move(location);
                 }
                 this.content = new Set();
@@ -353,15 +356,15 @@
 
         class Source {
             static create(attributes) {
-                const source = new Source(attributes.content);
+                const source = new Source();
+                //attributes.content.forEach((asset) => asset.move(source));
                 source[id] = attributes.id;
                 return source;
             }
-            constructor(content = []) {
+            constructor() {
                 this.links = [];
                 this.content = new Set();
                 this[id] = uuidv4();
-                [...this.content].forEach((asset) => asset.move(this));
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -381,7 +384,8 @@
             constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
-                this.content = new Set(content);
+                //this.content = new Set(content);
+                this.content = new Set();
                 this.links = [];
                 this[id] = uuid || uuidv4();
             }
@@ -450,8 +454,8 @@
             static all = [];
             static create(attributes) {
                 const activity = new Activity(attributes.name);
-                activity.inputs = new Map(attributes.inputs);
-                activity.outputs = new Map(attributes.outputs);
+                //activity.inputs = new Map(attributes.inputs);
+                //activity.outputs = new Map(attributes.outputs);
                 activity.duration = attributes.duration;
                 activity[id] = attributes.id || uuidv4();
                 return activity;
@@ -520,7 +524,8 @@
                     const duration = app.simulation.runTime - this.startTime;
                     const outputs = this.outputs.values().filter((output) => !output.done && output.duration < duration);
                     outputs.forEach((output) => {
-                        const asset = new Asset(output.product, output);
+                        const asset = new Asset(output.product);
+                        asset.move(output);
                         [...this.content].forEach((component) => component.move(asset));
                         output.links.forEach((link) => link.to.update());
                         output.done = true;
@@ -691,9 +696,10 @@
                             .forEach((link) => link.end.update());
                     } else {
                         const content = Array(quantity).fill(1, 0, quantity).map((i) => new Asset(product));
-                        const input = new Source(content);
-                        this.inputs.set(product, input);
-                        this.all.push(input);
+                        const source = new Source();
+                        content.forEach((asset) => asset.move(source));
+                        this.inputs.set(product, source);
+                        this.all.push(source);
                     }
                 },
                 addOutput(name, quantity = 0) {
@@ -861,22 +867,24 @@
             const datePattern = /[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{1,4}Z/
             const references = new Map();
             const unresolved = [];
+            const containers = [];
             function reviver(key, value) {
-                if (value && value.ref && references.has(value.ref)) {
-                    return references.get(value.ref);
-                } else if (value && value.ref) {
-                    unresolved.push({ key, id: value.ref, context: value.context || this });
-                }
                 if (datePattern.test(value)) {
                     return Date.parse(value);
                 }
-                if (typeof value === 'object' && value !== null) {
+                /* if (value && value.ref && references.has(value.ref)) {
+                    return references.get(value.ref);
+                } else */if (value && value.ref) {
+                    unresolved.push({ key, id: value.ref, context: value.context || this });
+                } else if (typeof value === 'object' && value !== null) {
                     if (value.dataType === 'Map') {
-                        return new Map(value.value);
+                        containers.push({ type: Map, key, content: value.value, context: this });
+                        return 'tbd';
+                        //return new Map(value.value);
                     } else if (value.dataType === 'Set') {
-                        return new Set(value.value);
-                    } else if (value.dataType === 'Date') {
-                        return new Date(value.value);
+                        containers.push({ type: Set, key, content: value.value, context: this });
+                        return 'tbd';
+                        //return new Set(value.value);
                     } else if (value.dataType) {
                         const element = {
                             Product, Asset, Process, Port, Input, Activity, Link, Input, Output, Source,
@@ -899,6 +907,15 @@
                     context[reference.key] = item;
                 } else {
                     appendLine(`Warning: unmatched reference (${reference.id}) for ${reference.key} in ${context?.name}`);
+                }
+            });
+            containers.forEach((container) => {
+                const context = references.get(container.context.id) || container.context;
+
+                if (context) {
+                    context[container.key] = new container.type(container.content);
+                } else {
+                    appendLine(`Warning: unmatched container (${container.id}) for ${container.key} in ${context?.name}`);
                 }
             });
             return structure;
@@ -1066,7 +1083,6 @@
                 reset,
                 parse,
             },
-            /*
             {
                 name: 'clear model',
                 action(str) {
@@ -1078,7 +1094,6 @@
                 reset,
                 parse,
             },
-            */
             {
                 name: 'clear',
                 action(str) {
@@ -1479,16 +1494,19 @@
             while (validCommands.length > 0 && command.length > 0) {
                 parse(command.shift());
             }
-            if (validCommands.length === 1) {
-                validCommands[0].action(input.value);
-            } else if (input.value.startsWith('$')) {
+            if (input.value.startsWith('$')) {
                 try {
                     const func = new Function('app', '_', `return ${input.value.slice(1)};`);
                     appendLine(func(app, byName));
                 } catch (error) {
                     appendLine(`Error: ${error.message}`);
                 }
-            } else {
+            } else if (validCommands.length === 1) {
+                validCommands[0].action(input.value);
+            } else if (validCommands.length > 1) {
+                validCommands.sort((a, b) => b.length - a.length);
+                validCommands[0].action(input.value);
+             } else {
                 const pattern = new RegExp(input.value);
                 const items = app.model.all.filter((item) => pattern.test(item.name));
 
@@ -1584,6 +1602,16 @@
 
 
         /**
+         * Select an item, updating the representation as necessary.
+         */
+        function select(item, node) {
+            app.selected.add(item);
+            node.classList.add('selected');
+            updateSelected();
+        }
+
+
+        /**
          * Update the SVG that represents the current process and its state.
          */
         function updateView() {
@@ -1621,7 +1649,8 @@
                     representations.push(representation);
                     view.map.set(state, representation);
                     outline.addEventListener('click', (event) => {
-                        const asset = new Asset(product, state);
+                        const asset = new Asset(product);
+                        asset.move(state);
                         state.content.add(asset);
                         state.links.forEach((link) => link.to.update);
                         updateView();
@@ -1813,7 +1842,7 @@
             node.append(list);
             for (let element of app.selected) {
                 const item = document.createElement('li');
-                item.innerHTML = element.name;
+                item.innerHTML = element.name || element.constructor.__name__;
                 list.append(item);
                 item.addEventListener('click', (event) => {
                     if (app.selected.has(element)) {
