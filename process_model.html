@@ -194,6 +194,11 @@
                 }
                 return element
             }
+            remove(item) {
+                const representation = this.map.get(item);
+                representation.nodes.forEach((node) => node.remove());
+                this.map.delete(item);
+            }
         }
     </script>
 
@@ -301,10 +306,6 @@
             static all = new Set();
             static create(attributes) {
                 const asset = new Asset(attributes.product);
-                if (attributes?.location?.content) {
-                    asset.move(attributes.location);
-                }
-                Object.assign(asset, attributes);
                 asset[id] = attributes.id;
                 return asset;
             }
@@ -339,17 +340,16 @@
                 }
 
                 const product = new Product(attributes.product);
-                Object.assign(product, attributes);
                 product[id] = attributes.id;
                 return product;
             }
             static get(name) {
                 return Product.all.find((existing) => existing.name === name) || new Product(name);
             }
-            constructor(name, instances = []) {
+            constructor(name) {
                 this.name = name;
                 this[id] = uuidv4();
-                this.instances = new Set(instances);
+                this.instances = new Set();
                 Product.all.push(this);
             }
         }
@@ -414,6 +414,12 @@
                 this.required = required;
                 Input.all.push(this);
             }
+            delete() {
+                [...this.content].forEach((asset) => asset.move(app.model.store));
+                this.lines.forEach((link) => link.deleteTo());
+                app.selected.delete(this);
+                view.remove(this);
+            }
             get available() {
                 if (this.links) {
                     const available = this.links.reduce((list, link) => list.concat(link.available), []);
@@ -433,6 +439,15 @@
                 super(product, capacity, content, uuid);
                 this.duration = duration;
                 Output.all.push(this);
+            }
+            delete() {
+                [...this.content].forEach((asset) => asset.move(app.model.store));
+                this.lines.forEach((link) => link.deleteFrom());
+                app.selected.delete(this);
+                view.remove(this);
+            }
+            get available() {
+                return [...this.content].map((asset) => ({ asset, from: this }));
             }
         }
 
@@ -469,6 +484,14 @@
                 this.outputs = new Map();
                 this.content = new Set();
                 Activity.all.push(this);
+            }
+            delete() {
+                [...this.content].forEach((asset) => asset.move(app.model.store));
+                this.inputs.values().forEach((input) => input.delete());
+                this.outputs.values().forEach((output) => output.delete());
+                Activity.all.splice(Activity.all.indexOf(this), 1);
+                app.selected.delete(this);
+                view.remove(this);
             }
             addInput(product, quantity = 1) {
                 const state = this.inputs.get(product);
@@ -517,7 +540,11 @@
                 return Infinity;
             }
             getRemaining() {
-                return getDurationString(this.duration - (app.simulation.now - this.start));
+                const next = this.nextEvent;
+                if (next === Infinity) {
+                    return 'N/A';
+                }
+                return getShortDurationString(next);
             }
             update() {
                 if (this.state === running) {
@@ -560,8 +587,9 @@
                 const inputs = Array.from(this.inputs.values());
                 return {
                     [ready]: `Ready`,
-                    //[waiting]: `Waiting for ${inputs.filter((input) => input.available < input.required).map((input) => input.product.name).join(', ')}`,
-                    [waiting]: `Waiting for ${inputs.reduce((sum, input) => sum + (input.required - input.available > 0 ? input.required - input.available : 0), 0)}`,
+                    [waiting]: `Waiting for:
+${inputs.filter((input) => input.available < input.required)
+                            .map((input) => (input.required - input.available) + ' x ' + input.product.name).join('\n')}`,
                     [running]: `Running (${this.getRemaining()} to go)`,
                     [blocked]: `Blocked`,
                     [paused]: `Paused`,
@@ -600,7 +628,7 @@
         /**
          * Convert a duration in milliseconds into a string.
          */
-        function getSortDurationString(duration) {
+        function getShortDurationString(duration) {
             const s = (duration - (60 * 1000 * Math.floor(duration / (60 * 1000)))) / 1000;
             const m = Math.floor((duration - (60 * 60 * 1000 * Math.floor(duration / (60 * 60 * 1000)))) / (60 * 1000));
             const h = Math.floor((duration - (24 * 60 * 60 * 1000 * Math.floor(duration / (24 * 60 * 60 * 1000)))) / (60 * 60 * 1000));
@@ -636,6 +664,16 @@
                 this.to = to;
                 from.links?.push(this);
                 to.links?.push(this);
+            }
+            deleteTo() {
+                this.from.links = this.from.links.filter((link) => link.to !== this.to);
+                app.selected.delete(this);
+                view.remove(this);
+            }
+            deleteFrom() {
+                this.to.links = this.to.links.filter((link) => link.from !== this.from);
+                app.selected.delete(this);
+                view.remove(this);
             }
             get available() {
                 return this.from.available;
@@ -1295,13 +1333,10 @@
                 name: 'delete',
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
-                    const pattern = parameters[0];
-                    if (pattern === '') {
+                    if (parameters.length === 0) {
                         for (const item of app.selected) {
-                            app.model.processes = app.model.processes.filter((process) => process !== item);
-                            app.model.activities = app.model.activities.filter((activity) => activity !== item);
-                            app.model.products = app.model.products.filter((product) => product !== item);
-                            app.model.links = app.model.links.filter((link) => link.source !== item && link.destination !== item);
+                            app.model.all = app.model.all.filter((element) => element !== item);
+                            item.delete();
                             item.deleted = true;
                             appendLine(`${item.name} deleted`);
                         }
@@ -1385,6 +1420,15 @@
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
                     update();
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'redraw',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    redraw();
                 },
                 reset,
                 parse,
@@ -1506,7 +1550,7 @@
             } else if (validCommands.length > 1) {
                 validCommands.sort((a, b) => b.length - a.length);
                 validCommands[0].action(input.value);
-             } else {
+            } else {
                 const pattern = new RegExp(input.value);
                 const items = app.model.all.filter((item) => pattern.test(item.name));
 
@@ -1589,7 +1633,7 @@
             const node = document.getElementById('status');
             const modeString = {
                 // Simulation mode
-                [byTime]: `time based (${getSortDurationString(app.simulation.runTime)})`,
+                [byTime]: `time based (${getShortDurationString(app.simulation.runTime)})`,
                 [byEvent]: 'event based',
             }[app.simulation.mode];
             const stateString = {
@@ -1609,6 +1653,16 @@
             node.classList.add('selected');
             updateSelected();
         }
+
+        /**
+         * Redraw the view
+         */
+        function redraw() {
+            view.svg.innerHTML = '';
+            view.map.clear()
+            updateView();
+        }
+
 
 
         /**
@@ -1824,9 +1878,32 @@
                 <tbody>
                 </tbody>`;
             const body = container.lastElementChild;
+            Product.all.sort((a, b) => a.name?.localeCompare(b.name));
             Product.all.forEach((product, index) => {
                 const row = document.createElement('tr');
                 row.innerHTML = `<td>${index}</td><td>${product.name}</td><td>${product.instances.size}</td>`;
+                const idx = row.firstChild;
+                const name = idx.nextSibling;
+                name.contentEditable = true;
+                name.addEventListener('focus', (event) => {
+                    name.contentEditable = true;
+
+                });
+                name.addEventListener('blur', (event) => {
+                    product.name = name.innerText;
+                    name.contentEditable = false;
+                });
+                name.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        name.innerText = product.name;
+                        input.focus();
+                    }
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        product.name = name.innerText;
+                    }
+                });
                 body.append(row);
             });
         }
