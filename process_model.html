@@ -38,10 +38,15 @@
             padding: 2px 5px;
         }
 
-        #product-list {
+        #side-bar {
             background-color: lightblue;
         }
 
+        /*
+        #product-list {
+            background-color: lightblue;
+        }
+*/
         #command-input {
             position: fixed;
             top: 1em;
@@ -102,6 +107,13 @@
             height: 100%;
         }
 
+        #bin {
+            position: fixed;
+            bottom: 1rem;
+            left: 1rem;
+            font-size: 400%;
+        }
+
         .window>h2 {
             padding: 0.5em;
             margin: 0;
@@ -111,11 +123,30 @@
             stroke: yellow;
             filter: drop-shadow(2px 2px 4px rgba(0, 0, 0, 0.5));
         }
+
+        .running {
+            stroke-dasharray: 4 4;
+            stroke-dashoffset: 8;
+            animation: drawPath 1s infinite;
+        /* Apply the animation */
+        }
+
+        @keyframes drawPath {
+            to {
+                stroke-dashoffset: 0;
+                /* Animate to show the path */
+            }
+        }
     </style>
 </head>
 
 <body>
-    <div id="product-list"></div>
+    <div id="side-bar">
+        <h3>Products:</h3>
+        <div id="product-list"></div>
+        <h3>Assets:</h3>
+        <div id="asset-list"></div>
+    </div>
     <svg id="process-view"></svg>
 
     <div id="selection-window" class="window">
@@ -132,6 +163,8 @@
 
     <datalist id="command-list"></datalist>
     <input id="command-input" type="text" list="command-list" autocorrect="off" autocapitalize="off" />
+
+    <div id="bin">&#128465;</div>
 
     <script>
         /**
@@ -305,7 +338,7 @@
         class Asset {
             static all = new Set();
             static create(attributes) {
-                const asset = new Asset(attributes.product);
+                const asset = new Asset(attributes.product, attributes.location);
                 asset[id] = attributes.id;
                 return asset;
             }
@@ -318,12 +351,22 @@
                 }
                 this.content = new Set();
                 Asset.all.add(this);
+                this.serialNumber = Asset.all.size; //...Asset.all].filter((asset) => asset.product === product).length;
+            }
+            delete() {
+                if (this.location) {
+                    this.location.content.delete(this);
+                }
+                Asset.all.delete(this);
+            }
+            get name() {
+                return `${this.product.name}/${this.serialNumber}`;
             }
             move(destination) {
                 if (this.location) {
                     this.location.content.delete(this);
                 }
-                destination.content.add(this);
+                destination.content.add?.(this);
                 this.location = destination;
             }
         }
@@ -365,6 +408,7 @@
                 this.links = [];
                 this.content = new Set();
                 this[id] = uuidv4();
+                this.name = 'Source';
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -372,6 +416,50 @@
             get(quantity = 1) {
                 quantity = Math.min(quantity, this.content.length);
                 return this.content.splice(0, quantity);
+            }
+            validate() {
+                for (const asset of this.content) {
+                    if (asset.location !== this) {
+                        appendLine(`Warning: location mismatch`);
+                        this.content.delete(asset);
+                    }
+                }
+            }
+        }
+
+        class Store {
+            static create(attributes) {
+                const store = new store();
+                store[id] = attributes.id;
+                return store;
+            }
+            constructor(name, parent, capacity = Infinity) {
+                this.links = [];
+                this.content = new Set();
+                this[id] = uuidv4();
+                this.name = name || 'Store';
+                this.parent = parent || app.model;
+            }
+            delete() {
+                for (const asset of this.content) {
+                    asset.delete();
+                }
+                this.parent.delete(this);
+            }
+            get available() {
+                return [...this.content].map((asset) => ({ asset, from: this }));
+            }
+            get(quantity = 1) {
+                quantity = Math.min(quantity, this.content.length);
+                return this.content.splice(0, quantity);
+            }
+            validate() {
+                for (const asset of this.content) {
+                    if (asset.location !== this) {
+                        appendLine(`Warning: location mismatch`);
+                        this.content.delete(asset);
+                    }
+                }
             }
         }
 
@@ -384,7 +472,6 @@
             constructor(product, capacity = 1, content = [], uuid) {
                 this.product = product;
                 this.capacity = capacity;
-                //this.content = new Set(content);
                 this.content = new Set();
                 this.links = [];
                 this[id] = uuid || uuidv4();
@@ -420,6 +507,9 @@
                 app.selected.delete(this);
                 view.remove(this);
             }
+            get name() {
+                return `Input of ${this.parent}`;
+            }
             get available() {
                 if (this.links) {
                     const available = this.links.reduce((list, link) => list.concat(link.available), []);
@@ -445,6 +535,9 @@
                 this.lines.forEach((link) => link.deleteFrom());
                 app.selected.delete(this);
                 view.remove(this);
+            }
+            get name() {
+                return `Output of ${this.parent}`;
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -748,7 +841,7 @@ ${inputs.filter((input) => input.available < input.required)
                         this.links.filter((link) => link.start === input)
                             .forEach((link) => link.end.update());
                     } else {
-                        const content = Array(5).fill(1, 0, quantity).map((i) => ({ product }));
+                        const content = Array(quantity).fill(1, 0, quantity).map((i) => ({ product }));
                         this.outputs.set(product, { content });
                     }
                 },
@@ -1074,11 +1167,6 @@ ${inputs.filter((input) => input.available < input.required)
                 app.model.all.push(...state.model.all);
                 app.model.inputs = state.model.inputs || new Map();
                 app.model.outputs = state.model.outputs || new Map();
-
-                /*
-                app.model.inputs.values().forEach((input) => input.id = input.id || uuidv4());
-                app.model.outputs.values().forEach((output) => output.id = output.id || uuidv4());
-                */
 
                 app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
                 if (state.history) {
@@ -1655,6 +1743,15 @@ ${inputs.filter((input) => input.available < input.required)
         }
 
         /**
+         * Deselect an item, updating the representation as necessary.
+         */
+        function deselect(item, node) {
+            app.selected.delete(item);
+            node.classList.remove('selected');
+            updateSelected();
+        }
+
+        /**
          * Redraw the view
          */
         function redraw() {
@@ -1664,12 +1761,12 @@ ${inputs.filter((input) => input.available < input.required)
         }
 
 
-
         /**
          * Update the SVG that represents the current process and its state.
          */
         function updateView() {
             updateProductList();
+            updateAssetList();
             // Remove deleted items
             for (const [item, representation] of view.map.entries()) {
                 if (item.deleted) {
@@ -1684,17 +1781,19 @@ ${inputs.filter((input) => input.available < input.required)
             const representations = [];
             for (const input of app.model.inputs) {
                 const [product, state] = input;
-                const representation = view.map.get(input);
+                const representation = view.map.get(state);
                 const fill = state.content.size > 0 ? 'lightgreen' : 'white';
                 if (representation) {
                     representation.nodes[0].setAttribute('fill', fill);
                     representations.push(representation);
-                    representation.text.innerHTML = product.name;
-                    representation.bbox = text.getBBox();
-                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})`;
+                    representation.nodes[2].innerHTML = product.name;
+                    representation.bbox = representation.nodes[2].getBBox();
+                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
+${[...state.content].map((asset) => asset.name).join('\n')}`;
                 } else {
                     const outline = view.add('path', null, { fill, stroke: 'black' });
-                    const title = view.add('title', outline, {}, `${product.name} (${state.content.size})`);
+                    const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
+${[...state.content].map((asset) => asset.name).join('\n')}`);
 
                     const text = view.add('text', null, textAttrs, `${product.name}`);
                     const textTitle = view.add('title', text, {}, `${product.name} (${state.content.size})`);
@@ -1703,10 +1802,38 @@ ${inputs.filter((input) => input.available < input.required)
                     representations.push(representation);
                     view.map.set(state, representation);
                     outline.addEventListener('click', (event) => {
+                        if (event.altKey) {
+                            state.validate();
+                        } else if (event.shiftKey) {
+                            deselect(state, outline);
+                        } else {
+                            select(state, outline);
+                        }
+                        updateView();
+                    });
+                    outline.addEventListener('dblclick', (event) => {
                         const asset = new Asset(product);
                         asset.move(state);
                         state.content.add(asset);
                         state.links.forEach((link) => link.to.update);
+                        updateView();
+                    });
+                    outline.addEventListener('dragover', (event) => {
+                        const assetId = event.dataTransfer.getData('text/plain');
+                        /*
+                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
+                        if (item.product === product) {
+                            }
+                            */
+                        event.preventDefault();
+                    });
+                    outline.addEventListener('drop', (event) => {
+                        event.preventDefault();
+                        const assetId = event.dataTransfer.getData('text/plain');
+                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
+                        if (item.product === product) {
+                            item.move(state);
+                        }
                         updateView();
                     });
                 }
@@ -1801,6 +1928,7 @@ ${inputs.filter((input) => input.available < input.required)
                             appendLine(`duration: ${output.duration}`);
                             const item = [...state.content].pop();
                             if (item) {
+                                state.content.delete(item);
                                 item.move(app.model.store);
                             }
                             updateView();
@@ -1843,6 +1971,111 @@ ${inputs.filter((input) => input.available < input.required)
 
                 view.map.set(activity, representation);
             });
+
+
+
+
+
+
+
+
+
+
+
+
+            x = 1000;
+            y = 50;
+            Object.assign(textAttrs, { x, y: y + 30, 'text-anchor': 'center', 'alignment-baseline': 'hanging' });
+            representations.length = 0;
+            for (const output of app.model.outputs) {
+                const [product, state] = output;
+                const representation = view.map.get(state);
+                const fill = state.content.size > 0 ? 'lightgreen' : 'white';
+                if (representation) {
+                    representation.nodes[0].setAttribute('fill', fill);
+                    representations.push(representation);
+                    representation.nodes[2].innerHTML = product.name;
+                    representation.bbox = representation.nodes[2].getBBox();
+                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
+${[...state.content].map((asset) => asset.name).join('\n')}`;
+                } else {
+                    const w = 30;
+                    const h = 10;
+                    const d = `M ${x} ${y + h} l ${w} ${-h} l ${w} ${h} l ${-w} ${h} l ${-w} ${-h} v 5 l ${w} ${h} l ${w} ${-h} v -5 M ${x + w} ${y + 2 * h} v 5`;
+                    const outline = view.add('path', null, { d, fill, stroke: 'black' });
+                    const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
+${[...state.content].map((asset) => asset.name).join('\n')}`);
+
+                    const text = view.add('text', null, textAttrs, `${product.name}`);
+                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.size})`);
+
+                    const representation = { nodes: [outline, title, text, textTitle], bbox: text.getBBox() };
+                    representations.push(representation);
+                    view.map.set(state, representation);
+                    outline.addEventListener('click', (event) => {
+                        if (event.altKey) {
+                            state.validate();
+                        } else if (event.shiftKey) {
+                            deselect(state, outline);
+                        } else {
+                            select(state, outline);
+                        }
+                        updateView();
+                    });
+                    outline.addEventListener('dblclick', (event) => {
+                        const asset = new Asset(product);
+                        asset.move(state);
+                        state.content.add(asset);
+                        state.links.forEach((link) => link.to.update);
+                        updateView();
+                    });
+                    outline.addEventListener('dragover', (event) => {
+                        const assetId = event.dataTransfer.getData('text/plain');
+                        event.preventDefault();
+                    });
+                    outline.addEventListener('drop', (event) => {
+                        event.preventDefault();
+                        const assetId = event.dataTransfer.getData('text/plain');
+                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
+                        if (item.product === product) {
+                            item.move(state);
+                        }
+                        updateView();
+                    });
+                }
+                textAttrs.y += 50;
+            }
+
+            /*
+            const textWidth = Math.max(0, ...representations.map((representation) => representation.bbox.width));
+            const textHeight = Math.max(0, ...representations.map((representation) => representation.bbox.height));
+
+            representations.forEach((representation, index) => {
+                const x = 10 - textHeight / 2;
+                const y = 20 + index * 50 - textHeight / 2;
+                const d = `M ${x} ${y} h ${textWidth + textHeight} l ${textHeight / 2} ${textHeight / 2} l ${-textHeight / 2} ${textHeight / 2} h ${-textWidth - textHeight} z`;
+                representation.nodes[0].setAttribute('d', d);
+                representation.x = x;
+                representation.y = y;
+                representation.width = textWidth + textHeight * 1.5;
+                representation.height = textHeight;
+            });
+            */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
             for (const link of app.model.links) {
                 const representation = view.map.get(link);
@@ -1908,6 +2141,61 @@ ${inputs.filter((input) => input.available < input.required)
             });
         }
 
+        /**
+         * Update the table of products
+         */
+        function updateAssetList(product) {
+            const container = document.getElementById('asset-list');
+            container.innerHTML = `
+            <table>
+                <thead>
+                    <tr><th>Product</th><th>S/N</th><th>Location</th></tr>
+                </thead>
+                <tbody>
+                </tbody>`;
+            const body = container.lastElementChild;
+            const products = new Map();
+            [...Asset.all].forEach((asset) => {
+                const list = products.get(asset.product) || [];
+                products.set(asset.product, list);
+                list.push(asset);
+            });
+            const entries = [...products];
+            entries.sort((a, b) => a[0].name?.localeCompare(b[0].name));
+            entries.forEach(([product, assets]) => {
+                assets.forEach((asset) => {
+                    const row = document.createElement('tr');
+                    row.draggable = true;
+                    row.title = asset[id];
+                    row.addEventListener('dragstart', (event) => {
+                        event.dataTransfer.setData('text/plain', asset[id]);
+                    });
+                    row.innerHTML = `<td>${product.name}</td><td>${asset.serialNumber}</td><td>${asset.location?.name}</td>`;
+                    const idx = row.firstChild;
+                    const name = idx.nextSibling;
+                    name.contentEditable = true;
+                    name.addEventListener('focus', (event) => {
+                        name.contentEditable = true;
+                    });
+                    name.addEventListener('blur', (event) => {
+                        product.name = name.innerText;
+                        name.contentEditable = false;
+                    });
+                    name.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            event.preventDefault();
+                            name.innerText = product.name;
+                            input.focus();
+                        }
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            product.name = name.innerText;
+                        }
+                    });
+                    body.append(row);
+                });
+            });
+        }
 
         /**
          * Update the list of selected items.
@@ -1937,6 +2225,19 @@ ${inputs.filter((input) => input.available < input.required)
         const input = document.getElementById('command-input');
         //input.addEventListener('change', processCommand);
         input.addEventListener('keydown', processKey);
+
+
+        const bin = document.getElementById('bin');
+        bin.addEventListener('dragover', (event) => event.preventDefault());
+        bin.addEventListener('drop', (event) => {
+            const assetId = event.dataTransfer.getData('text/plain');
+            const item = [...Asset.all].find((asset) => asset[id] === assetId);
+            if (item) {
+                item.delete();
+            }
+            updateView();
+        });
+
 
         //updateCommandList();
 
