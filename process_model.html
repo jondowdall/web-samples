@@ -128,7 +128,7 @@
             stroke-dasharray: 4 4;
             stroke-dashoffset: 8;
             animation: drawPath 1s infinite;
-        /* Apply the animation */
+            /* Apply the animation */
         }
 
         @keyframes drawPath {
@@ -229,7 +229,7 @@
             }
             remove(item) {
                 const representation = this.map.get(item);
-                representation.nodes.forEach((node) => node.remove());
+                Object.values(representation.nodes).forEach((node) => node.remove());
                 this.map.delete(item);
             }
         }
@@ -503,7 +503,7 @@
             }
             delete() {
                 [...this.content].forEach((asset) => asset.move(app.model.store));
-                this.lines.forEach((link) => link.deleteTo());
+                this.links.forEach((link) => link.deleteTo());
                 app.selected.delete(this);
                 view.remove(this);
             }
@@ -1763,6 +1763,52 @@ ${inputs.filter((input) => input.available < input.required)
 
 
         /**
+         * Make an svg element moveable
+         */
+        function moveable(representation) {
+            const group = representation.nodes.group;
+            group.addEventListener('mousedown', (event) => {
+                app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
+                app.actions.move = (event) => {
+                    const delta = {
+                        x: event.clientX - app.actions.start.x,
+                        y: event.clientY - app.actions.start.y,
+                    };
+                    x = app.actions.start.nodeX + delta.x;
+                    y = app.actions.start.nodeY + delta.y;
+                    representation.nodes.group.setAttribute('transform', `translate(${x} ${y})`);
+                    //updateView();
+                };
+                app.actions.mouseup = (event) => {
+                    const delta = {
+                        x: event.clientX - app.actions.start.x,
+                        y: event.clientY - app.actions.start.y,
+                    };
+                    representation.x = app.actions.start.nodeX + delta.x;
+                    representation.y = app.actions.start.nodeY + delta.y;
+                    updateView();
+                };
+            });
+        }
+
+        /**
+         * Make an svg element a target for dropping assets
+         */
+        function contentTarget(container, node) {
+            node.addEventListener('dragover', (event) => event.preventDefault());
+            node.addEventListener('drop', (event) => {
+                event.preventDefault();
+                const assetId = event.dataTransfer.getData('text/plain');
+                const item = [...Asset.all].find((asset) => asset[id] === assetId);
+                if (item.product === product) {
+                    item.move(container);
+                }
+                updateView();
+            });
+        }
+
+
+        /**
          * Update the SVG that represents the current process and its state.
          */
         function updateView() {
@@ -1771,7 +1817,7 @@ ${inputs.filter((input) => input.available < input.required)
             // Remove deleted items
             for (const [item, representation] of view.map.entries()) {
                 if (item.deleted) {
-                    representation.nodes.forEach((node) => node.remove(node));
+                    Object.values(representation.nodes).forEach((node) => node.remove(node));
                     view.map.delete(item);
                 }
             }
@@ -1782,14 +1828,14 @@ ${inputs.filter((input) => input.available < input.required)
             const representations = [];
             for (const input of app.model.inputs) {
                 const [product, state] = input;
-                const representation = view.map.get(state);
                 const fill = state.content.size > 0 ? 'lightgreen' : 'white';
+                const representation = view.map.get(state);
                 if (representation) {
-                    representation.nodes[0].setAttribute('fill', fill);
+                    representation.nodes.group.setAttribute('fill', fill);
                     representations.push(representation);
-                    representation.nodes[2].innerHTML = product.name;
-                    representation.bbox = representation.nodes[2].getBBox();
-                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
+                    representation.nodes.label.innerHTML = product.name;
+                    representation.bbox = representation.nodes.label.getBBox();
+                    representation.nodes.title.innerHTML = representation.nodes.textTitle.innerHTML = `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`;
                 } else {
                     const group = view.add('g');
@@ -1797,12 +1843,13 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`;
                     const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
-                    const text = view.add('text', group, textAttrs, `${product.name}`);
-                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.size})`);
+                    const label = view.add('text', group, textAttrs, `${product.name}`);
+                    const textTitle = view.add('title', label, {}, `${product.name} (${state.content.size})`);
 
-                    const representation = { x: 0, y: 0, nodes: [group, outline, title, text, textTitle], bbox: text.getBBox() };
+                    const representation = { x: 0, y: 0, nodes: {group, outline, title, label, textTitle}, bbox: label.getBBox() };
                     representations.push(representation);
                     view.map.set(state, representation);
+
                     outline.addEventListener('click', (event) => {
                         if (event.altKey) {
                             state.validate();
@@ -1820,44 +1867,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    group.addEventListener('mousedown', (event) => {
-                        app.actions.start = {x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y};
-                        app.actions.move = (event) => {
-                            const delta = {
-                                x: event.clientX - app.actions.start.x,
-                                y: event.clientY - app.actions.start.y,
-                            };
-                            x = app.actions.start.nodeX + delta.x;
-                            y = app.actions.start.nodeY + delta.y;
-                            representation.nodes[0].setAttribute('transform', `translate(${x} ${y})`);
-                        };
-                        app.actions.mouseup = (event) => {
-                            const delta = {
-                                x: event.clientX - app.actions.start.x,
-                                y: event.clientY - app.actions.start.y,
-                            };
-                            representation.x = app.actions.start.nodeX + delta.x;
-                            representation.y = app.actions.start.nodeY + delta.y;
-                        };
-                    });
-                    outline.addEventListener('dragover', (event) => {
-                        const assetId = event.dataTransfer.getData('text/plain');
-                        /*
-                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
-                        if (item.product === product) {
-                            }
-                            */
-                        event.preventDefault();
-                    });
-                    outline.addEventListener('drop', (event) => {
-                        event.preventDefault();
-                        const assetId = event.dataTransfer.getData('text/plain');
-                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
-                        if (item.product === product) {
-                            item.move(state);
-                        }
-                        updateView();
-                    });
+                    moveable(representation);
+                    contentTarget(state, outline);
                 }
                 textAttrs.y += 50;
             }
@@ -1869,7 +1880,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 const x = 10 - textHeight / 2;
                 const y = 20 + index * 50 - textHeight / 2;
                 const d = `M ${x} ${y} h ${textWidth + textHeight} l ${textHeight / 2} ${textHeight / 2} l ${-textHeight / 2} ${textHeight / 2} h ${-textWidth - textHeight} z`;
-                representation.nodes[1].setAttribute('d', d);
+                representation.nodes.outline.setAttribute('d', d);
                 representation.x = x;
                 representation.y = y;
                 representation.width = textWidth + textHeight * 1.5;
@@ -1884,90 +1895,78 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             const verticalSpace = 30;
             app.model.activities.forEach((activity) => {
                 const classes = app.selected.has(activity) ? ['selected'] : [];
-                const representation = view.map.get(activity) ||
-                    { nodes: [view.add('rect', null, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black' }, null, classes)] };
 
-                representation.nodes[0].setAttribute('x', x);
-                representation.nodes[0].setAttribute('y', y);
+                const representation = view.map.get(activity) || {};
+                if (representation.nodes) {
+                    representation.nodes.outline.innerHTML = activity.name;
+                    representation.nodes.label.setAttribute('x', width / 2);
+                    representation.nodes.label.setAttribute('y', 15);
+                    representation.nodes.title.innerHTML = activity.getStateDescription();
+                } else {
+                    const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
+                    const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black' }, null, classes);
+                    const label = view.add('text', group, { x: width / 2, y: 15, 'text-anchor': 'middle' }, activity.name);
+                    const title = view.add('title', group, {}, activity.getStateDescription());
+                    representation.x = x;
+                    representation.y = y;
+                    representation.nodes = {group, outline, label, title};
+                    view.map.set(activity, representation);
 
-                if (representation.nodes.length === 1) {
-                    representation.nodes[0].addEventListener('click', (event) => {
+                    outline.addEventListener('click', (event) => {
                         if (app.selected.has(activity)) {
-                            app.selected.delete(activity);
-                            representation.nodes[0].classList.remove('selected');
+                            deselect(activity, group);
                         } else {
-                            app.selected.add(activity);
-                            representation.nodes[0].classList.add('selected');
+                            select(activity, group);
                         }
                         updateSelected();
                     });
-                    const label = view.add('text', null, { x: x + width / 2, y: y + 15, 'text-anchor': 'middle' }, activity.name);
-                    const title = view.add('title', representation.nodes[0], {}, activity.getStateDescription());
-                    representation.nodes.push(label, title);
-                } else {
-                    representation.nodes[1].innerHTML = activity.name;
-                    representation.nodes[1].setAttribute('x', x + width / 2);
-                    representation.nodes[1].setAttribute('y', y + 15);
-                    representation.nodes[2].innerHTML = activity.getStateDescription();
+                    moveable(representation);
                 }
+
                 const step = (height - 10) / activity.inputs.size;
-                let iy = 10 + y + step / 2;
+                let iy = 10 + step / 2;
                 for (const input of activity.inputs) {
                     const [product, state] = input;
-                    const representation = view.map.get(state) || {
-                        nodes: [view.add('circle', null, { r: 5, fill: 'white', stroke: 'black' })],
-                    };
-                    if (!view.map.get(state)) {
-                        representation.nodes[0].addEventListener('click', (event) => {
+                    const node = view.map.get(state);
+
+                    if (node) {
+                        node.x = node.parent.x - 5;
+                        node.y = node.parent.y + iy - 5;
+                        node.nodes.title = `${product.name} (${state.content.size}/${state.required})`
+                    } else {
+                        const outline = view.add('circle', representation.nodes.group, { cx: 0, cy: iy, r: 5, fill: 'white', stroke: 'black' })
+                        const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.required})`);
+                        view.map.set(state, { x: x - 5, y: y + iy - 5, width: 10, height: 10, nodes: {outline, title}, parent: representation });
+
+                        outline.addEventListener('click', (event) => {
                             appendLine(`Product: ${product.name}`);
                             appendLine(`Available: ${state.available.map((available) => available.asset.id).join(', ')}`);
                         });
                     }
-
-                    representation.nodes[0].setAttribute('cx', x);
-                    representation.nodes[0].setAttribute('cy', iy);
-                    view.map.set(state, representation);
-                    representation.x = x - 5;
-                    representation.y = iy - 5;
-                    representation.width = 10;
-                    representation.height = 10;
-
-                    view.add('title', representation.nodes[0], {}, `${product.name} (${state.content.size}/${state.required})`);
                     iy += step;
                 }
 
                 const oStep = (height - 10) / activity.outputs.size;
                 let oy = 10 + y + oStep / 2;
-
                 for (const output of activity.outputs) {
                     const [product, state] = output;
-                    const fill = state.content.size > 0 ? 'green' : 'white';
-                    const representation = view.map.get(state) || {
-                        nodes: [view.add('circle', null, { cx: x + width, cy: oy, r: 5, fill, stroke: 'black' })]
-                    };
-                    if (!view.map.get(state)) {
-                        representation.nodes[0].addEventListener('click', (event) => {
-                            appendLine(`duration: ${output.duration}`);
-                            const item = [...state.content].pop();
-                            if (item) {
-                                state.content.delete(item);
-                                item.move(app.model.store);
-                            }
-                            updateView();
-                        });
-                        representation.nodes.push(view.add('title', representation.nodes[0], {}, `${product.name} (${state.content.size})`));
-                    }
-                    representation.nodes[0].setAttribute('cx', x + width);
-                    representation.nodes[0].setAttribute('cy', oy);
-                    representation.nodes[0].setAttribute('fill', fill);
-                    view.map.set(state, representation);
-                    representation.x = x + width - 5;
-                    representation.y = oy - 5;
-                    representation.width = 10;
-                    representation.height = 10;
+                    const node = view.map.get(state);
 
-                    representation.nodes[1].innerHTML = `${product.name} (${state.content.size})`;
-                    oy += oStep;
+                    if (node) {
+                        node.x = node.parent.x + width - 5;
+                        node.y = node.parent.y + oy - 5;
+                        node.nodes.group = `${product.name} (${state.content.size}/${state.required})`
+                    } else {
+                        const outline = view.add('circle', representation.nodes.group, { cx: width, cy: oy, r: 5, fill: 'white', stroke: 'black' })
+                        const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.required})`);
+                        view.map.set(state, { x: x - 5, y: y + oy - 5, width: 10, height: 10, nodes: {outline, title}, parent: representation });
+
+                        outline.addEventListener('click', (event) => {
+                            appendLine(`Product: ${product.name}`);
+                            appendLine(`Available: ${state.available.map((available) => available.asset.id).join(', ')}`);
+                        });
+                    }
+                    oy += step;
                 }
 
                 y += height + verticalSpace;
@@ -1976,13 +1975,13 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     x += width + horizontalSpace;
                 }
                 if (representation) {
-                    representation.nodes[0].classList.remove('ready');
-                    representation.nodes[0].classList.remove('running');
-                    representation.nodes[0].classList.remove('waiting');
-                    representation.nodes[0].classList.remove('blocked');
-                    representation.nodes[0].classList.remove('paused');
+                    representation.nodes.group.classList.remove('ready');
+                    representation.nodes.group.classList.remove('running');
+                    representation.nodes.group.classList.remove('waiting');
+                    representation.nodes.group.classList.remove('blocked');
+                    representation.nodes.group.classList.remove('paused');
 
-                    representation.nodes[0].classList.add({
+                    representation.nodes.group.classList.add({
                         [ready]: 'ready',
                         [running]: 'running',
                         [waiting]: 'waiting',
@@ -1990,8 +1989,6 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         [paused]: 'paused',
                     }[activity.state]);
                 }
-
-                view.map.set(activity, representation);
             });
 
 
@@ -2011,27 +2008,28 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             representations.length = 0;
             for (const output of app.model.outputs) {
                 const [product, state] = output;
-                const representation = view.map.get(state);
                 const fill = state.content.size > 0 ? 'lightgreen' : 'white';
+                const representation = view.map.get(state);
                 if (representation) {
-                    representation.nodes[0].setAttribute('fill', fill);
+                    representation.nodes.outline.setAttribute('fill', fill);
                     representations.push(representation);
-                    representation.nodes[2].innerHTML = product.name;
-                    representation.bbox = representation.nodes[2].getBBox();
-                    representation.nodes[1].innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
+                    representation.nodes.label.innerHTML = product.name;
+                    representation.bbox = representation.nodes.group.getBBox();
+                    representation.nodes.title.innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`;
                 } else {
+                    const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
                     const w = 30;
                     const h = 10;
                     const d = `M ${x} ${y + h} l ${w} ${-h} l ${w} ${h} l ${-w} ${h} l ${-w} ${-h} v 5 l ${w} ${h} l ${w} ${-h} v -5 M ${x + w} ${y + 2 * h} v 5`;
-                    const outline = view.add('path', null, { d, fill, stroke: 'black' });
+                    const outline = view.add('path', group, { d, fill, stroke: 'black' });
                     const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
-                    const text = view.add('text', null, textAttrs, `${product.name}`);
-                    const textTitle = view.add('title', text, {}, `${product.name} (${state.content.size})`);
+                    const label = view.add('text', group, textAttrs, `${product.name}`);
+                    const textTitle = view.add('title', label, {}, `${product.name} (${state.content.size})`);
 
-                    const representation = { nodes: [outline, title, text, textTitle], bbox: text.getBBox() };
+                    const representation = { nodes: {group, outline, title, label, textTitle}, bbox: group.getBBox() };
                     representations.push(representation);
                     view.map.set(state, representation);
                     outline.addEventListener('click', (event) => {
@@ -2051,46 +2049,11 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    outline.addEventListener('dragover', (event) => {
-                        const assetId = event.dataTransfer.getData('text/plain');
-                        event.preventDefault();
-                    });
-                    outline.addEventListener('drop', (event) => {
-                        event.preventDefault();
-                        const assetId = event.dataTransfer.getData('text/plain');
-                        const item = [...Asset.all].find((asset) => asset[id] === assetId);
-                        if (item.product === product) {
-                            item.move(state);
-                        }
-                        updateView();
-                    });
+                    moveable(group);
+                    contentTarget(state, outline);
                 }
                 textAttrs.y += 50;
             }
-
-            /*
-            const textWidth = Math.max(0, ...representations.map((representation) => representation.bbox.width));
-            const textHeight = Math.max(0, ...representations.map((representation) => representation.bbox.height));
-
-            representations.forEach((representation, index) => {
-                const x = 10 - textHeight / 2;
-                const y = 20 + index * 50 - textHeight / 2;
-                const d = `M ${x} ${y} h ${textWidth + textHeight} l ${textHeight / 2} ${textHeight / 2} l ${-textHeight / 2} ${textHeight / 2} h ${-textWidth - textHeight} z`;
-                representation.nodes[0].setAttribute('d', d);
-                representation.x = x;
-                representation.y = y;
-                representation.width = textWidth + textHeight * 1.5;
-                representation.height = textHeight;
-            });
-            */
-
-
-
-
-
-
-
-
 
 
 
@@ -2110,11 +2073,11 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     const y2 = end.y + end.height / 2;
                     const mx = (x1 + x2) / 2;
                     const d = `M ${x1} ${y1} C ${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
-                    if (!representation) {
-                        const edge = view.addUnder('path', null, { d, fill: 'none', stroke: 'black' });
-                        view.map.set(link, { nodes: [edge] });
+                    if (representation) {
+                        representation.nodes.edge.setAttribute('d', d);
                     } else {
-                        representation.nodes[0].setAttribute('d', d);
+                        const edge = view.addUnder('path', null, { d, fill: 'none', stroke: 'black' });
+                        view.map.set(link, { nodes: {edge} });
                     }
                 }
             }
