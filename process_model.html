@@ -40,6 +40,16 @@
 
         #side-bar {
             background-color: lightblue;
+            padding: 0.5em;
+        }
+
+        #side-bar table {
+            background: white;
+        }
+
+        #side-bar th {
+            background-color: lightgray;
+            font-weight: bold;
         }
 
         /*
@@ -119,9 +129,13 @@
             margin: 0;
         }
 
+        svg {
+            background-color: lavender;
+        }
+
         .selected {
             stroke: yellow;
-            filter: drop-shadow(2px 2px 4px rgba(0, 0, 0, 0.5));
+            filter: drop-shadow(2px 2px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 5px yellow);
         }
 
         .running {
@@ -437,7 +451,6 @@
                 this.links = [];
                 this.content = new Set();
                 this[id] = uuidv4();
-                this.name = name || 'Store';
                 this.parent = parent || app.model;
             }
             delete() {
@@ -445,6 +458,14 @@
                     asset.delete();
                 }
                 this.parent.delete(this);
+            }
+            get name() {
+                const products = new Set([...this.content].map((asset) => asset.product));
+                const names = [...products].map((product) => product.name).join(', ');
+                if (names) {
+                    return `Store of ${names}`;
+                }
+                return 'Empty Store'
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -509,7 +530,7 @@
                 view.remove(this);
             }
             get name() {
-                return `Input of ${this.parent}`;
+                return `Input of ${this.parent.name}`;
             }
             get available() {
                 if (this.links) {
@@ -538,7 +559,7 @@
                 view.remove(this);
             }
             get name() {
-                return `Output of ${this.parent}`;
+                return `Output of ${this.parent.name}`;
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -984,7 +1005,7 @@ ${inputs.filter((input) => input.available < input.required)
                     };
                 }
 
-                if (['Product', 'Asset', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output', 'Source'].includes(value.constructor.name)) {
+                if (['Product', 'Asset', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output', 'Source', 'Store'].includes(value.constructor.name)) {
                     return {
                         dataType: value.constructor.name,
                         value: Object.assign({}, value, { id: value[id], [id]: undefined }),
@@ -1087,7 +1108,16 @@ ${inputs.filter((input) => input.available < input.required)
                 reader.addEventListener('load', (event) => {
                     const filename = file.name;
                     try {
-                        app.model = deserialise(reader.result);
+                        view.map.clear();
+                        view.svg.innerHTML = '';
+                        const state = deserialise(reader.result);
+                        app.model.all.push(...state.model.all);
+                        app.model.inputs = state.model.inputs || new Map();
+                        app.model.outputs = state.model.outputs || new Map();
+
+                        app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
+
+
                         appendLine(`Loaded ${filename}`);
                     } catch (error) {
                         appendLine(error.message);
@@ -1397,13 +1427,22 @@ ${inputs.filter((input) => input.available < input.required)
                     const name = parameters[0];
                     const product = app.model.products.find((product) => product.name === name);
                     if (product) {
-                        const from = app.model.inputs.get(product);
-                        if (from) {
+                        if (app.model.inputs.get(product)) {
                             for (const item of app.selected) {
                                 if (item.inputs) {
                                     const to = item.inputs.get(product);
                                     if (to) {
-                                        app.model.links.push(new Link(from, to));
+                                        app.model.links.push(new Link(app.model.inputs.get(product), to));
+                                    }
+                                }
+                            }
+                        }
+                        if (app.model.outputs.get(product)) {
+                            for (const item of app.selected) {
+                                if (item.outputs) {
+                                    const from = item.outputs.get(product);
+                                    if (from) {
+                                        app.model.links.push(new Link(from, app.model.outputs.get(product)));
                                     }
                                 }
                             }
@@ -1798,6 +1837,7 @@ ${inputs.filter((input) => input.available < input.required)
                     representation.nodes.group.setAttribute('transform', `translate(${representation.x} ${representation.y})`);
                     representation.dependencies.forEach((dependency) => dependency.update(event, representation));
                 };
+                /*
                 app.actions.mouseup = (event) => {
                     const delta = {
                         x: event.clientX - app.actions.start.x,
@@ -1807,6 +1847,7 @@ ${inputs.filter((input) => input.available < input.required)
                     representation.y = app.actions.start.nodeY + delta.y;
                     updateView();
                 };
+                */
             });
         }
 
@@ -1841,7 +1882,6 @@ ${inputs.filter((input) => input.available < input.required)
                 }
             }
 
-
             const toggleSelection = (item, node) => {
                 if (app.selected.has(item)) {
                     deselect(item, node);
@@ -1852,7 +1892,7 @@ ${inputs.filter((input) => input.available < input.required)
             }
 
             let x = 10;
-            let y = 20;
+            let y = 100;
             const textAttrs = { x: 2, y: 2, fill: 'black', stroke: 'none', 'text-anchor': 'start', 'alignment-baseline': 'hanging' };
             const representations = [];
             for (const input of app.model.inputs) {
@@ -1906,7 +1946,6 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     moveable(representation);
                     contentTarget(state, outline);
                 }
-                textAttrs.y += 50;
             }
 
             const textWidth = Math.max(0, ...representations.map((representation) => representation.bbox.width));
@@ -1914,7 +1953,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
             representations.forEach((representation, index) => {
                 const x = 10;
-                const y = 20 + index * 50 - textHeight / 2;
+                const y = 100 + index * 50 - textHeight / 2;
                 const w = textWidth;
                 const h = textHeight;
                 const d = `M 0 0 h ${w + 4} l ${h / 2} ${h / 2} l ${-h / 2} ${h / 2} h ${-w - 4} z`;
@@ -1931,7 +1970,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             // Add activities
             //
             x = textWidth + textHeight + 50;
-            y = 30;
+            y = 100;
             const width = 100;
             const horizontalSpace = 100;
             const height = 50;
@@ -1949,8 +1988,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     representation.nodes.title.innerHTML = activity.getStateDescription();
                 } else {
                     const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
-                    const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black' }, null, classes);
-                    const label = view.add('text', group, { x: width / 2, y: 15, 'text-anchor': 'middle' }, activity.name);
+                    const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black', }, null, classes);
+                    const label = view.add('text', group, { x: width / 2, y: 15, 'text-anchor': 'middle', stroke: 'none', }, activity.name);
                     const title = view.add('title', group, {}, activity.getStateDescription());
                     representation.x = x;
                     representation.y = y;
@@ -2013,8 +2052,9 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         node.y = node.parent.y + oy - 5;
                         node.nodes.group = `${product.name} (${state.content.size}/${state.required})`
                     } else {
-                        const outline = view.add('circle', representation.nodes.group, { cx: width, cy: oy, r: 5, fill: 'white', stroke: 'black' })
-                        const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.required})`);
+                        const fill = state.content.size > 0 ? (state.content.size < state.capacity ? 'green' : 'red') : 'white';
+                        const outline = view.add('circle', representation.nodes.group, { cx: width, cy: oy, r: 5, fill, stroke: 'black' })
+                        const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.capacity || '-'})`);
                         node.x = x + width - 5;
                         node.y = y + oy - 5;
                         node.oy = oy;
@@ -2087,7 +2127,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 const representation = view.map.get(activity);
                 order(activity, representation);
                 groups[representation.group] = groups[representation.group] || [];
-                representation.y = 30 + groups[representation.group].length * (height + verticalSpace);
+                representation.y = 80 + groups[representation.group].length * (height + verticalSpace);
                 groups[representation.group].push(representation);
 
                 if (!representation.moved) {
@@ -2098,7 +2138,6 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     representation.dependencies.forEach((dependency) =>
                         dependency.update({}, representation));
                 }
-                console.log(activity.name, representation.group);
             });
 
 
@@ -2106,8 +2145,10 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
             // Add stores
             x = 1000;
-            y = 50;
-            Object.assign(textAttrs, { x, y: y + 30, 'text-anchor': 'center', 'alignment-baseline': 'hanging' });
+            y = 80;
+            const w = 30;
+            const h = 10;
+            Object.assign(textAttrs, { x: w, y: 30, 'text-anchor': 'middle', 'alignment-baseline': 'hanging' });
             representations.length = 0;
             for (const output of app.model.outputs) {
                 const [product, state] = output;
@@ -2119,13 +2160,11 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     representations.push(representation);
                     representation.nodes.label.innerHTML = product.name;
                     representation.bbox = representation.nodes.group.getBBox();
-                    representation.nodes.title.innerHTML = representation.nodes[3].innerHTML = `${product.name} (${state.content.size})
+                    representation.nodes.title.innerHTML = representation.nodes.textTitle.innerHTML = `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`;
                 } else {
                     const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
-                    const w = 30;
-                    const h = 10;
-                    const d = `M ${x} ${y + h} l ${w} ${-h} l ${w} ${h} l ${-w} ${h} l ${-w} ${-h} v 5 l ${w} ${h} l ${w} ${-h} v -5 M ${x + w} ${y + 2 * h} v 5`;
+                    const d = `M 0 ${h} l ${w} ${-h} l ${w} ${h} l ${-w} ${h} l ${-w} ${-h} v 5 l ${w} ${h} l ${w} ${-h} v -5 M ${x + w} ${y + 2 * h} v 5`;
                     const outline = view.add('path', group, { d, fill, stroke: 'black' });
                     const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`);
@@ -2134,6 +2173,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     const textTitle = view.add('title', label, {}, `${product.name} (${state.content.size})`);
 
                     const representation = {
+                        x, y,
                         nodes: { group, outline, title, label, textTitle },
                         bbox: group.getBBox(), dependencies: [],
                     };
@@ -2156,10 +2196,10 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    moveable(group);
+                    moveable(representation);
                     contentTarget(state, outline);
                 }
-                textAttrs.y += 50;
+                y += 100;
             }
 
 
