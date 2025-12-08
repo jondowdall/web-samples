@@ -103,7 +103,7 @@
             top: 3em;
             right: 1em;
             width: 30vw;
-            height: 20vh;
+            /*height: 20vh; */
             color: antiquewhite;
             background-color: rgb(30, 30, 30, 0.8);
             border-radius: 0.5em;
@@ -160,6 +160,10 @@
         <div id="product-list"></div>
         <h3>Assets:</h3>
         <div id="asset-list"></div>
+        <h3>Activities:</h3>
+        <div id="activity-list"></div>
+        <h3>Links:</h3>
+        <div id="link-list"></div>
     </div>
     <svg id="process-view"></svg>
 
@@ -243,8 +247,10 @@
             }
             remove(item) {
                 const representation = this.map.get(item);
-                Object.values(representation.nodes).forEach((node) => node.remove());
-                this.map.delete(item);
+                if (representation) {
+                    Object.values(representation.nodes).forEach((node) => node.remove());
+                    this.map.delete(item);
+                }
             }
         }
     </script>
@@ -390,7 +396,7 @@
             static create(attributes) {
                 if (attributes.name === undefined) {
                     let index = 1;
-                    while (Product.all.find((item) => item.id === `Product ${index}`)) {
+                    while (Product.all.find((item) => item.name === `Product ${index}`)) {
                         index += 1;
                     }
                     attributes.name = `Product ${index}`;
@@ -423,6 +429,14 @@
                 this.content = new Set();
                 this[id] = uuidv4();
                 this.name = 'Source';
+            }
+            delete() {
+                this.links.forEach((link) => link.delete);
+                this.content.entries().forEach((asset) => asset.delete());
+                [...app.model.inputs].filter(([key, value]) => value === this)
+                    .forEach(([key, value]) => app.model.inputs.delete(key));
+                app.selected.delete(this);
+                view.remove(this);
             }
             get available() {
                 return [...this.content].map((asset) => ({ asset, from: this }));
@@ -711,6 +725,15 @@ ${inputs.filter((input) => input.available < input.required)
                     [paused]: `Paused`,
                 }[this.state];
             }
+            getContentString() {
+                const content = [...this.content].reduce((products, asset) => {
+                    const name = asset.product.name;
+                    products[name] = products[name] || 0;
+                    ++products[name];
+                    return products;
+                }, {});
+                return Object.entries(content).map(([name, count]) => `${name}: ${count}`).join('<br>');
+            }
         }
 
         /**
@@ -791,6 +814,16 @@ ${inputs.filter((input) => input.available < input.required)
                 app.selected.delete(this);
                 view.remove(this);
             }
+            delete() {
+                if (this.from.links) {
+                    this.from.links = this.from.links.filter((link) => link !== this);
+                }
+                if (this.to.links) {
+                    this.to.links = this.to.links.filter((link) => link !== this);
+                }
+                app.model.links = app.model.links.filter((link) => link !== this);
+                view.remove(this);
+            }
             get available() {
                 return this.from.available;
             }
@@ -833,7 +866,7 @@ ${inputs.filter((input) => input.available < input.required)
                 addActivity(name) {
                     if (name === undefined) {
                         let index = 1;
-                        while (this.all.find((item) => (item instanceof Activity) && item.id === `Activity ${index}`)) {
+                        while (this.all.find((item) => (item instanceof Activity) && item.name === `Activity ${index}`)) {
                             index += 1;
                         }
                         name = `Activity ${index}`;
@@ -1110,13 +1143,19 @@ ${inputs.filter((input) => input.available < input.required)
                     try {
                         view.map.clear();
                         view.svg.innerHTML = '';
+                        Asset.all = new Set();
+                        Product.add = new Set();
+                        Input.add = new Set();
+                        Output.add = new Set();
+                        Activity.add = new Set();
+                        app.model.all.length = 0;
+
                         const state = deserialise(reader.result);
-                        app.model.all.push(...state.model.all);
-                        app.model.inputs = state.model.inputs || new Map();
-                        app.model.outputs = state.model.outputs || new Map();
+                        app.model.all.push(...state.all);
+                        app.model.inputs = state.inputs || new Map();
+                        app.model.outputs = state.outputs || new Map();
 
-                        app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
-
+                        app.model.links = state.links.filter((link) => link.from !== undefined && link.to !== undefined);
 
                         appendLine(`Loaded ${filename}`);
                     } catch (error) {
@@ -1824,30 +1863,25 @@ ${inputs.filter((input) => input.available < input.required)
         function moveable(representation) {
             const group = representation.nodes.group;
             group.addEventListener('mousedown', (event) => {
-                representation.moved = true;
                 app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
                 app.actions.move = (event) => {
                     const delta = {
                         x: event.clientX - app.actions.start.x,
                         y: event.clientY - app.actions.start.y,
                     };
+                    const dist = Math.hypot(delta.x, delta.y);
+                    if (dist > 5) {
+                        representation.moved = true;
+                    }
                     representation.x = app.actions.start.nodeX + delta.x;
                     representation.y = app.actions.start.nodeY + delta.y;
 
                     representation.nodes.group.setAttribute('transform', `translate(${representation.x} ${representation.y})`);
                     representation.dependencies.forEach((dependency) => dependency.update(event, representation));
                 };
-                /*
                 app.actions.mouseup = (event) => {
-                    const delta = {
-                        x: event.clientX - app.actions.start.x,
-                        y: event.clientY - app.actions.start.y,
-                    };
-                    representation.x = app.actions.start.nodeX + delta.x;
-                    representation.y = app.actions.start.nodeY + delta.y;
                     updateView();
                 };
-                */
             });
         }
 
@@ -1874,6 +1908,8 @@ ${inputs.filter((input) => input.available < input.required)
         function updateView() {
             updateProductList();
             updateAssetList();
+            updateActivityList();
+            updateLinkList();
             // Remove deleted items
             for (const [item, representation] of view.map.entries()) {
                 if (item.deleted) {
@@ -1928,7 +1964,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
                     outline.addEventListener('click', (event) => {
                         if (event.altKey) {
-                            state.validate();
+                            representation.moved = false;
+                            updateView();
                         } else if (event.shiftKey) {
                             deselect(state, outline);
                         } else {
@@ -1981,6 +2018,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 const representation = view.map.get(activity) || {};
                 representation.dependencies = [];
                 representation.group = null;
+                representation.width = width;
+                representation.height = height;
                 if (representation.nodes) {
                     representation.nodes.outline.innerHTML = activity.name;
                     representation.nodes.label.setAttribute('x', width / 2);
@@ -1995,8 +2034,14 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     representation.y = y;
                     representation.nodes = { group, outline, label, title };
                     view.map.set(activity, representation);
-
-                    outline.addEventListener('click', (event) => toggleSelection(activity, group));
+                    outline.addEventListener('click', (event) => {
+                        if (event.altKey) {
+                            representation.moved = false;
+                            updateView();
+                        } else {
+                            toggleSelection(activity, group);
+                        }
+                    });
                     moveable(representation);
                 }
 
@@ -2104,7 +2149,9 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 }
             });
 
-
+            const positioned = [...view.map.values()].filter((representation) => representation.moved);
+            positioned.sort((a, b) => (a.y + a.height) - (b.y + b.height));
+            view.firstColumn = Math.max(textWidth + textHeight, view.firstColumn || 100);
             // Update activity positions based on dependencies, ignoring user positioned activities
             const activities = app.model.activities.filter((activity) => !view.map.get(activity)?.moved);
             const order = (activity, representation, path = []) => {
@@ -2126,14 +2173,21 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             activities.forEach((activity) => {
                 const representation = view.map.get(activity);
                 order(activity, representation);
-                groups[representation.group] = groups[representation.group] || [];
-                representation.y = 80 + groups[representation.group].length * (height + verticalSpace);
-                groups[representation.group].push(representation);
+                groups[representation.group] = groups[representation.group] || 80;
 
                 if (!representation.moved) {
-                    const x = representation.x = textWidth + textHeight + 50 + (representation.group - 1) * (width + horizontalSpace);
-                    const y = representation.y; 
-                    view.updateElement(representation.nodes.group, {transform: `translate (${x}, ${y})`});
+                    representation.y = groups[representation.group];
+                    const y = representation.y = positioned.reduce((y, moved) =>
+                        (((representation.x + representation.width) > moved.x) &&
+                            (representation.x < (moved.x + moved.width)) &&
+                            ((representation.y + representation.height) > (moved.y - 30)) &&
+                            (representation.y < (moved.y + moved.height))) ? moved.y + moved.height + 30 : y,
+                        groups[representation.group]);
+                    groups[representation.group] = y + height + verticalSpace;
+                    const x = representation.x = view.firstColumn + 50 + (representation.group - 1) * (width + horizontalSpace);
+                    // Check for overlap with user positioned item
+                    //const y = representation.y;
+                    view.updateElement(representation.nodes.group, { transform: `translate (${x}, ${y})` });
 
                     representation.dependencies.forEach((dependency) =>
                         dependency.update({}, representation));
@@ -2144,7 +2198,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
 
             // Add stores
-            x = 1000;
+            x = view.firstColumn + 50 + (groups.length - 1) * (width + horizontalSpace);
             y = 80;
             const w = 30;
             const h = 10;
@@ -2240,6 +2294,28 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             }
         }
 
+
+        /**
+         * Make a node editable
+         */
+        function makeEditable(node, obj, attr) {
+            node.contentEditable = true;
+            node.addEventListener('blur', (event) => {
+                obj[attr] = node.innerText;
+            });
+            node.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    node.innerText = obj[attr];
+                    input.focus();
+                }
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    obj[attr] = node.innerText;
+                }
+            });
+        }
+
         /**
          * Update the table of products
          */
@@ -2259,32 +2335,13 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 row.innerHTML = `<td>${index}</td><td>${product.name}</td><td>${product.instances.size}</td>`;
                 const idx = row.firstChild;
                 const name = idx.nextSibling;
-                name.contentEditable = true;
-                name.addEventListener('focus', (event) => {
-                    name.contentEditable = true;
-
-                });
-                name.addEventListener('blur', (event) => {
-                    product.name = name.innerText;
-                    name.contentEditable = false;
-                });
-                name.addEventListener('keydown', (event) => {
-                    if (event.key === 'Escape') {
-                        event.preventDefault();
-                        name.innerText = product.name;
-                        input.focus();
-                    }
-                    if (event.key === 'Enter') {
-                        event.preventDefault();
-                        product.name = name.innerText;
-                    }
-                });
+                makeEditable(name, product, 'name');
                 body.append(row);
             });
         }
 
         /**
-         * Update the table of products
+         * Update the table of assets
          */
         function updateAssetList(product) {
             const container = document.getElementById('asset-list');
@@ -2340,6 +2397,72 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
         }
 
         /**
+         * Update the table of activities
+         */
+        function updateActivityList() {
+            const container = document.getElementById('activity-list');
+            container.innerHTML = `
+            <table>
+                <thead>
+                    <tr><th>Activity</th><th>Content</th><th>State</th></tr>
+                </thead>
+                <tbody>
+                </tbody>`;
+            const body = container.lastElementChild;
+            const activities = app.model.activities;
+            activities.sort((a, b) => a.name?.localeCompare(b.name));
+            activities.forEach((activity) => {
+                const row = document.createElement('tr');
+                row.draggable = true;
+                row.title = activity[id];
+                row.addEventListener('dragstart', (event) => {
+                    event.dataTransfer.setData('text/plain', activity[id]);
+                });
+                row.innerHTML = `<td>${activity.name}</td><td>${activity.getContentString()}</td><td>${activity.getStateDescription()}</td>`;
+                const name = row.firstChild;
+                makeEditable(name, activity, 'name');
+                body.append(row);
+            });
+        }
+
+        /**
+         * Update the table of links
+         */
+        function updateLinkList() {
+            const container = document.getElementById('link-list');
+            container.innerHTML = `
+            <table>
+                <thead>
+                    <tr><th>Product</th><th>From</th><th>To</th></tr>
+                </thead>
+                <tbody>
+                </tbody>`;
+            const body = container.lastElementChild;
+            const products = app.model.links.reduce((products, link) => {
+                const name = link.to.product?.name || 'Any';
+                products[name] = products[name] || [];
+                products[name].push(link);
+                return products;
+            }, {});
+            const names = Object.keys(products);
+            names.sort((a, b) => a.localeCompare(b));
+
+            names.forEach((name) => {
+                products[name].forEach((link) => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `<td>${name}</td><td>${link.from.name}</td><td>${link.to.name}</td>`;
+                    row.draggable = true;
+                    row.title = link[id];
+                    row.addEventListener('dragstart', (event) => {
+                        event.dataTransfer.setData('text/plain', link[id]);
+                    });
+
+                    body.append(row);
+                });
+            });
+        }
+
+        /**
          * Update the list of selected items.
          */
         function updateSelected() {
@@ -2372,11 +2495,16 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
         const bin = document.getElementById('bin');
         bin.addEventListener('dragover', (event) => event.preventDefault());
         bin.addEventListener('drop', (event) => {
-            const assetId = event.dataTransfer.getData('text/plain');
-            const item = [...Asset.all].find((asset) => asset[id] === assetId);
-            if (item) {
-                item.delete();
+            const itemId = event.dataTransfer.getData('text/plain');
+            const asset = [...Asset.all].find((asset) => asset[id] === itemId);
+            if (asset) {
+                asset.delete();
             }
+            const link = app.model.links.find((link) => link[id] === itemId);
+            if (link) {
+                link.delete();
+            }
+
             updateView();
         });
 
