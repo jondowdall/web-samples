@@ -102,7 +102,7 @@
             flex-direction: column;
             top: 3em;
             right: 1em;
-            width: 30vw;
+            min-width: 10em;
             /*height: 20vh; */
             color: antiquewhite;
             background-color: rgb(30, 30, 30, 0.8);
@@ -115,6 +115,11 @@
             background-color: rgb(150, 150, 150, 0.9);
             width: 100%;
             height: 100%;
+            padding: 0.5em;
+        }
+
+        #selection-window ul {
+            padding-inline-start: 1em;
         }
 
         #bin {
@@ -635,6 +640,7 @@
                 if (quantity === 0) {
                     this.inputs.delete(product);
                 }
+                return this.inputs.get(product);
             }
             addOutput(name, quantity = 1) {
                 const product = Product.get(name);
@@ -1858,14 +1864,32 @@ ${inputs.filter((input) => input.available < input.required)
 
 
         /**
+         * Get the cursor position relative to an element
+         */
+        function localPosition(screenPosition, element) {
+            const box = element.getBoundingClientRect();
+            return {
+                x: screenPosition.x - box.x,
+                y: screenPosition.y - box.y,
+            }
+        }
+
+
+        /**
          * Make an svg element moveable
          */
-        function moveable(representation, options = {}) {
+        function moveable(element, representation, options = {}) {
             const group = representation.nodes.group;
             group.addEventListener('mousedown', (event) => {
+                app.actions.element = element;
                 app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
                 if (event.ctrlKey && options.ctrl) {
-
+                    const pos = localPosition({ x: event.clientX, y: event.clientY }, view.svg);
+                    app.actions.start.nodeX = pos.x;
+                    app.actions.start.nodeY = pos.y;
+                    options.ctrl.mousedown(event);
+                    app.actions.move = options.ctrl.move;
+                    app.actions.up = options.ctrl.up;
                 } else {
                     app.actions.move = (event) => {
                         const delta = {
@@ -1882,7 +1906,7 @@ ${inputs.filter((input) => input.available < input.required)
                         representation.nodes.group.setAttribute('transform', `translate(${representation.x} ${representation.y})`);
                         representation.dependencies.forEach((dependency) => dependency.update(event, representation));
                     };
-                    app.actions.mouseup = (event) => {
+                    app.actions.up = (event) => {
                         updateView();
                     };
                 }
@@ -1984,12 +2008,47 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    moveable(representation, {
+                    moveable(input, representation, {
                         ctrl: {
-                            mousemove(event) {
-
+                            mousedown(event) {
+                                event.preventDefault();
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
+                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
                             },
-                            mouseup(event) { },
+                            move(event) {
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                const delta = {
+                                    x: event.clientX - app.actions.start.x,
+                                    y: event.clientY - app.actions.start.y,
+                                };
+
+                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
+                                view.updateElement(app.actions.node, { d });
+                            },
+                            up(event) {
+                                app.actions.node.remove();
+                                app.actions.point.remove();
+                                const elements = document.elementsFromPoint(event.clientX, event.clientY);
+                                const items = [...view.map].filter(([item, element]) => elements.includes(element.nodes.outline)).map(([item, element]) => item);
+                                const product = app.actions.element[0];
+                                for (const item of items) {
+                                    if (item instanceof Activity) {
+                                        const input = item.inputs.get(product);
+                                        if (input) {
+                                            const existing = input.links.filter((link) => link.from === app.actions.element);
+                                            if (existing.length < 1) {
+                                                app.model.links.push(new Link(app.actions.element, input));
+                                            } else {
+                                                appendLine(`${app.actions.element.name} is already linked to ${item.name}`);
+                                            }
+                                        } else {
+                                            const input = item.addInput(product);
+                                            app.model.links.push(new Link(app.actions.element, input));
+                                        }
+                                    }
+                                }
+                            },
                         }
                     });
                     contentTarget(state, outline);
@@ -2053,7 +2112,30 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                             toggleSelection(activity, group);
                         }
                     });
-                    moveable(representation);
+                    moveable(activity, representation, {
+                        ctrl: {
+                            mousedown(event) {
+                                event.preventDefault();
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
+                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
+                            },
+                            move(event) {
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                const delta = {
+                                    x: event.clientX - app.actions.start.x,
+                                    y: event.clientY - app.actions.start.y,
+                                };
+
+                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
+                                view.updateElement(app.actions.node, { d });
+                            },
+                            up(event) {
+                                app.actions.node.remove();
+                                app.actions.point.remove();
+                            },
+                        }
+                    });
                 }
 
                 const step = (height - 10) / activity.inputs.size;
@@ -2229,8 +2311,10 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 ${[...state.content].map((asset) => asset.name).join('\n')}`;
                 } else {
                     const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
-                    const d = `M 0 ${h} l ${w} ${-h} l ${w} ${h} l ${-w} ${h} l ${-w} ${-h} v 5 l ${w} ${h} l ${w} ${-h} v -5 M ${x + w} ${y + 2 * h} v 5`;
+                    const d = `M 0 ${h} l ${w} ${-h} l ${w} ${h} v 5 l ${-w} ${h} l ${-w} ${-h} v -5`;
                     const outline = view.add('path', group, { d, fill, stroke: 'black' });
+                    const d1 = `M 0 ${h} l ${w} ${h} l ${w} ${-h} M ${w} ${2 * h} v 5`;
+                    const detail = view.add('path', group, { d: d1, fill: 'none', stroke: 'black' });
                     const title = view.add('title', outline, {}, `${product.name} (${state.content.size})
 ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
@@ -2239,7 +2323,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
                     const representation = {
                         x, y,
-                        nodes: { group, outline, title, label, textTitle },
+                        nodes: { group, outline, detail, title, label, textTitle },
                         bbox: group.getBBox(), dependencies: [],
                     };
                     representations.push(representation);
@@ -2261,7 +2345,30 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    moveable(representation);
+                    moveable(output, representation, {
+                        ctrl: {
+                            mousedown(event) {
+                                event.preventDefault();
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
+                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
+                            },
+                            move(event) {
+                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
+                                const delta = {
+                                    x: event.clientX - app.actions.start.x,
+                                    y: event.clientY - app.actions.start.y,
+                                };
+
+                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
+                                view.updateElement(app.actions.node, { d });
+                            },
+                            up(event) {
+                                app.actions.node.remove();
+                                app.actions.point.remove();
+                            },
+                        }
+                    });
                     contentTarget(state, outline);
                 }
                 y += 100;
@@ -2527,11 +2634,11 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             }
         });
         document.body.addEventListener('mouseup', (event) => {
-            if (app.actions.mouseup) {
-                app.actions.mouseup(event);
+            if (app.actions.up) {
+                app.actions.up(event);
             }
             app.actions.move = null
-            app.actions.mouseup = null;
+            app.actions.up = null;
         });
 
 
