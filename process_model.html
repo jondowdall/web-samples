@@ -462,7 +462,7 @@
 
         class Store {
             static create(attributes) {
-                const store = new store();
+                const store = new Store();
                 store[id] = attributes.id;
                 return store;
             }
@@ -848,6 +848,7 @@ ${inputs.filter((input) => input.available < input.required)
                 outputs: new Map(),
                 links: [],
                 store: { content: new Set() },
+                issues: [],
 
                 reset() {
                     this.all = [];
@@ -904,7 +905,7 @@ ${inputs.filter((input) => input.available < input.required)
                             .forEach((link) => link.end.update());
                     } else {
                         const content = Array(quantity).fill(1, 0, quantity).map((i) => ({ product }));
-                        this.outputs.set(product, { content });
+                        this.outputs.set(product, new Store(content));
                     }
                 },
                 toJSON() {
@@ -1081,7 +1082,7 @@ ${inputs.filter((input) => input.available < input.required)
                         //return new Set(value.value);
                     } else if (value.dataType) {
                         const element = {
-                            Product, Asset, Process, Port, Input, Activity, Link, Input, Output, Source,
+                            Product, Asset, Process, Port, Input, Activity, Link, Input, Output, Source, Store,
                         }[value.dataType].create(value.value);
                         if (element[id]) {
                             references.set(element[id], element);
@@ -1253,6 +1254,14 @@ ${inputs.filter((input) => input.available < input.required)
                     activity.outputs.values().forEach((output) => output.parent = activity);
                 });
 
+                const keys = [];
+                for (const [key, value] of app.model.outputs.entries()) {
+                    if (!(value instanceof Store)) {
+                        keys.push(key);
+                    }
+                }
+                keys.forEach((key) => app.model.outputs.delete(key));
+
 
 
                 app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
@@ -1367,6 +1376,16 @@ ${inputs.filter((input) => input.available < input.required)
                         showList(app.model.activities.filter((activity) => expr.test(activity.name))
                             .map((activity) => activity.name));
                     }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'add issue',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    app.selected.forEach((component) =>
+                        app.model.issues.push({ component, text: parameters.join(' ') }));
                 },
                 reset,
                 parse,
@@ -1876,39 +1895,82 @@ ${inputs.filter((input) => input.available < input.required)
 
 
         /**
+         * Make an svg element linkable
+         */
+        function linkable(element, representation, action) {
+            return {
+                start(event) {
+                    app.actions.element = element;
+                    app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
+
+                    event.preventDefault();
+                    const pos = localPosition({ x: event.clientX, y: event.clientY }, view.svg);
+                    app.actions.node = view.add('path', null, { fill: 'none', stroke: 'gray' });
+                    app.actions.point = view.add('circle', null, { cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray' });
+                },
+                move(event) {
+                    const pos = localPosition({ x: event.clientX, y: event.clientY }, view.svg);
+                    const delta = {
+                        x: event.clientX - app.actions.start.x,
+                        y: event.clientY - app.actions.start.y,
+                    };
+
+                    const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
+                    view.updateElement(app.actions.node, { d });
+                },
+                up(event) {
+                    app.actions.node.remove();
+                    app.actions.point.remove();
+                    action(event);
+                    updateView();
+                },
+            }
+        }
+
+
+        /**
          * Make an svg element moveable
          */
-        function moveable(element, representation, options = {}) {
-            const group = representation.nodes.group;
-            group.addEventListener('mousedown', (event) => {
-                app.actions.element = element;
-                app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
-                if (event.ctrlKey && options.ctrl) {
-                    const pos = localPosition({ x: event.clientX, y: event.clientY }, view.svg);
-                    app.actions.start.nodeX = pos.x;
-                    app.actions.start.nodeY = pos.y;
-                    options.ctrl.mousedown(event);
-                    app.actions.move = options.ctrl.move;
-                    app.actions.up = options.ctrl.up;
-                } else {
-                    app.actions.move = (event) => {
-                        const delta = {
-                            x: event.clientX - app.actions.start.x,
-                            y: event.clientY - app.actions.start.y,
-                        };
-                        const dist = Math.hypot(delta.x, delta.y);
-                        if (dist > 5) {
-                            representation.moved = true;
-                        }
-                        representation.x = app.actions.start.nodeX + delta.x;
-                        representation.y = app.actions.start.nodeY + delta.y;
+        function moveable(representation) {
+            return {
+                start() {
+                    app.actions.start = { x: event.clientX, y: event.clientY, nodeX: representation.x, nodeY: representation.y };
+                },
+                move(event) {
+                    const delta = {
+                        x: event.clientX - app.actions.start.x,
+                        y: event.clientY - app.actions.start.y,
+                    };
+                    const dist = Math.hypot(delta.x, delta.y);
+                    if (dist > 5) {
+                        representation.moved = true;
+                    }
+                    representation.x = app.actions.start.nodeX + delta.x;
+                    representation.y = app.actions.start.nodeY + delta.y;
 
-                        representation.nodes.group.setAttribute('transform', `translate(${representation.x} ${representation.y})`);
-                        representation.dependencies.forEach((dependency) => dependency.update(event, representation));
-                    };
-                    app.actions.up = (event) => {
-                        updateView();
-                    };
+                    representation.nodes.group.setAttribute('transform', `translate(${representation.x} ${representation.y})`);
+                    representation.dependencies.forEach((dependency) => dependency.update(event, representation));
+                },
+                up(event) {
+                    updateView();
+                },
+            };
+        }
+
+
+        /**
+         * Add mouse controls to an element on the SVG
+         */
+        function addMouseControls(node, controls) {
+            node.addEventListener('mousedown', (event) => {
+                if (event.ctrlKey && controls.ctrl) {
+                    controls.ctrl.start(event);
+                    app.actions.move = controls.ctrl.move;
+                    app.actions.up = controls.ctrl.up;
+                } else {
+                    controls.start(event);
+                    app.actions.move = controls.move;
+                    app.actions.up = controls.up;
                 }
             });
         }
@@ -2008,49 +2070,31 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    moveable(input, representation, {
-                        ctrl: {
-                            mousedown(event) {
-                                event.preventDefault();
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
-                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
-                            },
-                            move(event) {
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                const delta = {
-                                    x: event.clientX - app.actions.start.x,
-                                    y: event.clientY - app.actions.start.y,
-                                };
 
-                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
-                                view.updateElement(app.actions.node, { d });
-                            },
-                            up(event) {
-                                app.actions.node.remove();
-                                app.actions.point.remove();
-                                const elements = document.elementsFromPoint(event.clientX, event.clientY);
-                                const items = [...view.map].filter(([item, element]) => elements.includes(element.nodes.outline)).map(([item, element]) => item);
-                                const product = app.actions.element[0];
-                                for (const item of items) {
-                                    if (item instanceof Activity) {
-                                        const input = item.inputs.get(product);
-                                        if (input) {
-                                            const existing = input.links.filter((link) => link.from === app.actions.element);
-                                            if (existing.length < 1) {
-                                                app.model.links.push(new Link(app.actions.element, input));
-                                            } else {
-                                                appendLine(`${app.actions.element.name} is already linked to ${item.name}`);
-                                            }
-                                        } else {
-                                            const input = item.addInput(product);
-                                            app.model.links.push(new Link(app.actions.element, input));
-                                        }
+                    const controls = moveable(representation);
+                    controls.ctrl = linkable(input, representation, (event) => {
+                        const elements = document.elementsFromPoint(event.clientX, event.clientY);
+                        const items = [...view.map].filter(([item, element]) => elements.includes(element.nodes.outline)).map(([item, element]) => item);
+                        const product = app.actions.element[0];
+                        for (const item of items) {
+                            if (item instanceof Activity) {
+                                const input = item.inputs.get(product);
+                                if (input) {
+                                    const existing = input.links.filter((link) => link.from === app.actions.element);
+                                    if (existing.length < 1) {
+                                        app.model.links.push(new Link(app.actions.element[1], input));
+                                    } else {
+                                        appendLine(`${app.actions.element[1].name} is already linked to ${item.name}`);
                                     }
+                                } else {
+                                    const input = item.addInput(product);
+                                    app.model.links.push(new Link(app.actions.element[1], input));
                                 }
-                            },
+                            }
                         }
                     });
+
+                    addMouseControls(representation.nodes.group, controls);
                     contentTarget(state, outline);
                 }
             }
@@ -2112,30 +2156,34 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                             toggleSelection(activity, group);
                         }
                     });
-                    moveable(activity, representation, {
-                        ctrl: {
-                            mousedown(event) {
-                                event.preventDefault();
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
-                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
-                            },
-                            move(event) {
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                const delta = {
-                                    x: event.clientX - app.actions.start.x,
-                                    y: event.clientY - app.actions.start.y,
-                                };
-
-                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
-                                view.updateElement(app.actions.node, { d });
-                            },
-                            up(event) {
-                                app.actions.node.remove();
-                                app.actions.point.remove();
-                            },
+                    const controls = moveable(representation);
+                    controls.ctrl = linkable(activity, representation, (event) => {
+                        const elements = document.elementsFromPoint(event.clientX, event.clientY);
+                        const items = [...view.map].filter(([item, element]) => elements.includes(element.nodes.outline)).map(([item, element]) => item);
+                        const inputProducts = [...app.actions.element.outputs.keys()];
+                        const outputProducts = [...app.actions.element.outputs.keys()];
+                        for (const item of items) {
+                            if (item instanceof Activity) {/*
+                                const input = item.inputs.get(product);
+                                if (input) {
+                                    const existing = input.links.filter((link) => link.from === app.actions.element);
+                                    if (existing.length < 1) {
+                                        app.model.links.push(new Link(app.actions.element[1], input));
+                                    } else {
+                                        appendLine(`${app.actions.element[1].name} is already linked to ${item.name}`);
+                                    }
+                                } else {
+                                    const input = item.addInput(product);
+                                    app.model.links.push(new Link(app.actions.element[1], input));
+                                }
+                            */}
+                            if (item instanceof Store) {
+                                const outputs = [...app.actions.element.outputs.values()].filter((output) => output.links.length < 1);
+                                outputs.forEach((output) => app.model.links.push(new Link(output, item)));
+                            }
                         }
                     });
+                    addMouseControls(representation.nodes.group, controls);
                 }
 
                 const step = (height - 10) / activity.inputs.size;
@@ -2279,15 +2327,12 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     groups[representation.group] = y + height + verticalSpace;
                     const x = representation.x = view.firstColumn + 50 + (representation.group - 1) * (width + horizontalSpace);
                     // Check for overlap with user positioned item
-                    //const y = representation.y;
                     view.updateElement(representation.nodes.group, { transform: `translate (${x}, ${y})` });
 
                     representation.dependencies.forEach((dependency) =>
                         dependency.update({}, representation));
                 }
             });
-
-
 
 
             // Add stores
@@ -2322,7 +2367,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     const textTitle = view.add('title', label, {}, `${product.name} (${state.content.size})`);
 
                     const representation = {
-                        x, y,
+                        x, y, width: w * 2, height: h * 2,
                         nodes: { group, outline, detail, title, label, textTitle },
                         bbox: group.getBBox(), dependencies: [],
                     };
@@ -2345,35 +2390,13 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         state.links.forEach((link) => link.to.update);
                         updateView();
                     });
-                    moveable(output, representation, {
-                        ctrl: {
-                            mousedown(event) {
-                                event.preventDefault();
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                app.actions.node = view.add('path', null, {fill: 'none', stroke: 'gray'});
-                                app.actions.point = view.add('circle', null, {cx: pos.x, cy: pos.y, r: 5, fill: 'gray', stroke: 'gray'});
-                            },
-                            move(event) {
-                                const pos = localPosition({x: event.clientX, y: event.clientY}, view.svg);
-                                const delta = {
-                                    x: event.clientX - app.actions.start.x,
-                                    y: event.clientY - app.actions.start.y,
-                                };
 
-                                const d = `M ${pos.x} ${pos.y} L ${pos.x - delta.x} ${pos.y - delta.y}`;
-                                view.updateElement(app.actions.node, { d });
-                            },
-                            up(event) {
-                                app.actions.node.remove();
-                                app.actions.point.remove();
-                            },
-                        }
-                    });
+                    const controls = moveable(representation);
+                    addMouseControls(representation.nodes.group, controls);
                     contentTarget(state, outline);
                 }
                 y += 100;
             }
-
 
 
             // Add links
@@ -2410,6 +2433,21 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     end.dependencies.push(update);
                 }
             }
+
+            app.model.issues.forEach((issue) => {
+                const representation = view.map.get(issue) || {};
+                const parent = view.map.get(issue.component);
+                if (!representation.nodes) {
+                    if (parent) {
+                        const attrs = {
+                            d: `M ${parent.width - 10} 0 h 10 v 10 z`,
+                            fill: 'red',
+                        };
+                        representation.nodes = {main: view.add('path', parent.nodes.group, attrs)};
+                        representation.nodes.title = view.add('title',  representation.nodes.main, {}, issue.text);
+                    }
+                }
+            });
         }
 
 
