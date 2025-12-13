@@ -362,7 +362,7 @@
          */
         class Asset {
             static all = new Set();
-            static create(attributes) {
+            static make(attributes) {
                 const asset = new Asset(attributes.product, attributes.location);
                 asset[id] = attributes.id;
                 return asset;
@@ -398,7 +398,7 @@
 
         class Product {
             static all = [];
-            static create(attributes) {
+            static make(attributes) {
                 if (attributes.name === undefined) {
                     let index = 1;
                     while (Product.all.find((item) => item.name === `Product ${index}`)) {
@@ -423,7 +423,7 @@
         }
 
         class Source {
-            static create(attributes) {
+            static make(attributes) {
                 const source = new Source();
                 //attributes.content.forEach((asset) => asset.move(source));
                 source[id] = attributes.id;
@@ -461,7 +461,7 @@
         }
 
         class Store {
-            static create(attributes) {
+            static make(attributes) {
                 const store = new Store();
                 store[id] = attributes.id;
                 return store;
@@ -504,7 +504,7 @@
         }
 
         class Port {
-            static create(attributes) {
+            static make(attributes) {
                 const port = new Port(attributes.name, attributes.capacity, attributes.content);
                 port[id] = attributes.id;
                 return port;
@@ -531,7 +531,7 @@
 
         class Input extends Port {
             static all = [];
-            static create(attributes) {
+            static make(attributes) {
                 const input = new Input(attributes.product, attributes.capacity, attributes.content, attributes.required, attributes.id);
                 input.links = attributes.links;
                 input.parent = attributes.parent;
@@ -562,7 +562,7 @@
 
         class Output extends Port {
             static all = [];
-            static create(attributes) {
+            static make(attributes) {
                 const output = new Output(attributes.product, attributes.duration, attributes.capacity, attributes.content, attributes.id);
                 return output;
             }
@@ -586,7 +586,7 @@
         }
 
         class Process {
-            static create(attributes) {
+            static make(attributes) {
                 const process = new Process(attributes.name);
                 process.inputs = new Map(attributes.inputs);
                 process.outputs = new Map(attributes.outputs);
@@ -601,7 +601,7 @@
 
         class Activity {
             static all = [];
-            static create(attributes) {
+            static make(attributes) {
                 const activity = new Activity(attributes.name);
                 //activity.inputs = new Map(attributes.inputs);
                 //activity.outputs = new Map(attributes.outputs);
@@ -657,6 +657,7 @@
                 if (quantity === 0) {
                     this.outputs.delete(product);
                 }
+                return this.outputs.get(product);
             }
             start() {
                 if (this.state !== running) {
@@ -798,7 +799,7 @@ ${inputs.filter((input) => input.available < input.required)
         }
 
         class Link {
-            static create(attributes) {
+            static make(attributes) {
                 const link = new Link(attributes.from, attributes.to);
                 link[id] = attributes.id;
                 return link;
@@ -838,6 +839,7 @@ ${inputs.filter((input) => input.available < input.required)
 
         const app = {
             model: {
+                [id]: uuidv4(),
                 name: 'model',
                 all: [],
                 ids: {},
@@ -878,7 +880,7 @@ ${inputs.filter((input) => input.available < input.required)
                         }
                         name = `Activity ${index}`;
                     }
-                    const activity = Activity.create({ name });
+                    const activity = Activity.make({ name });
                     this.all.push(activity);
                     return activity;
                 },
@@ -1023,16 +1025,22 @@ ${inputs.filter((input) => input.available < input.required)
 
         function serialise(item) {
             const serialised = new Set();
+            const seen = new Map();
             function replacer(key, value) {
                 if (!value) {
                     return value;
                 }
                 if (value[id]) {
                     if (serialised.has(value[id])) {
-                        return { ref: value[id], key, context: this.id };
+                        return { ref: value[id], };
                     }
                     serialised.add(value[id]);
+                } else if (value instanceof Object && seen.has(value)) {
+                    console.log('Duplicate reference to: ', value);
+                    console.log('Previous context:', seen.get(value));
+                    console.log('Current context:', this);
                 }
+                seen.set(value, this);
                 if (value instanceof Map) {
                     return {
                         dataType: 'Map',
@@ -1045,7 +1053,7 @@ ${inputs.filter((input) => input.available < input.required)
                     };
                 }
 
-                if (['Product', 'Asset', 'Process', 'Port', 'Input', 'Activity', 'Link', 'Input', 'Output', 'Source', 'Store'].includes(value.constructor.name)) {
+                if (value.constructor.make) {
                     return {
                         dataType: value.constructor.name,
                         value: Object.assign({}, value, { id: value[id], [id]: undefined }),
@@ -1067,27 +1075,35 @@ ${inputs.filter((input) => input.available < input.required)
                 if (datePattern.test(value)) {
                     return Date.parse(value);
                 }
-                /* if (value && value.ref && references.has(value.ref)) {
-                    return references.get(value.ref);
-                } else */if (value && value.ref) {
-                    unresolved.push({ key, id: value.ref, context: value.context || this });
-                } else if (typeof value === 'object' && value !== null) {
+                if (!value) {
+                    return value;
+                }
+                if (value.ref) {
+                    if (references.has(value.ref)) {
+                        return references.get(value.ref);
+                    } else {
+                        unresolved.push({ key, id: value.ref, context: this });
+                    }
+                } else if (typeof value === 'object') {
                     if (value.dataType === 'Map') {
                         containers.push({ type: Map, key, content: value.value, context: this });
-                        return 'tbd';
-                        //return new Map(value.value);
+                        return value;
                     } else if (value.dataType === 'Set') {
                         containers.push({ type: Set, key, content: value.value, context: this });
-                        return 'tbd';
-                        //return new Set(value.value);
+                        return value;
                     } else if (value.dataType) {
                         const element = {
                             Product, Asset, Process, Port, Input, Activity, Link, Input, Output, Source, Store,
-                        }[value.dataType].create(value.value);
-                        if (element[id]) {
-                            references.set(element[id], element);
+                        }[value.dataType].make(value.value);
+                        const elementId = element[id] || value.id;
+                        if (elementId) {
+                            references.set(elementId, element);
                         }
                         return element;
+                    }
+                    const valueId = value[id] || value.id;
+                    if (valueId) {
+                        references.set(valueId, value);
                     }
                 }
 
@@ -1096,10 +1112,12 @@ ${inputs.filter((input) => input.available < input.required)
             const structure = JSON.parse(str, reviver);
             unresolved.forEach((reference) => {
                 const item = references.get(reference.id);
-                const context = references.get(reference.context) || reference.context;
+                const context = references.get(reference.context) || references.get(reference.context.id) || reference.context;
 
                 if (item && context) {
                     context[reference.key] = item;
+                } else if (item) {
+                    console.log(`context of ${reference.context} for ${item} not found`);
                 } else {
                     appendLine(`Warning: unmatched reference (${reference.id}) for ${reference.key} in ${context?.name}`);
                 }
@@ -1243,10 +1261,18 @@ ${inputs.filter((input) => input.available < input.required)
 
             if (stateStr) {
                 const state = deserialise(stateStr);
-                app.model.all.push(...state.model.all);
+                if (Array.isArray(state.model.all)) {
+                    app.model.all.push(...state.model.all);
+                } else {
+                    app.model.all.push(...Object.entries(state.model.all).reduce((arr, [key, value]) => {
+                        if (!isNaN(Number(key))) {
+                            arr[Number(key)] = value;
+                        }
+                        return arr;
+                    }, []));
+                }
                 app.model.inputs = state.model.inputs || new Map();
                 app.model.outputs = state.model.outputs || new Map();
-
 
                 // ToDo: remove temporary fix for input / output parents
                 app.model.activities.forEach((activity) => {
@@ -1281,6 +1307,7 @@ ${inputs.filter((input) => input.available < input.required)
                 history: app.commandHistory,
             };
 
+            state.model.all[id] = uuidv4();
             const str = serialise(state);
             localStorage.setItem('process-model', str);
         }
@@ -1459,7 +1486,7 @@ ${inputs.filter((input) => input.available < input.required)
                 action(str) {
                     const parameters = parseParameters(str.replace(this.name, ''));
                     const name = parameters[0];
-                    const product = Product.create({ name });
+                    const product = Product.make({ name });
                     app.model.addItem(product);
                     app.selected.add(product);
 
@@ -2160,23 +2187,41 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     controls.ctrl = linkable(activity, representation, (event) => {
                         const elements = document.elementsFromPoint(event.clientX, event.clientY);
                         const items = [...view.map].filter(([item, element]) => elements.includes(element.nodes.outline)).map(([item, element]) => item);
-                        const inputProducts = [...app.actions.element.outputs.keys()];
-                        const outputProducts = [...app.actions.element.outputs.keys()];
+                        const inputProducts = new Set([...app.actions.element.inputs.keys()]);
+                        const unlinkedInputs = [...app.actions.element.inputs.values()].filter((input) => input.links.length === 0);
+                        const outputProducts = new Set([...app.actions.element.outputs.keys()]);
+                        const unlinkedOutputs = [...app.actions.element.outputs.values()].filter((output) => output.links.length === 0);
                         for (const item of items) {
-                            if (item instanceof Activity) {/*
-                                const input = item.inputs.get(product);
-                                if (input) {
-                                    const existing = input.links.filter((link) => link.from === app.actions.element);
-                                    if (existing.length < 1) {
-                                        app.model.links.push(new Link(app.actions.element[1], input));
-                                    } else {
-                                        appendLine(`${app.actions.element[1].name} is already linked to ${item.name}`);
+                            if (item instanceof Activity) {
+                                // Find potential links based on inputs and outputs
+                                const targetInputProducts = new Set([...item.inputs.keys()]);
+                                const targetOutputProducts = new Set([...item.outputs.keys()]);
+                                const outputs = outputProducts.intersection(targetInputProducts);
+                                const inputs = inputProducts.intersection(targetOutputProducts);
+                                if (outputs.size) {
+                                    for (const product of outputs) {
+                                        const from = app.actions.element.outputs.get(product);
+                                        const to = item.inputs.get(product);
+                                        app.model.links.push(new Link(from, to));
                                     }
-                                } else {
-                                    const input = item.addInput(product);
-                                    app.model.links.push(new Link(app.actions.element[1], input));
+                                } else if (inputs.size) {
+                                    for (const product of inputs) {
+                                        const from = item.outputs.get(product);
+                                        const to = app.actions.element.inputs.get(product);
+                                        app.model.links.push(new Link(from, to));
+                                    }
+                                } else if (unlinkedOutputs.length > 0) {
+                                    const product = unlinkedOutputs[0].product;
+                                    const from = unlinkedOutputs[0];
+                                    const to = item.addInput(product);
+                                    app.model.links.push(new Link(from, to));
+                                } else if (unlinkedInputs.length > 0) {
+                                    const product = unlinkedInputs[0].product;
+                                    const from = item.addOutput(product);
+                                    const to = unlinkedInputs[0];
+                                    app.model.links.push(new Link(from, to));
                                 }
-                            */}
+                            }
                             if (item instanceof Store) {
                                 const outputs = [...app.actions.element.outputs.values()].filter((output) => output.links.length < 1);
                                 outputs.forEach((output) => app.model.links.push(new Link(output, item)));
@@ -2443,8 +2488,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                             d: `M ${parent.width - 10} 0 h 10 v 10 z`,
                             fill: 'red',
                         };
-                        representation.nodes = {main: view.add('path', parent.nodes.group, attrs)};
-                        representation.nodes.title = view.add('title',  representation.nodes.main, {}, issue.text);
+                        representation.nodes = { main: view.add('path', parent.nodes.group, attrs) };
+                        representation.nodes.title = view.add('title', representation.nodes.main, {}, issue.text);
                     }
                 }
             });
