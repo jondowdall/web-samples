@@ -134,6 +134,10 @@
             margin: 0;
         }
 
+        .unused {
+            background-color: gray;
+        }
+
         svg {
             background-color: lavender;
         }
@@ -365,6 +369,7 @@
             static make(attributes) {
                 const asset = new Asset(attributes.product, attributes.location);
                 asset[id] = attributes.id;
+                asset.serialNumber = attributes.serialNumber;
                 return asset;
             }
             constructor(product, location) {
@@ -603,10 +608,9 @@
             static all = [];
             static make(attributes) {
                 const activity = new Activity(attributes.name);
-                //activity.inputs = new Map(attributes.inputs);
-                //activity.outputs = new Map(attributes.outputs);
                 activity.duration = attributes.duration;
                 activity[id] = attributes.id || uuidv4();
+                app.model.ids[activity[id]] = activity;
                 return activity;
             }
             constructor(name) {
@@ -974,6 +978,8 @@ ${inputs.filter((input) => input.available < input.required)
                     appendLine('tick');
                 },
             },
+            undo: [],
+            redo: [],
             timeout: 1000,
             selected: new Set(),
             actions: {},
@@ -1288,12 +1294,21 @@ ${inputs.filter((input) => input.available < input.required)
                 }
                 keys.forEach((key) => app.model.outputs.delete(key));
 
-
-
                 app.model.links = state.model.links.filter((link) => link.from !== undefined && link.to !== undefined);
                 if (state.history) {
                     app.commandHistory.position = state.history.position;
                     app.commandHistory.content = state.history.content;
+                }
+
+                if (state.view) {
+                    state.view.forEach((item) => {
+                        const element = byId(item.element);
+                        if (element) {
+                            view.map.set(element, { x: item.x, y: item.y, width: item.width, height: item.height, moved: true });
+                        } else {
+                            appendLine(`Info: element ${item.element} not found when setting representation.`)
+                        }
+                    });
                 }
             }
         }
@@ -1302,8 +1317,14 @@ ${inputs.filter((input) => input.available < input.required)
          * load the current state to local storage
          */
         function saveLocally() {
+            const viewData = [...view.map.entries()].filter(([item, representation]) => representation.moved)
+                .map(([item, representation]) => ({
+                    element: item[id],
+                    x: representation.x, y: representation.y, width: representation.width, height: representation.height
+                }));
             const state = {
                 model: app.model,
+                view: viewData,
                 history: app.commandHistory,
             };
 
@@ -1348,6 +1369,36 @@ ${inputs.filter((input) => input.available < input.required)
                 action(str) {
                     const output = document.getElementById('output');
                     output.innerHTML = '';
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'undo',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    if (app.undo.length > 0) {
+                        const action = app.undo.pop();
+                        app.redo.push(action);
+                        action.undo();
+                    } else {
+                        appendLine('Info: undo queue is empty');
+                    }
+                },
+                reset,
+                parse,
+            },
+            {
+                name: 'redo',
+                action(str) {
+                    const parameters = parseParameters(str.replace(this.name, ''));
+                    if (app.redo.length > 0) {
+                        const action = app.redo.pop();
+                        app.undo.push(action);
+                        action.redo();
+                    } else {
+                        appendLine('Info: redo queue is empty');
+                    }
                 },
                 reset,
                 parse,
@@ -1950,6 +2001,7 @@ ${inputs.filter((input) => input.available < input.required)
                     app.actions.point.remove();
                     action(event);
                     updateView();
+                    saveLocally();
                 },
             }
         }
@@ -2011,7 +2063,7 @@ ${inputs.filter((input) => input.available < input.required)
                 event.preventDefault();
                 const assetId = event.dataTransfer.getData('text/plain');
                 const item = [...Asset.all].find((asset) => asset[id] === assetId);
-                if (item.product === product) {
+                if (container.product === undefined || item.product === container.product) {
                     item.move(container);
                 }
                 updateView();
@@ -2023,8 +2075,49 @@ ${inputs.filter((input) => input.available < input.required)
          * Update the SVG that represents the current process and its state.
          */
         function updateView() {
-            updateProductList();
-            updateAssetList();
+            Product.all.sort((a, b) => a.name?.localeCompare(b.name));
+            updateList(Product.all, [{
+                title: 'Index',
+                get: (item, index) => index,
+            },
+            {
+                title: 'Name',
+                get: (item) => item.name,
+                set: (item, value) => item.name = value,
+            },
+            {
+                title: 'Qty',
+                get: (item) => item.instances.size,
+            },
+            ], 'product-list', { draggable: true });
+
+            const data = [...Asset.all.values()];
+            data.sort((a, b) => a.product === b.product ?
+                a.name?.localeCompare(b.name) :
+                a.product.name?.localeCompare(b.product.name));
+
+            updateList(data, [{
+                title: 'Product',
+                get: (item) => item.product.name,
+            },
+            {
+                title: 'S/N',
+                get: (item) => item.serialNumber,
+                set: (item, value) => item.serialNumber = value,
+            },
+            {
+                title: 'Location',
+                get: (item) => item.location?.name,
+            },
+            ], 'asset-list', {
+                draggable: true,
+                append: {
+                    type: Asset, require: [0],
+                    set(item, value) {
+                        new Asset(Product.get(value));
+                    }
+                },
+            });
             updateActivityList();
             updateLinkList();
             // Remove deleted items
@@ -2073,7 +2166,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     const textTitle = view.add('title', label, {}, `${product.name} (${state.content.size})`);
 
                     const representation = {
-                        x: 10, y: 20, nodes: { group, outline, title, label, textTitle },
+                        nodes: { group, outline, title, label, textTitle },
                         bbox: label.getBBox(), dependencies: [], group: 0,
                     };
                     representations.push(representation);
@@ -2130,13 +2223,12 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             const textHeight = Math.max(0, ...representations.map((representation) => representation.bbox.height));
 
             representations.forEach((representation, index) => {
-                const x = 10;
-                const y = 100 + index * 50 - textHeight / 2;
+                const x = representation.x ?? 10;
+                const y = representation.y ?? (100 + index * 50 - textHeight / 2);
                 const w = textWidth;
                 const h = textHeight;
                 const d = `M 0 0 h ${w + 4} l ${h / 2} ${h / 2} l ${-h / 2} ${h / 2} h ${-w - 4} z`;
                 view.updateElement(representation.nodes.group, { transform: `translate(${x}, ${y})` });
-                //representation.nodes.group.setAttribute(transform, `translate(${x}, ${y})`);
                 representation.nodes.outline.setAttribute('d', d);
                 representation.x = x;
                 representation.y = y;
@@ -2159,20 +2251,20 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 const representation = view.map.get(activity) || {};
                 representation.dependencies = [];
                 representation.group = null;
-                representation.width = width;
-                representation.height = height;
+                representation.width = representation.width ?? width;
+                representation.height = representation.height ?? height;
                 if (representation.nodes) {
                     representation.nodes.outline.innerHTML = activity.name;
                     representation.nodes.label.setAttribute('x', width / 2);
                     representation.nodes.label.setAttribute('y', 15);
                     representation.nodes.title.innerHTML = activity.getStateDescription();
                 } else {
-                    const group = view.add('g', null, { transform: `translate (${x}, ${y})` });
+                    const group = view.add('g', null, { transform: `translate (${representation.x ?? x}, ${representation.y ?? y})` });
                     const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black', }, null, classes);
                     const label = view.add('text', group, { x: width / 2, y: 15, 'text-anchor': 'middle', stroke: 'none', }, activity.name);
                     const title = view.add('title', group, {}, activity.getStateDescription());
-                    representation.x = x;
-                    representation.y = y;
+                    representation.x = representation.x ?? x;
+                    representation.y = representation.y ?? y;
                     representation.nodes = { group, outline, label, title };
                     view.map.set(activity, representation);
                     outline.addEventListener('click', (event) => {
@@ -2245,8 +2337,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     } else {
                         const outline = view.add('circle', representation.nodes.group, { cx: 0, cy: iy, r: 5, fill: 'white', stroke: 'black' })
                         const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.required})`);
-                        node.x = x - 5;
-                        node.y = y + iy - 5;
+                        node.x = (representation.x ?? x) - 5;
+                        node.y = (representation.y ?? y) + iy - 5;
                         node.iy = iy;
                         node.width = 10;
                         node.height = 10;
@@ -2286,8 +2378,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         const fill = state.content.size > 0 ? (state.content.size < state.capacity ? 'green' : 'red') : 'white';
                         const outline = view.add('circle', representation.nodes.group, { cx: width, cy: oy, r: 5, fill, stroke: 'black' })
                         const title = view.add('title', outline, {}, `${product.name} (${state.content.size}/${state.capacity || '-'})`);
-                        node.x = x + width - 5;
-                        node.y = y + oy - 5;
+                        node.x = (representation.x ?? x) + width - 5;
+                        node.y = (representation.y ?? y) + oy - 5;
                         node.oy = oy;
                         node.width = 10;
                         node.height = 10;
@@ -2502,8 +2594,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
         function makeEditable(node, obj, attr) {
             node.contentEditable = true;
             node.addEventListener('blur', (event) => {
-                if (attr.edit) {
-                    attr.edit(obj);
+                if (attr.set) {
+                    attr.set(obj, node.innerText);
                 } else {
                     obj[attr] = node.innerText;
                 }
@@ -2513,7 +2605,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     event.preventDefault();
                     node.innerText = obj[attr];
                     if (attr.edit) {
-                        node.innerText = attr.getData(obj);
+                        node.innerText = attr.get(obj);
                     } else {
                         node.innerText = obj[attr];
                     }
@@ -2522,7 +2614,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 if (event.key === 'Enter') {
                     event.preventDefault();
                     if (attr.edit) {
-                        attr.edit(obj);
+                        attr.set(obj, node.innerText);
                     } else {
                         obj[attr] = node.innerText;
                     }
@@ -2636,7 +2728,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             const body = container.lastElementChild;
             const activities = app.model.activities;
             data.sort((a, b) => a.name?.localeCompare(b.name));
-            data.forEach((item) => {
+            data.forEach((item, index) => {
                 const row = document.createElement('tr');
                 row.title = item[id];
                 if (options.draggable) {
@@ -2645,19 +2737,35 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                         event.dataTransfer.setData('text/plain', item[id]);
                     });
                 }
-                column.forEach((column) => {
+                columns.forEach((column) => {
                     const cell = document.createElement('td');
-                    cell.innerHTML = column.getData(item);
-                    if (column.edit) {
+                    cell.innerHTML = column.get(item, index);
+                    if (column.set) {
                         makeEditable(cell, item, column);
                     }
                     row.append(cell);
                 });
-                row.innerHTML = `<td>${columns.map((column) => column.getData(item)).join('</td><td>')}</td>`;
-                const name = row.firstChild;
-                makeEditable(name, activity, 'name');
                 body.append(row);
             });
+            if (options.append) {
+                const row = document.createElement('tr');
+                row.title = `Add new ${options.append.type.constructor.__name__}`;
+
+                columns.forEach((column, col) => {
+                    const cell = document.createElement('td');
+                    const newItem = {};
+                    if (options.append.require.includes(col)) {
+                        makeEditable(cell, newItem, {
+                            get: () => '',
+                            set: options.append.set,
+                        });
+                    } else {
+                        cell.classList.add('unused');
+                    }
+                    row.append(cell);
+                });
+                body.append(row);
+            }
         }
 
         /**
