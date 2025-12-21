@@ -381,13 +381,18 @@
                 }
                 this.content = new Set();
                 Asset.all.add(this);
-                this.serialNumber = Asset.all.size; //...Asset.all].filter((asset) => asset.product === product).length;
+                if (product.instances) {
+                    this.serialNumber = product.instances.size;
+                } else {
+                    appendLine(`Warning: Product ${product.name} not found when creating asset!`);
+                }
             }
             delete() {
                 if (this.location) {
                     this.location.content.delete(this);
                 }
                 Asset.all.delete(this);
+                Asset.product?.instances.delete(this);
             }
             get name() {
                 return `${this.product.name}/${this.serialNumber}`;
@@ -402,11 +407,12 @@
         }
 
         class Product {
-            static all = [];
+            static all = new Set();
             static make(attributes) {
                 if (attributes.name === undefined) {
                     let index = 1;
-                    while (Product.all.find((item) => item.name === `Product ${index}`)) {
+                    const productNames = product.all.values().map((product) => product.name);
+                    while (productNames.includes(`Product ${index}`)) {
                         index += 1;
                     }
                     attributes.name = `Product ${index}`;
@@ -417,13 +423,20 @@
                 return product;
             }
             static get(name) {
-                return Product.all.find((existing) => existing.name === name) || new Product(name);
+                if (Product.all.has(name)) {
+                    return name;
+                }
+                return Product.all.values().find((existing) => existing.name === name) || new Product(name);
             }
             constructor(name) {
                 this.name = name;
                 this[id] = uuidv4();
                 this.instances = new Set();
-                Product.all.push(this);
+                Product.all.add(this);
+            }
+            delete() {
+                Product.all.delete(this);
+                this.instances.values().forEach((instance) => instance.delete());
             }
         }
 
@@ -442,7 +455,7 @@
             }
             delete() {
                 this.links.forEach((link) => link.delete);
-                this.content.entries().forEach((asset) => asset.delete());
+                this.content.values().forEach((asset) => asset.delete());
                 [...app.model.inputs].filter(([key, value]) => value === this)
                     .forEach(([key, value]) => app.model.inputs.delete(key));
                 app.selected.delete(this);
@@ -535,7 +548,7 @@
         }
 
         class Input extends Port {
-            static all = [];
+            static all = new Set();
             static make(attributes) {
                 const input = new Input(attributes.product, attributes.capacity, attributes.content, attributes.required, attributes.id);
                 input.links = attributes.links;
@@ -545,13 +558,14 @@
             constructor(product, capacity = 0, content = [], required = 1, uuid) {
                 super(product, capacity, content, uuid);
                 this.required = required;
-                Input.all.push(this);
+                Input.all.add(this);
             }
             delete() {
                 [...this.content].forEach((asset) => asset.move(app.model.store));
                 this.links.forEach((link) => link.deleteTo());
                 app.selected.delete(this);
                 view.remove(this);
+                Input.all.delete(this);
             }
             get name() {
                 return `Input of ${this.parent.name}`;
@@ -566,7 +580,7 @@
         }
 
         class Output extends Port {
-            static all = [];
+            static all = new Set();
             static make(attributes) {
                 const output = new Output(attributes.product, attributes.duration, attributes.capacity, attributes.content, attributes.id);
                 return output;
@@ -574,13 +588,14 @@
             constructor(product, duration = 5000, capacity = 1, content = [], uuid) {
                 super(product, capacity, content, uuid);
                 this.duration = duration;
-                Output.all.push(this);
+                Output.all.add(this);
             }
             delete() {
                 [...this.content].forEach((asset) => asset.move(app.model.store));
                 this.lines.forEach((link) => link.deleteFrom());
                 app.selected.delete(this);
                 view.remove(this);
+                Output.all.delete(this);
             }
             get name() {
                 return `Output of ${this.parent.name}`;
@@ -605,7 +620,7 @@
         }
 
         class Activity {
-            static all = [];
+            static all = new Set();
             static make(attributes) {
                 const activity = new Activity(attributes.name);
                 activity.duration = attributes.duration;
@@ -621,13 +636,13 @@
                 this.inputs = new Map();
                 this.outputs = new Map();
                 this.content = new Set();
-                Activity.all.push(this);
+                Activity.all.add(this);
             }
             delete() {
                 [...this.content].forEach((asset) => asset.move(app.model.store));
                 this.inputs.values().forEach((input) => input.delete());
                 this.outputs.values().forEach((output) => output.delete());
-                Activity.all.splice(Activity.all.indexOf(this), 1);
+                Activity.all.delete(this);
                 app.selected.delete(this);
                 view.remove(this);
             }
@@ -655,7 +670,7 @@
                     const output = new Output(product, 5000, quantity, []);
                     output.parent = this;
                     this.outputs.set(product, output);
-                    app.model.all.push(output);
+                    app.model.all.add(output);
                 }
                 appendLine(`Added product ${name} as input to ${this.name}`);
                 if (quantity === 0) {
@@ -845,11 +860,11 @@ ${inputs.filter((input) => input.available < input.required)
             model: {
                 [id]: uuidv4(),
                 name: 'model',
-                all: [],
+                all: new Set(),
                 ids: {},
-                get processes() { return this.all.filter((item) => item instanceof Process) },
-                get activities() { return this.all.filter((item) => item instanceof Activity) },
-                get products() { return Product.all; },
+                get processes() { return [...this.all].filter((item) => item instanceof Process) },
+                get activities() { return [...this.all].filter((item) => item instanceof Activity) },
+                get products() { return [...Product.all]; },
                 inputs: new Map(),
                 outputs: new Map(),
                 links: [],
@@ -857,35 +872,31 @@ ${inputs.filter((input) => input.available < input.required)
                 issues: [],
 
                 reset() {
-                    this.all = [];
+                    this.all = new Set();
                     this.ids = {};
                     this.inputs = new Map();
                     this.outputs = new Map();
                     this.links = [];
                 },
                 addItem(item, replace = false) {
-                    const pos = this.all.findIndex((existing) => existing.name === item.name);
-                    if (pos !== -1) {
-                        if (replace) {
-                            this.all.splice(pos, 1, item);
-                        } else {
-                            appendLine(`Warning: ${this.all[pos].name} already exists in the model`);
+                    const existing = this.all.values().find((existing) => existing.name === item.name);
+                    if (existing) {
+                        if (replace && existing !== item) {
+                            this.all.delete(existing);
                         }
-                    } else {
-                        this.all.push(item);
                     }
+                    this.all.add(item);
                 },
-
                 addActivity(name) {
                     if (name === undefined) {
                         let index = 1;
-                        while (this.all.find((item) => (item instanceof Activity) && item.name === `Activity ${index}`)) {
+                        while (this.all.values().find((item) => (item instanceof Activity) && item.name === `Activity ${index}`)) {
                             index += 1;
                         }
                         name = `Activity ${index}`;
                     }
                     const activity = Activity.make({ name });
-                    this.all.push(activity);
+                    this.all.add(activity);
                     return activity;
                 },
                 addInput(product, quantity = 0) {
@@ -899,7 +910,7 @@ ${inputs.filter((input) => input.available < input.required)
                         const source = new Source();
                         content.forEach((asset) => asset.move(source));
                         this.inputs.set(product, source);
-                        this.all.push(source);
+                        this.all.add(source);
                     }
                 },
                 addOutput(name, quantity = 0) {
@@ -1012,7 +1023,7 @@ ${inputs.filter((input) => input.available < input.required)
          */
         function byId(id) {
             return app.model.ids[id];
-            return app.model.all.find((item) => item.id === id) ||
+            return app.model.all.values().find((item) => item.id === id) ||
                 app.model.inputs.values().find((item) => item.id === id) ||
                 app.model.outputs.values().find((item) => item.id === id);
         }
@@ -1021,7 +1032,7 @@ ${inputs.filter((input) => input.available < input.required)
          * Find an object by it's name.
          */
         function byName(name) {
-            const item = app.model.all.find((item) => item.name === name);
+            const item = app.model.all.values().find((item) => item.name === name);
             return item;
         }
 
@@ -1175,14 +1186,13 @@ ${inputs.filter((input) => input.available < input.required)
                         view.map.clear();
                         view.svg.innerHTML = '';
                         Asset.all = new Set();
-                        Product.add = new Set();
-                        Input.add = new Set();
-                        Output.add = new Set();
-                        Activity.add = new Set();
-                        app.model.all.length = 0;
+                        Product.all = new Set();
+                        Input.all = new Set();
+                        Output.all = new Set();
+                        Activity.all = new Set();
 
                         const state = deserialise(reader.result);
-                        app.model.all.push(...state.all);
+                        app.model.all = new Set(state.all);
                         app.model.inputs = state.inputs || new Map();
                         app.model.outputs = state.outputs || new Map();
 
@@ -1267,16 +1277,19 @@ ${inputs.filter((input) => input.available < input.required)
 
             if (stateStr) {
                 const state = deserialise(stateStr);
+                app.model.all = state.model.all;
+                /*
                 if (Array.isArray(state.model.all)) {
-                    app.model.all.push(...state.model.all);
+                    app.model.all = new Set(state.model.all);
                 } else {
-                    app.model.all.push(...Object.entries(state.model.all).reduce((arr, [key, value]) => {
+                    app.model.all = new Set(Object.entries(state.model.all).reduce((arr, [key, value]) => {
                         if (!isNaN(Number(key))) {
                             arr[Number(key)] = value;
                         }
                         return arr;
                     }, []));
                 }
+                    */
                 app.model.inputs = state.model.inputs || new Map();
                 app.model.outputs = state.model.outputs || new Map();
 
@@ -1622,7 +1635,7 @@ ${inputs.filter((input) => input.available < input.required)
                     const parameters = parseParameters(str.replace(this.name, ''));
                     if (parameters.length === 0) {
                         for (const item of app.selected) {
-                            app.model.all = app.model.all.filter((element) => element !== item);
+                            app.model.all.delete(item);
                             item.delete();
                             item.deleted = true;
                             appendLine(`${item.name} deleted`);
@@ -1759,7 +1772,7 @@ ${inputs.filter((input) => input.available < input.required)
                         const attribute = parameters.pop();
                         const items = parameters.flatMap((str) => {
                             const pattern = new RegExp(str);
-                            return app.model.all.filter((item) => pattern.test(item.name));
+                            return [...app.model.all].filter((item) => pattern.test(item.name));
                         });
                         items.forEach((item) => item[attribute] = value);
                     }
@@ -1839,10 +1852,9 @@ ${inputs.filter((input) => input.available < input.required)
                 validCommands[0].action(input.value);
             } else {
                 const pattern = new RegExp(input.value);
-                const items = app.model.all.filter((item) => pattern.test(item.name));
-
-                if (items.length > 0) {
-                    items.forEach((item) => {
+                const matched = app.model.all.values()
+                    .filter((item) => pattern.test(item.name))
+                    .some((item) => {
                         if (app.selected.has(item)) {
                             app.selected.delete(item);
                             appendLine(`Deselected ${item.name}`);
@@ -1850,9 +1862,10 @@ ${inputs.filter((input) => input.available < input.required)
                             app.selected.add(item);
                             appendLine(`Selected ${item.name}`);
                         }
+                        return true;
                     });
 
-                } else {
+                if (!matched) {
                     appendLine(`Warning: unrecognised input "${input.value}"`);
                 }
             }
@@ -2062,7 +2075,7 @@ ${inputs.filter((input) => input.available < input.required)
             node.addEventListener('drop', (event) => {
                 event.preventDefault();
                 const assetId = event.dataTransfer.getData('text/plain');
-                const item = [...Asset.all].find((asset) => asset[id] === assetId);
+                const item = Asset.all.values().find((asset) => asset[id] === assetId);
                 if (container.product === undefined || item.product === container.product) {
                     item.move(container);
                 }
@@ -2101,8 +2114,9 @@ ${inputs.filter((input) => input.available < input.required)
          * Update the SVG that represents the current process and its state.
          */
         function updateView() {
-            Product.all.sort((a, b) => a.name?.localeCompare(b.name));
-            updateList(Product.all, [{
+            const products = [...Product.all];
+            products.sort((a, b) => a.name?.localeCompare(b.name));
+            updateList(products, [{
                 title: 'Index',
                 get: (item, index) => index,
             },
@@ -2140,7 +2154,8 @@ ${inputs.filter((input) => input.available < input.required)
                 append: {
                     type: Asset, require: [0],
                     set(item, value) {
-                        new Asset(Product.get(value));
+                        app.model.all.add(new Asset(Product.get(value)));
+                        updateView();
                     }
                 },
             });
@@ -2301,8 +2316,8 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 } else {
                     const group = view.add('g', null, { transform: `translate (${representation.x ?? x}, ${representation.y ?? y})` });
                     const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black', }, null, classes);
-                    const label = view.add('g', group);//, textAttrs);//, activity.name);
-                    lines.forEach((text, line) => view.add('text', label, Object.assign(textAttrs, {dy: line * 18}), text));
+                    const label = view.add('g', group);
+                    lines.forEach((text, line) => view.add('text', label, Object.assign(textAttrs, { dy: line * 18 }), text));
                     const title = view.add('title', group, {}, activity.getStateDescription());
                     representation.x = representation.x ?? x;
                     representation.y = representation.y ?? y;
@@ -2474,6 +2489,9 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             // Update activity positions based on dependencies, ignoring user positioned activities
             const activities = app.model.activities.filter((activity) => !view.map.get(activity)?.moved);
             const order = (activity, representation, path = []) => {
+                if (!representation) {
+                    return 0;
+                }
                 if (representation.group || representation.group === 0) {
                     return representation.group;
                 }
@@ -2645,7 +2663,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     node.innerText = obj[attr];
-                    if (attr.edit) {
+                    if (attr.get) {
                         node.innerText = attr.get(obj);
                     } else {
                         node.innerText = obj[attr];
@@ -2654,7 +2672,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 }
                 if (event.key === 'Enter') {
                     event.preventDefault();
-                    if (attr.edit) {
+                    if (attr.set) {
                         attr.set(obj, node.innerText);
                     } else {
                         obj[attr] = node.innerText;
@@ -2665,7 +2683,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
         /**
          * Update the table of products
-         */
+         *
         function updateProductList() {
             const container = document.getElementById('product-list');
             container.innerHTML = `
@@ -2685,7 +2703,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 makeEditable(name, product, 'name');
                 body.append(row);
             });
-        }
+        }*/
 
         /**
          * Update the table of assets
@@ -2790,7 +2808,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
             });
             if (options.append) {
                 const row = document.createElement('tr');
-                row.title = `Add new ${options.append.type.constructor.__name__}`;
+                row.title = `Add new ${options.append.type.name}`;
 
                 columns.forEach((column, col) => {
                     const cell = document.createElement('td');
@@ -2880,9 +2898,10 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
         bin.addEventListener('dragover', (event) => event.preventDefault());
         bin.addEventListener('drop', (event) => {
             const itemId = event.dataTransfer.getData('text/plain');
-            const asset = [...Asset.all].find((asset) => asset[id] === itemId);
-            if (asset) {
-                asset.delete();
+            const item = Asset.all.values().find((asset) => asset[id] === itemId) ||
+                Product.all.values().find((product) => product[id] == itemId);
+            if (item) {
+                item.delete();
             }
             const link = app.model.links.find((link) => link[id] === itemId);
             if (link) {
