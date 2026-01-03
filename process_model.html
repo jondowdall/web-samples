@@ -240,6 +240,7 @@
             addDefinition(type, id, attributes = {}, content, classes) {
                 this.defs = this.defs || document.createElementNS(SVGView.ns, 'defs');
                 attributes.id = id;
+                this.svg.insertBefore(this.defs, this.svg.firstElementChild);
                 return this.add(type, this.defs, attributes, content, classes);
             }
             addUnder(type, parent, attributes = {}, content, classes) {
@@ -867,9 +868,9 @@ ${inputs.filter((input) => input.available < input.required)
                 name: 'model',
                 all: new Set(),
                 ids: {},
-                get processes() { return [...this.all].filter((item) => item instanceof Process) },
-                get activities() { return [...this.all].filter((item) => item instanceof Activity) },
-                get products() { return [...Product.all]; },
+                get processes() { return [...this.all.values()].filter((item) => item instanceof Process) },
+                get activities() { return [...this.all.values()].filter((item) => item instanceof Activity) },
+                get products() { return [...Product.all.values()]; },
                 inputs: new Map(),
                 outputs: new Map(),
                 links: [],
@@ -1282,7 +1283,7 @@ ${inputs.filter((input) => input.available < input.required)
 
             if (stateStr) {
                 const state = deserialise(stateStr);
-                app.model.all = state.model.all;
+                app.model.all = new Set(Object.values(state.model.all));
                 /*
                 if (Array.isArray(state.model.all)) {
                     app.model.all = new Set(state.model.all);
@@ -1921,6 +1922,10 @@ ${inputs.filter((input) => input.available < input.required)
         }
 
         const view = new SVGView('process-view', 'Process View');
+        const mixed = view.addDefinition('linearGradient', 'mixed', {x1: 0, y1:0, x2: 1, y2: 1});
+        view.add('stop', mixed, {offset: 0, 'stop-color': 'hsl(0 80 80)'}, null, 'stop1');
+        view.add('stop', mixed, {offset: 1, 'stop-color': 'hsl(120 80 80)'}, null, 'stop2');
+
 
         /**
          *
@@ -2193,7 +2198,7 @@ ${inputs.filter((input) => input.available < input.required)
                 const representation = view.map.get(state);
                 if (representation) {
                     representation.dependencies = [];
-                    representation.group = 0;
+                    representation.rank = 0;
                     representation.nodes.group.setAttribute('fill', fill);
                     if (!representation.moved) {
                         representations.push(representation);
@@ -2213,7 +2218,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
                     const representation = {
                         nodes: { group, outline, title, label, textTitle },
-                        bbox: label.getBBox(), dependencies: [], group: 0,
+                        bbox: label.getBBox(), dependencies: [], rank: 0,
                     };
                     representations.push(representation);
                     view.map.set(state, representation);
@@ -2309,7 +2314,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
                 const representation = view.map.get(activity) || {};
                 representation.dependencies = [];
-                representation.group = null;
+                representation.rank = null;
                 representation.width = representation.width ?? width;
                 representation.height = representation.height ?? height;
                 const lines = fitText(activity.name, 100, getLength);
@@ -2320,7 +2325,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                     representation.nodes.title.innerHTML = activity.getStateDescription();
                 } else {
                     const group = view.add('g', null, { transform: `translate (${representation.x ?? x}, ${representation.y ?? y})` });
-                    const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'white', stroke: 'black', }, null, classes);
+                    const outline = view.add('rect', group, { width, height, rx: 5, ry: 5, fill: 'url(#mixed)', stroke: 'black', }, null, classes);
                     const label = view.add('g', group);
                     lines.forEach((text, line) => view.add('text', label, Object.assign(textAttrs, { dy: line * 18 }), text));
                     const title = view.add('title', group, {}, activity.getStateDescription());
@@ -2497,36 +2502,36 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
                 if (!representation) {
                     return 0;
                 }
-                if (representation.group || representation.group === 0) {
-                    return representation.group;
+                if (representation.rank || representation.rank === 0) {
+                    return representation.rank;
                 }
                 const inputs = [...activity.inputs.values()];
                 const links = inputs.flatMap((input) => input.links);
                 const sources = links.map((link) => link.from.parent || link.from).filter((source) => !path.includes(source));
                 if (sources.length) {
-                    representation.group = Math.max(0, ...sources.map((source) =>
+                    representation.rank = Math.max(0, ...sources.map((source) =>
                         order(source, view.map.get(source), [...path, activity]))) + 1;
                 } else {
-                    representation.group = 1;
+                    representation.rank = 1;
                 }
-                return representation.group;
+                return representation.rank;
             }
-            const groups = [];
+            const ranks = [];
             activities.forEach((activity) => {
                 const representation = view.map.get(activity);
                 order(activity, representation);
-                groups[representation.group] = groups[representation.group] || 80;
+                ranks[representation.rank] = ranks[representation.rank] || 80;
 
                 if (!representation.moved) {
-                    representation.y = groups[representation.group];
+                    representation.y = ranks[representation.rank];
                     const y = representation.y = positioned.reduce((y, moved) =>
                         (((representation.x + representation.width) > moved.x) &&
                             (representation.x < (moved.x + moved.width)) &&
                             ((representation.y + representation.height) > (moved.y - 30)) &&
                             (representation.y < (moved.y + moved.height))) ? moved.y + moved.height + 30 : y,
-                        groups[representation.group]);
-                    groups[representation.group] = y + height + verticalSpace;
-                    const x = representation.x = view.firstColumn + 50 + (representation.group - 1) * (width + horizontalSpace);
+                        ranks[representation.rank]);
+                    ranks[representation.rank] = y + height + verticalSpace;
+                    const x = representation.x = view.firstColumn + 50 + (representation.rank - 1) * (width + horizontalSpace);
                     // Check for overlap with user positioned item
                     view.updateElement(representation.nodes.group, { transform: `translate (${x}, ${y})` });
 
@@ -2537,7 +2542,7 @@ ${[...state.content].map((asset) => asset.name).join('\n')}`);
 
 
             // Add stores
-            x = view.firstColumn + 50 + (groups.length - 1) * (width + horizontalSpace);
+            x = view.firstColumn + 50 + (ranks.length - 1) * (width + horizontalSpace);
             y = 80;
             const w = 30;
             const h = 10;
