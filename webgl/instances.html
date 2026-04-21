@@ -1966,6 +1966,7 @@
                 graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
             }
             render() {
+                this.items.forEach((item) => item.update());
                 if (app.useDeferredRender) {
                     /* The models will normally consist of multiple instances of similar objects.
                      * The objects are defined by a node that sets the transform for meshes.
@@ -4302,15 +4303,76 @@
          * Class to manage a collection of instances.
          */
         class Collection {
-            constructor() {
+            constructor(points, indices) {
                 this.instances = [];
                 this.buffers = {
                     vertices: gl.createBuffer(),
                     instances: gl.createBuffer(),
                     vao: gl.createVertexArray(),
                 };
-                this.triangles = 0;
-                this.lines = 0;
+                this.triangles = points.triangles;
+                this.lines = points.lines;
+                this.initialiseBuffers(points.shape);
+                if (indices) {
+                    this.buffers.indices = gl.createBuffer();
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.indices);
+                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+                    this.points = indices.length;
+
+                }
+                gl.bindVertexArray(null);
+                app.view[0].renderQueue.push(this);
+            }
+            initialiseBuffers(shape) {
+                gl.bindVertexArray(this.buffers.vao);
+                //gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.vertices);
+
+                gl.bindVertexArray(this.buffers.vao);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.vertices);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
+
+                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
+                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
+                gl.enableVertexAttribArray(app.pbrShader.position);
+
+                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 32, 12);
+                gl.enableVertexAttribArray(app.pbrShader.normal);
+
+                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 32, 24);
+                gl.enableVertexAttribArray(app.pbrShader.coord);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
+
+                // Matrices are passed as 4 vertex attributes
+                for (let i = 0; i < 4; ++i) {
+                    const location = app.pbrShader.model + i;
+                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
+                    gl.vertexAttribDivisor(location, 1);
+                    gl.enableVertexAttribArray(location);
+                }
+                for (let i = 0; i < 3; ++i) {
+                    const location = app.pbrShader.normalMatrix + i;
+                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
+                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
+                    gl.vertexAttribDivisor(location, 1);
+                    gl.enableVertexAttribArray(location);
+                }
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
+                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.colour);
+
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
+                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
+                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
+                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
+                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+
+                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
+                gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
+                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
             }
             initialiseInstances() {
                 // Create an array with the data for all instances
@@ -4409,6 +4471,7 @@
                 this.instanceData.set(this.material.emissivityColour, 29);   // offset: 29, size: 3
                 this.representation.updateInstances = true;
             }
+            update() {}
             updateInstanceData() {
                 this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
                 this.instanceData.set(this.orientation, 16);                 // offset: 16, size: 9
@@ -4531,75 +4594,8 @@
                 const shape = [...triangles.flatMap((t, i) => [...t.p1, ...t.n, i % 2, i % 2, ...t.p2, ...t.n, 1, 0, ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                const collection = new Collection();
+                const collection = new Collection({shape, triangles: 12, lines: 12});
                 Block.collection = collection;
-                collection.triangles = 12;
-                collection.lines = 12;
-
-                gl.bindVertexArray(collection.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
-
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 32, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 32, 24);
-                gl.enableVertexAttribArray(app.pbrShader.coord);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-                /*
-                transform                  offset:  0, size: 16
-                orientation                offset: 15, size: 9
-                material.colour            offset: 25, size: 3
-                material.emissivityColour  offset: 28, size: 3
-                material.reflectivity      offset: 31, size: 3
-                material.materialProperties offset: 34, size: 4
-
-                material.roughness         offset: 34, size: 1
-                material.opacity           offset: 35, size: 1
-                material.metallic          offset: 36, size: 1
-                material.mirror            offset: 37, size: 1
-                */
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
-
-                app.view[0].renderQueue.push(collection);
-                gl.bindVertexArray(null);
                 return collection;
             }
             constructor(node, parent) {
@@ -4736,75 +4732,8 @@
                 const shape = [...triangles.flatMap((t, i) => [...t.p1, ...t.n, i % 2, i % 2, ...t.p2, ...t.n, 1, 0, ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                const collection = new Collection();
+                const collection = new Collection({shape, triangles: 12, lines: 12});
                 Block.collection = collection;
-                collection.triangles = 12;
-                collection.lines = 12;
-
-                gl.bindVertexArray(collection.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
-
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 32, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 32, 24);
-                gl.enableVertexAttribArray(app.pbrShader.coord);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-                /*
-                transform                  offset:  0, size: 16
-                orientation                offset: 15, size: 9
-                material.colour            offset: 25, size: 3
-                material.emissivityColour  offset: 28, size: 3
-                material.reflectivity      offset: 31, size: 3
-                material.materialProperties offset: 34, size: 4
-
-                material.roughness         offset: 34, size: 1
-                material.opacity           offset: 35, size: 1
-                material.metallic          offset: 36, size: 1
-                material.mirror            offset: 37, size: 1
-                */
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
-
-                app.view[0].renderQueue.push(collection);
-                gl.bindVertexArray(null);
                 return collection;
             }
             constructor(node, parent) {
@@ -4822,24 +4751,45 @@
                     mirror: 0.3,
                 };
                 const t = 0.1;
-                const s1 = new Representation(node, parent, 'WalledBox');
-                s1.move([(t - node.size[0]) * 0.5, 0, 0]);
-                s1.scale([t / node.size[0], 1 - 2 * t / node.size[1], 1 - 2 * t / node.size[2]]);
-                s1.material = this.material;
+                this.sides = [
+                    new Representation(node, parent, 'WalledBox'),
+                    new Representation(node, parent, 'WalledBox'),
+                    new Representation(node, parent, 'WalledBox'),
+                    new Representation(node, parent, 'WalledBox'),
+                    new Representation(node, parent, 'WalledBox'),
+                    new Representation(node, parent, 'WalledBox'),
+                ];
+                this.sides[0].move([(t - node.size[0]) * 0.5, 0, 0]);
+                this.sides[0].scale([t / node.size[0], 1 - 2 * t / node.size[1], 1 - 2 * t / node.size[2]]);
+                this.sides[0].material = this.material;
                 
-                const s2 = new Representation(node, parent, 'WalledBox');
-                s2.move([0, (t - node.size[1]) * 0.5, 0]);
-                s2.scale([1, t / node.size[1], 1]);
-                s2.material = this.material;
+                this.sides[1] = new Representation(node, parent, 'WalledBox');
+                this.sides[1].move([0, (t - node.size[1]) * 0.5, 0]);
+                this.sides[1].scale([1, t / node.size[1], 1]);
+                this.sides[1].material = this.material;
 
-                const s3 = new Representation(node, parent, 'WalledBox');
-                s3.move([0, 0, 0.5 * (t - node.size[2])]);
-                s3.scale([1, 1 - 2 * t / node.size[1], t / node.size[2]]);
-                s3.material = this.material;
+                this.sides[2] = new Representation(node, parent, 'WalledBox');
+                this.sides[2].move([0, 0, 0.5 * (t - node.size[2])]);
+                this.sides[2].scale([1, 1 - 2 * t / node.size[1], t / node.size[2]]);
+                this.sides[2].material = this.material;
 
-                this.representation.instances.push(s1);
-                this.representation.instances.push(s2);
-                this.representation.instances.push(s3);
+                this.sides[3] = new Representation(node, parent, 'WalledBox');
+                this.sides[3].move([(node.size[0] - t) * 0.5, 0, 0]);
+                this.sides[3].scale([t / node.size[0], 1 - 2 * t / node.size[1], 1 - 2 * t / node.size[2]]);
+                this.sides[3].material = this.material;
+                
+                this.sides[4] = new Representation(node, parent, 'WalledBox');
+                this.sides[4].move([0, (node.size[1] - t) * 0.5, 0]);
+                this.sides[4].scale([1, t / node.size[1], 1]);
+                this.sides[4].material = this.material;
+
+                this.sides[5] = new Representation(node, parent, 'WalledBox');
+                this.sides[5].move([0, 0, 0.5 * (node.size[2] - t)]);
+                this.sides[5].scale([1, 1 - 2 * t / node.size[1], t / node.size[2]]);
+                this.sides[5].material = this.material;
+
+                this.representation.instances.push(...this.sides);
+
                 this.representation.initialise = true;
             }
             intersects(line, all) {
@@ -4884,6 +4834,28 @@
             }
             showInfo() {
             }
+            update() {
+                const orientation = [...this.transform];
+                orientation[12] = 0;
+                orientation[13] = 0;
+                orientation[14] = 0;
+                const normals = [
+                    [-1, 0, 0], [0, -1, 0], [0, 0, -1],
+                    [ 1, 0, 0], [0,  1, 0], [0, 0,  1],
+                ];
+                this.sides.forEach((side, index) => {
+                    // Transform the normal into world space
+                    const s1Normal = applyTransform(normals[index], orientation);
+                    const s1Centre = applyTransform(normals[index], side.transform);
+                    const eyeVector = normalised(subtract(s1Centre, app.camera.position));
+                    const opacity = dot(eyeVector, s1Normal);
+                    side.instanceData[35] = opacity > 0 ? 1 : 0;
+                    this.representation.updateInstances = true;
+                    console.log(opacity);
+                });
+
+
+            }
         }
 
         /**
@@ -4922,11 +4894,6 @@
                  *    | /          \ |
                  *    2 ------------ 3
                  */
-                const collection = new Collection();
-                collection.key = bevel;
-                BevelledBlock.bevels.push(collection);
-                collection.triangles = 44;
-                collection.lines = 12;
 
                 const faces = [
                     [1 - bevel[0], 1 - bevel[1], 1],
@@ -5019,57 +4986,12 @@
                 const shape = [...triangles.flatMap((t, i) => [...t.p1, ...normalised(t.n), i % 2, i % 2, ...t.p2, ...normalised(t.n), 1 - i % 2, i % 2, ...t.p3, ...normalised(t.n), i % 2, 1 - i % 2]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                gl.bindVertexArray(collection.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
 
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 32, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 32, 24);
-                gl.enableVertexAttribArray(app.pbrShader.coord);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    // attribute index, numComponents = 4, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
-                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
-
-                app.view[0].renderQueue.push(collection);
-                gl.bindVertexArray(null);
+                const collection = new Collection({shape, triangles: 44, lines: 12});
+                collection.key = bevel;
+                BevelledBlock.bevels.push(collection);
+                collection.triangles = 44;
+                collection.lines = 12;
                 return collection;
             }
             constructor(node, parent) {
@@ -5169,78 +5091,28 @@
                     const angle3 = Math.PI * 2 * (i + 1) / sides;
                     const angle4 = Math.PI * 2 * (i + 1.5) / sides;
                     triangles.push(
-                        0, -1, 0, 0, -1, 0, 0.5, 0.5,
-                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0, 0.5, 0.5,
-                        Math.sin(angle3), -1, Math.cos(angle3), 0, -1, 0, 0.5, 0.5,
+                        0, -1, 0, 0, -1, 0, 0.5, 0,
+                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
+                        Math.sin(angle3), -1, Math.cos(angle3), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle3), 0,
 
-                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5, 0.5,
-                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), 0, Math.cos(angle1), 0.5, 0.5,
-                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5, 0.5,
+                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), 0, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
+                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5 + 0.5 * Math.sin(angle3), 0,
 
-                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5, 0.5,
-                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5, 0.5,
-                        Math.sin(angle4), 1, Math.cos(angle4), Math.sin(angle4), 0, Math.cos(angle4), 0.5, 0.5,
+                        Math.sin(angle3), -1, Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5 + 0.5 * Math.sin(angle3), 0,
+                        Math.sin(angle2), 1, Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        Math.sin(angle4), 1, Math.cos(angle4), Math.sin(angle4), 0, Math.cos(angle4), 0.5 + 0.5 * Math.sin(angle4), 1,
 
-                        0, 1, 0, 0, 1, 0, 0.5, 0.5,
-                        Math.sin(angle2), 1, Math.cos(angle2), 0, 1, 0, 0.5, 0.5,
-                        Math.sin(angle4), 1, Math.cos(angle4), 0, 1, 0, 0.5, 0.5,
+                        0, 1, 0, 0, 1, 0, 0.5, 1,
+                        Math.sin(angle2), 1, Math.cos(angle2), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle2), 1,
+                        Math.sin(angle4), 1, Math.cos(angle4), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle4), 1,
                     );
                 }
 
-                const collection = new Collection();
+                const collection = new Collection({shape: triangles, triangles: triangles.length / 8});
                 collection.key = sides;
                 collection.triangles = triangles.length / 8;
                 Cylinder.representations[sides] = collection;
-
-                gl.bindVertexArray(collection.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
-
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 32, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 32, 24);
-                gl.enableVertexAttribArray(app.pbrShader.coord);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
-                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-
-                app.view[0].renderQueue.push(collection);
-                gl.bindVertexArray(null);
                 return collection;
             }
             constructor(node, parent, sides = 12) {
@@ -5306,87 +5178,29 @@
                     const angle2 = Math.PI * 2 * (i + 1) / sides;
                     const ny = Math.sin(Math.atan(1 - ratio, 2));
                     triangles.push(
-                        0, -1, 0, 0, -1, 0,
-                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0,
-                        Math.sin(angle2), -1, Math.cos(angle2), 0, -1, 0,
+                        0, -1, 0, 0, -1, 0, 0.5, 0,
+                        Math.sin(angle1), -1, Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
+                        Math.sin(angle2), -1, Math.cos(angle2), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle2), 0,
 
-                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
-                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
-                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
+                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 1,
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
 
-                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
-                        Math.sin(angle2), -1, Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2),
-                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1),
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        Math.sin(angle2), -1, Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 0,
+                        Math.sin(angle1), -1, Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
 
-                        0, 1, 0, 0, 1, 0,
-                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), 0, 1, 0,
-                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), 0, 1, 0,
+                        0, 1, 0, 0, 1, 0, 0.5, 1,
+                        ratio * Math.sin(angle1), 1, ratio * Math.cos(angle1), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle1), 1,
+                        ratio * Math.sin(angle2), 1, ratio * Math.cos(angle2), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle2), 1,
                     );
                 }
 
-                const collection = new Collection();
+                const collection = new Collection({shape: triangles, triangles: triangles.length / 6});
                 collection.key = [ratio, sides];
                 collection.triangles = triangles.length / 6;
 
                 Frustum.representations[sides] = collection;
-
-                gl.bindVertexArray(collection.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangles), gl.STATIC_DRAW);
-
-                // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 24, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 24, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-                /*
-                transform                  offset:  0, size: 16
-                orientation                offset: 16, size: 9
-                material.roughness         offset: 25, size: 1
-                material.colour            offset: 26, size: 3
-                material.emissivityColour  offset: 29, size: 3
-                material.reflectivity      offset: 32, size: 3
-                material.opacity           offset: 35, size: 1
-                material.metallic          offset: 36, size: 1
-                material.mirror            offset: 37, size: 1
-                */
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
-                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-
-                app.view[0].renderQueue.push(collection);
-                gl.bindVertexArray(null);
                 return collection;
             }
             constructor(node, parent, ratio, sides = 12) {
@@ -5520,87 +5334,22 @@
                 let i = 0;
                 while (i <= subdivisions) {
                     if (Icosphere.level[i] === undefined) {
-                        const collection = new Collection();
-                        Icosphere.level[i] = collection;
-                        collection.buffers.indices = gl.createBuffer();
-                        const positions = points.flatMap((point) => point);
-                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
-                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
-
+                        const positions = points.flatMap((point) => [...point, ...point, point[0], point[1]]);
                         const indices = faces.flatMap((face) => {
                             const points = [face[0].p1, face[0].p2];
                             points.push(points.includes(face[1].p1) ? face[1].p2 : face[1].p1);
                             return points;
                         });
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
-                        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
-                        collection.points = indices.length;
+
+                        const collection = new Collection({shape: positions}, indices);
+
 
                         edges = edges.flatMap((edge) => divideEdge(edge));
                         faces = faces.flatMap((face) => divideFace(face));
 
                         collection.key = i;
-                        //collection.triangles = faces.length;
-                        gl.bindVertexArray(collection.buffers.vao);
-                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.vertices);
 
-                        // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride = 3 * 4, offset = 0
-                        gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 12, 0);
-                        gl.enableVertexAttribArray(app.pbrShader.position);
-
-                        gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, true, 12, 0);
-                        gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                        gl.disableVertexAttribArray(app.pbrShader.coord);
-                        gl.vertexAttrib2f(app.pbrShader.coord, 0.5, 0.5);
-
-                        gl.bindBuffer(gl.ARRAY_BUFFER, collection.buffers.instances);
-                        /*
-                        transform                  offset:  0, size: 16
-                        orientation                offset: 16, size: 9
-                        material.roughness         offset: 25, size: 1
-                        material.colour            offset: 26, size: 3
-                        material.emissivityColour  offset: 29, size: 3
-                        material.reflectivity      offset: 32, size: 3
-                        material.opacity           offset: 35, size: 1
-                        material.metallic          offset: 36, size: 1
-                        material.mirror            offset: 37, size: 1
-                        */
-
-                        // Matrices are passed as 4 vertex attributes
-                        for (let i = 0; i < 4; ++i) {
-                            const location = app.pbrShader.model + i;
-                            // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                            gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
-                            gl.vertexAttribDivisor(location, 1);
-                            gl.enableVertexAttribArray(location);
-                        }
-                        for (let i = 0; i < 3; ++i) {
-                            const location = app.pbrShader.normalMatrix + i;
-                            // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                            gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
-                            gl.vertexAttribDivisor(location, 1);
-                            gl.enableVertexAttribArray(location);
-                        }
-                        gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
-                        gl.vertexAttribDivisor(app.pbrShader.colour, 1);
-                        gl.enableVertexAttribArray(app.pbrShader.colour);
-
-                        gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
-                        gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
-                        gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-
-                        gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
-                        gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
-                        gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-
-                        gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
-                        gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
-                        gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-
-                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, collection.buffers.indices);
-
-                        app.view[0].renderQueue.push(collection);
+                        Icosphere.level[i] = collection;
                     }
                     ++i;
                 }
