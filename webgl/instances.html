@@ -737,6 +737,7 @@
         out vec3 v_position;
         out vec3 v_normal;
         out vec2 v_coord;
+        out vec2 v_coord2;
         out vec3 v_colour;
         out vec3 v_emissivityColour;
         out float v_roughness;
@@ -752,6 +753,13 @@
             v_position = worldPosition.xyz;
             v_normal = normalMatrix * normal;
             v_coord = coord;
+            float up = dot(vec3(0.0f, 1.0f, 0.0f), normal);
+
+            vec3 x = (1.0f - up) * cross(vec3(0.0f, 1.0f, 0.0f), normal) + up * vec3(1.0f, 0.0f, 0.0f);
+            vec3 y = (1.0f - up) * vec3(0.0f, 1.0f, 0.0f) + up * vec3(0.0f, 0.0f, 1.0f);
+
+            vec2 coord2 = vec2(dot(position, x), dot(position, y));
+            v_coord2 = vec2(0.5f, 0.5f) + coord2;
             v_colour = colour;
             v_emissivityColour = emissivityColour;
             v_baseReflectivity = reflectivity;
@@ -779,11 +787,13 @@
 
         uniform vec3 cameraPosition;
 
+        uniform sampler2D surfaceTexture;
         uniform samplerCube envTexture;
 
         in vec3 v_position;
         in vec3 v_normal;
         in vec2 v_coord;
+        in vec2 v_coord2;
         in vec3 v_colour;
         in vec3 v_emissivityColour;
         in vec3 v_baseReflectivity;
@@ -893,8 +903,9 @@
 
             float clear = max(totalShine * 0.2, 0.0) * v_opacity;
             float opacity = clear + (1.0 - clear) * pow(v_opacity, 5.0);
-            float occ = 1.0 - 0.1 * (pow(2.0 * (v_coord.x - 0.5), 8.0) + pow(2.0 * (v_coord.y - 0.5), 8.0));
-            fragmentColour = vec4(lo * occ, opacity);
+            float occ = 1.0 - 0.1 * (pow(2.0 * (v_coord2.x - 0.5), 8.0) + pow(2.0 * (v_coord2.y - 0.5), 8.0));
+            fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
+
             //fragmentColour = vec4(lo, opacity);
             //fragmentColour.r = v_coord.x;
             //fragmentColour.g = v_coord.y;
@@ -1663,7 +1674,7 @@
                 const lookAt = scale(sum(...selected.map((item) =>
                     applyTransform(product(getAttribute(item.node, 'size'), getAttribute(item.node, 'offset')), item.world))), 1 / selected.length);
                 const size = Math.max(...selected.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
-                const dist = size / Math.tan(180 * app.fov / Math.PI);
+                const dist = Math.max(1.5 * size / Math.tan(180 * app.fov / Math.PI), app.near * 2);
                 const position = sum(lookAt, scale(direction, dist));
                 moveCamera(position, lookAt, up);
             } else {
@@ -2108,6 +2119,10 @@
                     gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
                     gl.uniform1i(app.pbrShader.envTexture, 0);
 
+                    gl.activeTexture(gl.TEXTURE1);
+                    gl.bindTexture(gl.TEXTURE_2D, app.white);
+                    gl.uniform1i(app.pbrShader.surfaceTexture, 1);
+
                     gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
                     gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
 
@@ -2243,42 +2258,7 @@
             }
         }
 
-        /**
-         * Generate the vertex data for a quad.
-         */
-        function makeQuad() {
-            const positions = [
-                [-1, -1, 0,],
-                [1, -1, 0,],
-                [-1, 1, 0,],
-                [1, 1, 0,],
-            ].map((v) => v.map((i) => i / 2));
 
-            /*
-            *       4 ------ 5
-            *      /|        | \
-            *    0 ------------ 1
-            *    |  |        |  |
-            *    |  |        |  |
-            *    |  |        |  |
-            *    |  6 ------ 7  |
-            *    | /          \ |
-            *    2 ------------ 3
-            */
-
-            const triangles = [
-                { p1: positions[0], p2: positions[1], p3: positions[2], n: [0, 0, 1] },
-                { p1: positions[1], p2: positions[3], p3: positions[2], n: [0, 0, 1] },
-            ];
-            const lines = [
-                positions[0], positions[1],
-                positions[1], positions[3],
-                positions[3], positions[2],
-                positions[2], positions[0],
-            ];
-            return [...triangles.flatMap((t) => [...t.p1, ...t.n, ...t.p2, ...t.n, ...t.p3, ...t.n]),
-            ...lines.flatMap((p) => [...p, ...normalised(p)])];
-        }
 
         /**
          * Generate the vertex data for a cube.
@@ -2507,7 +2487,7 @@
             const border = 0;
             const srcFormat = gl.RGBA;
             const srcType = gl.UNSIGNED_BYTE;
-            const pixel = new Uint8Array([0, 0, 255, 255]); // opaque blue
+            const pixel = new Uint8Array([0, 0, 255, 255]);
             gl.texImage2D(
                 gl.TEXTURE_2D,
                 level,
@@ -2544,6 +2524,104 @@
                 };
             }
             image.src = url;
+
+            return texture;
+        }
+
+        /**
+         * Load a texture from a url.
+         */
+        function addTexture(url, parameters) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            // Because images have to be downloaded over the internet
+            // they might take a moment until they are ready.
+            // Until then put a single pixel in the texture so we can
+            // use it immediately. When the image has finished downloading
+            // we'll update the texture with the contents of the image.
+            const level = 0;
+            const internalFormat = gl.RGBA;
+            const width = 1;
+            const height = 1;
+            const border = 0;
+            const srcFormat = gl.RGBA;
+            const srcType = gl.UNSIGNED_BYTE;
+            const pixel = new Uint8Array([0, 0, 255, 255]);
+            gl.texImage2D(
+                gl.TEXTURE_2D,
+                level,
+                internalFormat,
+                width,
+                height,
+                border,
+                srcFormat,
+                srcType,
+                pixel,
+            );
+
+            const image = new Image();
+            const canvas = new OffscreenCanvas(1024, 1024);//gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_TEXTURE_SIZE));
+            const context = canvas.getContext('2d');
+            image.onload = () => {
+                context.drawImage(image, 0, 0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(
+                    gl.TEXTURE_2D,
+                    level,
+                    internalFormat,
+                    srcFormat,
+                    srcType,
+                    canvas,
+                );
+                gl.generateMipmap(gl.TEXTURE_2D);
+                if (parameters) {
+                    const mapping = {
+                        magFilter: gl.TEXTURE_MAG_FILTER,
+                        minFilter: gl.TEXTURE_MIN_FILTER,
+                        wrapS: gl.TEXTURE_WRAP_S,
+                        wrapT: TEXTURE_WRAP_T,
+                    };
+                    Object.entries.forEach(([parameter, value]) =>
+                        gl.texParameteri(gl.TEXTURE_2D, mapping[parameter], value));
+                };
+            }
+            image.src = url;
+
+            return texture;
+        }
+
+        /**
+         * Load a texture from a url.
+         */
+        function makeColourTexture(colour=[255, 255, 255, 255], parameters) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            // Because images have to be downloaded over the internet
+            // they might take a moment until they are ready.
+            // Until then put a single pixel in the texture so we can
+            // use it immediately. When the image has finished downloading
+            // we'll update the texture with the contents of the image.
+            const level = 0;
+            const internalFormat = gl.RGBA;
+            const width = 1;
+            const height = 1;
+            const border = 0;
+            const srcFormat = gl.RGBA;
+            const srcType = gl.UNSIGNED_BYTE;
+            const pixel = new Uint8Array(colour);
+            gl.texImage2D(
+                gl.TEXTURE_2D,
+                level,
+                internalFormat,
+                width,
+                height,
+                border,
+                srcFormat,
+                srcType,
+                pixel,
+            );
 
             return texture;
         }
@@ -3968,6 +4046,7 @@
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
+                    gl.disable(gl.DEPTH_TEST);
 
                     gl.useProgram(app.textShader.program);
                     gl.bindVertexArray(app.textVertexArray);
@@ -4591,8 +4670,6 @@
                 this.transform = identityMatrix();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
-                //this.instanceData = new Float32Array(38);
-
                 name = this.node[meta].name[0] || name;
                 this.name = name;
                 this.node[meta].name[0] = name;
@@ -4604,6 +4681,11 @@
 
                 this.offset(getAttribute(node, 'offset') || [0, 0, 0]);
                 this.scale(getAttribute(node, 'size') || [1, 1, 1]);
+
+                const texture = getAttribute(node, 'texture');
+                if (texture) {
+                    this.texture = getTexture(texture);
+                }
             }
             set opacity(value) {
                 this.instances.forEach((instance) => instance.opacity = value);
@@ -4615,17 +4697,6 @@
             }
             update() { }
             updateInstanceData() {
-                /*
-                this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
-                this.instanceData.set(this.orientation, 16);                 // offset: 16, size: 9
-                this.instanceData.set(this.material.colour, 25);             // offset: 26, size: 3
-                this.instanceData.set(this.material.emissivityColour, 28);   // offset: 29, size: 3
-                this.instanceData.set(this.material.reflectivity, 31);       // offset: 32, size: 3
-                this.instanceData[34] = this.material.roughness;             // offset: 25, size: 1
-                this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
-                this.instanceData[36] = this.material.metallic;              // offset: 36, size: 1
-                this.instanceData[37] = this.material.mirror;                // offset: 37, size: 1
-                */
                 this.collection.updateInstances = true;
             }
             get world() {
@@ -4662,6 +4733,110 @@
                 this.transform[12] += size[0] * offset[0];
                 this.transform[13] += size[1] * offset[1];
                 this.transform[14] += size[2] * offset[2];
+            }
+        }
+
+        /**
+         * Generate the vertex data for a quad.
+         */
+        class Quad extends Shape {
+            static make() {
+                const positions = [
+                    [-1, -1, 0,],
+                    [1, -1, 0,],
+                    [-1, 1, 0,],
+                    [1, 1, 0,],
+                ].map((v) => v.map((i) => i / 2));
+
+                /*
+                *    0 ----- 1
+                *    |     / |
+                *    |    /  |
+                *    |   /   |
+                *    |  /    |
+                *    | /     |
+                *    2 ----- 3
+                */
+
+                const lines = [
+                    positions[0], positions[1],
+                    positions[1], positions[3],
+                    positions[3], positions[2],
+                    positions[2], positions[0],
+                ];
+                /*
+                return [...triangles.flatMap((t) => [...t.p1, ...t.n, ...t.p2, ...t.n, ...t.p3, ...t.n]),
+                ...lines.flatMap((p) => [...p, ...normalised(p)])];
+                */
+                const normal = [0, 0, 1];
+                const shape = [
+                    ...positions[0], ...normal, 0, 0,
+                    ...positions[1], ...normal, 1, 0,
+                    ...positions[2], ...normal, 0, 1,
+
+                    ...positions[1], ...normal, 1, 0,
+                    ...positions[3], ...normal, 1, 1,
+                    ...positions[2], ...normal, 0, 1,
+                ];
+                const collection = new Collection({ shape, triangles: 2, });
+                Block.collection = collection;
+                return collection;
+            }
+            constructor(node, parent) {
+                super(node, parent, `quad`);
+
+                this.collection = Quad.collection || Quad.make();
+                this.children = [];
+                this.material = {
+                    roughness: 0.1,
+                    colour: [1, 0.95, 0.1],
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.2, 0.2, 0.2],
+                    opacity: 1,
+                    metallic: 0.1,
+                    mirror: 0.3,
+                };
+                this.instances = [new Instance(node, parent, `quad`)];
+                this.collection.instances.push(...this.instances);
+                this.collection.initialise = true;
+            }
+            intersects(line, all) {
+                const transform = multiply(this.transform, this.world);
+                const size = extractScale(this.transform);
+                const radius = Math.hypot(...size);
+
+                const centre = applyTransform([0, 0, 0], transform);
+
+                if (radius === 0) {
+                    return this.children.filter((child) => child.intersects(line)).length > 0;
+                } else {
+                    const l = dot(line.direction, subtract(centre, line.point));
+                    const n = l / line.direction.reduce((s, v) => s + v * v, 0);
+                    const p = sum(line.point, scale(line.direction, n));
+                    const v = subtract(p, centre);
+                    const dist = Math.hypot(...v);
+                    if (dist < radius) {
+                        const corner1 = applyTransform([-0.5, -0.5, -0.5], transform);
+                        const corner2 = applyTransform([0.5, 0.5, 0.5], transform);
+                        const rotation = extractRotation(transform);
+                        const planes = [
+                            { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                            { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                        ];
+                        const points = convexHullIntercept(line, planes);
+                        if (points && (all || points[0] > 0 || points[1] > 0)) {
+                            const p1 = sum(line.point, scale(line.direction, points[0]));
+                            const p2 = sum(line.point, scale(line.direction, points[1]));
+
+                            this.points = [p1, p2];
+                            return true;
+                        }
+                    }
+                }
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
             }
         }
 
@@ -6457,6 +6632,8 @@
                 }
             };
 
+
+            /*
             const interpretValues = (node, context) => {
                 context = Object.assign({}, node[meta].context, context);
                 const instance = context.instance;
@@ -6485,6 +6662,9 @@
                 node[children].forEach((child) => interpretValues(child, context));
                 node[meta].name[0] = node.name || resolve(node[meta].name[0]);
             };
+            */
+
+
 
             /**
              * Parse a line, returning an object or updating the current object and returning an empty array.
@@ -7829,6 +8009,8 @@
                     node.load = true;
                     if (node[meta].representation.makeWalls) {
                         node[meta].representation.makeWalls();
+                        setView([0, 1, 0], [0, 0, -1]);
+                        app.view[0].items.forEach((item) => item.node.selected = false);
                     }
                 }
             } else {
@@ -8258,7 +8440,7 @@
 
             app.pbrShader = makeProgram(pbrShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters',],
-                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
+                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'surfaceTexture', 'envTexture', 'pass']
             );
 
             app.pbrClearShader = makeProgram(pbrClearShaderSource,
@@ -8326,6 +8508,7 @@
             if (app.useDeferredRender) {
                 app.renderTarget = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
             }
+            app.white = makeColourTexture();// getTexture('data/JORN-400.png');
         }
 
         /**
@@ -8637,5 +8820,4 @@
         window.addEventListener('load', main);
     </script>
 </body>
-
 </html>
