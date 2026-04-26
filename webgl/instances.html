@@ -733,6 +733,7 @@
         in vec3 emissivityColour;
         in vec3 reflectivity;
         in vec4 materialParameters;
+        in vec4 textureParameters;
 
         out vec3 v_position;
         out vec3 v_normal;
@@ -752,7 +753,9 @@
 
             v_position = worldPosition.xyz;
             v_normal = normalMatrix * normal;
-            v_coord = coord;
+            vec2 offset = textureParameters.xy;
+            vec2 scale = textureParameters.zw;
+            v_coord = offset + scale * coord;
             float up = dot(vec3(0.0f, 1.0f, 0.0f), normal);
 
             vec3 x = (1.0f - up) * cross(vec3(0.0f, 1.0f, 0.0f), normal) + up * vec3(1.0f, 0.0f, 0.0f);
@@ -1849,7 +1852,7 @@
         /**
          * Utility function to parse and report errors
          */
-        function glErrors(context = '') {
+        function reportGLErrors(context = '') {
             if (app.reportErrors) {
                 const err = gl.getError();
 
@@ -1862,7 +1865,7 @@
                     errors[gl.OUT_OF_MEMORY] = 'Not enough memory is left to execute the command.';
                     errors[gl.CONTEXT_LOST_WEBGL] = 'If the WebGL context is lost, this error is returned on the first call to getError. Afterwards and until the context has been restored, it returns gl.NO_ERROR.';
                     console.trace();
-                    console.log(context, errors[err]);
+                    console.log(context, err, errors[err]);
                 }
             }
         }
@@ -2007,8 +2010,8 @@
                 }
                 graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
             }
-            render() {
-                this.items.forEach((item) => item.update());
+            render(time) {
+                this.items.forEach((item) => item.update(time));
                 if (app.useDeferredRender) {
                     /* The models will normally consist of multiple instances of similar objects.
                      * The objects are defined by a node that sets the transform for meshes.
@@ -2045,7 +2048,7 @@
                     //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
                     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-                    this.renderQueue.forEach((item) => item.render());
+                    this.renderQueue.forEach((item) => item.render(time));
 
                     const width = canvas.width;
                     const height = canvas.height;
@@ -2097,7 +2100,7 @@
                     gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
 
                     gl.depthMask(false);  // Don't write to the depth buffer
-                    this.renderQueue.forEach((item) => item.render());
+                    this.renderQueue.forEach((item) => item.render(time));
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                     if (app.drawOverlay) {
@@ -2113,18 +2116,22 @@
                     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
 
                 } else {
-                    gl.useProgram(app.pbrShader.program);
 
                     gl.activeTexture(gl.TEXTURE0);
                     gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
-                    gl.uniform1i(app.pbrShader.envTexture, 0);
 
                     gl.activeTexture(gl.TEXTURE1);
                     gl.bindTexture(gl.TEXTURE_2D, app.white.texture);
+
+                    gl.useProgram(app.pbrShader.program);
+
+                    gl.uniform1i(app.pbrShader.envTexture, 0);
                     gl.uniform1i(app.pbrShader.surfaceTexture, 1);
 
                     gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
                     gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
+
+                    reportGLErrors('view render 1');
 
                     gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
@@ -2133,15 +2140,16 @@
 
                     gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
                     gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
-
+                    reportGLErrors('view render 2');
                     gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
                     gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
                     gl.uniform1i(app.pbrShader.pass, 0);
 
                     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-                    this.renderQueue.forEach((item) => item.render());
+                    reportGLErrors('view render pre');
+                    this.renderQueue.forEach((item) => item.render(time));
+                    reportGLErrors('view render end');
                 }
             }
             addNode(node) {
@@ -2185,6 +2193,7 @@
             force: [0, 0, 0],
             mass: 1000,
             rotation: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            reportErrors: true,
         };
 
         const shaderSource = {
@@ -2524,14 +2533,20 @@
                 };
             }
             image.src = url;
-
             return texture;
         }
 
+        const meta = Symbol('meta');
+        const textureAtlas = {
+            [meta]: {x: 0, y: 0},
+        };
         /**
          * Load a texture from a url.
          */
         function addTexture(url, parameters) {
+            if (textureAtlas[url]) {
+                return textureAtlas[url];
+            }
             gl.bindTexture(gl.TEXTURE_2D, app.white.texture);
 
             // Because images have to be downloaded over the internet
@@ -2541,28 +2556,32 @@
             // we'll update the texture with the contents of the image.
             const level = 0;
             const internalFormat = gl.RGBA;
-            const border = 0;
             const srcFormat = gl.RGBA;
             const srcType = gl.UNSIGNED_BYTE;
 
             const image = new Image();
             const context = app.white.context;
+            const canvas = app.white.context.canvas;
             const texture = {
                 texture: app.white.texture,
                 context: app.white.context,
             };
+            const width = canvas.width;
+            const height = canvas.height;
+
             image.onload = () => {
-                context.drawImage(image, 0, 1);
+                const level = 0;
+                const internalFormat = gl.RGBA;
+                const srcFormat = gl.RGBA;
+                const srcType = gl.UNSIGNED_BYTE;
+                context.drawImage(image, 1, 0);
                 gl.bindTexture(gl.TEXTURE_2D, app.white.texture);
-                gl.texImage2D(
-                    gl.TEXTURE_2D,
-                    level,
-                    internalFormat,
-                    srcFormat,
-                    srcType,
-                    app.white.context.canvas,
-                );
+                gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, srcFormat, srcType, canvas);
+
+                reportGLErrors('tex image 2d');
                 gl.generateMipmap(gl.TEXTURE_2D);
+                reportGLErrors('generate mipmap');
+
                 if (parameters) {
                     const mapping = {
                         magFilter: gl.TEXTURE_MAG_FILTER,
@@ -2573,13 +2592,17 @@
                     Object.entries.forEach(([parameter, value]) =>
                         gl.texParameteri(gl.TEXTURE_2D, mapping[parameter], value));
                 };
+
                 texture.x = 0;
                 texture.y = 1;
                 texture.width = image.width / context.canvas.width;
                 texture.height = image.height / context.canvas.height;
+                reportGLErrors('Add Texture');
+
             }
             image.src = url;
 
+            textureAtlas[url] = texture;
             return texture;
         }
 
@@ -2587,37 +2610,31 @@
          * Load a texture from a url.
          */
         function makeColourTexture(colour = [255, 255, 255, 255], parameters) {
+            //const width = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+            //const height = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+            const width = 1024;
+            const height = 1024;
+
             const texture = gl.createTexture();
-            const canvas = new OffscreenCanvas(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_TEXTURE_SIZE));
+            const canvas = new OffscreenCanvas(width, height);
             const context = canvas.getContext('2d');
 
-            context.fillStyle = `rgb(255, 255, 255)`;
-            context.fillRect(0, 0, 10, 10);
+            context.fillStyle = `rgb(${colour.join(', ')})`;
+            context.fillRect(0, 0, width, height);
 
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-
-            // Because images have to be downloaded over the internet
-            // they might take a moment until they are ready.
-            // Until then put a single pixel in the texture so we can
-            // use it immediately. When the image has finished downloading
-            // we'll update the texture with the contents of the image.
             const level = 0;
             const internalFormat = gl.RGBA;
-            const width = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-            const height = gl.getParameter(gl.MAX_TEXTURE_SIZE);
             const border = 0;
             const srcFormat = gl.RGBA;
             const srcType = gl.UNSIGNED_BYTE;
-            gl.texImage2D(
-                gl.TEXTURE_2D,
-                level,
-                internalFormat,
-                srcFormat,
-                srcType,
-                canvas,
-            );
+            const pixel = new Uint8Array([0, 0, 255, 255]);  // opaque blue
 
-            return { texture, context, x: 0, y: 0, width: 1 / canvas.width, height: 1 / canvas.height };
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                width, height, border, srcFormat, srcType,
+                context.createImageData(width, height));
+
+            return { texture, context, x: 0, y: 0, width: 1 / width, height: 1 / height };
         }
 
         /**
@@ -3596,7 +3613,7 @@
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.bindTexture(gl.TEXTURE_2D, null);
 
-            glErrors(gl, 'Load Texture');
+            reportGLErrors('Load Texture');
         }
 
         /**
@@ -3922,6 +3939,9 @@
             gl.disableVertexAttribArray(shader.materialParameters);
             gl.vertexAttrib4f(shader.materialParameters, 0, 1, 0, 0);
 
+            gl.disableVertexAttribArray(shader.textureParameters);
+            gl.vertexAttrib4f(shader.textureParameters, 0, 0, 1, 1);
+
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.lines);
 
             gl.vertexAttribPointer(shader.position, 3, gl.FLOAT, false, 24, 0);
@@ -3959,6 +3979,8 @@
             }
             gl.clearColor(...app.background, 1.0);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            reportGLErrors('render start');
 
             if (start) {
                 if (app.movement.state === 'start') {
@@ -4017,8 +4039,9 @@
                                 gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
                                 gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
                 */
-                app.view[0].render();
-
+                reportGLErrors('render 2');
+                app.view[0].render(time);
+                reportGLErrors('render 3');
                 /*
                 if (app.connections.length > 0) {
                     gl.enable(gl.DEPTH_TEST);
@@ -4060,7 +4083,7 @@
                 }
                 gl.enable(gl.DEPTH_TEST);
 
-                glErrors();
+                reportGLErrors('render end');
             } else {
                 start = time;
             }
@@ -4436,7 +4459,8 @@
                 if (indices) {
                     this.buffers.indices = gl.createBuffer();
                     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.indices);
-                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER
+                        , new Uint16Array(indices), gl.STATIC_DRAW);
                     this.points = indices.length;
 
                 }
@@ -4467,32 +4491,36 @@
                 for (let i = 0; i < 4; ++i) {
                     const location = app.pbrShader.model + i;
                     // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 38, 4 * (i * 4));
+                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * 42, 4 * (i * 4));
                     gl.vertexAttribDivisor(location, 1);
                     gl.enableVertexAttribArray(location);
                 }
                 for (let i = 0; i < 3; ++i) {
                     const location = app.pbrShader.normalMatrix + i;
                     // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 38, 4 * (16 + i * 3));
+                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 42, 4 * (16 + i * 3));
                     gl.vertexAttribDivisor(location, 1);
                     gl.enableVertexAttribArray(location);
                 }
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 38, 4 * 25);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 4 * 42, 4 * 25);
                 gl.vertexAttribDivisor(app.pbrShader.colour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.colour);
 
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 38, 4 * 28);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 4 * 42, 4 * 28);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, 1);
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
 
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 38, 4 * 31);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 4 * 42, 4 * 31);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, 1);
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
 
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 38, 4 * 34);
+                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 4 * 42, 4 * 34);
                 gl.vertexAttribDivisor(app.pbrShader.materialParameters, 1);
                 gl.enableVertexAttribArray(app.pbrShader.materialParameters);
+
+                gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, 4 * 42, 4 * 38);
+                gl.vertexAttribDivisor(app.pbrShader.textureParameters, 1);
+                gl.enableVertexAttribArray(app.pbrShader.textureParameters);
             }
             initialiseInstances() {
                 // Create an array with the data for all instances
@@ -4508,6 +4536,10 @@
                     data.push(instance.material.opacity);             // offset: 35, size: 1
                     data.push(instance.material.metallic);            // offset: 36, size: 1
                     data.push(instance.material.mirror);              // offset: 36, size: 1
+                    data.push(instance.texture.x);           // offset: 25, size: 1
+                    data.push(instance.texture.y);             // offset: 35, size: 1
+                    data.push(instance.texture.width);            // offset: 36, size: 1
+                    data.push(instance.texture.height);              // offset: 36, size: 1
                 });
 
                 // Create a buffer
@@ -4530,9 +4562,11 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
                 gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW);
             }
-            render() {
+            render(time) {
+                reportGLErrors('Collection Render 1');
                 if (this.instances.length > 0) {
                     gl.bindVertexArray(this.buffers.vao);
+                    reportGLErrors('Collection Render 2');
                     if (this.initialise) {
                         this.initialiseInstances();
                         this.initialise = false;
@@ -4540,12 +4574,15 @@
                         this.updateInstanceData();
                         this.updateInstances = false;
                     }
+                    reportGLErrors('Collection Render 3');
                     if (this.triangles > 0 && !app.wireframe) {
                         gl.drawArraysInstanced(gl.TRIANGLES, 0, this.triangles * 3, this.instances.length);
                     }
+                    reportGLErrors('Collection Render 4');
                     if (this.lines > 0 && (app.wireframe || !app.solid)) {
                         gl.drawArraysInstanced(gl.LINES, this.triangles * 3, this.lines * 2, this.instances.length);
                     }
+                    reportGLErrors('Collection Render 5');
                     if (this.buffers.indices && this.points > 0) {
                         gl.drawElementsInstanced(gl.TRIANGLES, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
                     }
@@ -4570,6 +4607,7 @@
                     metallic: getAttribute(node, 'metallic', 0.1),
                     mirror: getAttribute(node, 'mirror', 0.3),
                 };
+                this.texture = { x: 0, y: 0, width: 1, height: 1, };
 
                 this.origin = [0, 0, 0];
                 this.referenceFrame = new Transform();
@@ -4609,6 +4647,10 @@
                 this.instanceData[35] = this.material.opacity;               // offset: 35, size: 1
                 this.instanceData[36] = this.material.metallic;              // offset: 36, size: 1
                 this.instanceData[37] = this.material.mirror;                // offset: 37, size: 1
+                this.instanceData[38] = this.texture.x;             // offset: 25, size: 1
+                this.instanceData[39] = this.texture.y;               // offset: 35, size: 1
+                this.instanceData[40] = this.texture.width;              // offset: 36, size: 1
+                this.instanceData[41] = this.texture.height;                // offset: 37, size: 1
                 this.representation.updateInstances = true;
             }
             get world() {
@@ -4903,11 +4945,10 @@
                     positions[7], positions[6],
                     positions[6], positions[4],
                 ];
-                const uv = app.white;
                 const shape = [...triangles.flatMap((t, i) => [
-                    ...t.p1, ...t.n, uv.x + uv.width * i % 2, uv.y + uv.height * i % 2,
-                    ...t.p2, ...t.n, uv.x + uv.width, uv.y,
-                    ...t.p3, ...t.n, uv.x, uv.y + uv.height]),
+                    ...t.p1, ...t.n, i % 2, i % 2,
+                    ...t.p2, ...t.n, 1, 0,
+                    ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
                 const collection = new Collection({ shape, triangles: 12, lines: 12 });
@@ -4919,15 +4960,6 @@
 
                 this.collection = Block.collecion || Block.make();
                 this.children = [];
-                this.material = {
-                    roughness: 0.1,
-                    colour: [1, 0.95, 0.1],
-                    emissivityColour: [0, 0, 0],
-                    reflectivity: [0.2, 0.2, 0.2],
-                    opacity: 1,
-                    metallic: 0.1,
-                    mirror: 0.3,
-                };
                 this.instances = [new Instance(node, parent, `block`)];
                 this.collection.instances.push(...this.instances);
                 this.collection.initialise = true;
@@ -5046,19 +5078,11 @@
                     positions[7], positions[6],
                     positions[6], positions[4],
                 ];
-                const uv = {
-                    x: 0,
-                    y: 1 / 16384,
-                    width: 256 / 16384,
-                    height: 256 / 16384,
-                }
-                //app.white;
 
                 const shape = [...triangles.flatMap((t, i) => [
-                    ...t.p1, ...t.n, uv.x + uv.width * (i % 2), uv.y + uv.height * (i % 2),
-                    ...t.p2, ...t.n, uv.x + uv.width, uv.y,
-                    ...t.p3, ...t.n, uv.x, uv.y + uv.height]),
-                //...t.p1, ...t.n, i % 2, i % 2, ...t.p2, ...t.n, 1, 0, ...t.p3, ...t.n, 0, 1]),
+                    ...t.p1, ...t.n, i % 2, i % 2,
+                    ...t.p2, ...t.n, 1, 0,
+                    ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
                 const collection = new Collection({ shape, triangles: 12, lines: 12 });
@@ -5070,17 +5094,13 @@
 
                 this.collection = WalledBox.collecion || WalledBox.make();
                 this.children = [];
-                this.material = {
-                    roughness: 0.1,
-                    colour: [0.5, 0.5, 0.5],
-                    emissivityColour: [0, 0, 0],
-                    reflectivity: [0.2, 0.2, 0.2],
-                    opacity: 1,
-                    metallic: 0.1,
-                    mirror: 0.3,
-                };
                 const t = 0.1;
                 this.instances = [new Instance(node, parent, `WalledBox`)];
+
+                this.instances[0].texture.x = 0;
+                this.instances[0].texture.y = 1 / 1024;
+                this.instances[0].texture.width = 256 / 1024;
+                this.instances[0].texture.height = 256 / 1024;
 
                 this.collection.instances.push(...this.instances);
                 this.collection.initialise = true;
@@ -5433,12 +5453,6 @@
             static collections = [];
             static make(sides) {
                 const triangles = [];
-                const uv = {
-                    x: 0,
-                    y: 1 / 16384,
-                    width: 256 / 16384,
-                    height: 256 / 16384,
-                };
 
                 for (let i = 0; i < sides; ++i) {
                     const angle1 = Math.PI * 2 * i / sides;
@@ -5446,27 +5460,26 @@
                     const angle3 = Math.PI * 2 * (i + 1) / sides;
                     const angle4 = Math.PI * 2 * (i + 1.5) / sides;
                     triangles.push(
-                        0, -0.5, 0, 0, -1, 0, uv.x + uv.width / 2, uv.y,
-                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y,
-                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), 0, -1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle3)), uv.y,
+                        0, -0.5, 0, 0, -1, 0, 0.5, 0,
+                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
+                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle3), 0,
 
-                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y + uv.height,
-                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), 0, Math.cos(angle1), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y,
-                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle3)), uv.y,
+                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), 0, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
+                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5 + 0.5 * Math.sin(angle3), 0,
 
-                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle3)), uv.y,
-                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y + uv.height,
-                        0.5 * Math.sin(angle4), 0.5, 0.5 * Math.cos(angle4), Math.sin(angle4), 0, Math.cos(angle4), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle4)), uv.y + uv.height,
+                        0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), Math.sin(angle3), 0, Math.cos(angle3), 0.5 + 0.5 * Math.sin(angle3), 0,
+                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), 0, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        0.5 * Math.sin(angle4), 0.5, 0.5 * Math.cos(angle4), Math.sin(angle4), 0, Math.cos(angle4), 0.5 + 0.5 * Math.sin(angle4), 1,
 
-                        0, 0.5, 0, 0, 1, 0, uv.x + uv.width / 2, uv.y + uv.height,
-                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle2), uv.y + uv.height,
-                        0.5 * Math.sin(angle4), 0.5, 0.5 * Math.cos(angle4), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle4), uv.y + uv.height,
+                        0, 0.5, 0, 0, 1, 0, 0.5, 1,
+                        0.5 * Math.sin(angle2), 0.5, 0.5 * Math.cos(angle2), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle2), 1,
+                        0.5 * Math.sin(angle4), 0.5, 0.5 * Math.cos(angle4), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle4), 1,
                     );
                 }
 
-                const collection = new Collection({ shape: triangles, triangles: triangles.length / 8 });
+                const collection = new Collection({ shape: triangles, triangles: triangles.length / 24 });
                 collection.key = sides;
-                collection.triangles = triangles.length / 8;
                 Cylinder.collections[sides] = collection;
                 return collection;
             }
@@ -5527,12 +5540,6 @@
         class Frustum extends Shape {
             static collections = [];
             static make(ratio, sides) {
-                const uv = {
-                    x: 0,
-                    y: 1 / 16384,
-                    width: 256 / 16384,
-                    height: 256 / 16384,
-                };
 
                 const triangles = [];
                 for (let i = 0; i < sides; ++i) {
@@ -5540,28 +5547,26 @@
                     const angle2 = Math.PI * 2 * (i + 1) / sides;
                     const ny = Math.sin(Math.atan(1 - ratio, 2));
                     triangles.push(
-                        0, -0.5, 0, 0, -1, 0, uv.x + uv.width * 0.5, uv.y,
-                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y,
-                        0.5 * Math.sin(angle2), -0.5, 0.5 * Math.cos(angle2), 0, -1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y,
+                        0, -0.5, 0, 0, -1, 0, 0.5, 0,
+                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
+                        0.5 * Math.sin(angle2), -0.5, 0.5 * Math.cos(angle2), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle2), 0,
 
-                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y,
-                        0.5 * ratio * Math.sin(angle1), 0.5, 0.5 * ratio * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y + uv.height,
-                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y + uv.height,
+                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
+                        0.5 * ratio * Math.sin(angle1), 0.5, 0.5 * ratio * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 1,
+                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
 
-                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y + uv.height,
-                        0.5 * Math.sin(angle2), -0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y,
-                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y,
+                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 1,
+                        0.5 * Math.sin(angle2), -0.5, 0.5 * Math.cos(angle2), Math.sin(angle2), ny, Math.cos(angle2), 0.5 + 0.5 * Math.sin(angle2), 0,
+                        0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), Math.sin(angle1), ny, Math.cos(angle1), 0.5 + 0.5 * Math.sin(angle1), 0,
 
-                        0, 0.5, 0, 0, 1, 0, uv.x + uv.width * 0.5, uv.y + uv.height,
-                        0.5 * ratio * Math.sin(angle1), 0.5, 0.5 * ratio * Math.cos(angle1), 0, 1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle1)), uv.y + uv.height,
-                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), 0, 1, 0, uv.x + uv.width * (0.5 + 0.5 * Math.sin(angle2)), uv.y + uv.height,
+                        0, 0.5, 0, 0, 1, 0, 0.5, 1,
+                        0.5 * ratio * Math.sin(angle1), 0.5, 0.5 * ratio * Math.cos(angle1), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle1), 1,
+                        0.5 * ratio * Math.sin(angle2), 0.5, 0.5 * ratio * Math.cos(angle2), 0, 1, 0, 0.5 + 0.5 * Math.sin(angle2), 1,
                     );
                 }
 
-                const collection = new Collection({ shape: triangles, triangles: triangles.length / 6 });
+                const collection = new Collection({ shape: triangles, triangles: triangles.length / 24 });
                 collection.key = [ratio, sides];
-                collection.triangles = triangles.length / 6;
-
                 Frustum.collections[sides] = collection;
                 return collection;
             }
@@ -5697,16 +5702,10 @@
                 let i = 0;
                 while (i <= subdivisions) {
                     if (Icosphere.level[i] === undefined) {
-                        const uv = {
-                            x: 0,
-                            y: 1 / 16384,
-                            width: 256 / 16384,
-                            height: 256 / 16384,
-                        };
                         const positions = points.flatMap((point) => [
                             ...point.map((p) => p * 0.5), ...point,
-                            uv.x + uv.width * 0.5 * (1 + Math.atan2(point[0], point[2]) / Math.PI),
-                            uv.y + uv.height * (1 + point[1]) * 0.5]);
+                            0.5 * (1 + Math.atan2(point[0], point[2]) / Math.PI),
+                            1 + point[1] * 0.5]);
                         const indices = faces.flatMap((face) => {
                             const points = [face[0].p1, face[0].p2];
                             points.push(points.includes(face[1].p1) ? face[1].p2 : face[1].p1);
@@ -5764,14 +5763,15 @@
                 const n = l / direction.reduce((s, v) => s + v * v, 0);
                 const p = sum(point, scale(direction, n));
                 const dist = Math.hypot(...p);
-                if (dist <= 1) {
+                const radius = getAttribute(this.node, 'radius');
+                if (dist <= radius) {
                     const offset = scale(direction, Math.sqrt(1 - dist * dist));
                     this.points = [
                         applyTransform(subtract(p, offset), world),
                         applyTransform(sum(p, offset), world),
                     ];
                 }
-                return dist <= 1.0;
+                return dist <= radius;
             }
             highlightFace(line) {
             }
@@ -6568,7 +6568,6 @@
             app.view.forEach((view) => view.updateMaterials());
         }
 
-        const meta = Symbol('meta');
         const children = Symbol('children');
         const connections = Symbol('connections');
 
@@ -8447,12 +8446,12 @@
                 ['projection', 'view', 'texture']);
 
             app.pbrShader = makeProgram(pbrShaderSource,
-                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters',],
+                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'surfaceTexture', 'envTexture', 'pass']
             );
 
             app.pbrClearShader = makeProgram(pbrClearShaderSource,
-                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters',],
+                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
             );
 
@@ -8517,7 +8516,7 @@
                 app.renderTarget = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
             }
             app.white = makeColourTexture();// getTexture('data/JORN-400.png');
-            addTexture('cubetexture.png');
+            app.cubeTexture = addTexture('cubetexture.png');
         }
 
         /**
