@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>untitled</title>
+  <style>
+html {
+    font-family: sans-serif;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+}
+
+#debug {
+  position: fixed;
+  top: 0;
+  left: 0;
+  color: white;
+  z-index: 10;
+}
+
+#canvas {
+  width: 100%;
+  height: 100%;
+}
+</style>
+
+</head>
+
+<body>
+      <div id="debug"></div>
+  <canvas id="canvas" tabindex="0"></canvas>
+
+    <script>
+addEventListener('load', main);
+
+function report(str) {
+    const debug = document.getElementById('debug');
+    debug.innerHTML = str;
+}
+
+const view = {
+    left: 0,
+    top: 0,
+    width: document.body.clientWidth,
+    height: document.body.clientHeight,
+};
+
+const boxes = [];
+const click = {};
+
+/**
+ * Converts an HSL color value to RGB. Conversion formula
+ * adapted from http://en.wikipedia.org/wiki/HSL_color_space.
+ * Assumes h, s, and l are contained in the set [0, 1] and
+ * returns r, g, and b in the set [0, 255].
+ *
+ * @param   {number}  h       The hue
+ * @param   {number}  s       The saturation
+ * @param   {number}  l       The lightness
+ * @return  {Array}           The RGB representation
+ */
+function hslToRgb(h, s, l) {
+    var r, g, b;
+
+    if (s == 0) {
+        r = g = b = l; // achromatic
+    } else {
+        var hue2rgb = function hue2rgb(p, q, t) {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        }
+
+        var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        var p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+    }
+
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+
+class Box {
+    constructor (x, y, width, height) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+        this.colour = hslToRgb(Math.random(), 0.5, 0.5);
+    }
+    colourString() {
+        return `${this.colour[0]}, ${this.colour[1]}, ${this.colour[2]}`;
+    }
+    draw(context) {
+        const alpha = this.selected ? 1.0 : 0.4;
+        context.fillStyle = `rgb(${this.colourString()}, ${alpha})`;
+        context.strokeStyle = `rgb(${this.colourString()}, 1.0)`;
+        context.beginPath();
+        context.rect(...toScreen(this.x, this.y), this.width * context.width / view.width, this.height * context.height / view.height);
+        context.fill();
+        context.stroke();
+    }
+    test(x, y) {
+        return x >= this.x && x <= (this.x + this.width) && 
+            y >= this.y && y <= (this.y + this.height);
+    }
+}
+
+/**
+ *
+ */
+function toScreen(appX, appY) {
+    const canvas = document.getElementById('canvas');
+    const rect = canvas.getBoundingClientRect();
+
+    const x = (appX - view.left) * rect.width / view.width;
+    const y = (appY - view.top) * rect.height / view.height;
+
+    return [x, y];
+}
+
+
+/**
+ *
+ */
+function toApp(screenX, screenY) {
+    const canvas = document.getElementById('canvas');
+    const rect = canvas.getBoundingClientRect();
+
+    const x = (screenX * view.width / rect.width) + view.left;
+    const y = (screenY * view.height / rect.height) + view.top;
+
+    return [x, y];
+}
+
+function main() {
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+
+    const box = {
+       x: 0, y: 0,
+       width: 0, height: 0,
+    };
+
+    const start = [];
+    let action;
+    let changeX, changeY;
+
+    function touchstart(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Save the initial state of the view
+        start.view = Object.assign({}, view);
+        const [x, y] = toApp(event.touches[0].clientX, event.touches[0].clientY);
+        start[0] = {x, y};
+
+        if (event.touches.length === 3) {
+            view.left = 0;
+            view.top = 0;
+            view.width = 1;
+            view.height = 1;
+        } else if (event.touches.length === 2) {
+            action = 'edit view';
+            const [x, y] = toApp(event.touches[1].clientX, event.touches[1].clientY);
+            start[1] = {x, y};
+            changeX = Math.abs(event.touches[0].clientX - event.touches[1].clientX) > 50;
+            changeY = Math.abs(event.touches[0].clientY - event.touches[1].clientY) > 50;
+        } else {
+            action = 'click';
+        }
+    }
+
+    function touchmove(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.touches.length === 2) {
+            const rect = canvas.getBoundingClientRect();
+            const [x0, y0] = [event.touches[0].clientX, event.touches[0].clientY];
+            const [x1, y1] = [event.touches[1].clientX, event.touches[1].clientY];
+
+            // Determine the view position and scale that results in the updated
+            // points having the same view positions as the original points.
+
+            // vx = (x * vw / rect.width) - vl
+            // vx + vl = (x * vw / rect.width)
+            // (vx + vl) * rect.width / x = vw
+
+            // (s[0].x + vl) * rect.width / x0 = (s[1].x + vl) * rect.width / x1
+            // (s[0].x + vl) * x1 = (s[1].x + vl) * x0
+            // s[0].x * x1 + vl * x1 = s[1].x * x0 + vl * x0
+            // vl * x1 - vl * x0 = s[1].x * x0 - s[0].x * x1
+            // vl * (x1 - x0) = s[1].x * x0 - s[0].x * x1
+            // vl = (s[1].x * x0 - s[0].x * x1) / (x1 - x0)
+
+
+            // vl = (x * vl / rect.width) - vx
+
+            // vl = (x0 * vw / rect.width) - start[0].x
+            // vl = (x1 * vw / rect.width) - start[1].x
+            // (x0 * vw / rect.width) - start[0].x = (x1 * vw / rect.width) - start[1].x
+            // x0 * vw = x1 * vw + rect.width * (start[0].x - start[1].x)
+            // (x0 - x1) * vw = rect.width * (start[0].x - start[1].x)
+            box.width = box.height = 0;
+            if (changeX) {
+                view.left = (start[1].x * x0 - start[0].x * x1) / (x0 - x1);
+                view.width = rect.width * (start[0].x - start[1].x) / (x0 - x1);
+            }
+
+            if (changeY) {
+                view.top = (start[1].y * y0 - start[0].y * y1) / (y0 - y1);
+                view.height = rect.height * (start[0].y - start[1].y) / (y0 - y1);
+            }
+
+        } else if (action === 'click' || action === 'drag') {
+            action = 'drag';
+            const [x, y] = toApp(event.touches[0].clientX, event.touches[0].clientY);
+            box.x = Math.min(start[0].x, x);
+            box.y = Math.min(start[0].y, y);
+            box.width = Math.abs(start[0].x - x);
+            box.height = Math.abs(start[0].y - y);
+        }
+    }
+
+    const points = [];
+    function touchend(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (action === 'click') {
+            boxes.forEach((box) => box.selected = false);
+            if (start[0].x >= box.x && start[0].x <= (box.x + box.width) &&
+                start[0].y >= box.y && start[0].y <= (box.y + box.height)) {
+                boxes.push(new Box(box.x, box.y, box.width, box.height));
+            } else {
+                boxes.toReversed().some((box) => box.selected = box.test(start[0].x, start[0].y));
+            }
+            click.x = start[0].x;
+            click.y = start[0].y;
+            box.width = box.height = 0;
+            points.push({x: click.x, y: click.y});
+        } else if (action === 'edit view') {
+
+        }
+    }
+
+    function keydown(event) {
+        report(event.key);
+    }
+    
+    canvas.addEventListener('touchstart', touchstart);
+    canvas.addEventListener('touchmove', touchmove);
+    canvas.addEventListener('touchend', touchend);
+    canvas.addEventListener('keydown', keydown);
+
+    function cross(v1, v2) {
+        return v1.x * v2.y - v2.x * v1.y;
+    }
+
+    function crosses(rect) {
+        const v1 = {
+            x: box.x - 0,
+            y: box.y - 1,
+        }
+        const v2 = {
+            x: box.x + box.width - 0,
+            y: box.y - 1,
+        }
+        const v3 = {
+            x: box.x + box.width - 0,
+            y: box.y + box.height - 1,
+        }
+        const v4 = {
+            x: box.x - 0,
+            y: box.y + box.height - 1,
+        }
+        const v5 = {
+            x: 1 - 0,
+            y: 0 - 1,
+        }
+        const c1 = cross(v1, v5);
+        const c2 = cross(v2, v5);
+        const c3 = cross(v3, v5);
+        const c4 = cross(v4, v5);
+        return [((c1 * c2) < 0) || ((c2 * c3) < 0) || ((c3 * c4) < 0), c1 * c2, c2 * c3, c3 * c4, c4 * +1];
+
+        report(`${c1} ${c2} ${c3} ${c4} ${((c1 * c2) < 0) || ((c1 * c3) < 0) || ((c1 * c2) < 0)}`);
+
+        return ((c1 * c2) < 0) || ((c2 * c3) < 0) || ((c3 * c4) < 0);
+    }
+
+    function draw() {
+        report(`${view.left.toFixed(2)}, ${view.top.toFixed(2)} ${view.width.toFixed(2)}, ${view.height.toFixed(2)}`);
+
+        const rect = canvas.getBoundingClientRect();
+        context.width = rect.width;
+        context.height = rect.height;
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+
+        context.globalCompositeOperation = 'source-over';
+        context.shadowBlur = 0;
+        context.fillStyle = 'rgb(0,0,0)';
+        context.fillRect( 0, 0, rect.width, rect.height );
+        //context.globalCompositeOperation = 'lighter';
+
+        context.strokeStyle = 'rgba(255, 240, 100, 0.9)';
+        context.fillStyle = 'rgba(255, 240, 100, 0.2)';
+        //context.shadowColor = 'rgba(255, 240, 100, 0.9)';
+        context.shadowBlur = 15;
+        context.lineWidth = 1;
+
+        let step = 128;
+        let start = step * Math.ceil(view.left / step);
+        
+        context.beginPath();
+        for (let x = start; x < view.left + view.width; x += step) {
+            context.moveTo(...toScreen(x, view.top));
+            context.lineTo(...toScreen(x, view.top + view.height));
+        }
+
+        step = 128;
+        start = step * Math.ceil(view.top / step);
+
+        for (let y = start; y < view.top + view.height; y += step) {
+            context.moveTo(...toScreen(view.left, y));
+            context.lineTo(...toScreen(view.left + view.width, y));
+        }
+        context.stroke();
+
+        context.beginPath();
+        context.moveTo(...toScreen(0, 1));
+        context.lineTo(...toScreen(1, 0));
+        context.stroke();
+
+        if (box.width && box.height) {
+            context.fillRect( ...toScreen(box.x, box.y), box.width * rect.width / view.width, box.height * rect.height / view.height);
+        }
+
+        const intersect = crosses(rect);
+
+        if (intersect[0]) {
+            context.strokeStyle = 'rgba(255, 200, 200, 1)';
+            context.lineWidth = 3;
+            context.beginPath();
+            if (intersect[1] < 0) {
+                context.moveTo(...toScreen(box.x, box.y));
+                context.lineTo(...toScreen(box.x + box.width, box.y));
+            }
+            if (intersect[2] < 0) {
+                context.moveTo(...toScreen(box.x + box.width, box.y));
+                context.lineTo(...toScreen(box.x + box.width, box.y + box.height));
+            }
+            if (intersect[3] < 0) {
+                context.moveTo(...toScreen(box.x + box.width, box.y + box.height));
+                context.lineTo(...toScreen(box.x, box.y + box.height));
+            }
+            if (intersect[4] < 0) {
+                context.moveTo(...toScreen(box.x, box.y + box.height));
+                context.lineTo(...toScreen(box.x, box.y));
+            }
+            context.stroke();
+        }
+
+        boxes.forEach((box) => box.draw(context));
+        if (click.x !== undefined) {
+            context.beginPath();
+            context.arc(...toScreen(click.x, click.y), 5, 0, 2 * Math.PI);
+            context.stroke();
+            context.fill();
+        }
+        if (points.length > 1) {
+            context.beginPath();
+            context.moveTo(...toScreen(points[0].x, points[0].y));
+            points.slice(1).forEach((point) =>
+                context.lineTo(...toScreen(point.x, point.y)));
+            context.lineTo(...toScreen(points[0].x, points[0].y));
+            context.stroke();
+            context.fill();
+        }
+        if (points.length > 1) {
+            const vectors = [];
+            context.beginPath();
+            let sum = 0;
+            points.forEach((point, i) => {
+                const next = (i + 1) % points.length;
+                vectors.push({
+                    x: points[next].x - point.x,
+                    y: points[next].y - point.y,
+                });
+                if (i > 0) {
+                    sum += cross(vectors[i], vectors[i - 1]);
+                }
+            });
+            const dir = -sum < 0 ? -1 : 1;
+            
+            const corners = [];
+            points.forEach((point, i) => {
+                
+                const prior = (i + points.length - 1) % points.length;
+                const d1 = vectors[prior];
+                const d2 = vectors[i];
+
+                const l1 = 0.05 * Math.hypot(d1.x, d1.y);
+                const p1 = {
+                    x: point.x - dir * d1.y / l1,
+                    y: point.y + dir * d1.x / l1
+                };
+                const l2 = 0.05 * Math.hypot(d2.x, d2.y);
+                const p2 = {
+                    x: point.x - dir * d2.y / l2,
+                    y: point.y + dir * d2.x / l2
+                };
+
+                context.moveTo(...toScreen(p1.x, p1.y));
+                context.lineTo(...toScreen(point.x, point.y));
+                context.lineTo(...toScreen(p2.x, p2.y));
+
+                const u = (p2.y * d2.x + d2.y * p1.x - d2.y * p2.x - p1.y * d2.x) / (d1.y * d2.x - d2.y * d1.x);
+                const corner = {
+                    x: p1.x + u * d1.x,
+                    y: p1.y + u * d1.y,
+                };
+                corners.push(corner);
+                context.moveTo(...toScreen(point.x, point.y));
+                context.lineTo(...toScreen(corner.x, corner.y));
+            });
+
+            context.stroke();
+            
+            context.strokeStyle = 'lightblue';
+            context.beginPath();
+            context.moveTo(...toScreen(corners[0].x, corners[0].y));
+            corners.slice(1).forEach((point) =>
+                context.lineTo(...toScreen(point.x, point.y)));
+            context.lineTo(...toScreen(corners[0].x, corners[0].y));
+            context.stroke();
+            //context.fill();
+
+        }
+    }
+
+    let generators = [];
+    let dots = [];
+
+    const newGenerator = () => ({
+            x: Math.random(),
+            y: Math.random(),
+            initialRate: 1,
+            start: Date.now(),
+            duration: 3,
+        });
+
+    const updateGenerator = (generator, delta) => {
+        const age = (Date.now() - generator.start) / 1000;
+        if (age > generator.duration) {
+            return;
+        }
+        const rate = generator.initialRate * (1 - age / generator.duration);
+        if (Math.random() < rate) {
+            dots.push(newDot(generator.x, generator.y));
+        }
+        return true;
+    }
+
+    const newDot = (x, y) => ({
+            x, y,
+            vx: Math.random(),
+            vy: Math.random(),
+            radius: 4 * Math.random(),
+            hue: Math.random() * 360,
+        });
+
+    const updateDot = (dot, delta) => {
+        const alpha = 1;
+        const v = Math.hypot(dot.vx, dot.vy);
+        if (v > 0.01) {
+            return false;
+        }
+        dot.vx -= delta * (v * v) / 1000;
+        dot.vy -= delta * (v * v) / 1000;
+        dot.x += dot.vx * delta / 1000;
+        dot.y += dot.vy * delta / 1000;
+       
+        dot.colour = `hsl(${dot.hue} 80% 80% / ${alpha})`;
+        return true;
+    }
+
+
+    const drawDot = (dot) => {
+        context.fillStyle = dot.colour;
+        context.beginPath();
+        context.arc(dot.x, dot.y, dot.radius, 0, Math.PI * 2, false);
+        context.fill();
+    }
+
+
+
+    function fireworks(delta) {
+        if (Math.random() > 0.95) {
+            generators.push(newGenerator());
+        }
+
+        generators = generators.filter((generator) => updateGenerator(generator, delta));
+        dots = dots.filter((dot) => updateDot(dot, delta));
+        dots.forEach(drawDot);
+
+    }
+
+    let last;
+    const update = (time) => {
+        draw();
+        if (last) {
+            const delta = time - last;
+            fireworks(delta);
+        }
+        last = time;
+        window.requestAnimationFrame(update);
+    };
+
+    update();
+}
+</script>
+</body>
+</html>
