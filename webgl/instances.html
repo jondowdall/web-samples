@@ -902,15 +902,16 @@
             lo = pow(lo, vec3(1.0 / 2.2));
             totalShine += 10.0 * length(pow(1.0 - alpha, 2.0) * F * F * texture(envTexture, direction, (pow(alpha, 3.0)) * 20.0).rgb);
 
-            if (v_opacity < 0.9) {
+            if (v_opacity < 0.1) {
                 discard;
                 return;
             }
 
             float clear = max(totalShine * 0.2, 0.0) * v_opacity;
             float opacity = clear + (1.0 - clear) * pow(v_opacity, 5.0);
+
             float occ = 1.0 - 0.1 * (pow(2.0 * (v_coord2.x - 0.5), 8.0) + pow(2.0 * (v_coord2.y - 0.5), 8.0));
-            fragmentColour = vec4(lo * occ, opacity);// * texture(surfaceTexture, v_coord);
+            fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
         }
     </script>
 
@@ -2567,7 +2568,7 @@
         /**
          * Load a texture from a url.
          */
-        function addTexture(url, texture={}, callback) {
+        function addTexture(url, texture = {}, callback) {
             if (textureAtlas[url]) {
                 return textureAtlas[url];
             }
@@ -4541,6 +4542,19 @@
                 gl.vertexAttribDivisor(app.pbrShader.textureParameters, 1);
                 gl.enableVertexAttribArray(app.pbrShader.textureParameters);
             }
+            addInstance(node, parent, name) {
+                const instance = new Instance(node, parent, this, name);
+                this.instances.push(instance);
+                this.initialise = true;
+                return instance;
+            }
+            removeInstance(instance) {
+                const index = this.instances.indexOf(instance);
+                if (index >= 0) {
+                    this.instances.splice(index, 1);
+                    this.initialise = true;
+                }
+            }
             initialiseInstances() {
                 // Create an array with the data for all instances
                 const data = [];
@@ -4579,7 +4593,7 @@
             }
             updateInstanceData() {
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData);
             }
             render(time) {
                 reportGLErrors('Collection Render 1');
@@ -4840,9 +4854,7 @@
 
                 this.collection = Quad.collection || Quad.make();
                 this.children = [];
-                this.instances = [new Instance(node, parent, this.collection, `quad`)];
-                this.collection.instances.push(...this.instances);
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, `quad`)];
             }
             intersects(line, all) {
                 const transform = multiply(this.transform, this.world);
@@ -4969,9 +4981,7 @@
 
                 this.collection = Block.collecion || Block.make();
                 this.children = [];
-                this.instances = [new Instance(node, parent, this.collection, `block`)];
-                this.collection.instances.push(...this.instances);
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, `block`)];
             }
             intersects(line, all) {
                 const transform = multiply(this.transform, this.world);
@@ -5101,18 +5111,16 @@
             constructor(node, parent) {
                 super(node, parent, `WalledBox`);
 
-                this.collection = WalledBox.collecion || WalledBox.make();
+                this.collection = WalledBox.collection || WalledBox.make();
                 this.children = [];
                 const t = 0.1;
-                this.instances = [new Instance(node, parent, this.collection, `WalledBox`)];
-
-                this.collection.instances.push(...this.instances);
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, `WalledBox`)];
             }
             makeWalls() {
-                if (this.instances.length > 1) {
+                if (this.open) {
                     return;
                 }
+                this.open = true;
                 this.material = {
                     roughness: 0.1,
                     colour: [0.6, 0.6, 0.6],
@@ -5125,11 +5133,11 @@
                 const t = Math.max(1, ...getAttribute(this.node, 'size')) * 0.001;
                 const node = this.node;
                 this.instances.push(
-                    new Instance(node, this.parent, this.collection, 'WalledBox'),
-                    new Instance(node, this.parent, this.collection, 'WalledBox'),
-                    new Instance(node, this.parent, this.collection, 'WalledBox'),
-                    new Instance(node, this.parent, this.collection, 'WalledBox'),
-                    new Instance(node, this.parent, this.collection, 'WalledBox'));
+                    this.collection.addInstance(node, this.parent, 'WalledBox'),
+                    this.collection.addInstance(node, this.parent, 'WalledBox'),
+                    this.collection.addInstance(node, this.parent, 'WalledBox'),
+                    this.collection.addInstance(node, this.parent, 'WalledBox'),
+                    this.collection.addInstance(node, this.parent, 'WalledBox'));
 
                 this.instances[0].move([(t - node.size[0]) * 0.5, 0, 0]);
                 this.instances[0].scale([t / node.size[0], 1 - 2 * t / node.size[1], 1 - 2 * t / node.size[2]]);
@@ -5154,10 +5162,6 @@
                 this.instances[5].move([0, 0, 0.5 * (node.size[2] - t)]);
                 this.instances[5].scale([1, 1 - 2 * t / node.size[1], t / node.size[2]]);
                 this.instances[5].material = this.material;
-
-                this.collection.instances.push(...this.instances.slice(1));
-                this.collection.initialise = true;
-
             }
             intersects(line, all) {
                 const transform = multiply(this.transform, this.world);
@@ -5222,7 +5226,12 @@
                         const centre = applyTransform([0.5, 0.5, 0.5], transform);
                         const eyeVector = subtract(centre, app.camera.position);
                         const opacity = dot(eyeVector, normal);
-                        side.instanceData[35] = opacity > 0 ? 1 : 0;
+                        //side.instanceData[35] = opacity > 0 ? 1 : 0;
+                        if (opacity > 0) {
+                            side.instanceData.set(multiply(side.transform, side.world));
+                        } else {
+                            side.instanceData.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                        }
                         this.collection.updateInstances = true;
                     });
                 }
@@ -5388,9 +5397,7 @@
                     this.collection = BevelledBlock.make(scaledBevel);
                 }
                 this.children = [];
-                this.instances = [new Instance(node, parent, this.collection, 'BavelledBlock')];
-                this.collection.instances.push(...this.instances);
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, 'BavelledBlock')];
             }
             intersects(line, all) {
                 let size;
@@ -5484,9 +5491,7 @@
                 this.collection = Cylinder.collections[sides] || Cylinder.make(sides);
 
                 this.children = [];
-                this.instances = [new Instance(node, parent, this.collection, 'Cylinder')];
-                this.collection.instances.push(...this.instances);
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, 'Cylinder')];
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
@@ -5564,10 +5569,7 @@
                 this.children = [];
                 this.name = `frustum (${sides}:${Frustum.collections[sides].instances.length})`;
                 this.collection = Frustum.collections[sides];
-                this.instances = [new Instance(node, parent, this.collection, 'Frustum')];
-                Frustum.collections[sides].instances.push(...this.instances);
-
-                this.collection.initialise = true;
+                this.instances = [this.collection.addInstance(node, parent, 'Frustum')];
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
@@ -5704,14 +5706,12 @@
             constructor(node, parent, subdivisions = 0) {
                 super(node, parent, 'icosphere');
                 this.collection = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
-                this.instances = [new Instance(node, parent, this.collection, 'icosphere')];
-                this.collection.instances.push(...this.instances);
+                this.instances = [this.collection.addInstance(node, parent, 'icosphere')];
                 const scale = getAttribute(node, 'radius') * 2;
                 this.instances[0].scale([scale, scale, scale]);
 
                 this.children = [];
                 this.name = node.name || `icosphere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
-                this.collection.initialise = true;
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
@@ -6979,7 +6979,7 @@
                 context = Object.assign({}, source[meta].context, context);
                 const instance = source[meta].context.instance;
                 const attrs = Object.assign({}, source[meta].context.values);
-          
+
                 const resolve = (string) =>
                     string.replace ?
                         string.replace(/<([0-9]*)>/g, (match, num) =>
@@ -7555,7 +7555,8 @@
             const hits = [];
             const test = (item) => {
                 if (item.intersects(line)) {
-                    if (this.radius > 0 && !item.hidden && app.solid && !item.state.transparent) {
+                    //if (this.radius > 0 && !item.hidden && app.solid && !item.state.transparent) {
+                    if (!item.open && !item.hidden && app.solid && !item.state.transparent) {
                         hits.push(item);
                     } else {
                         const content = item.children.filter((child) => test(child));
@@ -7775,7 +7776,7 @@
                     if (node[meta].representation instanceof WalledBox) {
                         node[meta].representation.makeWalls();
                     }
-                    node[children].forEach((child) => app.view[0].addItem(child, node[meta].representation));
+                    //node[children].forEach((child) => app.view[0].addItem(child, node[meta].representation));
                     app.view.forEach((view) => view.updateMaterials());
                 }
             }
