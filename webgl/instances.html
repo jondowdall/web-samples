@@ -51,6 +51,15 @@
             height: 100dvh;
         }
 
+        #overlay-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100dvw;
+            height: 100dvh;
+            pointer-events: none;
+        }
+
         #command-entry {
             position: fixed;
             top: 1em;
@@ -431,9 +440,7 @@
 
 <body>
     <canvas id="main-canvas" tabindex="1">HTML canvas not supported!</canvas>
-    <!--div id="command-entry">
-        <input type="text" \>
-    </div-->
+    <canvas id="overlay-canvas" tabindex="1">HTML canvas not supported!</canvas>
 
     <input id="command-entry" type="text" />
 
@@ -1850,6 +1857,11 @@
         //const gl = canvas.getContext('webgl2', { antialias: false });
         const gl = canvas.getContext('webgl2', { antialias: true });
 
+        const overlay = document.getElementById('overlay-canvas');
+        const ctx = overlay.getContext('2d');
+        overlay.width = overlay.clientWidth;
+        overlay.height = overlay.clientHeight;
+
         /**
          * Utility function to parse and report errors
          */
@@ -2015,6 +2027,60 @@
                 graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
             }
             render(time) {
+                const width = ctx.canvas.width;
+                const height = ctx.canvas.height;
+                ctx.clearRect(0, 0, width, height);
+
+                if (app.show) {
+                    const transform = multiply(app.viewMatrix, app.projectionMatrix);
+                    const corners = [
+                        [-0.5, -0.5, -0.5],
+                        [0.5, -0.5, -0.5],
+                        [0.5, 0.5, -0.5],
+                        [-0.5, 0.5, -0.5],
+                        [-0.5, 0.5, 0.5],
+                        [-0.5, -0.5, 0.5],
+                        [0.5, -0.5, 0.5],
+                        [0.5, 0.5, 0.5],
+                    ];
+                    const point = applyTransform4([...app.show.point, 1], transform);
+                    const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+
+                    const radius = Math.max(...corners.map((corner) => {
+                        corner = applyTransform(corner, app.show.toWorld);
+                        const point = applyTransform4([...corner, 1], transform);
+                        const screen = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                        return Math.hypot(...subtract(screen, position)) * 0.5;
+                    }));
+
+                    app.show.distance = Math.hypot(...subtract(app.show.point, app.camera.position));
+                    app.show.transform = transform;
+                    app.show.position = position;
+                    app.show.radius = radius;
+
+                    if (app.showConstruction) {
+                        const x = 0.5 * width * (position[0] / app.aspect + 1);
+                        const y = 0.5 * height * (1 - position[1]);
+                        ctx.strokeStyle = 'black';
+                        ctx.fillStyle = 'rgb(255, 255, 0, 0.3)';
+                        ctx.beginPath();
+                        ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                        ctx.fill();
+                        ctx.stroke();
+
+                        ctx.strokeStyle = 'white';
+                        ctx.beginPath();
+                        corners.forEach((corner) => {
+                            corner = applyTransform(corner, app.show.toWorld);
+                            const point = applyTransform4([...corner, 1], transform);
+                            const position = [point[0] / point[3], point[1] / point[3]];
+                            const x = 0.5 * width * (position[0] + 1);
+                            const y = 0.5 * height * (1 - position[1]);
+                            ctx.lineTo(x, y);
+                        });
+                        ctx.stroke();
+                    }
+                }
                 this.items.forEach((item) => item.update(time));
                 if (app.useDeferredRender) {
                     /* The models will normally consist of multiple instances of similar objects.
@@ -2572,7 +2638,6 @@
             if (textureAtlas[url]) {
                 return textureAtlas[url];
             }
-            gl.bindTexture(gl.TEXTURE_2D, textureAtlas[meta].texture);
 
             // Because images have to be downloaded over the internet
             // they might take a moment until they are ready.
@@ -2657,6 +2722,10 @@
             gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
                 width, height, border, srcFormat, srcType,
                 textureAtlas[meta].context.createImageData(width, height));
+
+            gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, srcFormat, srcType, textureAtlas[meta].canvas);
+            gl.generateMipmap(gl.TEXTURE_2D);
+
             textureAtlas[meta].parameters = parameters;
             const row = getTextureRow(1, 1);
             textureAtlas[name] = { x: row.x, y: row.y, width: 1 / width, height: 1 / height };
@@ -3257,7 +3326,6 @@
                 intersects(line, all) {
                     const transform = this.world;
                     const size = extractScale(this.transform);
-
                     const radius = Math.hypot(...size);
 
                     const centre = applyTransform([0, 0, 0], this.world);
@@ -4559,7 +4627,7 @@
                 // Create an array with the data for all instances
                 const data = [];
                 this.instances.forEach((instance) => {
-                    const transform = instance.hidden ? [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0] : multiply(instance.transform, instance.world);
+                    const transform = instance.hidden ? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : multiply(instance.transform, instance.world);
                     data.push(...transform);                          // offset:  0, size: 16
                     data.push(...instance.orientation);               // offset: 16, size: 9
                     data.push(...instance.material.colour);           // offset: 26, size: 3
@@ -4690,6 +4758,20 @@
                     this.hidden = false;
                 }
             }
+            highlight() {
+                if (!this.highlighted) {
+                    this.instanceData.set([255, 255, 50], 28);
+                    this.collection.updateInstances = true;
+                    this.highlighted = true;
+                }
+            }
+            unhighlight() {
+                if (this.highlighted) {
+                    this.instanceData.set(this.material.emissivityColour, 28);
+                    this.collection.updateInstances = true;
+                    this.highlighted = false;
+                }
+            }
             update(point) { }
             updateInstanceData() {
                 this.instanceData.set(multiply(this.transform, this.world)); // offset:  0, size: 16
@@ -4782,10 +4864,46 @@
                 this.instances.forEach((instance) => instance.emissivityColour = value);
                 this.collection.updateInstances = true;
             }
-            update(point) {
-                if (point) {
-                    this.instances.forEach((instance) => instance.update(point));
+            update() {
+                if (this.node.selected) {
+                    this.instances.forEach((instance) => instance.highlight());
+                } else {
+                    this.instances.forEach((instance) => instance.unhighlight());
                 }
+                if (app.show && app.show.item !== this) {
+                    const transform = multiply(this.transform, this.world);
+                    // Get the origin of this element
+                    const origin = applyTransform([0, 0, 0], transform);
+                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+
+                    if (dist < app.show.distance) {
+                        const point = applyTransform4([...origin, 1], app.show.transform);
+                        const size = extractScale(this.transform);
+                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                        const radius = Math.hypot(...size) / point[3];
+
+                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                        if (gap < (radius + app.show.radius)) {
+                            this.instances.forEach((instance) => instance.hide());
+                            return;
+                        }
+
+                        if (app.showConstruction) {
+                            const width = ctx.canvas.width;
+                            const height = ctx.canvas.height;
+                            const x = 0.5 * width * (position[0] / app.aspect + 1);
+                            const y = 0.5 * height * (1 - position[1]);
+
+                            ctx.strokeStyle = 'grey';
+                            ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                            ctx.beginPath();
+                            ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
+                    }
+                }
+                this.instances.forEach((instance) => instance.show());
             }
             updateInstanceData() {
                 this.collection.updateInstances = true;
@@ -5136,20 +5254,11 @@
                 this.instances = [this.collection.addInstance(node, parent, `WalledBox`)];
             }
             makeWalls() {
-                if (this.open) {
+                if (this.interiorView) {
                     return;
                 }
-                this.open = true;
+                this.interiorView = true;
                 const material = this.instances[0].material;
-                /*{
-                    roughness: 0.1,
-                    colour: [0.6, 0.6, 0.6],
-                    emissivityColour: [0, 0, 0],
-                    reflectivity: [0.2, 0.2, 0.2],
-                    opacity: 1,
-                    metallic: 0.1,
-                    mirror: 0.3,
-                };*/
                 const t = getAttribute(this.node, 'walls');
                 const node = this.node;
                 this.instances.push(
@@ -5226,16 +5335,50 @@
             showInfo() {
             }
             update() {
-                if (this.instances.length > 1) {
+                if (this.node.selected) {
+                    this.instances.forEach((instance) => instance.highlight());
+                } else {
+                    this.instances.forEach((instance) => instance.unhighlight());
+                }
+                if (app.show && app.show.item !== this) {
+                    const transform = multiply(this.transform, this.world);
+                    // Get the origin of this element
+                    const origin = applyTransform([0, 0, 0], transform);
+                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+
+                    if (dist < app.show.distance) {
+                        const point = applyTransform4([...origin, 1], app.show.transform);
+                        const size = extractScale(this.transform);
+                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                        const radius = Math.hypot(...size) / point[3];
+
+                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                        if (gap < (radius + app.show.radius)) {
+                            this.instances.forEach((instance) => instance.hide());
+                            return;
+                        }
+
+                        if (app.showConstruction) {
+                            const width = ctx.canvas.width;
+                            const height = ctx.canvas.height;
+                            const x = 0.5 * width * (position[0] / app.aspect + 1);
+                            const y = 0.5 * height * (1 - position[1]);
+
+                            ctx.strokeStyle = 'grey';
+                            ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                            ctx.beginPath();
+                            ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
+                    }
+                    this.instances.forEach((instance) => instance.show());
+                } else if (this.instances.length > 1) {
                     const orientation = multiply(this.transform, this.world)
                     orientation[12] = 0;
                     orientation[13] = 0;
                     orientation[14] = 0;
                     const normals = [
-                        [-1, 0, 0], [0, -1, 0], [0, 0, -1],
-                        [1, 0, 0], [0, 1, 0], [0, 0, 1],
-                    ];
-                    const centres = [
                         [-1, 0, 0], [0, -1, 0], [0, 0, -1],
                         [1, 0, 0], [0, 1, 0], [0, 0, 1],
                     ];
@@ -5246,16 +5389,14 @@
                         const centre = applyTransform([0.5, 0.5, 0.5], transform);
                         const eyeVector = subtract(centre, app.camera.position);
                         const direction = dot(eyeVector, normal);
-                        //side.instanceData[35] = opacity > 0 ? 1 : 0;
                         if (direction > 0) {
                             side.show();
-                            //side.instanceData.set(multiply(side.transform, side.world));
                         } else {
                             side.hide();
-                            //side.instanceData.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
                         }
-                        //this.collection.updateInstances = true;
                     });
+                } else {
+                    this.instances.forEach((instance) => instance.show());
                 }
             }
         }
@@ -5763,6 +5904,51 @@
             highlightFace(line) {
             }
             showInfo() {
+            }
+            update() {
+                if (this.node.selected) {
+                    this.instances.forEach((instance) => instance.highlight());
+                } else {
+                    this.instances.forEach((instance) => instance.unhighlight());
+                }
+                if (app.show && app.show.item !== this) {
+                    const transform = multiply(this.transform, this.world);
+                    // Get the position of this object in world space
+                    const origin = applyTransform([0, 0, 0], transform);
+                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+
+                    // If this object is closer to the camera than the shown object check the overlap in the view plane
+                    if (dist < app.show.distance) {
+                        const width = ctx.canvas.width;
+                        const height = ctx.canvas.height;
+
+                        // Convert world space to view frustum
+                        const point = applyTransform4([...origin, 1], app.show.transform);
+                        // Get the position in view space
+                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+
+                        // Convert to view space
+                        const radius = 2 * getAttribute(this.node, 'radius') / point[3];
+
+                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                        if (gap < (radius + app.show.radius)) {
+                            this.instances.forEach((instance) => instance.hide());
+                            return;
+                        }
+
+                        const x = 0.5 * width * (position[0] / app.aspect + 1);
+                        const y = 0.5 * height * (1 - position[1]);
+
+                        ctx.strokeStyle = 'grey';
+                        ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                        ctx.beginPath();
+                        ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                        ctx.stroke();
+
+                    }
+                    this.instances.forEach((instance) => instance.show());
+                }
             }
         }
 
@@ -7303,6 +7489,14 @@
         }
 
         /**
+         * Convert a point to 2d space, applying perspective corrections.
+         */
+        function project(point, transform) {
+            const position = applyTransform4([...point, 1], transform);
+            return [position[0] / position[3], position[1] / position[3]];
+        }
+
+        /**
          * Return the result of multiplying 2 4x4 matrices
          */
         function matrixMultiply(a, b) {
@@ -7577,7 +7771,6 @@
             const hits = [];
             const test = (item) => {
                 if (item.intersects(line)) {
-                    //if (this.radius > 0 && !item.hidden && app.solid && !item.state.transparent) {
                     if (!item.open && !item.hidden && app.solid && !item.state.transparent) {
                         hits.push(item);
                     } else {
@@ -8550,8 +8743,19 @@
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
                     const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
                     app.view[0].items.filter((item) => select.find((pattern) => pattern.test(item.name))).forEach((item) => item.node.selected = true);
-                    app.view[0].items.filter((item) => deselect.find(() => pattern.test(item.name))).forEach((item) => item.node.selected = false);
+                    app.view[0].items.filter((item) => deselect.find((pattern) => pattern.test(item.name))).forEach((item) => item.node.selected = false);
                     app.view.forEach((view) => view.updateMaterials());
+                    const selected = app.view[0].items.filter((item) => item.node.selected);
+                    report(`Selected: ${selected.length}`);
+                    if (selected.length) {
+                        const item = selected[0];
+                        const size = extractScale(item.transform);
+                        const transform = multiply(item.transform, item.world);
+                        const point = applyTransform([0, 0, 0], transform);
+                        app.show = { item, point, size, toWorld: transform };
+                    } else {
+                        app.show = null;
+                    }
                 }
             };
 
