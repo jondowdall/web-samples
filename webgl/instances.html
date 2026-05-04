@@ -2292,7 +2292,7 @@
                 const container = document.getElementById('top-right');
                 const id = (item.name + '').replace(/\s+/g, '-');
                 const nodes = container.querySelectorAll(`#details-${id}`);
-                for(const node of nodes) {
+                for (const node of nodes) {
                     node.remove();
                 }
             }
@@ -4616,7 +4616,6 @@
                 }
                 for (let i = 0; i < 3; ++i) {
                     const location = app.pbrShader.normalMatrix + i;
-                    // attribute index, numComponents = 3, type = gl.FLOAT, normalise = false, stride (bytes), offset
                     gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * 42, 4 * (16 + i * 3));
                     gl.vertexAttribDivisor(location, 1);
                     gl.enableVertexAttribArray(location);
@@ -6023,6 +6022,102 @@
             }
         }
 
+        /**
+          * Manage Prisms.
+          * 
+          * Prisms are not managed as collections as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
+          * 
+          */
+        class Prism extends Shape {
+            constructor(node, parent) {
+                super(node, parent, 'prism');
+                this.getPoints();
+                this.children = [];
+            }
+            getPoints() {
+                const path = getAttribute(node, 'points');
+                const points = [];
+                return this.children.flatMap((child) => child.points);
+            }
+            get vertices() {
+                return this.children.flatMap((child) => child.vertices);
+            }
+            intersects(line, all) {
+                // Allow for non-uniform scaling by converting the line to icosphere space
+                const world = this.world;
+                const toLocal = invert(world);
+                const orientation = [...toLocal];
+                orientation[12] = 0;
+                orientation[13] = 0;
+                orientation[14] = 0;
+                const point = applyTransform(line.point, toLocal);
+                const direction = applyTransform(line.direction, orientation);
+
+                const l = dot(direction, subtract([0, 0, 0], point));
+                const n = l / direction.reduce((s, v) => s + v * v, 0);
+                const p = sum(point, scale(direction, n));
+                const dist = Math.hypot(...p);
+                const radius = getAttribute(this.node, 'radius');
+                if (dist <= radius) {
+                    const offset = scale(direction, Math.sqrt(radius * radius - dist * dist));
+                    this.points = [
+                        applyTransform(subtract(p, offset), world),
+                        applyTransform(sum(p, offset), world),
+                    ];
+                }
+                return dist <= radius;
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
+            }
+            update() {
+                if (this.node.selected) {
+                    this.instances.forEach((instance) => instance.highlight());
+                } else {
+                    this.instances.forEach((instance) => instance.unhighlight());
+                }
+                if (app.show && app.show.item !== this) {
+                    const transform = multiply(this.transform, this.world);
+                    // Get the position of this object in world space
+                    const origin = applyTransform([0, 0, 0], transform);
+                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+
+                    // If this object is closer to the camera than the shown object check the overlap in the view plane
+                    if (dist < app.show.distance) {
+                        const width = ctx.canvas.width;
+                        const height = ctx.canvas.height;
+
+                        // Convert world space to view frustum
+                        const point = applyTransform4([...origin, 1], app.show.transform);
+                        // Get the position in view space
+                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+
+                        // Convert to view space
+                        const radius = 2 * getAttribute(this.node, 'radius') / point[3];
+
+                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                        if (gap < (radius + app.show.radius)) {
+                            this.instances.forEach((instance) => instance.hide());
+                            return;
+                        }
+
+                        const x = 0.5 * width * (position[0] / app.aspect + 1);
+                        const y = 0.5 * height * (1 - position[1]);
+
+                        ctx.strokeStyle = 'grey';
+                        ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                        ctx.beginPath();
+                        ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                        ctx.stroke();
+
+                    }
+                    this.instances.forEach((instance) => instance.show());
+                }
+            }
+        }
+
         /*
         Material	F0  (Linear)	F0 (sRGB)	Color
         Water	(0.02, 0.02, 0.02)	 (0.15, 0.15, 0.15)  	
@@ -6907,36 +7002,58 @@
                 }
             };
 
+            const scope = {
+                stack: [{}],
+                start() {
+
+                    const defaultParameters = this.stack.findLast((local) => local.defaultParameters)?.defaultParameters ?? [];
+                    // Create context from stack
+                    const context = {
+                        values: Object.assign({}, ...this.stack.map((local) => local.values)),
+                        path: this.stack.map((local) => local.object),
+                        defaultParameters: [...defaultParameters],
+                        object: this.stack.findLast((local) => local.object)?.object,
+                        parameter: this.stack.findLast((local) => local.parameter)?.parameter,
+                        name: this.stack.findLast((local) => local.name)?.name,
+                        index: this.stack.findLast((local) => local.index !== undefined)?.index,
+                    };
+
+                    // Create empty local scope
+                    const local = {
+                        values: {},
+                    };
+
+                    this.stack.push(local);
+                    return { local, context };
+                },
+
+                end() {
+                    this.stack.pop();
+                }
+            }
+
             /**
              * Parse a line, returning an object or updating the current object and returning an empty array.
              */
-            const processLine = (line, context) => {
+            const processLine = (line) => {
+
+                const { local, context } = scope.start();
+
                 // Create the potential object
                 const node = {
                     [meta]: {
                         source: line,
-                        context: structuredClone(context),
+                        context,
                         name: [],
                         data: [],
                         typeNames: [],
-                        cache: { functions: {} },
-                        instance: [...context.instance],
-                        values: Object.assign({}, context.values),
                         parent: context.object,
                     },
                     [children]: [],
                 };
 
-                node[meta].context.path.push(node);
-
-                if (line.instance !== undefined) {
-                    node[meta].context.instance = node[meta].context.instance || [];
-                    node[meta].context.instance.push(line.instance);
-                }
-                context.parameters = [...context.defaultParameters];
-
                 // Options
-                // 1 component
+                // 1 field
                 //   assignment
                 //     has content
                 //       - assign value as first element of array
@@ -6950,20 +7067,19 @@
                 //         - assign to next content parameter
                 //       no unused parameters
                 //         - assign as specified by context
-                // multiple components
+                // multiple fields
                 //  - create object and update context
 
-                const items = line.components;
+                let fieldIndex = 0;
 
-                //
-                const addProperty = (item, first, last) => {
+                const processField = (node, field, first, last) => {
                     const getTarget = (name) =>
-                        name.startsWith('&') ?
-                            [context.object[meta], name.replace(/^&\s*/, '')] :
-                            [context.object, name];
+                        (name + '').startsWith('&') ?
+                            [node[meta], name.replace(/^&\s*/, '')] :
+                            [node, name];
 
-                    if (item.includes('=>')) {
-                        const [name, value] = item.split(/\s*=>\s*/);
+                    if (field.includes('=>')) {
+                        const [name, value] = field.split(/\s*=>\s*/);
                         const expr = value.replace(/<([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.name')
                             .replace(/<n([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.index');
                         const func = makeFunction([], expr);
@@ -6975,78 +7091,73 @@
                                 return func(this);
                             }
                         });
-                    } else if (item.includes('=')) {
-                        const [name, value] = item.split(/\s*=\s*/);
+                    } else if (field.includes('=')) {
+                        const [name, value] = field.split(/\s*=\s*/);
                         const [obj, arg] = getTarget(name);
                         obj[arg] = value;
                     } else {
-                        item = item.replace(/<([0-9]*)>/g, (match, num) =>
-                            context.instance[parseInt(num) || 0].name ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0].index ?? match)
-                            .replace(/<([^>]+)>/g, (match, val) =>
-                                context.values[val] ?? match);
-                        const name = context.parameters.shift()?.name ?? context.parameter;
+                        const name = context.defaultParameters.shift()?.name;
                         if (name) {
                             const [obj, arg] = getTarget(name);
                             if (Array.isArray(obj[arg])) {
-                                obj[arg].push(item);
+                                obj[arg].push(field);
                             } else if (obj[arg] === undefined) {
-                                obj[arg] = item;
+                                obj[arg] = field;
                             } else {
-                                obj[arg] = [obj[arg], item];
+                                obj[arg] = [obj[arg], field];
                             }
                         } else if (first) {
-                            context.object[meta].name.push(item);
+                            local.object[meta].name.push(field);
                         } else if (last) {
-                            context.parameter = item;
+                            local.parameter = field;
                         } else {
-                            const [obj, arg] = getTarget(item);
+                            const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
                         }
                     }
                 }
 
-                if (items.length === 1) {
-                    if (items[0].endsWith('=')) { // line ends in '=' add children as attributes for last parameter
-                        const parameter = items[0].replace(/\s*=$/, '');
+                if (line.fields.length === 1) {
+                    if (line.fields[0].endsWith('=')) { // line ends in '=' add children as attributes for last parameter
+                        const parameter = line.fields[0].replace(/\s*=$/, '');
                         const parent = node[meta].context.path.at(-2);
-                        parent[parameter] = line.children.flatMap((line) => line.action(line, context));
+                        parent[parameter] = line.children.flatMap((line) => line.action(line));
+                        scope.end();
                         return [];
                     } else if (line.text.includes(':') && !line.text.includes('=')) {
-                        context.object = node;
-                    } else if (!items[0].includes('--')) {  // If not a link definition
-                        addProperty(items[0], false, true); // Single element not a link or type
-                        //node[children] = line.children.flatMap((line) => line.action(line, context));
+                        local.object = node;
+                    } else if (!line.fields[0].includes('--')) {  // If not a link definition
+                        processField(context.object, line.fields[0], false, true); // Single element not a link or type
                     }
-                } else if (items.length > 1) {
-                    context.object = node;
-                    if (items.at(-1).endsWith('=')) {
-                        context.parameter = items.at(-1).replace(/\s*=$/, '');
-                        items.pop();
+                } else if (line.fields.length > 1) {
+                    local.object = node;
+                    if (line.fields.at(-1).endsWith('=')) {
+                        local.parameter = line.fields.at(-1).replace(/\s*=$/, '');
+                        line.fields.pop();
                     }
-                    items.forEach((item, index) => addProperty(item, index === 0, index === items.length - 1));
+                    line.fields.forEach((field, index) => processField(node, field, index === 0, index === line.fields.length - 1));
                 }
 
                 // Add remaining default values
-                while (context.parameters.length) {
-                    const parameter = context.parameters.shift();
+                while (context.defaultParameters.length) {
+                    const parameter = context.defaultParameters.shift();
                     if (parameter.value !== undefined) {
-                        context.object[parameter.name] = parameter.value;
+                        local.object[parameter.name] = parameter.value;
                     }
                 }
 
                 // Find the name and types
-                const qualifiedName = node.name || line.components[0];
+                const qualifiedName = node.name || line.fields[0];
                 const [name, ...typeNames] = (qualifiedName + '').split(/\s*:\s*/g);
                 node[meta].typeNames.push(...typeNames);
-                if (node.name) {
-                    node.name = name;
-                }
+                node.name = node.name || name;
+
                 node[meta].name.push(name);
                 app.named[name] = node;
+
                 if (name.includes('--')) {
-                    context.object.connections = context.object.connections || [];
-                    const [start, type, end] = items[0].split(/\s*([<]?--[>]?)\s*/);
+                    local.object.connections = local.object.connections || [];
+                    const [start, type, end] = line.fields[0].split(/\s*([<]?--[>]?)\s*/);
                     node.start = start;
                     node.end = end;
                     node.connectionType = type;
@@ -7070,28 +7181,20 @@
                     }
                 }
 
-                app.named[name] = node;
-
-                if (node.name) {
-                    node[meta].name = [node.name];
-                }
-
-                const instance = context.instance;
-                const attrs = instance.filter((instance) => instance.label);
-                attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
+                const names = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
+                const indices = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
 
                 const resolve = (string) =>
                     string.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) =>
-                            instance[parseInt(num) || 0].name ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0].index ?? match)
-                            .replace(/<([^>]+)>/g, (match, val) =>
-                                context.values[val] ?? match)
+                        string.replace(/<([0-9]*)>/g, (match, num) => names[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => indices[parseInt(num) || 0] ?? match)
+                            .replace(/<([^>]+)>/g, (match, name) =>
+                                context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
-                                    const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
+                                    const func = makeFunction(Object.keys(context.values), expr);
                                     node[meta].cache.functions[expr] = func;
-                                    return func(...attrs.map((attr) => attr.name));
+                                    return func(...Object.values(context.values));
                                 } catch (err) {
                                     report(err.message);
                                     return `${err.message}: ${match}`;
@@ -7102,27 +7205,30 @@
                 node[meta].types.forEach((type) =>
                     Object.keys(type).filter((property) => node[property] === undefined)
                         .forEach((property) =>
-                            node[property] = resolve(type[property])));
+                            node[property] = type[property]));
 
                 //*
                 Object.keys(node).forEach((property) =>
                     Object.defineProperty(node, property, {
                         enumerable: true,
-                        value: node[property],
+                        value: resolve(node[property]),
                     }));
                 /*/
                 Object.keys(node).forEach((property) =>
                     node[property] = resolve(node[property]));
                 //*/
-                node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+
+                // Add children from types
+                node[children].push(...node[meta].types.flatMap((type) =>
+                    type[children].map((child) => expandTypes(child, context))));
 
                 if (node.name === undefined) {
-                    node.name = resolve(items[0]);
+                    node.name = resolve(line.fields[0]);
                 }
                 node[meta].name[0] = node.name || resolve(node[meta].name[0]);
 
-                node[children] = line.children.flatMap((line) => line.action(line, context));
-
+                node[children] = line.children.flatMap((line) => line.action(line));
+                scope.end();
                 return node;
             };
 
@@ -7148,40 +7254,47 @@
                             commands[command](value);
                         }
                     };
-                    const contextParser = (item, context) => { return []; };
-                    const optionParser = (item, context) => {
+                    const contextParser = (item) => { return []; };
+                    const optionParser = (item) => {
+                        const { local, context } = scope.start();
                         const testStr = item.text.replace(/^\s*\?\s*/, '');
                         try {
                             const attrs = Object.assign({}, context.values);
                             const test = makeFunction(Object.keys(attrs), testStr);
 
                             if (test(...Object.values(attrs))) {
-                                return item.children.flatMap((child) => child.action(child, context));
+                                scope.end();
+                                return item.children.flatMap((child) => child.action(child));
                             }
+                            scope.end();
                             return [];
                         } catch (error) {
                             report(`${line.lineNumber + 1}: ${error.message}`);
                         }
+                        scope.end();
                         return [];
                     };
-                    const defaultParser = (line, context) => {
-                        line.components.shift();
-                        const defaultParameters = [...context.defaultParameters];
-                        context.defaultParameters = context.defaultParameters || [];
-
-                        line.components.forEach((element, index) => {
-                            const [name, value] = element.split(/\s*=\s*/);
-                            context.defaultParameters[index] = { name, value: value };
-                        });
+                    const defaultParser = (line) => {
+                        line.fields.shift();
                         if (line.children.length > 0) {
-                            const children = line.children.flatMap((child) => child.action(child, context));
-                            context.defaultParameters = defaultParameters;
+                            const { local, context } = scope.start();
+                            local.defaultParameters = line.fields.map((field) => {
+                                const [name, value] = field.split(/\s*=\s*/);
+                                return { name, value };
+                            });
+                            const children = line.children.flatMap((child) => child.action(child));
+                            scope.end();
                             return children;
                         }
+
+                        scope.stack.at(-1).defaultParameters = line.fields.map((field) => {
+                            const [name, value] = field.split(/\s*=\s*/);
+                            return { name, value };
+                        });
                         return [];
                     };
-                    const passParser = (line, context) => { return []; };
-                    const commentParser = (line, context) => { return []; };
+                    const passParser = (line) => { return []; };
+                    const commentParser = (line) => { return []; };
 
                     const immediate = [
                         settingsParser, commentParser,
@@ -7207,7 +7320,7 @@
                             text: text,
                             lineNumber,
                             level,
-                            components: value.split(/\s*[;\|\t\u{1f}]\s*/ug),
+                            fields: value.split(/\s*[;\|\t\u{1f}]\s*/ug),
                             parent: stack[0],
                             children: [],
                             functions: {},
@@ -7217,33 +7330,36 @@
                         if (group) {
                             const instances = getList(group[1]);
                             const label = group[2];
-                            line.action = (line, context) =>
+                            line.action = (line) =>
                                 instances.flatMap((name, index) => {
-                                    context.instance.unshift({ name, index });
+                                    const { local, context } = scope.start();
+                                    local.name = name;
+                                    local.index = index;
                                     if (label) {
-                                        context.values[label] = name;
-                                        context.values[`${label}_n`] = index;
+                                        local.values[label] = name;
+                                        local.values[`${label}_n`] = index;
                                     }
-                                    const result = line.children.flatMap((child) =>
-                                        child.action(child, context));
-                                    context.instance.shift();
+                                    const result = line.children.flatMap((child) => child.action(child));
+                                    scope.end();
                                     return result;
                                 });
                         } else if (template) {
                             const instances = getList(template[1]);
                             const label = trimmed.replace(/\s*[<\{:;\|\t\u{1f}].*/u, '').replace(/\s+/g, '_').replace(/([0-9])+/, '_$1');
-                            line.action = (line, context) =>
+                            line.action = (line) =>
                                 instances.flatMap((name, index) => {
-                                    context.instance.unshift({ index, name });
+                                    const { local, context } = scope.start();
+                                    local.name = name;
+                                    local.index = index;
                                     if (label) {
-                                        context.values[label] = name;
-                                        context.values[`${label}_n`] = index;
+                                        local.values[label] = name;
+                                        local.values[`${label}_n`] = index;
                                     }
-                                    const result = processLine(line, context);
-                                    context.instance.shift();
+                                    const result = processLine(line);
+                                    scope.end();
                                     return result;
                                 });
-                        } else if (line.components[0] === '') { // If line starts with a seperator, use it as a default specifier
+                        } else if (line.fields[0] === '') { // If line starts with a seperator, use it as a default specifier
                             line.action = defaultParser;
                         }
 
@@ -7263,7 +7379,6 @@
                 const node = {
                     [meta]: {
                         source,
-                        context: structuredClone(context),
                         name: [],
                         data: [],
                         types: [],
@@ -7278,22 +7393,21 @@
                     node[meta].name = [node.name];
                 }
 
-                context = Object.assign({}, source[meta].context, context);
-                const instance = source[meta].context.instance;
-                const attrs = Object.assign({}, source[meta].context.values);
+                const names = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
+                const indices = scope.stack.map((local) => local.index).filter((i) => i).toReversed();
 
                 const resolve = (string) =>
                     string.replace ?
                         string.replace(/<([0-9]*)>/g, (match, num) =>
-                            instance[parseInt(num) || 0].name ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0].index ?? match)
-                            .replace(/<([^>]+)>/g, (match, val) =>
-                                context.values[val] ?? match)
+                            names[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => indices[parseInt(num) || 0] ?? match)
+                            .replace(/<([^>]+)>/g, (match, name) =>
+                                context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
-                                    const func = node[meta].cache.functions[expr] || makeFunction(Object.keys(attrs), expr);
+                                    const func = node[meta].cache.functions[expr] || makeFunction(Object.keys(context.values), expr);
                                     node[meta].cache.functions[expr] = func;
-                                    return func(...Object.values(attrs));
+                                    return func(...Object.values(context.values));
                                 } catch (err) {
                                     report(err.message);
                                     return `${err.message}: ${match}`;
@@ -7310,10 +7424,11 @@
 
                 node[children] = source[children].map((child) => expandTypes(child, context));
                 // Add all the children from this nodes types
-                node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
+                node[children].push(...node[meta].types.flatMap((type) =>
+                    type[children].map((child) => expandTypes(child, context))));
 
                 if (node.name === undefined) {
-                    node.name = resolve(source[meta].source.components[0]);
+                    node.name = resolve(source[meta].source.fields[0]);
                 }
                 node[meta].name[0] = node.name || resolve(node[meta].name[0]);
                 return node;
@@ -7321,7 +7436,7 @@
 
             // Generate the object graph
             const context = { defaultParameters: [], instance: [], values: {}, path: [] };
-            const objectTree = roots.flatMap((line) => line.action(line, context));
+            const objectTree = roots.flatMap((line) => line.action(line));
             app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
 
             app.view[0].update(app.graph, parent, replace);
@@ -7390,7 +7505,7 @@
             node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
 
             if (node.name === undefined) {
-                node.name = resolve(source[meta].source.components[0]);
+                node.name = resolve(source[meta].source.fields[0]);
             }
             node[meta].name[0] = node.name || resolve(node[meta].name[0]);
             return node;
@@ -8591,7 +8706,7 @@
         /**
          * Add a new item to the model
          */
-        function addProperty(text) {
+        function addProperty_delete_me(text) {
             const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
             const templatePattern = /\s*\[([^\]]+)\]$/;
 
@@ -8603,7 +8718,7 @@
                 text,
                 lineNumber: undefined,
                 level: 0,
-                components: value.split(/\s*[;\|\t\u{1f}]\s*/ug),
+                fields: value.split(/\s*[;\|\t\u{1f}]\s*/ug),
                 parent: undefined,
                 children: [],
                 functions: {},
