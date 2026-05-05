@@ -7014,8 +7014,8 @@
                         defaultParameters: [...defaultParameters],
                         object: this.stack.findLast((local) => local.object)?.object,
                         parameter: this.stack.findLast((local) => local.parameter)?.parameter,
-                        name: this.stack.findLast((local) => local.name)?.name,
-                        index: this.stack.findLast((local) => local.index !== undefined)?.index,
+                        names: scope.stack.flatMap((local) => local.name ?? []).reverse(),
+                        indices: scope.stack.flatMap((local) => local.index ?? []).reverse(),
                     };
 
                     // Create empty local scope
@@ -7078,10 +7078,12 @@
                             [node[meta], name.replace(/^&\s*/, '')] :
                             [node, name];
 
+                    field = field.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => context.indices[parseInt(num) || 0] ?? match)
+                            .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match);
+
                     if (field.includes('=>')) {
-                        const [name, value] = field.split(/\s*=>\s*/);
-                        const expr = value.replace(/<([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.name')
-                            .replace(/<n([0-9]*)>/g, (match, num) => 'context[meta].instance[parseInt(num) || 0]?.index');
+                        const [name, expr] = field.split(/\s*=>\s*/);
                         const func = makeFunction([], expr);
                         const [obj, arg] = getTarget(name);
 
@@ -7113,6 +7115,7 @@
                         } else {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
+                            local.object[meta].data(fieldIndex++) = field;
                         }
                     }
                 }
@@ -7181,19 +7184,15 @@
                     }
                 }
 
-                const names = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
-                const indices = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
-
                 const resolve = (string) =>
                     string.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) => names[parseInt(num) || 0] ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => indices[parseInt(num) || 0] ?? match)
+                        string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => context.indices[parseInt(num) || 0] ?? match)
                             .replace(/<([^>]+)>/g, (match, name) =>
                                 context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
                                     const func = makeFunction(Object.keys(context.values), expr);
-                                    node[meta].cache.functions[expr] = func;
                                     return func(...Object.values(context.values));
                                 } catch (err) {
                                     report(err.message);
@@ -7243,7 +7242,7 @@
                     while (stack.length && level <= stack[0].level) {
                         stack.shift();
                     }
-                    const trimmed = text.trim();
+                    const trimmed = text.trim().replace(/\/\/.*/, '');
 
                     const settingsParser = (text) => {
                         if (parent) {
@@ -7382,7 +7381,6 @@
                         name: [],
                         data: [],
                         types: [],
-                        cache: { functions: {} },
                     },
                     [children]: [],
                 };
@@ -7393,20 +7391,16 @@
                     node[meta].name = [node.name];
                 }
 
-                const names = scope.stack.map((local) => local.name).filter((i) => i).toReversed();
-                const indices = scope.stack.map((local) => local.index).filter((i) => i).toReversed();
-
                 const resolve = (string) =>
                     string.replace ?
                         string.replace(/<([0-9]*)>/g, (match, num) =>
-                            names[parseInt(num) || 0] ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => indices[parseInt(num) || 0] ?? match)
+                            context.names[parseInt(num) || 0] ?? match)
+                            .replace(/<n([0-9]*)>/g, (match, num) => context.indices[parseInt(num) || 0] ?? match)
                             .replace(/<([^>]+)>/g, (match, name) =>
                                 context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
-                                    const func = node[meta].cache.functions[expr] || makeFunction(Object.keys(context.values), expr);
-                                    node[meta].cache.functions[expr] = func;
+                                    const func = makeFunction(Object.keys(context.values), expr);
                                     return func(...Object.values(context.values));
                                 } catch (err) {
                                     report(err.message);
@@ -7435,7 +7429,6 @@
             }
 
             // Generate the object graph
-            const context = { defaultParameters: [], instance: [], values: {}, path: [] };
             const objectTree = roots.flatMap((line) => line.action(line));
             app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
 
@@ -7460,7 +7453,6 @@
                     name: [],
                     data: [],
                     types: [],
-                    cache: { functions: {} },
                 },
                 [children]: [],
             };
@@ -7484,8 +7476,7 @@
                         .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
                         .replace(/\{([^\}]+)\}/g, (match, expr) => {
                             try {
-                                const func = node[meta].cache.functions[expr] || makeFunction(attrs.map((attr) => attr.label), expr);
-                                node[meta].cache.functions[expr] = func;
+                                const func = makeFunction(attrs.map((attr) => attr.label), expr);
                                 return func(...attrs.map((attr) => attr.name));
                             } catch (err) {
                                 report(err.message);
@@ -8725,8 +8716,7 @@
                 action: processLine,
             };
 
-            const context = { defaultParameters: [], instance: [], values: {}, path: [] };
-            const objects = [processLine(line, context)].flatMap((item) => item);
+            const objects = [processLine(line)].flatMap((item) => item);
             const nodes = objects.map((source) => expandTypes(source));
 
             nodes.forEach((node) => app.view[0].addProperty(node));
