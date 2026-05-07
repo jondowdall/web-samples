@@ -1982,7 +1982,8 @@
                     if (descend || 1) {
                         node[children].forEach((node) => this.addItem(node, item));
                     }
-                } else if (node[meta].source[meta].connection) {
+                //} else if (node[meta].source[meta].connection) {
+                } else if (node[meta].connection) {
                     const start = this.named[node.start];
                     const end = this.named[node.end];
                     if (start && end) {
@@ -6037,10 +6038,19 @@
             getPoints() {
                 const path = getAttribute(node, 'points');
                 const points = [];
-                return this.children.flatMap((child) => child.points);
+                path.forEach((point) => {
+                    if (point === 'close') {
+                        points.push(points[0]);
+                    } else if (point.startswith('d')) {
+                        const last = points.at(-1);
+                        const [x, y] = point.slice(1).split(/\s+/).map(Number);
+                        points.push([last[0] + x, last[1] + y, 0]);
+                    } else {
+                        points.push(point.split(/\s*s+/).map(Number));
+                    }
+                });
             }
             get vertices() {
-                return this.children.flatMap((child) => child.vertices);
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
@@ -7115,7 +7125,7 @@
                         } else {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
-                            local.object[meta].data(fieldIndex++) = field;
+                            local.object[meta].data[fieldIndex++] = field;
                         }
                     }
                 }
@@ -7153,7 +7163,7 @@
                 const qualifiedName = node.name || line.fields[0];
                 const [name, ...typeNames] = (qualifiedName + '').split(/\s*:\s*/g);
                 node[meta].typeNames.push(...typeNames);
-                node.name = node.name || name;
+                node.name = name;//node.name || name;
 
                 node[meta].name.push(name);
                 app.named[name] = node;
@@ -7184,9 +7194,9 @@
                     }
                 }
 
-                const resolve = (string) =>
-                    string.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
+                const resolve = (string) => {
+                    while (string.replace) {
+                        const result = string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => context.indices[parseInt(num) || 0] ?? match)
                             .replace(/<([^>]+)>/g, (match, name) =>
                                 context.values[name] ?? match)
@@ -7198,7 +7208,14 @@
                                     report(err.message);
                                     return `${err.message}: ${match}`;
                                 }
-                            }) : string;
+                            });
+                        if (string === result) {
+                            return string;
+                        }
+                        string = result;
+                    }
+                    return string;
+                }
 
                 node[meta].types = node[meta].typeNames.map((name) => app.named[name]).filter((i) => i);
                 node[meta].types.forEach((type) =>
@@ -7210,7 +7227,7 @@
                 Object.keys(node).forEach((property) =>
                     Object.defineProperty(node, property, {
                         enumerable: true,
-                        value: resolve(node[property]),
+                        value: interpret(resolve(node[property])),
                     }));
                 /*/
                 Object.keys(node).forEach((property) =>
@@ -7222,11 +7239,11 @@
                     type[children].map((child) => expandTypes(child, context))));
 
                 if (node.name === undefined) {
-                    node.name = resolve(line.fields[0]);
+                    node.name = interpret(resolve(line.fields[0]));
                 }
-                node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+                node[meta].name[0] = node.name || interpret(resolve(node[meta].name[0]));
 
-                node[children] = line.children.flatMap((line) => line.action(line));
+                node[children].push(...line.children.flatMap((line) => line.action(line)));
                 scope.end();
                 return node;
             };
@@ -7380,24 +7397,16 @@
                         source,
                         name: [],
                         data: [],
-                        types: [],
+                        types: [...source[meta].types],
                     },
                     [children]: [],
                 };
 
-                node[meta].types = source[meta].types;
-
-                if (node.name) {
-                    node[meta].name = [node.name];
-                }
-
                 const resolve = (string) =>
                     string.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) =>
-                            context.names[parseInt(num) || 0] ?? match)
+                        string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => context.indices[parseInt(num) || 0] ?? match)
-                            .replace(/<([^>]+)>/g, (match, name) =>
-                                context.values[name] ?? match)
+                            .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
                                     const func = makeFunction(Object.keys(context.values), expr);
@@ -7422,15 +7431,14 @@
                     type[children].map((child) => expandTypes(child, context))));
 
                 if (node.name === undefined) {
-                    node.name = resolve(source[meta].source.fields[0]);
+                    node.name = interpret(resolve(source[meta].source.fields[0]));
                 }
-                node[meta].name[0] = node.name || resolve(node[meta].name[0]);
+                node[meta].name[0] = node.name || interpret(resolve(node[meta].name[0]));
                 return node;
             }
 
             // Generate the object graph
-            const objectTree = roots.flatMap((line) => line.action(line));
-            app.graph[children] = objectTree.flatMap((typed) => expandTypes(typed));
+            app.graph[children] = roots.flatMap((line) => line.action(line));
 
             app.view[0].update(app.graph, parent, replace);
             showModel(app.graph);
@@ -7438,68 +7446,6 @@
             showStructure();
             showStock();
             app.view.forEach((view) => view.updateMaterials());
-        }
-
-        /**
-         * Add typed data to the object and interpret the parameters
-         */
-        function expandTypes_old(source, context) {
-
-            // Create the potential object
-            const node = {
-                [meta]: {
-                    source,
-                    context: structuredClone(context),
-                    name: [],
-                    data: [],
-                    types: [],
-                },
-                [children]: [],
-            };
-
-            node[meta].types = source[meta].typeNames.map((name) => app.named[name]);
-
-            if (node.name) {
-                node[meta].name = [node.name];
-            }
-
-            context = Object.assign({}, source[meta].context, context);
-            const instance = context.instance;
-            const attrs = instance.filter((instance) => instance.label);
-            attrs.push(...instance.filter((instance) => instance.label).map((attr) => ({ label: `${attr.label}_n`, name: attr.index })));
-
-            const resolve = (string) =>
-                string.replace ?
-                    string.replace(/<([0-9]*)>/g, (match, num) =>
-                        instance[parseInt(num) || 0] ?? match)
-                        .replace(/<n([0-9]*)>/g, (match, num) => instance[parseInt(num) || 0] ?? match)
-                        .replace(/<([^>]+)>/g, (match, val) => context.values[val] ?? match)
-                        .replace(/\{([^\}]+)\}/g, (match, expr) => {
-                            try {
-                                const func = makeFunction(attrs.map((attr) => attr.label), expr);
-                                return func(...attrs.map((attr) => attr.name));
-                            } catch (err) {
-                                report(err.message);
-                                return `${err.message}: ${match}`;
-                            }
-                        }) : string;
-
-            node[meta].types.forEach((type) =>
-                Object.keys(type).filter((property) => node[property] === undefined)
-                    .forEach((property) =>
-                        node[property] = interpret(resolve(type[property]))));
-
-            Object.keys(source).forEach((property) =>
-                node[property] = interpret(resolve(source[property])));
-
-            node[children] = source[children].map((child) => expandTypes(child, context));
-            node[children].push(...node[meta].types.flatMap((type) => type[children].map((child) => expandTypes(child, context))));
-
-            if (node.name === undefined) {
-                node.name = resolve(source[meta].source.fields[0]);
-            }
-            node[meta].name[0] = node.name || resolve(node[meta].name[0]);
-            return node;
         }
 
         /**
@@ -7971,7 +7917,7 @@
             const hits = [];
             const test = (item) => {
                 if (item.intersects(line)) {
-                    const size = Math.min(...getAttribute(item.node, 'size'));
+                    const size = Math.min(...getAttribute(item.node, 'size', [1]));
                     if (size > 0 && !item.interiorView && !item.hidden && app.solid && !item.state.transparent) {
                         hits.push(item);
                     } else {
