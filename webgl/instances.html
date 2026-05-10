@@ -470,28 +470,7 @@
 
         <div id="structure-view" class="window">
             <h2 class="unselectable">Structure</h2>
-            <div id="structure" class="hide expandable">
-                <span class="two-rows">Name</span>
-                <span class="three-columns">Position</span>
-                <span class="three-columns">Size</span>
-                <span class="two-rows">Angle</span>
-                <span class="three-columns">Axis</span>
-                <span class="two-rows">Colour</span>
-                <span class="two-rows">Specular</span>
-                <span class="two-rows">Opacity</span>
-
-                <span>x</span>
-                <span>y</span>
-                <span>z</span>
-
-                <span>x</span>
-                <span>y</span>
-                <span>z</span>
-
-                <span>x</span>
-                <span>y</span>
-                <span>z</span>
-            </div>
+            <div id="structure" class="hide expandable"></div>
         </div>
     </div>
 
@@ -763,13 +742,13 @@
             vec2 offset = textureParameters.xy;
             vec2 scale = textureParameters.zw;
             v_coord = offset + scale * coord;
-            float up = dot(vec3(0.0f, 1.0f, 0.0f), normal);
+            float up = abs(dot(vec3(0.0f, 1.0f, 0.0f), normal));
 
             vec3 x = (1.0f - up) * cross(vec3(0.0f, 1.0f, 0.0f), normal) + up * vec3(1.0f, 0.0f, 0.0f);
             vec3 y = (1.0f - up) * vec3(0.0f, 1.0f, 0.0f) + up * vec3(0.0f, 0.0f, 1.0f);
 
-            vec2 coord2 = vec2(dot(position, normalize(x)), dot(position, normalize(y)));
-            v_coord2 = vec2(0.5f, 0.5f) + coord2;
+            v_coord2 = vec2(dot(position, normalize(x)), dot(position, normalize(y)));
+
             v_colour = colour;
             v_emissivityColour = emissivityColour;
             v_baseReflectivity = reflectivity;
@@ -865,7 +844,7 @@
 
         void main() {
             vec3 viewVector = normalize(cameraPosition - v_position);
-            vec3 normal = normalize(v_normal * dot(v_normal, viewVector));
+            vec3 normal = normalize(v_normal);// * max(dot(v_normal, viewVector), 0.0));
 
             vec3 lightVector1 = normalize(lightPosition1);
             float intensity1 = 1.0;
@@ -917,9 +896,10 @@
             float clear = max(totalShine * 0.2, 0.0) * v_opacity;
             float opacity = clear + (1.0 - clear) * pow(v_opacity, 5.0);
 
-            float occ = 1.0 - 0.1 * (pow(2.0 * (v_coord2.x - 0.5), 8.0) + pow(2.0 * (v_coord2.y - 0.5), 8.0));
+            float occ = 1.0 - 0.4 * (pow(v_coord2.x, 4.0) + pow(v_coord2.y, 4.0));
             fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
-            //fragmentColour = vec4(occ, 1.0, 1.0, 1.0)* texture(surfaceTexture, v_coord);
+            //fragmentColour = vec4(abs(v_normal), opacity);
+            //fragmentColour = vec4(vec2(0.5, 0.5) + 0.5 * v_coord2, occ, 1.0)* texture(surfaceTexture, v_coord);
         }
     </script>
 
@@ -1941,9 +1921,9 @@
                 this.items = [];
                 this.roots = [];
                 this.named = {};
+                this.shapes = new Map();
             }
             addItem(node, parent, descend) {
-                //const getAttribute = (node, attribute) => node[attribute];
                 let item = parent;  // Use parent to allow container nodes with no representation
                 if (getAttribute(node, 'position')) {
                     if (getAttribute(node, 'obj')) {
@@ -1968,12 +1948,14 @@
                     } else if (getAttribute(node, 'radius')) {
                         const subdivisions = getAttribute(node, 'subdivisions', 4);
                         item = new Icosphere(node, parent, subdivisions);
-                    } else if (getAttribute(node, 'points')) {
+                    } else if (getAttribute(node, 'points') && getAttribute(node, 'height')) {
                         item = new Prism(node, parent);
+                    } else if (getAttribute(node, 'points')) {
+                        item = new Ngon(node, parent);
                     } else {
-                        item = new Block(node, parent);
+                        item = new Shape(node, parent);
                     }
-                    node[meta].representation = item;
+                    this.shapes.set(node, [item]);
                     this.named[node.name] = item;
 
                     this.items.push(item);
@@ -2000,24 +1982,14 @@
                         const start = node[children].find((node) => node[meta].name.includes(connection.start));
                         const end = node[children].find((node) => node[meta].name.includes(connection.end));
                         if (start && end) {
-                            app.connections.push(new Connection(start[meta].representation, end[meta].representation));
+                            const startItem = this.shapes.get(start);
+                            const endItem = this.shapes.get(end);
+                            app.connections.push(new Connection(startItem[0], endItem[0]));
                         }
                     }
                 });
             }
             updateMaterials() {
-                /**
-                 * Update the colour data for the instances.
-                 */
-                const setTransparency = (item) => {
-                    return;
-                    if (item.state === undefined) return;
-                    item.state.transparent = item.children.length > 0;
-                    item.opacity = item.children.length > 0 ? 0.4 : item.material.opacity;
-                    item.emissivityColour = item.node.selected ? item.material.colour : [0, 0, 0];
-                    item.children.forEach((item) => setTransparency(item));
-                }
-                this.roots.forEach((item) => setTransparency(item));
             }
 
             update(graph, parent, replace = true) {
@@ -2521,10 +2493,10 @@
             const segments = [];
 
             function det(u, v) {
-                return u.x * v.z - u.z * v.x;
+                return u[0] * v[1] - u[1] * v[0];
             }
 
-            // Return true if point p is inside the triangle with a vertices at V0 
+            // Return true if point p is inside the triangle with a vertex at V0 
             // and sides defined by D1 and d2
             //
             function inside(v0, d1, d2, p) {
@@ -2534,8 +2506,7 @@
                 return (a > 0) && (b > 0) && (a + b < 1);;
             }
 
-
-            // Return false if any of the points are within the triangle with a vertices at V0 
+            // Return false if any of the points are within the triangle with a vertex at V0 
             // and sides defined by d1 and d2
             //
             function empty(v0, d1, d2) {
@@ -2552,7 +2523,7 @@
                 const n = (i + 1) % a.length;
                 const d1 = subtract(v, a[p]);
                 const d2 = subtract(a[n], v);
-                const grad = cross(d1, d2);
+                const grad = [0, d1[0] * d2[1] - d2[0] * d1[1], 0];
                 add(winding, grad);
                 segments.push({
                     start: i,
@@ -2573,7 +2544,7 @@
                 const v = points[segments[i].end];
                 const d1 = subtract(v, points[segments[i].start]);
                 const d2 = subtract(points[segments[n].end], v);
-                const g = cross(d1, d2);
+                const g = [0, d1[0] * d2[1] - d2[0] * d1[1], 0];
                 const sgn = dot(g, winding);
 
                 if (sgn > 0 && empty(v, scale(d1, -1), d2)) {
@@ -3362,7 +3333,7 @@
             const instance = Object.assign(Object.create(new Instance(node, parent, null, indexedName)), {
                 children: [],
                 material: { opacity: 1 },
-                representation: loadedObjs[url],
+                geometry: loadedObjs[url],
                 intersects(line, all) {
                     const transform = this.world;
                     const size = extractScale(this.transform);
@@ -3411,15 +3382,16 @@
                 }
             });
             loadedObjs[url].updateMaterials();
+            const shape = app.view[0].shapes.get(this);
             Object.defineProperties(instance, {
                 transform: {
                     enumerable: true,
-                    get() { return this.representation.transform; },
+                    get() { return shape[0].transform; },
 
                 }
 
             })
-            instance.representation.initialise = true;
+            instance.geometry.initialise = true;
             loadedObjs[url].instances.push(instance);
             return loadedObjs[url].instances.at(-1);
         }
@@ -4232,29 +4204,6 @@
             return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
         }
 
-
-        /**
-         * Evaluate the element passed in.
-         */
-        function evaluate(item) {
-            return item;
-            if (Array.isArray(item)) {
-                return item.map((element) => item.action(element));
-            }
-            if (typeof item === 'string') {
-                item = item.replace(/^\s*\{/, '').replace(/}\s*$/, '');
-                const func = makeFunction([], item);
-                return func();
-            }
-            const num = Number(item);
-            if (isNaN(num)) {
-                item = item.replace(/^\s*\{/, '').replace(/}\s*$/, '');
-                const func = makeFunction([], item);
-                return func();
-            }
-            return num;
-        }
-
         /**
          * Get the path for an item.
          */
@@ -4266,7 +4215,6 @@
             }
             return path;
         }
-
 
         /**
          * Load the comments (if any) for the selected item
@@ -4300,7 +4248,6 @@
             }
             return defaultValue;
         }
-
 
         /**
          * Add event to make element moveable with the mouse.
@@ -6031,7 +5978,6 @@
           * Manage Prisms.
           * 
           * Prisms are not managed as collections as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
-          * 
           */
         class Prism extends Shape {
             constructor(node, parent) {
@@ -6045,6 +5991,7 @@
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
                 }
+                this.height = getAttribute(node, 'height', 1);
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeWalls();
@@ -6071,7 +6018,193 @@
                 gl.disableVertexAttribArray(app.pbrShader.model + 2);
                 gl.disableVertexAttribArray(app.pbrShader.model + 3);
                 gl.vertexAttrib4f(app.pbrShader.model + 0, this.width / 1000, 0, 0, 0);
-                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 2.7, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, this.height, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, this.depth / 1000, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
+
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix);
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 1);
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 2);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
+
+                gl.disableVertexAttribArray(app.pbrShader.colour);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
+
+                gl.disableVertexAttribArray(app.pbrShader.reflectivity);
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
+
+                gl.disableVertexAttribArray(app.pbrShader.materialParameters);
+                gl.vertexAttrib4f(app.pbrShader.materialParameters, ...this.material.materialParameters);
+
+                gl.disableVertexAttribArray(app.pbrShader.textureParameters);
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
+
+                gl.bindVertexArray(null);
+            }
+            getPoints() {
+                const path = getAttribute(this.node, 'points');
+                this.points = [];
+                path.forEach((point) => {
+                    if (point === 'close') {
+                        this.points.push(this.points[0]);
+                    } else if (point.startsWith('d')) {
+                        const last = this.points.at(-1);
+                        const [x, y] = point.replace(/d\s*/, '').split(/\s+/).map(Number);
+                        this.points.push([last[0] + x, last[1] + y]);
+                    } else {
+                        this.points.push(point.split(/\s+/).map(Number));
+                    }
+                });
+                const minx = Math.min(...this.points.map((point) => point[0]));
+                const miny = Math.min(...this.points.map((point) => point[1]));
+                const maxx = Math.max(...this.points.map((point) => point[0]));
+                const maxy = Math.max(...this.points.map((point) => point[1]));
+                this.width = 0.5 * (maxx - minx);
+                this.depth = 0.5 * (maxy - miny);
+                this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.depth - 1]);
+            }
+            makeWalls() {
+                const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
+                const vectors = [];
+                const vertices = [];
+                let sum = 0;
+                let perimeter = 0;
+                this.points.forEach((point, i) => {
+                    const next = (i + 1) % this.points.length;
+                    vectors.push([
+                        this.points[next][0] - point[0],
+                        this.points[next][1] - point[1]
+                    ]);
+                    if (i > 0) {
+                        sum += cross2d(vectors[i], vectors[i - 1]);
+                    }
+                    perimeter += Math.hypot(...vectors[i]);
+                });
+                const dir = -sum < 0 ? -1 : 1;
+
+                let length = 0;
+                this.points.forEach((point, i) => {
+                    const next = (i + 1) % this.points.length;
+                    const nextPoint = this.points[next];
+                    const d1 = vectors[i];
+                    const d2 = vectors[next];
+
+                    const l1 = 0.05 * Math.hypot(...d1);
+                    const p1 = [
+                        point[0] - dir * d1[1] / l1,
+                        point[1] + dir * d1[0] / l1
+                    ];
+                    const l2 = 0.05 * Math.hypot(...d2);
+                    const p2 = [
+                        point[0] - dir * d2[1] / l2,
+                        point[1] + dir * d2[0] / l2
+                    ];
+
+                    const u = (p2[1] * d2[0] + d2[1] * p1[0] - d2[1] * p2[0] - p1[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
+                    const corner = [p1[0] + u * d1[0], p1[1] + u * d1[1]];
+                    const normal = normalised([dir * d1[1] / l1, 0, -dir * d1[0] / l1]);
+                    const u1 = length / perimeter;
+                    length += Math.hypot(...vectors[i]);
+                    const u2 = length / perimeter;
+
+                    vertices.push(point[0], -1, point[1], ...normal, 0, u1);
+                    vertices.push(point[0], 1, point[1], ...normal, 1, u1);
+                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, 1, u2);
+                    vertices.push(point[0], -1, point[1], ...normal, 0, u1);
+                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, 1, u2);
+                    vertices.push(nextPoint[0], -1, nextPoint[1], ...normal, 0, u2);
+                });
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+            }
+            render(time) {
+                gl.bindVertexArray(this.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
+                reportGLErrors('Prism');
+            }
+            get vertices() {
+            }
+            intersects(line, all) {
+                // Allow for non-uniform scaling by converting the line to icosphere space
+                const world = this.world;
+                const toLocal = invert(world);
+                const orientation = [...toLocal];
+                orientation[12] = 0;
+                orientation[13] = 0;
+                orientation[14] = 0;
+                const point = applyTransform(line.point, toLocal);
+                const direction = applyTransform(line.direction, orientation);
+
+                const l = dot(direction, subtract([0, 0, 0], point));
+                const n = l / direction.reduce((s, v) => s + v * v, 0);
+                const p = sum(point, scale(direction, n));
+                const dist = Math.hypot(...p);
+                const radius = getAttribute(this.node, 'radius');
+                if (dist <= radius) {
+                    const offset = scale(direction, Math.sqrt(radius * radius - dist * dist));
+                    this.points = [
+                        applyTransform(subtract(p, offset), world),
+                        applyTransform(sum(p, offset), world),
+                    ];
+                }
+                return dist <= radius;
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
+            }
+            update() {
+            }
+        }
+
+        class Ngon extends Shape {
+            constructor(node, parent) {
+                super(node, parent, 'n-gon');
+                this.children = [];
+                this.textureParameters = [app.white.x, app.white.y, app.white.width, app.white.height];
+
+                this.material = {
+                    colour: [0.6, 0.3, 0.8],
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [0.1, 1, 0.1, 0.3],
+                }
+                this.getPoints();
+                this.initialiseBuffers();
+                this.makeSurface();
+                app.view[0].renderQueue.push(this);
+            }
+            initialiseBuffers() {
+                this.vertex = gl.createBuffer();
+                this.indices = gl.createBuffer();
+
+                this.vao = gl.createVertexArray();
+                gl.bindVertexArray(this.vao);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indices);
+
+                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 20, 0);
+                gl.enableVertexAttribArray(app.pbrShader.position);
+
+                gl.disableVertexAttribArray(app.pbrShader.normal);
+                gl.vertexAttrib3f(app.pbrShader.normal, 0, 1, 0);
+
+                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 20, 12);
+                gl.enableVertexAttribArray(app.pbrShader.coord);
+
+                gl.disableVertexAttribArray(app.pbrShader.model);
+                gl.disableVertexAttribArray(app.pbrShader.model + 1);
+                gl.disableVertexAttribArray(app.pbrShader.model + 2);
+                gl.disableVertexAttribArray(app.pbrShader.model + 3);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, this.width / 1000, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
                 gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, this.height / 1000, 0);
                 gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
 
@@ -6117,69 +6250,27 @@
                 const miny = Math.min(...this.points.map((point) => point[1]));
                 const maxx = Math.max(...this.points.map((point) => point[0]));
                 const maxy = Math.max(...this.points.map((point) => point[1]));
-                this.width = maxx - minx;
-                this.height = maxy - miny;
-                this.points = this.points.map((point) => [(point[0] - minx) / this.width, (point[1] - miny) / this.height]);  
-                app.view[0].renderQueue.push(this);
+                this.width = 0.5 * (maxx - minx);
+                this.height = 0.5 * (maxy - miny);
+                this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.height - 1]);
             }
-            makeWalls() {
-                const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
-                const vectors = [];
-                const vertices = [];
-                let sum = 0;
-                let perimeter = 0;
-                this.points.forEach((point, i) => {
-                    const next = (i + 1) % this.points.length;
-                    vectors.push([
-                        this.points[next][0] - point[0],
-                        this.points[next][1] - point[1]
-                    ]);
-                    if (i > 0) {
-                        sum += cross2d(vectors[i], vectors[i - 1]);
-                    }
-                    perimeter += Math.hypot(...vectors[i]);
-                });
-                const dir = -sum < 0 ? -1 : 1;
-
-                let length = 0;
-                this.points.forEach((point, i) => {
-                    const next = (i + 1) % this.points.length;
-                    const nextPoint = this.points[next];
-                    const d1 = vectors[i];
-                    const d2 = vectors[next];
-
-                    const l1 = 0.05 * Math.hypot(...d1);
-                    const p1 = [
-                        point[0] - dir * d1[1] / l1,
-                        point[1] + dir * d1[0] / l1
-                    ];
-                    const l2 = 0.05 * Math.hypot(...d2);
-                    const p2 = [
-                        point[0] - dir * d2[1] / l2,
-                        point[1] + dir * d2[0] / l2
-                    ];
-
-                    const u = (p2[1] * d2[0] + d2[1] * p1[0] - d2[1] * p2[0] - p1[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
-                    const corner = [p1[0] + u * d1[0], p1[1] + u * d1[1]];
-                    const normal = normalised([dir * d1[1] / l1, -dir * d1[0] / l1, 0]);
-                    const u1 = length / perimeter;
-                    length += Math.hypot(...vectors[i]);
-                    const u2 = length / perimeter;
-                    vertices.push(point[0], 0, point[1], ...normal, u1, 0);
-                    vertices.push(point[0], 1, point[1], ...normal, u1, 1);
-                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, u2, 1);
-                    vertices.push(point[0], 0, point[1], ...normal, u1, 0);
-                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, u2, 1);
-                    vertices.push(nextPoint[0], 0, nextPoint[1], ...normal, u2, 0);
-                });
-
+            makeSurface() {
+                const tessellation = tessellate(this.points);
+                const indices = tessellation.indices.flatMap((triangle) => triangle);
+                const vertices = this.points.flatMap((point) => [point[0], 0, point[1], point[0], point[1]]);
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indices);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+                this.pointCount = indices.length;
             }
             render(time) {
                 gl.bindVertexArray(this.vao);
-                gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
-                reportGLErrors('Prism');
+                //gl.drawElements(gl.TRIANGLES, this.pointCount / 3, gl.UNSIGNED_SHORT, 0);
+                gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
+                gl.bindVertexArray(null);
+
+                reportGLErrors('n-gon');
             }
             get vertices() {
             }
@@ -6455,9 +6546,10 @@
                 const cell = document.createElement('td');
                 cell.classList.add('title');
                 cell.innerText = item[meta].name[0];
-                if (item[meta].representation) {
+                const shape = app.view[0].shapes.get(item);
+                if (shape) {
                     cell.classList.add('displayed');
-                    cell.title = item[meta].representation.world.join(', ');
+                    cell.title = shape[0].world.join(', ');
                 }
                 cell.style.paddingLeft = `${level}em`;
                 row.append(cell);
@@ -6500,31 +6592,128 @@
         }
 
         /**
+         * Tree View
+         */
+        class TreeView {
+            constructor(container, roots, options = {}) {
+                this.container = container || document.createElement('div');
+                this.container.classList.add('table-grid');
+                this.roots = roots;
+                this.options = options;
+                this.addHeadings();
+                this.roots.forEach((root) => this.addNode(root));
+            }
+            addHeadings() {
+                this.columns = [];
+                this.options.headings.forEach((heading) => heading.depth = 1);
+                const stack = [...this.options.headings];
+                let depth = 0;
+                while (stack.length) {
+                    const heading = stack.shift();
+                    depth = Math.max(depth, heading.depth);
+                    if (heading.subHeadings) {
+                        heading.subHeadings.forEach((subheading) =>
+                            subheading.depth = heading.depth + 1);
+                        stack.unshift(...heading.subHeadings);
+                    } else {
+                        this.columns.push(heading);
+                    }
+                }
+                this.container.style.setProperty('grid-template-columns', `repeat(${this.columns.length}, auto)`);
+                this.container.style.setProperty('grid-template-rows', `repeat(${depth}, max-content)`);
+
+                const addHeading = (heading, col, row) => {
+                    const element = document.createElement('div');
+                    const current = col;
+                    if (heading.subHeadings) {
+                        element.style.setProperty('grid-row', `${row}`);
+                        heading.subHeadings.forEach((subHeading, index) =>
+                            col = addHeading(subHeading, col, row + 1));
+                        col -= 1;
+                    } else {
+                        element.style.setProperty('grid-row', `${row} / span ${1 + depth - row}`);
+                    }
+                    element.style.setProperty('grid-column', `${current} / span ${1 + col - current}`);
+                    element.innerText = heading.title;
+                    this.container.append(element);
+                    return col + 1;
+                }
+                let col = 1;
+                this.options.headings.forEach((heading) => col = addHeading(heading, col, 1));
+            }
+            addNode(node) {
+                const data = this.options.data ? this.options.data(node) : node;
+                this.columns.forEach((column, index) => {
+                    const element = document.createElement('div');
+                    element.classList.add('tree-view-node');
+                    element.innerHTML = column.get ? column.get(data) : data[column] ?? '';
+                    this.container.append(element);
+                });
+            }
+            show(model) {
+                this.container.innerHTML = '';
+                const addNode = (node, parent) => {
+                    const element = document.createElement('div');
+                    element.classList.add('node');
+                    if (parent) {
+                        element.classList.add('child');
+                    }
+                    element.innerText = node[meta].name[0];
+                    this.container.append(element);
+                    node[children].forEach((child) => addNode(child, element));
+                }
+                addNode(model);
+            }
+        }
+
+
+        /**
          * Show structure
          */
         function showStructure() {
             const structure = document.getElementById('structure');
-            structure.innerHTML = `
-                <span class="value two-rows">Name</span>
-                <span class="value three-columns">Position</span>
-                <span class="value three-columns">Size</span>
-                <span class="value two-rows">Angle</span>
-                <span class="value three-columns">Axis</span>
+            const headings = [
+                { title: 'Name', get(data) { return data.name; } },
+                {
+                    title: 'Position', subHeadings: [
+                        { title: 'x', get(data) { return data.translation[0].toFixed(2); } },
+                        { title: 'y', get(data) { return data.translation[1].toFixed(2); } },
+                        { title: 'z', get(data) { return data.translation[2].toFixed(2); } }
+                    ],
+                },
+                {
+                    title: 'Size', subHeadings: [
+                        { title: 'x', get(data) { return data.scale[0].toFixed(2); } },
+                        { title: 'y', get(data) { return data.scale[1].toFixed(2); } },
+                        { title: 'z', get(data) { return data.scale[2].toFixed(2); } }
+                    ],
+                },
+                { title: 'Angle', get(data) { return data.angle.toFixed(2); } },
+                {
+                    title: 'Axis', subHeadings: [
+                        { title: 'x', get(data) { return data.axis[0].toFixed(2); } },
+                        { title: 'y', get(data) { return data.axis[1].toFixed(2); } },
+                        { title: 'z', get(data) { return data.axis[2].toFixed(2); } }
+                    ],
+                },
+            ];
+            const options = {
+                headings,
+                data(node) {
+                    const result = decompose(node.world);
+                    result.name = node.node.name;
+                    return result;
+                },
+            };
+            const roots = app.view[0].roots;
+            const view = new TreeView(structure, roots, options);
+            return;
 
-                <span class="value">x</span>
-                <span class="value">y</span>
-                <span class="value">z</span>
 
-                <span class="value">x</span>
-                <span class="value">y</span>
-                <span class="value">z</span>
-
-                <span class="value">x</span>
-                <span class="value">y</span>
-                <span class="value">z</span>`;
+            
 
             app.nodeMap = new Map();
-            const addInstance = (instance, level = 0) => {
+            const addShape = (shape, level = 0) => {
                 const nodes = [];
                 const addControls = (node, item, element, scaled) => {
                     node.contentEditable = true;
@@ -6532,7 +6721,7 @@
                         if (!event.shiftKey) {
                             app.view[0].items.forEach((item) => item.node.selected = false);
                         }
-                        instance.node.selected = true;
+                        shape.node.selected = true;
                         app.updateMaterials = true;
                     });
 
@@ -6562,24 +6751,24 @@
                                 } else {
                                     item[element] = Number(node.innerText);
                                 }
-                                instance.update();
+                                shape.update();
                             }
                         }
                         if (event.ctrlKey) {
                             if (event.key === 'ArrowLeft') {
-                                instance.promote();
+                                shape.promote();
                                 showStructure();
                             }
                             if (event.key === 'ArrowRight') {
-                                instance.demote();
+                                shape.demote();
                                 showStructure();
                             }
                             if (event.key === 'ArrowUp') {
-                                instance.up();
+                                shape.up();
                                 showStructure();
                             }
                             if (event.key === 'ArrowDown') {
-                                instance.down();
+                                shape.down();
                                 showStructure();
                             }
                         }
@@ -6596,8 +6785,8 @@
                                 action.last = event.clientY;
                                 item[element] += delta;
                                 node.innerText = item[element].toFixed(places);
-                                instance.setTransform();
-                                instance.update();
+                                shape.setTransform();
+                                shape.update();
                             };
                             const initial = item[element];
                             action.end = () => {
@@ -6607,13 +6796,13 @@
                                     history.push({
                                         undo: () => {
                                             item[element] = initial;
-                                            instance.setTransform();
-                                            instance.update();
+                                            shape.setTransform();
+                                            shape.update();
                                         },
                                         redo: () => {
                                             item[element] = initial;
-                                            instance.setTransform();
-                                            instance.update();
+                                            shape.setTransform();
+                                            shape.update();
                                         },
                                     });
                                 }
@@ -6629,7 +6818,7 @@
                                 action.last = event.clientY;
                                 item[element] += delta;
                                 node.innerText = item[element].toFixed(places);
-                                instance.update();
+                                shape.update();
                             };
                             const initial = item[element];
                             action.end = () => {
@@ -6639,11 +6828,11 @@
                                     history.push({
                                         undo: () => {
                                             item[element] = initial;
-                                            instance.update();
+                                            shape.update();
                                         },
                                         redo: () => {
                                             item[element] = initial;
-                                            instance.update();
+                                            shape.update();
                                         },
                                     });
                                 }
@@ -6662,21 +6851,21 @@
                         node.innerHTML = value.toFixed();
                         node.classList.add('value');
                     }
-                    //addControls(node, instance, argument, scaled);
+                    //addControls(node, shape, argument, scaled);
                     return node;
                 }
                 const addColour = (argument, scaled = 0.1) => {
                     const node = document.createElement('input');
                     nodes.push(node);
                     node.type = 'color';
-                    const value = instance[argument];
+                    const value = shape[argument];
                     const string = `#${toHex(value[0] * 255, 2)}${toHex(value[1] * 255, 2)}${toHex(value[2] * 255, 2)}`;
                     node.value = string;
 
                     node.addEventListener('change', (event) => {
                         const string = node.value;
                         const value = [parseInt(string.slice(1, 3), 16) / 255, parseInt(string.slice(3, 5), 16) / 255, parseInt(string.slice(5), 16) / 255];
-                        instance[argument] = value;
+                        shape[argument] = value;
                         app.updateMaterials = true;
                     });
                     return node;
@@ -6694,28 +6883,28 @@
                     });
                 }
 
-                if (instance.nodes) {
-                    structure.append(...instance.nodes);
-                    instance.children.map((child) => addInstance(child, level + 1));
-                } else if (instance.world) {
+                if (shape.nodes) {
+                    structure.append(...shape.nodes);
+                    shape.children.map((child) => addShape(child, level + 1));
+                } else if (shape.world) {
                     const expander = document.createElement('span');
-                    expander.innerHTML = instance.children?.length ? '&#9660;' : '';
+                    expander.innerHTML = shape.children?.length ? '&#9660;' : '';
                     expander.classList.add('expander');
 
                     const name = document.createElement('span');
                     name.style.whiteSpace = 'pre';
-                    name.append(''.padStart(level * 2, ' '), expander, addSpan(instance.name, -1));
+                    name.append(''.padStart(level * 2, ' '), expander, addSpan(shape.name, -1));
 
                     nodes.push(name);
-                    app.nodeMap.set(instance, nodes);
-                    const { translation, scale, angle, axis } = decompose(instance.world);
+                    app.nodeMap.set(shape, nodes);
+                    const { translation, scale, angle, axis } = decompose(shape.world);
                     structure.append(name,
                         ...addVec(translation),
                         ...addVec(scale),
                         addSpan(angle),
                         ...addVec(axis),
                     );
-                    instance.children.map((child) => addInstance(child, level + 1));
+                    shape.children.map((child) => addShape(child, level + 1));
 
                     const descend = (node, action) => {
                         action(node);
@@ -6726,8 +6915,8 @@
                         const recursive = event.ctrlKey;
                         expander.classList.toggle('collapsed');
                         if (expander.classList.contains('collapsed')) {
-                            expander.innerHTML = instance.children.length ? '&#9654;' : '';
-                            instance.children.forEach((child) =>
+                            expander.innerHTML = shape.children.length ? '&#9654;' : '';
+                            shape.children.forEach((child) =>
                                 descend(child, (node) => {
                                     if (recursive && node.children.length > 0) {
                                         node.nodes[1].querySelector('.expander').classList.add('collapsed');
@@ -6735,8 +6924,8 @@
                                     (node.nodes || []).forEach((node) => node.classList.add('hide'));
                                 }));
                         } else {
-                            expander.innerHTML = instance.children.length ? '&#9660;' : '';
-                            instance.children.forEach((child) =>
+                            expander.innerHTML = shape.children.length ? '&#9660;' : '';
+                            shape.children.forEach((child) =>
                                 descend(child, (node) => {
                                     if (recursive && node.children.length > 0) {
                                         node.nodes[1].querySelector('.expander').classList.remove('collapsed');
@@ -6748,10 +6937,10 @@
                         }
                     });
                 } else {
-                    instance.children.map((child) => addInstance(child, level));
+                    shape.children.map((child) => addShape(child, level));
                 }
             }
-            app.view[0].roots.forEach((child) => addInstance(child));
+            app.view[0].roots.forEach((child) => addShape(child));
         }
 
         /**
@@ -8204,6 +8393,7 @@
          * Perform the action associated with a node
          */
         function nodeAction(node) {
+            const shape = app.view[0].shapes.get(node);
             if (node.url) {
                 if (node.click === 'load page') {
                     location = node.url;
@@ -8213,21 +8403,20 @@
                     showStructure();
                     showStock();
                 } else if (event.crtlKey || node.load !== true) {
-                    load(node.url, node[meta].representation, event.shiftKey);
+                    load(node.url, shape[0], event.shiftKey);
                     node.load = true;
-                    if (node[meta].representation.showInterior) {
-                        node[meta].representation.showInterior();
+                    if (shape[0].showInterior) {
+                        shape[0].showInterior();
                         setView([0, 1, 0], [0, 0, -1]);
                         app.view[0].items.forEach((item) => item.node.selected = false);
                     }
                 }
             } else {
-                showItem(node[meta].representation);
+                showItem(shape[0]);
                 if (node[children].length > 0) {
-                    if (node[meta].representation.showInterior) {
-                        node[meta].representation.showInterior();
+                    if (shape[0].showInterior) {
+                        shape[0].showInterior();
                     }
-                    //node[children].forEach((child) => app.view[0].addItem(child, node[meta].representation));
                     app.view.forEach((view) => view.updateMaterials());
                 }
             }
