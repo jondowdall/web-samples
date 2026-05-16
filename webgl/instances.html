@@ -792,6 +792,8 @@
         in float v_metallic;
         in float v_mirror;
 
+        uniform int pass;
+
         out vec4 fragmentColour;
 
         float shine = 0.0;
@@ -843,6 +845,13 @@
         }
 
         void main() {
+            if ((pass == 0 && v_opacity < 1.0) ||
+                (pass == 1 && v_opacity >= 1.0)) {
+                discard;
+                return;
+            }
+
+
             vec3 viewVector = normalize(cameraPosition - v_position);
             vec3 normal = normalize(v_normal);// * max(dot(v_normal, viewVector), 0.0));
 
@@ -888,7 +897,8 @@
             lo = pow(lo, vec3(1.0 / 2.2));
             totalShine += 10.0 * length(pow(1.0 - alpha, 2.0) * F * F * texture(envTexture, direction, (pow(alpha, 3.0)) * 20.0).rgb);
 
-            if (v_opacity < 0.1) {
+            if ((pass == 0 && v_opacity < 1.0 && totalShine < 0.1) ||
+                (pass == 1 && v_opacity >= 1.0)) {
                 discard;
                 return;
             }
@@ -1932,9 +1942,10 @@
                 this.named = {};
                 this.shapes = new Map();
             }
-            addItem(node, parent, descend) {
+            addItem(node, parent) {
                 let item = parent;  // Use parent to allow container nodes with no representation
                 if (getAttribute(node, 'position')) {
+                    let descend = false;
                     if (getAttribute(node, 'obj')) {
                         item = getOBJ(node, parent);
                     } else if (getAttribute(node, 'gltf')) {
@@ -1949,7 +1960,6 @@
                         const sides = getAttribute(node, 'sides', 12);
                         node.size = [getAttribute(node, 'radius'), getAttribute(node, 'height'), getAttribute(node, 'radius')]
                         item = new Cylinder(node, parent, sides);
-                        //item = new Frustum(node, parent, 1, sides);
                     } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
                         const sides = getAttribute(node, 'sides', 12);
                         const ratio = getAttribute(node, 'radius2') / getAttribute(node, 'radius1');
@@ -1962,6 +1972,7 @@
                     } else if (getAttribute(node, 'points')) {
                         item = new Ngon(node, parent);
                     } else {
+                        descend = true;
                         item = new Shape(node, parent);
                     }
                     this.shapes.set(node, [item]);
@@ -1973,7 +1984,7 @@
                     } else if (item) {
                         this.roots.push(item);
                     }
-                    if (descend || 1) {
+                    if (descend) {
                         node[children].forEach((node) => this.addItem(node, item));
                     }
                     //} else if (node[meta].source[meta].connection) {
@@ -2186,7 +2197,6 @@
                     gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
                     gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
 
-                    reportGLErrors('view render 1');
 
                     gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
@@ -2195,16 +2205,22 @@
 
                     gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
                     gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
-                    reportGLErrors('view render 2');
                     gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
                     gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
                     gl.uniform1i(app.pbrShader.pass, 0);
+                    gl.depthMask(true);
 
                     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                    reportGLErrors('view render pre');
                     this.renderQueue.forEach((item) => item.render(time));
-                    reportGLErrors('view render end');
+
+                    gl.uniform1i(app.pbrShader.pass, 1);
+                    gl.depthMask(false);
+                    //gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA);
+                    this.renderQueue.forEach((item) => item.render(time));
+
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
                 }
             }
             addNode(node) {
@@ -2630,35 +2646,83 @@
 
         const meta = Symbol('meta');
         const textureAtlas = {
-            [meta]: { rows: [] },
+            [meta]: {
+                width: 0,
+                height: 0,
+                rows: [],
+            },
         };
 
         function getTextureRow(width, height) {
-            const rows = textureAtlas[meta].rows;
-            const row = rows.find((row) => row.width + width <= width && height <= row.height) || {
-                x: 0,
-                width: 0,
-                height: height,
-                y: 0,
-            };
-            if (row.width === 0) {
-                if (rows.length > 0) {
-                    row.y = rows.at(-1).y + rows.at(-1).width;
-                }
-                rows.push(row);
-            } else {
-                row.x = row.width;
+            if (textureAtlas[meta].texture === undefined) {
+                textureAtlas[meta].texture = gl.createTexture();
+                textureAtlas[meta].canvas = new OffscreenCanvas(width, height);
+                textureAtlas[meta].context = textureAtlas[meta].canvas.getContext('2d');
+                textureAtlas[meta].rows = [{
+                    x: 0, y: 0,
+                    width, height,
+                }];
+                return textureAtlas[meta].rows[0];
             }
-            row.width += width;
-            return row;
+            const maxWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+            const atlasWidth = textureAtlas[meta].canvas.width;
+            const rows = textureAtlas[meta].rows;
+            // Find a row that will fin this image
+            const existingRow = rows.find((row) => row.width + width <= atlasWidth && height <= row.height);
+            if (existingRow) {
+                existingRow.x = existingRow.width;
+                existingRow.width += width;
+                return existingRow;
+            }
+            const extendedRow = rows.find((row) => row.width + width <= maxWidth && height <= row.height);
+            if (extendedRow) {
+                const canvas = new OffscreenCanvas(row.width + width, textureAtlas[meta].canvas.height);
+                const context = canvas.getContext('2d');
+                context.drawImage(textureAtlas[meta].canvas, 0, 0); // Copy the existing canvas
+                textureAtlas[meta].canvas = canvas;
+                textureAtlas[meta].context = context;
+                extendedRow.x = extendedRow.width;
+                extendedRow.width += width;
+                return extendedRow;
+            }
+
+            // Create a new row to hold the image
+            const newRow = {
+                x: 0, y: textureAtlas[meta].canvas.height,
+                width, height,
+            };
+            const newWidth = Math.max(width, textureAtlas[meta].canvas.width);
+            const canvas = new OffscreenCanvas(newWidth, textureAtlas[meta].canvas.height + height);
+            const context = canvas.getContext('2d');
+            context.drawImage(textureAtlas[meta].canvas, 0, 0); // Copy the existing canvas
+            textureAtlas[meta].canvas = canvas;
+            textureAtlas[meta].context = context;
+            return newRow;
         }
         /**
          * Load a texture from a url.
          */
-        function addTexture(url, texture = {}, callback) {
+        function addTexture(url) {
             if (textureAtlas[url]) {
                 return textureAtlas[url];
             }
+
+            let x = 0, y = 0, width = 1, height = 1;
+
+            textureAtlas[url] = {
+                get x() {
+                    return x / textureAtlas[meta].canvas.width;
+                },
+                get y() {
+                    return y / textureAtlas[meta].canvas.height;
+                },
+                get width() {
+                    return width / textureAtlas[meta].canvas.width;
+                },
+                get height() {
+                    return height / textureAtlas[meta].canvas.height;
+                },
+            };
 
             // Because images have to be downloaded over the internet
             // they might take a moment until they are ready.
@@ -2671,10 +2735,6 @@
             const srcType = gl.UNSIGNED_BYTE;
 
             const image = new Image();
-            const context = textureAtlas[meta].context;
-            const canvas = textureAtlas[meta].canvas;
-            const width = canvas.width;
-            const height = canvas.height;
 
             image.onload = () => {
                 const level = 0;
@@ -2682,13 +2742,14 @@
                 const srcFormat = gl.RGBA;
                 const srcType = gl.UNSIGNED_BYTE;
                 const row = getTextureRow(image.width, image.height);
+                const context = textureAtlas[meta].context;
+                const canvas = textureAtlas[meta].canvas;
+
                 context.drawImage(image, row.x, row.y);
                 gl.bindTexture(gl.TEXTURE_2D, textureAtlas[meta].texture);
                 gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, srcFormat, srcType, canvas);
 
-                reportGLErrors('tex image 2d');
                 gl.generateMipmap(gl.TEXTURE_2D);
-                reportGLErrors('generate mipmap');
 
                 if (textureAtlas[meta].parameters) {
                     const mapping = {
@@ -2701,36 +2762,33 @@
                         gl.texParameteri(gl.TEXTURE_2D, mapping[parameter], value));
                 };
 
-                texture.x = row.x / width;
-                texture.y = row.y / width;
-                texture.width = image.width / context.canvas.width;
-                texture.height = image.height / context.canvas.height;
-                reportGLErrors('Add Texture');
-                if (callback) {
-                    callback();
-                }
+                x = row.x;
+                y = row.y;
+                width = image.width;
+                height = image.height;
+
+
+                Block.collection.initialise = true;
+                //WalledBox.collection.initialise = true;
+                BevelledBlock.bevels.forEach((bevel) => bevel.initialise = true);
+                Cylinder.collections.forEach((collection) => collection.initialise = true);
+                Frustum.collections.forEach((collection) => collection.initialise = true);
+                Icosphere.level.forEach((level) => level.initialise = true);
             }
             image.src = url;
 
-            textureAtlas[url] = texture;
-            return texture;
+            return textureAtlas[url];
         }
 
         /**
          * Load a texture from a url.
          */
         function makeColourTexture(name, colour = [255, 255, 255, 255], parameters) {
-            const width = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-            const height = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-
-            if (textureAtlas[meta].texture === undefined) {
-                textureAtlas[meta].texture = gl.createTexture();
-                textureAtlas[meta].canvas = new OffscreenCanvas(width, height);
-                textureAtlas[meta].context = textureAtlas[meta].canvas.getContext('2d');
-            }
+            const row = getTextureRow(3, 3);
+            const atlasData = textureAtlas[meta];
 
             textureAtlas[meta].context.fillStyle = `rgb(${colour.join(', ')})`;
-            textureAtlas[meta].context.fillRect(0, 0, width, height);
+            textureAtlas[meta].context.fillRect(row.x, row.y, 3, 3); // Allow a 1 pixel border for interpolation
 
             const level = 0;
             const internalFormat = gl.RGBA;
@@ -2740,16 +2798,27 @@
             const pixel = new Uint8Array(colour);  // opaque blue
 
             gl.bindTexture(gl.TEXTURE_2D, textureAtlas[meta].texture);
-            gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
-                width, height, border, srcFormat, srcType,
-                textureAtlas[meta].context.createImageData(width, height));
 
             gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, srcFormat, srcType, textureAtlas[meta].canvas);
             gl.generateMipmap(gl.TEXTURE_2D);
 
+            let x = row.x + 1;
+            let y = row.y + 1;
             textureAtlas[meta].parameters = parameters;
-            const row = getTextureRow(1, 1);
-            textureAtlas[name] = { x: row.x, y: row.y, width: 1 / width, height: 1 / height };
+            textureAtlas[name] = {
+                get x() {
+                    return x / textureAtlas[meta].canvas.width;
+                },
+                get y() {
+                    return y / textureAtlas[meta].canvas.height;
+                },
+                get width() {
+                    return 1 / textureAtlas[meta].canvas.width;
+                },
+                get height() {
+                    return 1 / textureAtlas[meta].canvas.height;
+                },
+            };
             return textureAtlas[name];
         }
 
@@ -3267,7 +3336,7 @@
 
                 // Create a buffer
                 const buffer = new ArrayBuffer(data.length * 4);
-                // Add a flaot 32 view
+                // Add a float 32 view
                 obj.instanceData = new Float32Array(buffer, 0, data.length);
                 // Load the data using the view
                 obj.instanceData.set(data);
@@ -3724,7 +3793,6 @@
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.bindTexture(gl.TEXTURE_2D, null);
 
-            reportGLErrors('Load Texture');
         }
 
         /**
@@ -4138,36 +4206,8 @@
                 if (app.skybox) {
                     app.skybox();
                 }
-                /*
-                                gl.useProgram(app.shader.program);
-                                gl.bindVertexArray(app.boxVertexArray);
-                
-                                gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
-                                gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                                gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                                gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
-                                gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
-                                gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
-                */
-                reportGLErrors('render 2');
+
                 app.view[0].render(time);
-                reportGLErrors('render 3');
-                /*
-                if (app.connections.length > 0) {
-                    gl.enable(gl.DEPTH_TEST);
-                    gl.useProgram(app.shader.program);
-
-                    gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
-                    gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                    gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                    gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
-                    gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
-                    gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
-
-                    gl.bindVertexArray(app.lineVertexArray);
-                    app.connections.forEach((connection) =>
-                        gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
-                }*/
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
@@ -4209,7 +4249,7 @@
          * translate a touch event into a simplified mouse event.
          */
         function touch(event) {
-            event.preventDefault();
+            //event.preventDefault();
             event.stopPropagation();
             return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
         }
@@ -4620,10 +4660,11 @@
                 const data = [];
                 this.instances.forEach((instance) => {
                     const transform = instance.hidden ? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : multiply(instance.transform, instance.world);
+                    const emissivity = instance.highlighted ? [1, 1, 0.3] : instance.material.emissivityColour;
                     data.push(...transform);                          // offset:  0, size: 16
                     data.push(...instance.orientation);               // offset: 16, size: 9
                     data.push(...instance.material.colour);           // offset: 26, size: 3
-                    data.push(...instance.material.emissivityColour); // offset: 29, size: 3
+                    data.push(...emissivity);                         // offset: 29, size: 3
                     data.push(...instance.material.reflectivity);     // offset: 32, size: 3
                     data.push(instance.material.roughness);           // offset: 25, size: 1
                     data.push(instance.material.opacity);             // offset: 35, size: 1
@@ -4656,26 +4697,20 @@
                 gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData);
             }
             render(time) {
-                reportGLErrors('Collection Render 1');
                 if (this.instances.length > 0) {
-                    gl.bindVertexArray(this.buffers.vao);
-                    reportGLErrors('Collection Render 2');
-                    if (this.initialise) {
+                    gl.bindVertexArray(this.buffers.vao); if (this.initialise) {
                         this.initialiseInstances();
                         this.initialise = false;
                     } else if (this.updateInstances) {
                         this.updateInstanceData();
                         this.updateInstances = false;
                     }
-                    reportGLErrors('Collection Render 3');
                     if (this.triangles > 0 && !app.wireframe) {
                         gl.drawArraysInstanced(gl.TRIANGLES, 0, this.triangles * 3, this.instances.length);
                     }
-                    reportGLErrors('Collection Render 4');
                     if (this.lines > 0 && (app.wireframe || !app.solid)) {
                         gl.drawArraysInstanced(gl.LINES, this.triangles * 3, this.lines * 2, this.instances.length);
                     }
-                    reportGLErrors('Collection Render 5');
                     if (this.buffers.indices && this.points > 0) {
                         gl.drawElementsInstanced(gl.TRIANGLES, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
                     }
@@ -4703,11 +4738,7 @@
                     mirror: getAttribute(node, 'mirror', 0.3),
                 };
 
-                this.texture = addTexture('white');
-                if (getAttribute(node, 'texture')) {
-                    this.texture = {};
-                    addTexture(getAttribute(node, 'texture'), this.texture, () => this.updateInstanceData());
-                }
+                this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.origin = [0, 0, 0];
                 this.referenceFrame = new Transform();
@@ -4738,21 +4769,23 @@
             }
             hide() {
                 if (!this.hidden) {
-                    this.instanceData.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                    //this.instanceData.set([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                    this.instanceData[35] = 0.5;
                     this.hidden = true;
                 }
                 this.collection.updateInstances = true;
             }
             show() {
                 if (this.hidden) {
-                    this.instanceData.set(multiply(this.transform, this.world));
+                    //this.instanceData.set(multiply(this.transform, this.world));
+                    this.instanceData[35] = this.material.opacity;
                     this.collection.updateInstances = true;
                     this.hidden = false;
                 }
             }
             highlight() {
                 if (!this.highlighted) {
-                    this.instanceData.set([255, 255, 50], 28);
+                    this.instanceData.set([1, 1, 0.2], 28);
                     this.collection.updateInstances = true;
                     this.highlighted = true;
                 }
@@ -5101,14 +5134,13 @@
                     ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                const collection = new Collection({ shape, triangles: 12, lines: 12 });
-                Block.collection = collection;
-                return collection;
+                Block.collection = new Collection({ shape, triangles: 12, lines: 12 });
+                return Block.collection;
             }
             constructor(node, parent) {
                 super(node, parent, `block`);
 
-                this.collection = Block.collecion || Block.make();
+                this.collection = Block.collection || Block.make();
                 this.children = [];
                 this.instances = [this.collection.addInstance(node, parent, `block`)];
             }
@@ -5250,6 +5282,7 @@
                     return;
                 }
                 this.interiorView = true;
+                this.instances[0].highlighted = false;
                 const material = this.instances[0].material;
                 const t = getAttribute(this.node, 'walls');
                 const node = this.node;
@@ -5327,7 +5360,7 @@
             showInfo() {
             }
             update() {
-                if (this.node.selected) {
+                if (this.node.selected || (app.show && app.show.item === this)) {
                     this.instances.forEach((instance) => instance.highlight());
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
@@ -5365,46 +5398,10 @@
                                 ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
                                 ctx.stroke();
                             }
+                        } else {
+                            side.show();
                         }
                     });
-
-                    /*
- 
- 
-                    const transform = multiply(this.transform, this.world);
-                    // Get the origin of this element
-                    const origin = applyTransform([0, 0, 0], transform);
-                    const dist = Math.hypot(...subtract(origin, app.camera.position));
- 
-                    if (dist < app.show.distance) {
-                        const point = applyTransform4([...origin, 1], app.show.transform);
-                        const size = extractScale(this.transform);
-                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
-                        const radius = Math.hypot(...size) / point[3];
- 
-                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
- 
-                        if (gap < (radius + app.show.radius)) {
-                            this.instances.forEach((instance) => instance.hide());
-                            return;
-                        }
- 
-                        if (app.showConstruction) {
-                            const width = ctx.canvas.width;
-                            const height = ctx.canvas.height;
-                            const x = 0.5 * width * (position[0] / app.aspect + 1);
-                            const y = 0.5 * height * (1 - position[1]);
- 
-                            ctx.strokeStyle = 'grey';
-                            ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
-                            ctx.beginPath();
-                            ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
-                            ctx.stroke();
-                        }
-                    }
-                    
-                    this.instances.forEach((instance) => instance.show());
-                    */
                 } else if (this.interiorView) {
                     const orientation = multiply(this.transform, this.world)
                     orientation[12] = 0;
@@ -6136,7 +6133,6 @@
             render(time) {
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
-                reportGLErrors('Prism');
             }
             get vertices() {
             }
@@ -6280,7 +6276,6 @@
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
 
-                reportGLErrors('n-gon');
             }
             get vertices() {
             }
@@ -8422,6 +8417,9 @@
             } else {
                 showItem(shape[0]);
                 if (node[children].length > 0) {
+                    const item = app.view[0].shapes.get(node)[0];
+                    node[children].forEach((child) => app.view[0].addItem(child, item));
+
                     if (shape[0].showInterior) {
                         shape[0].showInterior();
                     }
@@ -8700,6 +8698,7 @@
                 updatePoints();
             };
             canvas.addEventListener('dblclick', (event) => {
+                report('double click');
                 const mouseLine = getRay(event.clientX, event.clientY);
                 const hits = setSelected(getIntersection(mouseLine));
                 if (hits && hits[0].node) {
