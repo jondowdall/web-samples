@@ -1688,11 +1688,13 @@
             const selected = app.view[0].items.filter((item) => item.node.selected);
 
             if (selected.length) {
+                const orientation = extractRotation(selected[0].world);
                 const lookAt = scale(sum(...selected.map((item) =>
                     applyTransform(product(getAttribute(item.node, 'size'), getAttribute(item.node, 'offset')), item.world))), 1 / selected.length);
                 const size = Math.max(...selected.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
                 const dist = Math.max(1.5 * size / Math.tan(180 * app.fov / Math.PI), app.near * 2);
-                const position = sum(lookAt, scale(direction, dist));
+                const viewDirection = applyTransform(direction, orientation);
+                const position = sum(lookAt, scale(viewDirection, dist));
                 moveCamera(position, lookAt, up);
             } else {
                 const lookAt = app.initial.lookAt;
@@ -1742,7 +1744,7 @@
             // Calculate the axis and angle from the cross product of the view directions
             const axis = cross(zAxis, normalised(direction));
             const opposite = Math.sign(dot(zAxis, direction)) || 1;
-            const deg = -180 * Math.asin(Math.hypot(...axis)) / Math.PI;
+            const deg = -180 * Math.asin(Math.min(1, Math.hypot(...axis))) / Math.PI;
             // Allow for angles greater than 90 degrees
             const angle = opposite < 0 ? 180 + deg : deg;
             if (Math.abs(angle) < 0.001 || Math.hypot(...axis) < 0.001) {
@@ -1757,7 +1759,7 @@
             const rollAxis = cross(x1, x2);
             const acute = dot(x1, x2) || 1;
             const sign = Math.sign(dot(rollAxis, direction));
-            const roll1 = -180 * sign * Math.asin(Math.hypot(...rollAxis)) / Math.PI;
+            const roll1 = -180 * sign * Math.asin(Math.min(1, Math.hypot(...rollAxis))) / Math.PI;
             const roll = acute < 0 ? -180 - roll1 : roll1;
             // Check for 180 degree rotation
             if (Math.abs(roll) < 0.1 && dot(endUp, up) < 0) {
@@ -1950,6 +1952,9 @@
                 this.shapes = new Map();
             }
             addItem(node, parent) {
+                if (this.shapes.has(node)) {
+                    return this.shapes.get(node)[0];
+                }
                 let item = parent;  // Use parent to allow container nodes with no representation
                 if (getAttribute(node, 'position')) {
                     let descend = false;
@@ -2015,6 +2020,7 @@
                         }
                     }
                 });
+                return item;
             }
             removeItem(node) {
                 const shapes = this.shapes.get(node);
@@ -4155,6 +4161,7 @@
         let start;
         let last;
         function render(time) {
+            app.time = time;
             gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
             app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
             app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
@@ -4885,6 +4892,19 @@
                 this.collection.updateInstances = true;
             }
             update() {
+                if (this.node[meta].dynamic) {
+                    this.instances.forEach((instance) => {
+                        instance.referenceFrame = new Transform();
+
+                        instance.referenceFrame.move(getAttribute(this.node, 'position', [0, 0, 0]));
+                        instance.referenceFrame.rotate(getAttribute(this.node, 'angle', 0),
+                            getAttribute(this.node, 'axis', [0, 1, 0]));
+
+                        instance.referenceFrame.scale( getAttribute(this.node, 'size', [1, 1, 1]));
+
+                        instance.updateInstanceData();
+                    });
+                }
                 if (this.node.selected) {
                     this.instances.forEach((instance) => instance.highlight());
                 } else {
@@ -7315,15 +7335,16 @@
 
                     if (field.includes('=>')) {
                         const [name, expr] = field.split(/\s*=>\s*/);
-                        const func = makeFunction([], expr);
-                        const [obj, arg] = getTarget(name);
+                        const func = makeFunction(['time'], expr);
+                        const [obj, arg] = getTarget(name || context.defaultParameters.shift()?.name);
 
-                        Object.defineProperties(obj, arg, {
+                        Object.defineProperty(obj, arg, {
                             enumerable: true,
                             get() {
-                                return func(this);
+                                return func(app.time, this);
                             }
                         });
+                        node[meta].dynamic = true;
                     } else if (field.includes('=')) {
                         const [name, value] = field.split(/\s*=\s*/);
                         const [obj, arg] = getTarget(name);
@@ -7375,7 +7396,7 @@
                 // Add remaining default values
                 while (context.defaultParameters.length) {
                     const parameter = context.defaultParameters.shift();
-                    if (parameter.value !== undefined) {
+                    if (parameter.value !== undefined && local.object[parameter.name] === undefined) {
                         local.object[parameter.name] = parameter.value;
                     }
                 }
@@ -7445,11 +7466,15 @@
                             node[property] = type[property]));
 
                 //*
-                Object.keys(node).forEach((property) =>
-                    Object.defineProperty(node, property, {
-                        enumerable: true,
-                        value: interpret(resolve(node[property])),
-                    }));
+                Object.keys(node).forEach((property) => {
+                    const descriptor = Object.getOwnPropertyDescriptor(node, property);
+                    if (descriptor.configurable) {
+                        Object.defineProperty(node, property, {
+                            enumerable: true,
+                            value: interpret(resolve(node[property])),
+                        });
+                    }
+                });
                 /*/
                 Object.keys(node).forEach((property) =>
                     node[property] = resolve(node[property]));
@@ -7619,6 +7644,7 @@
                         name: [],
                         data: [],
                         types: [...source[meta].types],
+                        parent: context.object,
                     },
                     [children]: [],
                 };
@@ -7660,6 +7686,13 @@
 
             // Generate the object graph
             app.graph[children] = roots.flatMap((line) => line.action(line));
+            const nodes = [...app.graph[children]];
+            while (nodes.length) {
+                const node = nodes.shift();
+                app.nodes.push(node);
+                node[children].forEach((child) => child[meta].parent = node);
+                nodes.push(...node[children]);
+            }
 
             app.view[0].update(app.graph, parent, replace);
             showModel(app.graph);
@@ -7891,6 +7924,28 @@
         }
 
         /**
+         * Calculate the determinant of a 4x4 matrix.
+         * 
+         * Input: 16 element array
+         * Output: number
+         */
+        function determinant(matrix) {
+            const a0 = matrix[0] * matrix[5] - matrix[1] * matrix[4];
+            const a1 = matrix[0] * matrix[6] - matrix[2] * matrix[4];
+            const a2 = matrix[0] * matrix[7] - matrix[3] * matrix[4];
+            const a3 = matrix[1] * matrix[6] - matrix[2] * matrix[5];
+            const a4 = matrix[1] * matrix[7] - matrix[3] * matrix[5];
+            const a5 = matrix[2] * matrix[7] - matrix[3] * matrix[6];
+            const b0 = matrix[8] * matrix[13] - matrix[9] * matrix[12];
+            const b1 = matrix[8] * matrix[14] - matrix[10] * matrix[12];
+            const b2 = matrix[8] * matrix[15] - matrix[11] * matrix[12];
+            const b3 = matrix[9] * matrix[14] - matrix[10] * matrix[13];
+            const b4 = matrix[9] * matrix[15] - matrix[11] * matrix[13];
+            const b5 = matrix[10] * matrix[15] - matrix[11] * matrix[14];
+            return a0 * b5 - a1 * b4 + a2 * b3 + a3 * b2 - a4 * b1 + a5 * b0;
+        }
+
+        /**
          * Calculate the inverse of a 4x4 matrix.
          * 
          * Input: 16 element array
@@ -8001,7 +8056,7 @@
          * Get angle and axis from a quaternion
          */
         function getAngleAxis(quaternion) {
-            const radians = Math.acos(quaternion.w);
+            const radians = Math.acos(Math.min(1, Math.max(-1, quaternion.w)));
             const angle = 360 * radians / Math.PI;
             if (Math.abs(angle) > 0.0001) {
                 const s = 1 / Math.sin(radians);
@@ -9139,16 +9194,35 @@
                     const names = fullCommand.split(/\s*,\s*/);
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
                     const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
-                    app.view[0].items.filter((item) => select.find((pattern) => pattern.test(item.name))).forEach((item) => item.node.selected = true);
-                    app.view[0].items.filter((item) => deselect.find((pattern) => pattern.test(item.name))).forEach((item) => item.node.selected = false);
-                    app.view.forEach((view) => view.updateMaterials());
-                    const selected = app.view[0].items.filter((item) => item.node.selected);
-                    report(`Selected: ${selected.length}`);
-                    if (selected.length) {
-                        const item = selected[0];
-                        showItem(item);
-                        item.instances.forEach((instance) => instance.highlight())
-                    } else {
+
+                    const selected = new Set(select.flatMap((pattern) =>
+                        app.nodes.filter((node) => pattern.test(node.name))));
+
+                    let first = true;
+                    for (const node of selected) {
+                        let parent = node[meta].parent;
+                        const path = [];
+                        while (parent) {
+                            path.unshift(parent);
+                            parent = parent[meta].parent;
+                        }
+                        parent = null;
+                        path.forEach((node) => {
+                            const item = app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
+                            item[0].showInterior?.();
+                            node[children].forEach((child) => app.view[0].addItem(child, item[0]));
+                            parent = item[0];
+                        });
+                        const item = app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
+                        if (first) {
+                            showItem(item[0]);
+                            first = false;
+                        }
+                        item[0].instances.forEach((instance) => instance.highlight())
+                    }
+
+                    report(`Selected: ${selected.size}`);
+                    if (selected.size === 0) {
                         app.show = null;
                     }
                 }
