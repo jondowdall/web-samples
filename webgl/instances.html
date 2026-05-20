@@ -4306,6 +4306,11 @@
          * Return an attribute value, doing a breadth first search of the types.
          */
         function getAttribute(item, attribute, defaultValue) {
+            for (const state of item[meta].currentState) {
+                if (state[attribute] !== undefined) {
+                    return state[attribute];
+                }
+            } 
             if (item[attribute] !== undefined) {
                 return item[attribute];
             }
@@ -4805,7 +4810,7 @@
                 const instanceData = this.collection.instanceData;
                 instanceData.set(transform, this.offset + 0);                         // offset:  0, size: 16
                 instanceData.set(this.orientation, this.offset + 16);                 // offset: 16, size: 9
-                instanceData.set(this.material.colour, this.offset + 25);             // offset: 26, size: 3
+                instanceData.set(getAttribute(this.node, 'colour', [1,1,1]), this.offset + 25);             // offset: 26, size: 3
                 instanceData.set(emissivity, this.offset + 28);                       // offset: 28, size: 3
                 instanceData.set(this.material.reflectivity, this.offset + 31);       // offset: 31, size: 3
                 instanceData[this.offset + 34] = this.material.roughness;             // offset: 34, size: 1
@@ -4906,7 +4911,6 @@
                             getAttribute(this.node, 'axis', [0, 1, 0]));
 
                         instance.referenceFrame.scale(getAttribute(this.node, 'size', [1, 1, 1]));
-
                         instance.updateInstanceData();
                     });
                 }
@@ -7303,6 +7307,8 @@
                         data: [],
                         typeNames: [],
                         parent: context.object,
+                        states: {},
+                        currentState: new Set(),
                     },
                     [children]: [],
                 };
@@ -7483,7 +7489,7 @@
                 Object.keys(node).forEach((property) =>
                     node[property] = resolve(node[property]));
                 //*/
-
+                
                 // Add children from types
                 node[children].push(...node[meta].types.flatMap((type) =>
                     type[children].map((child) => expandTypes(child, context))));
@@ -7493,7 +7499,14 @@
                 }
                 node[meta].name[0] = node.name || interpret(resolve(node[meta].name[0]));
 
-                node[children].push(...line.children.flatMap((line) => line.action(line)));
+                const components = line.children.flatMap((line) => line.action(line));
+                node[children].push(...components.filter((component) => component.name[0] !== '$'));
+
+                Object.assign(node[meta].states,
+                    ...node[meta].types.map((type) => type[meta].states), 
+                    ...components.filter((component) => component.name[0] === '$').map((state) => ({ [state.name.slice(1)]: state }))
+                );
+
                 scope.end();
                 return node;
             };
@@ -7649,6 +7662,8 @@
                         data: [],
                         types: [...source[meta].types],
                         parent: context.object,
+                        states: {},
+                        currentState: new Set(),
                     },
                     [children]: [],
                 };
@@ -7676,10 +7691,14 @@
                 Object.keys(source).forEach((property) =>
                     node[property] = interpret(resolve(source[property])));
 
-                node[children] = source[children].map((child) => expandTypes(child, context));
+                const components = source[children].map((child) => expandTypes(child, context));
+                node[children] = components.filter((component) => component.name[0] !== '$');
                 // Add all the children from this nodes types
                 node[children].push(...node[meta].types.flatMap((type) =>
                     type[children].map((child) => expandTypes(child, context))));
+
+                Object.assign(node[meta].states, ...node[meta].types.map((type) => type[meta].states),
+                    ...components.filter((component) => component.name[0] === '$').map((state) => ({ [state.name.slice(1)]: state })));
 
                 if (node.name === undefined) {
                     node.name = interpret(resolve(source[meta].source.fields[0]));
@@ -8419,6 +8438,13 @@
                         app.view[0].items.forEach((item) => item.node.selected = false);
                     }
                 }
+            } else if (node[meta].states.selected) {
+                if (node[meta].currentState.has(node[meta].states.selected)) {
+                    node[meta].currentState.delete(node[meta].states.selected);
+                } else {
+                    node[meta].currentState.add(node[meta].states.selected);
+                }
+                node[meta].dynamic = true;
             } else {
                 showItem(shape[0]);
                 if (node[children].length > 0) {
