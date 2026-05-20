@@ -807,6 +807,7 @@
         in float v_mirror;
 
         uniform int pass;
+        uniform int effects;
 
         out vec4 fragmentColour;
 
@@ -913,19 +914,23 @@
             float clear = max(totalShine * 0.2, 0.0) * v_opacity;
             float opacity = clear + (1.0 - clear) * pow(v_opacity, 5.0);
 
-            const float offset = 0.6;
-            float s1 = 1.0 / (1.0 + exp(-15.0 * (v_coord2.x + offset)));
-            float s2 = 1.0 / (1.0 + exp(15.0 * (v_coord2.x - offset)));
-            float s3 = 1.0 / (1.0 + exp(-15.0 * (v_coord2.y + offset)));
-            float s4 = 1.0 / (1.0 + exp(15.0 * (v_coord2.y - offset)));
-            float occ = s1 * s2 * s3 * s4;
+            float occ = 1.0;
+            if (effects == 1) {
+                const float offset = 0.6;
+                const float sharpness = 15.0;
+                float s1 = 1.0 / (1.0 + exp(-sharpness * (v_coord2.x + offset)));
+                float s2 = 1.0 / (1.0 + exp(sharpness * (v_coord2.x - offset)));
+                float s3 = 1.0 / (1.0 + exp(-sharpness * (v_coord2.y + offset)));
+                float s4 = 1.0 / (1.0 + exp(sharpness * (v_coord2.y - offset)));
+                occ = s1 * s2 * s3 * s4;
+            }
 
-//            float occ = 1.0 - 0.4 * (pow(v_coord2.x, 4.0) + pow(v_coord2.y, 4.0));
             fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
             //fragmentColour = vec4(abs(v_normal), opacity);
             //fragmentColour = vec4(v_coord2, 0.0, 1.0)* texture(surfaceTexture, v_coord);
             //fragmentColour = vec4(vec2(0.5, 0.5) + 0.5 * v_coord2, 0.0, 1.0)* texture(surfaceTexture, v_coord);
             //fragmentColour = vec4(s1, s2, s3, opacity) * texture(surfaceTexture, v_coord);
+            //fragmentColour = vec4(float(effects), fragmentColour.g, fragmentColour.b, fragmentColour.a);
         }
     </script>
 
@@ -947,6 +952,7 @@
         uniform vec3 cameraPosition;
 
         uniform int pass;
+        uniform int effects;
 
         uniform samplerCube envTexture;
 
@@ -1690,7 +1696,7 @@
             if (selected.length) {
                 const orientation = extractRotation(selected[0].world);
                 const lookAt = scale(sum(...selected.map((item) =>
-                    applyTransform(product(getAttribute(item.node, 'size'), getAttribute(item.node, 'offset')), item.world))), 1 / selected.length);
+                    applyTransform(product(getAttribute(item.node, 'size', [1, 1, 1]), getAttribute(item.node, 'offset', [0, 0, 0])), item.world))), 1 / selected.length);
                 const size = Math.max(...selected.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
                 const dist = Math.max(1.5 * size / Math.tan(180 * app.fov / Math.PI), app.near * 2);
                 const viewDirection = applyTransform(direction, orientation);
@@ -1931,10 +1937,14 @@
                     gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
                     gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
 */
+                    gl.uniform1i(app.pbrShader.effects, 0);
 
                     gl.bindVertexArray(app.lineVertexArray);
                     app.connections.forEach((connection) =>
                         gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
+
+                    gl.uniform1i(app.pbrShader.effects, app.effects);
+                    reportGLErrors('rendering edges');
                 }
             }
         }
@@ -2129,6 +2139,7 @@
                     gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
                     gl.uniform1i(app.pbrShader.pass, 0);
+                    gl.uniform1i(app.pbrShader.effects, app.effects);
 
                     gl.bindFramebuffer(gl.FRAMEBUFFER, app.renderBufferFBO);
                     //gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -2230,6 +2241,7 @@
                     gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
 
                     gl.uniform1i(app.pbrShader.pass, 0);
+                    gl.uniform1i(app.pbrShader.effects, app.effects);
                     gl.depthMask(true);
 
                     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -2288,6 +2300,7 @@
             rotation: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             reportErrors: false,
             nodeMap: new Map(),
+            effects: 1,
         };
 
         /**
@@ -3234,6 +3247,10 @@
                 gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, false, 24, 12);
                 gl.enableVertexAttribArray(app.pbrShader.normal);
 
+                gl.disableVertexAttribArray(app.pbrShader.coord);
+                gl.vertexAttrib2f(app.pbrShader.coord, 0.0, 0.0);
+
+
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
 
                 obj.transform = identityMatrix();
@@ -3245,8 +3262,7 @@
                 obj.transform[13] = -size[1] / 2;
                 obj.transform[14] = -size[2] / 2;
 
-                const matrix = [...obj.transform];
-                matrix.push(1, 0, 0, 0, 1, 0, 0, 0, 1);
+                const matrix = [...obj.transform, 1, 0, 0, 0, 1, 0, 0, 0, 1];
 
                 // Matrices are passed as 4 vertex attributes
                 for (let i = 0; i < 4; ++i) {
@@ -3268,32 +3284,24 @@
                 const offset = materials[materialName].offset * 4;
 
                 gl.enableVertexAttribArray(app.pbrShader.colour);
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 52, offset);
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 68, offset);
                 gl.vertexAttribDivisor(app.pbrShader.colour, obj.instances.length);
 
                 gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 52, offset + 12);
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 68, offset + 12);
                 gl.vertexAttribDivisor(app.pbrShader.emissivityColour, obj.instances.length);
 
-                gl.enableVertexAttribArray(app.pbrShader.roughness);
-                gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 52, offset + 24);
-                gl.vertexAttribDivisor(app.pbrShader.roughness, obj.instances.length);
-
                 gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 52, offset + 28);
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 68, offset + 24);
                 gl.vertexAttribDivisor(app.pbrShader.reflectivity, obj.instances.length);
 
-                gl.enableVertexAttribArray(app.pbrShader.opacity);
-                gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 52, offset + 40);
-                gl.vertexAttribDivisor(app.pbrShader.opacity, obj.instances.length);
+                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
+                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 68, offset + 36);
+                gl.vertexAttribDivisor(app.pbrShader.materialParameters, obj.instances.length);
 
-                gl.enableVertexAttribArray(app.pbrShader.metallic);
-                gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 52, offset + 44);
-                gl.vertexAttribDivisor(app.pbrShader.metallic, obj.instances.length);
-
-                gl.enableVertexAttribArray(app.pbrShader.mirror);
-                gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 52, offset + 48);
-                gl.vertexAttribDivisor(app.pbrShader.mirror, obj.instances.length);
+                gl.enableVertexAttribArray(app.pbrShader.textureParameters);
+                gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, 68, offset + 52);
+                gl.vertexAttribDivisor(app.pbrShader.textureParameters, obj.instances.length);
 
                 gl.bindVertexArray(null);
 
@@ -3316,25 +3324,17 @@
                     gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 52, offset + 12);
                     gl.vertexAttribDivisor(app.pbrShader.emissivityColour, obj.instances.length);
 
-                    gl.enableVertexAttribArray(app.pbrShader.roughness);
-                    gl.vertexAttribPointer(app.pbrShader.roughness, 1, gl.FLOAT, false, 52, offset + 24);
-                    gl.vertexAttribDivisor(app.pbrShader.roughness, obj.instances.length);
-
                     gl.enableVertexAttribArray(app.pbrShader.reflectivity);
                     gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 52, offset + 28);
                     gl.vertexAttribDivisor(app.pbrShader.reflectivity, obj.instances.length);
 
-                    gl.enableVertexAttribArray(app.pbrShader.opacity);
-                    gl.vertexAttribPointer(app.pbrShader.opacity, 1, gl.FLOAT, false, 52, offset + 40);
-                    gl.vertexAttribDivisor(app.pbrShader.opacity, obj.instances.length);
+                    gl.enableVertexAttribArray(app.pbrShader.materialParameters);
+                    gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 52, offset + 40);
+                    gl.vertexAttribDivisor(app.pbrShader.materialParameters, obj.instances.length);
 
-                    gl.enableVertexAttribArray(app.pbrShader.metallic);
-                    gl.vertexAttribPointer(app.pbrShader.metallic, 1, gl.FLOAT, false, 52, offset + 44);
-                    gl.vertexAttribDivisor(app.pbrShader.metallic, obj.instances.length);
-
-                    gl.enableVertexAttribArray(app.pbrShader.mirror);
-                    gl.vertexAttribPointer(app.pbrShader.mirror, 1, gl.FLOAT, false, 52, offset + 48);
-                    gl.vertexAttribDivisor(app.pbrShader.mirror, obj.instances.length);
+                    gl.enableVertexAttribArray(app.pbrShader.textureParameters);
+                    gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, 52, offset + 40);
+                    gl.vertexAttribDivisor(app.pbrShader.textureParameters, obj.instances.length);
 
                     gl.bindVertexArray(null);
                 });
@@ -3482,12 +3482,10 @@
                 }
             });
             loadedObjs[url].updateMaterials();
-            const shape = app.view[0].shapes.get(this);
             Object.defineProperties(instance, {
                 transform: {
                     enumerable: true,
-                    get() { return shape[0].transform; },
-
+                    get() { return this.geometry.transform; },
                 }
 
             })
@@ -4109,7 +4107,10 @@
             const shader = app.pbrShader;
 
             gl.disableVertexAttribArray(shader.normal);
-            gl.vertexAttrib3f(shader.normal, 0, 0, 1);
+            gl.vertexAttrib3f(shader.normal, 0, 0, -1);
+
+            gl.disableVertexAttribArray(shader.coord);
+            gl.vertexAttrib4f(shader.coord, 0.5, 0.5, 0.5, 0.5);
 
             gl.disableVertexAttribArray(shader.model);
             gl.vertexAttrib4f(shader.model, 1, 0, 0, 0);
@@ -4535,9 +4536,9 @@
 
                 numberSlider('roughness', 'Roughness:');
                 colourSlider(material.colour, 'Colour:'),
-                    colourSlider(material.emissivityColour, 'Emissivity:'),
-                    colourSlider(material.reflectivity, 'Reflectivity:'),
-                    numberSlider('opacity', 'Opacity:');
+                colourSlider(material.emissivityColour, 'Emissivity:'),
+                colourSlider(material.reflectivity, 'Reflectivity:'),
+                numberSlider('opacity', 'Opacity:');
                 numberSlider('metallic', 'Metallic:');
                 numberSlider('mirror', 'Mirror:');
 
@@ -4793,6 +4794,9 @@
             }
             update(point) { }
             updateInstanceData() {
+                if (!this.collection.instanceData) {
+                    return;
+                }
                 //const transform = this.hidden ? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : multiply(this.transform, this.world);
                 const transform = multiply(this.transform, this.world);
                 const emissivity = this.highlighted ? [1, 1, 0.3] : this.material.emissivityColour;
@@ -4901,7 +4905,7 @@
                         instance.referenceFrame.rotate(getAttribute(this.node, 'angle', 0),
                             getAttribute(this.node, 'axis', [0, 1, 0]));
 
-                        instance.referenceFrame.scale( getAttribute(this.node, 'size', [1, 1, 1]));
+                        instance.referenceFrame.scale(getAttribute(this.node, 'size', [1, 1, 1]));
 
                         instance.updateInstanceData();
                     });
@@ -5843,7 +5847,6 @@
                         });
 
                         const collection = new Collection({ shape: positions }, indices);
-
 
                         edges = edges.flatMap((edge) => divideEdge(edge));
                         faces = faces.flatMap((face) => divideFace(face));
@@ -8850,12 +8853,12 @@
 
             app.pbrShader = makeProgram(pbrShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
-                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'surfaceTexture', 'envTexture', 'pass']
+                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'surfaceTexture', 'envTexture', 'pass', 'effects',]
             );
 
             app.pbrClearShader = makeProgram(pbrClearShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
-                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass']
+                ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass', 'effects',]
             );
 
             app.mirrorShader = makeProgram(mirrorShaderSource,
@@ -9274,4 +9277,5 @@
         window.addEventListener('load', main);
     </script>
 </body>
+
 </html>
