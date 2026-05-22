@@ -2067,7 +2067,6 @@
             }
             updateMaterials() {
             }
-
             update(graph, parent, replace = true) {
                 if (replace) {
                     this.items = [];
@@ -2282,7 +2281,23 @@
                 }
             }
             addNode(node) {
-
+                if (this.shapes.get(node)) {
+                    return this.shapes.get(node);
+                }
+                let parent = node[meta].parent;
+                const path = [];
+                while (parent) {
+                    path.unshift(parent);
+                    parent = parent[meta].parent;
+                }
+                parent = null;
+                path.forEach((node) => {
+                    const item = app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
+                    item[0].showInterior?.();
+                    node[children].forEach((child) => app.view[0].addItem(child, item[0]));
+                    parent = item[0];
+                });
+                return app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
             }
         }
 
@@ -2339,6 +2354,9 @@
          * Select the node, adding to the list of selected nodes.
          */
         function select(node) {
+            if (getAttribute(node, 'position') === undefined || Math.hypot(...getAttribute(node, 'size', [0])) === 0) {
+                node[children].forEach((child) => select(child));
+            }
             if (!node.selected) {
                 node.selected = true;
                 const container = document.getElementById('top-right');
@@ -2351,9 +2369,12 @@
         }
 
         /**
-         * Select the node, removing from the list of selected nodes.
+         * Deselect the node, removing from the list of selected nodes.
          */
         function deselect(item) {
+            if (getAttribute(item, 'position') === undefined || Math.hypot(...getAttribute(item, 'size', [0])) === 0) {
+                item[children].forEach((child) => deselect(child));
+            }
             if (item.selected) {
                 item.selected = false;
                 const container = document.getElementById('top-right');
@@ -2361,6 +2382,20 @@
                 for (const node of nodes) {
                     node.remove();
                 }
+            }
+        }
+
+        /**
+         * Toggle the selection of the node.
+         */
+        function toggleSelection(node) {
+            if (getAttribute(node, 'position') === undefined || Math.hypot(...getAttribute(node, 'size', [0])) === 0) {
+                node[children].forEach((child) => toggleSelection(child));
+            }
+            if (node.selected) {
+                deselect(node);
+            } else {
+                select(node);
             }
         }
 
@@ -6531,10 +6566,48 @@
             });
             const headings = Array.from(columns).map((column) => ({ title: column, get(data) { return data[column] ?? ''; } }));
 
-            const options = { headings, };
+            const options = {
+                headings,
+                actions: {
+                    click(event, node) {
+                        const item = app.view[0].addNode(node);
+                        showItem(item[0]);
+                        item[0].instances.forEach((instance) => instance.highlight());
+                        select(node);
+                    },
+                    dblclick(event, node) {
+                        const item = app.view[0].addNode(node);
+                        showItem(item[0]);
+                        item[0].instances.forEach((instance) => instance.highlight());
+                        select(node);
+                        setView([0, 0, 1]);
+                    },
+                }
+            };
 
             const view = new TreeView(container, model[children], options);
         }
+
+        /**
+         * Create a popup window.
+         */
+        let popup;
+        function openWindow(title = 'New Window') {
+            if (popup && !popup.closed) {
+                popup.focus();
+                /* or do something else, e.g. close the popup or alert a warning */
+            } else {
+                popup = window.open('', 'Rolling Wave Planning', 'popup');
+                popup.document.write(`<html><head><title>${title}</title>
+                    <link rel="stylesheet" href="styles/structure.css">
+                </head><body>`);
+                popup.document.write('</body></html>')
+                popup.document.close();
+                popup.document.body.append(template.content);
+            }
+            return popup.document;
+        }
+
 
         /**
          * Tree View
@@ -6546,6 +6619,7 @@
                 this.container.classList.add('table-grid');
                 this.roots = roots;
                 this.options = options;
+                this.options.actions = this.options.actions ?? {};
                 this.options.getChildren = this.options.getChildren || ((node) => node[children] || []);
                 this.addHeadings();
                 this.roots.forEach((root) => this.addNode(root));
@@ -6617,7 +6691,17 @@
                 row.cells[0].style.textAlign = 'left';
                 row.cells[0].classList.add('table-grid-heading');
 
+                if (this.options.actions.dblclick) {
+                    row.cells[0].addEventListener('dblclick', (event) =>
+                        this.options.actions.dblclick(event, node));
+                }
+
                 row.cells[0].addEventListener('click', (event) => {
+                    if (event.shiftKey && this.options.actions.click) {
+                        this.options.actions.click(event, node);
+                        return;
+                    }
+
                     const children = this.options.getChildren(node);
                     if (children.length === 0) {
                         row.cells[0].classList.add('leaf');
@@ -6673,7 +6757,7 @@
                     row.cells.forEach((element) => element.classList.remove('hide'));
                 }
                 const children = this.options.getChildren(node);
-                if (children) {                    
+                if (children) {
                     let last = row.cells.at(-1);
                     children.forEach((child) => {
                         const subrow = this.rows.get(child);
@@ -6727,6 +6811,15 @@
                     const result = decompose(multiply(node.transform, node.world));
                     result.name = node.node.name;
                     return result;
+                },
+                actions: {
+                    click(event, item) {
+                        toggleSelection(item.node);
+                    },
+                    dblclick(event, item) {
+                        select(item.node);
+                        setView([0, 0, 1]);
+                    }
                 },
                 getChildren(node) {
                     return node.children;
