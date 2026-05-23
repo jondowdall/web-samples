@@ -2015,6 +2015,8 @@
                     } else if (getAttribute(node, 'radius')) {
                         const subdivisions = getAttribute(node, 'subdivisions', 4);
                         item = new Icosphere(node, parent, subdivisions);
+                    } else if (getAttribute(node, 'points') && getAttribute(node, 'height') && getAttribute(node, 'thickness')) {
+                        item = new Walls(node, parent);
                     } else if (getAttribute(node, 'points') && getAttribute(node, 'height')) {
                         item = new Prism(node, parent);
                     } else if (getAttribute(node, 'points')) {
@@ -5976,8 +5978,6 @@
 
                     // If this object is closer to the camera than the shown object check the overlap in the view plane
                     if (dist < app.show.distance) {
-                        const width = ctx.canvas.width;
-                        const height = ctx.canvas.height;
 
                         // Convert world space to view frustum
                         const point = applyTransform4([...origin, 1], app.show.transform);
@@ -5994,18 +5994,360 @@
                             return;
                         }
 
-                        const x = 0.5 * width * (position[0] / app.aspect + 1);
-                        const y = 0.5 * height * (1 - position[1]);
+                        if (app.showConstruction) {
+                            const width = ctx.canvas.width;
+                            const height = ctx.canvas.height;
 
-                        ctx.strokeStyle = 'grey';
-                        ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
-                        ctx.beginPath();
-                        ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
-                        ctx.stroke();
+                            const x = 0.5 * width * (position[0] / app.aspect + 1);
+                            const y = 0.5 * height * (1 - position[1]);
 
+                            ctx.strokeStyle = 'grey';
+                            ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                            ctx.beginPath();
+                            ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
                     }
                     this.instances.forEach((instance) => instance.show());
                 }
+            }
+        }
+
+        /**
+          * Manage walls.
+          * 
+          * Walls are not managed as collections as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
+          */
+        class Walls extends Shape {
+            constructor(node, parent) {
+                super(node, parent, 'prism');
+                this.children = [];
+                this.textureParameters = [app.white.x, app.white.y, app.white.width, app.white.height];
+
+                this.material = {
+                    colour: [0.1, 0.3, 0.8],
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [0.1, 1, 0.1, 0.3],
+                }
+                this.height = getAttribute(node, 'height', 1);
+                this.thickness = getAttribute(node, 'thickness', 1);
+                this.getPoints();
+                this.initialiseBuffers();
+                this.makeWalls();
+                app.view[0].renderQueue.push(this);
+            }
+            initialiseBuffers() {
+                this.vertex = gl.createBuffer();
+                this.vao = gl.createVertexArray();
+                gl.bindVertexArray(this.vao);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
+
+                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 48, 0);
+                gl.enableVertexAttribArray(app.pbrShader.position);
+
+                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, false, 48, 12);
+                gl.enableVertexAttribArray(app.pbrShader.normal);
+
+                gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, 48, 24);
+                gl.enableVertexAttribArray(app.pbrShader.coord);
+
+                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 48, 32);
+                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
+
+                gl.disableVertexAttribArray(app.pbrShader.model);
+                gl.disableVertexAttribArray(app.pbrShader.model + 1);
+                gl.disableVertexAttribArray(app.pbrShader.model + 2);
+                gl.disableVertexAttribArray(app.pbrShader.model + 3);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
+
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix);
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 1);
+                gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 2);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
+
+                gl.disableVertexAttribArray(app.pbrShader.colour);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
+
+                gl.disableVertexAttribArray(app.pbrShader.reflectivity);
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
+
+                gl.disableVertexAttribArray(app.pbrShader.textureParameters);
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
+
+                gl.bindVertexArray(null);
+            }
+            getPoints() {
+                const path = getAttribute(this.node, 'points');
+                this.points = [];
+                path.forEach((point) => {
+                    if (point.startsWith('d')) {
+                        const last = this.points.at(-1);
+                        const [x, y] = point.replace(/d\s*/, '').split(/\s+/).map(Number);
+                        this.points.push([last[0] + x, last[1] + y]);
+                    } else {
+                        this.points.push(point.split(/\s+/).map(Number));
+                    }
+                });
+
+                const thickness = getAttribute(this.node, 'thickness') / 2;
+                // Generate the points for the wall segments based on wall thickness
+                const getCorner = (point, i) => {
+                    const prior = (i + this.points.length - 1) % this.points.length;
+                    const d1 = [point[0] - this.points[prior][0], point[1] - this.points[prior][1]];
+                    const l1 = thickness / Math.hypot(...d1);
+
+                    const next = (i + 1) % this.points.length;
+                    const d2 = [this.points[next][0] - point[0], this.points[next][1] - point[1]];
+                    const l2 = thickness / Math.hypot(...d2);
+
+                    // Get the points for the inner and outer faces of the wall segment
+                    const p1 = [
+                        point[0] - d1[1] * l1,
+                        point[1] + d1[0] * l1
+                    ];
+                    const p2 = [
+                        point[0] - d2[1] * l2,
+                        point[1] + d2[0] * l2
+                    ];
+
+                    const p3 = [
+                        point[0] + d1[1] * l1,
+                        point[1] - d1[0] * l1
+                    ];
+                    const p4 = [
+                        point[0] + d2[1] * l2,
+                        point[1] - d2[0] * l2
+                    ];
+
+                    const u = (p2[1] * d2[0] + d2[1] * p1[0] - d2[1] * p2[0] - p1[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
+                    const v = (p4[1] * d2[0] + d2[1] * p3[0] - d2[1] * p4[0] - p3[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
+                    return [
+                        [p1[0] + u * d1[0], p1[1] + u * d1[1]],
+                        [p3[0] + v * d1[0], p3[1] + v * d1[1]]
+                    ];
+                };
+
+                this.corners = this.points.map(getCorner);
+                if (!getAttribute(this.node, 'closed')) {
+                    // First and last corners are perpendicular to segment
+
+                    const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
+                    const l1 = thickness / Math.hypot(...d1);
+
+                    const p1 = [
+                        this.points[0][0] - d1[1] * l1,
+                        this.points[0][1] + d1[0] * l1
+                    ];
+                    const p2 = [
+                        this.points[0][0] + d1[1] * l1,
+                        this.points[0][1] - d1[0] * l1
+                    ];
+
+                    const last = this.points.length - 1;
+                    const d2 = [this.points[last][0] - this.points[last - 1][0], this.points[last][1] - this.points[last - 1][1]];
+                    const l2 = thickness / Math.hypot(...d2);
+
+                    const p3 = [
+                        this.points[last][0] - d2[1] * l2,
+                        this.points[last][1] + d2[0] * l2
+                    ];
+                    const p4 = [
+                        this.points[last][0] + d2[1] * l2,
+                        this.points[last][1] - d2[0] * l2
+                    ];
+                    this.corners = [[p1, p2], ...this.corners.slice(1, -1), [p3, p4]];
+                }
+                const height = getAttribute(this.node, 'height');
+                const get2dNormal = (p1, p2) => {
+                    const vector = [p2[0] - p1[0], p2[1] - p1[1]];
+                    const length = Math.hypot(...vector);
+                    return [vector[1] / length, 0, -vector[0] / length];
+                }
+                this.segments = this.points.map((point, i) => {
+                    const next = (i + 1) % this.points.length;
+                    const normal = get2dNormal(point, this.points[next]);
+                    const startNormal = get2dNormal(this.corners[i][0], this.corners[i][1]);
+                    const endNormal = get2dNormal(this.corners[next][0], this.corners[next][1]);
+                    return {
+                        centre: [(point[0] + this.points[next][0]) / 2, height / 2, (point[1] + this.points[next][1]) / 2],
+                        radius: Math.hypot(this.points[next][0] - point[0], height, this.points[next][1] - point[1]),
+                        visible: true,
+                        normal, startNormal, endNormal,
+                    };
+                });
+                if (!getAttribute(this.node, 'closed')) {
+                    this.segments.pop();
+                }
+            }
+            makeWalls() {
+                const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
+                const vectors = [];
+                const vertices = [];
+
+                const u1 = 0;
+                const u2 = 1;
+                const height = getAttribute(this.node, 'height', 1);
+                const closed = getAttribute(this.node, 'closed');
+                this.segments.forEach((segment, i) => {
+                    const p = (i + this.segments.length - 1) % this.segments.length;
+                    const n = (i + 1) % this.corners.length;
+                    const next = this.corners[n];
+
+                    const start = this.corners[i];
+                    const end = this.corners[n];
+
+                    const parameters = [...this.material.materialParameters];
+                    if (this.segments[i].visible === false) {
+                        parameters[1] = 0.5;
+                    }
+
+                    if ((!closed && i === 0) || (this.segments[i].visible && !this.segments[p].visible)) {
+                        vertices.push(start[0][0], 0, start[0][1], ...segment.startNormal, 0, u1, ...parameters);
+                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 1, u1, ...parameters);
+                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, u2, ...parameters);
+                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 0, u1, ...parameters);
+                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, u2, ...parameters);
+                        vertices.push(start[1][0], height, start[1][1], ...segment.startNormal, 0, u2, ...parameters);
+                    }
+
+                    vertices.push(start[0][0], 0, start[0][1], 0, -1, 0, 0, u1, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 1, u1, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, u2, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 0, u1, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, u2, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], 0, -1, 0, 0, u2, ...parameters);
+
+
+                    vertices.push(start[0][0], height, start[0][1], 0, 1, 0, 0, u1, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 1, u1, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, u2, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 0, u1, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, u2, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], 0, 1, 0, 0, u2, ...parameters);
+
+
+                    vertices.push(start[0][0], 0, start[0][1], ...segment.normal, 0, u1, ...parameters);
+                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, 1, u1, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, 1, u2, ...parameters);
+                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, 0, u1, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], ...segment.normal, 1, u2, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, 0, u2, ...parameters);
+
+                    vertices.push(start[1][0], 0, start[1][1], ...scale(segment.normal, -1), 0, u1, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), 1, u1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), 1, u2, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), 0, u1, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], ...scale(segment.normal, -1), 1, u2, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), 0, u2, ...parameters);
+
+                    if ((!closed && i === this.segments.length - 1)
+                        || this.segments[i].visible && !this.segments[n].visible) {
+                        vertices.push(end[0][0], 0, end[0][1], ...segment.endNormal, 0, u1, ...parameters);
+                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 1, u1, ...parameters);
+                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, u2, ...parameters);
+                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 0, u1, ...parameters);
+                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, u2, ...parameters);
+                        vertices.push(end[1][0], height, end[1][1], ...segment.endNormal, 0, u2, ...parameters);
+                    }
+                });
+
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, app.white.x, app.white.y, app.white.width, app.white.height);
+
+
+                this.count = vertices.length / 12;
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+            }
+            render(time) {
+                gl.uniform1i(app.pbrShader.effects, 0);
+                gl.bindVertexArray(this.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, this.count);
+                gl.uniform1i(app.pbrShader.effects, app.effects);
+            }
+            get vertices() {
+            }
+            intersects(line, all) {
+                // Allow for non-uniform scaling by converting the line to icosphere space
+                const world = this.world;
+                const toLocal = invert(world);
+                const orientation = [...toLocal];
+                orientation[12] = 0;
+                orientation[13] = 0;
+                orientation[14] = 0;
+                const point = applyTransform(line.point, toLocal);
+                const direction = applyTransform(line.direction, orientation);
+
+                const l = dot(direction, subtract([0, 0, 0], point));
+                const n = l / direction.reduce((s, v) => s + v * v, 0);
+                const p = sum(point, scale(direction, n));
+                const dist = Math.hypot(...p);
+                const radius = getAttribute(this.node, 'radius');
+                if (dist <= radius) {
+                    const offset = scale(direction, Math.sqrt(radius * radius - dist * dist));
+                    this.points = [
+                        applyTransform(subtract(p, offset), world),
+                        applyTransform(sum(p, offset), world),
+                    ];
+                }
+                return dist <= radius;
+            }
+            highlightFace(line) {
+            }
+            showInfo() {
+            }
+            update() {
+                if (app.show && app.show.item !== this) {
+                    const transform = multiply(this.transform, this.world);
+
+                    this.segments.forEach((segment) => {
+                        // Get the origin of this element
+                        const origin = applyTransform(segment.centre, transform);
+                        const dist = Math.hypot(...subtract(origin, app.camera.position));
+                        if (dist < app.show.distance) {
+
+                            const point = applyTransform4([...segment.centre, 1], app.show.transform);
+                            const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                            const radius = segment.radius / point[3];
+
+                            const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                            if (gap < (radius + app.show.radius)) {
+                                segment.visible = false;
+                            } else {
+                                segment.visible = true;
+                            }
+
+                            if (app.showConstruction) {
+                                const width = ctx.canvas.width;
+                                const height = ctx.canvas.height;
+                                const x = 0.5 * width * (position[0] / app.aspect + 1);
+                                const y = 0.5 * height * (1 - position[1]);
+
+                                ctx.strokeStyle = segment.visible ? 'grey' : 'red';
+                                ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                                ctx.beginPath();
+                                ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                                ctx.stroke();
+                            }
+
+                        } else {
+                            segment.visible = true;
+                        }
+                    });
+                } else {
+                    this.segments.forEach((segment) => segment.visible = true);
+                }
+                this.makeWalls();
             }
         }
 
@@ -6159,13 +6501,14 @@
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
             render(time) {
+                gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
+                gl.uniform1i(app.pbrShader.effects, app.effects);
             }
             get vertices() {
             }
             intersects(line, all) {
-                // Allow for non-uniform scaling by converting the line to icosphere space
                 const world = this.world;
                 const toLocal = invert(world);
                 const orientation = [...toLocal];
