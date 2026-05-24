@@ -311,9 +311,33 @@
             margin-left: 1em;
         }
 
+        #source-view-save {
+            position: absolute;
+            top: 0;
+            right: 0;
+        }
+
+        #tree {
+            overflow: auto;
+            height: 100%;
+            grid-template-columns: max-content;
+            padding-right: 10px;
+        }
+
+        #tree .title {
+            position: sticky;
+            left: 0;
+        }
+
+        #tree .displayed {
+            font-weight: bold;
+        }
+
         #model {
             overflow: auto;
             height: 100%;
+            grid-template-columns: minmax(10em, min-content) repeat(10, max-content);
+            padding-right: 10px;
         }
 
         #model .title {
@@ -324,13 +348,6 @@
 
         #model .displayed {
             font-weight: bold;
-        }
-
-        #model {
-            grid-template-columns: minmax(10em, min-content) repeat(10, max-content);
-
-            overflow: auto;
-            padding-right: 10px;
         }
 
         #structure {
@@ -484,6 +501,13 @@
     <input id="command-entry" type="text" />
 
     <div id="controls">
+        <div id="source-view" class="window">
+            <h2 class="unselectable">Source</h2>
+            <pre id="source" class="hide expandable" contenteditable="true"></pre>
+            <button id="source-view-save" class="hide expandable" >&#x1F4BE;</button>
+        </div>
+
+
         <div id="camera-control" class="window">
             <h2 class="unselectable">Camera Control</h2>
             <div class="hide expandable"></div>
@@ -500,6 +524,11 @@
 
         <div id="light-controls" class="window">
             <h2 class="unselectable">Light Controls</h2>
+        </div>
+
+        <div id="tree-view" class="window">
+            <h2 class="unselectable">Tree</h2>
+            <div id="tree" class="hide expandable"></div>
         </div>
 
         <div id="model-view" class="window">
@@ -2295,9 +2324,11 @@
                 parent = null;
                 path.forEach((node) => {
                     const item = app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
-                    item[0].showInterior?.();
-                    node[children].forEach((child) => app.view[0].addItem(child, item[0]));
-                    parent = item[0];
+                    if (item[0]) {
+                        item[0].showInterior?.();
+                        node[children].forEach((child) => app.view[0].addItem(child, item[0]));
+                        parent = item[0];
+                    }
                 });
                 return app.view[0].shapes.get(node) || [app.view[0].addItem(node, parent)];
             }
@@ -6022,10 +6053,11 @@
             constructor(node, parent) {
                 super(node, parent, 'prism');
                 this.children = [];
-                this.textureParameters = [app.white.x, app.white.y, app.white.width, app.white.height];
+
+                this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.material = {
-                    colour: [0.1, 0.3, 0.8],
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
@@ -6082,7 +6114,7 @@
                 gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
 
                 gl.disableVertexAttribArray(app.pbrShader.textureParameters);
-                gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
+                //gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
 
                 gl.bindVertexArray(null);
             }
@@ -6099,34 +6131,41 @@
                     }
                 });
 
-                const thickness = getAttribute(this.node, 'thickness') / 2;
+                const thickness = getAttribute(this.node, 'thickness');
+                const offset = [];
+                if (!Array.isArray(thickness)) {
+                    offset.push(thickness / 2, thickness / 2);
+                } else {
+                    offset[0] = thickness[0];
+                    offset[1] = thickness[1];
+                }
                 // Generate the points for the wall segments based on wall thickness
                 const getCorner = (point, i) => {
                     const prior = (i + this.points.length - 1) % this.points.length;
                     const d1 = [point[0] - this.points[prior][0], point[1] - this.points[prior][1]];
-                    const l1 = thickness / Math.hypot(...d1);
+                    const l1 = Math.hypot(...d1);
 
                     const next = (i + 1) % this.points.length;
                     const d2 = [this.points[next][0] - point[0], this.points[next][1] - point[1]];
-                    const l2 = thickness / Math.hypot(...d2);
+                    const l2 = Math.hypot(...d2);
 
                     // Get the points for the inner and outer faces of the wall segment
                     const p1 = [
-                        point[0] - d1[1] * l1,
-                        point[1] + d1[0] * l1
+                        point[0] - d1[1] * offset[0] / l1,
+                        point[1] + d1[0] * offset[0] / l1
                     ];
                     const p2 = [
-                        point[0] - d2[1] * l2,
-                        point[1] + d2[0] * l2
+                        point[0] - d2[1] * offset[0] / l2,
+                        point[1] + d2[0] * offset[0] / l2
                     ];
 
                     const p3 = [
-                        point[0] + d1[1] * l1,
-                        point[1] - d1[0] * l1
+                        point[0] + d1[1] * offset[1] / l1,
+                        point[1] - d1[0] * offset[1] / l1
                     ];
                     const p4 = [
-                        point[0] + d2[1] * l2,
-                        point[1] - d2[0] * l2
+                        point[0] + d2[1] * offset[1] / l2,
+                        point[1] - d2[0] * offset[1] / l2
                     ];
 
                     const u = (p2[1] * d2[0] + d2[1] * p1[0] - d2[1] * p2[0] - p1[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
@@ -6173,8 +6212,15 @@
                     const length = Math.hypot(...vector);
                     return [vector[1] / length, 0, -vector[0] / length];
                 }
+
                 this.segments = this.points.map((point, i) => {
                     const next = (i + 1) % this.points.length;
+                    const inner = Math.hypot(this.corners[next][0][0] - this.corners[i][0][0],
+                        this.corners[next][0][1] - this.corners[i][0][1]);
+
+                    const outer = Math.hypot(this.corners[next][1][0] - this.corners[i][1][0],
+                        this.corners[next][1][1] - this.corners[i][1][1]);
+
                     const normal = get2dNormal(point, this.points[next]);
                     const startNormal = get2dNormal(this.corners[i][0], this.corners[i][1]);
                     const endNormal = get2dNormal(this.corners[next][0], this.corners[next][1]);
@@ -6183,21 +6229,24 @@
                         radius: Math.hypot(this.points[next][0] - point[0], height, this.points[next][1] - point[1]),
                         visible: true,
                         normal, startNormal, endNormal,
+                        inner, outer,
                     };
                 });
                 if (!getAttribute(this.node, 'closed')) {
                     this.segments.pop();
                 }
+                this.outer = this.segments.reduce((sum, segment) => sum + segment.outer, 0);
+                this.inner = this.segments.reduce((sum, segment) => sum + segment.inner, 0);
             }
             makeWalls() {
                 const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
                 const vectors = [];
                 const vertices = [];
 
-                const u1 = 0;
-                const u2 = 1;
                 const height = getAttribute(this.node, 'height', 1);
                 const closed = getAttribute(this.node, 'closed');
+                let inner = 0;
+                let outer = 0;
                 this.segments.forEach((segment, i) => {
                     const p = (i + this.segments.length - 1) % this.segments.length;
                     const n = (i + 1) % this.corners.length;
@@ -6211,64 +6260,88 @@
                         parameters[1] = 0.5;
                     }
 
+                    const u1 = inner / this.inner;
+                    inner += segment.inner;
+                    const u2 = inner / this.inner;
+
+                    const u3 = outer / this.outer;
+                    outer += segment.outer;
+                    const u4 = outer / this.outer;
+
                     if ((!closed && i === 0) || (this.segments[i].visible && !this.segments[p].visible)) {
-                        vertices.push(start[0][0], 0, start[0][1], ...segment.startNormal, 0, u1, ...parameters);
-                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 1, u1, ...parameters);
-                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, u2, ...parameters);
-                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 0, u1, ...parameters);
-                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, u2, ...parameters);
-                        vertices.push(start[1][0], height, start[1][1], ...segment.startNormal, 0, u2, ...parameters);
+                        vertices.push(start[0][0], 0, start[0][1], ...segment.startNormal, 0, 0, ...parameters);
+                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 1, 0, ...parameters);
+                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, 1, ...parameters);
+                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 0, 0, ...parameters);
+                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, 1, ...parameters);
+                        vertices.push(start[1][0], height, start[1][1], ...segment.startNormal, 0, 1, ...parameters);
                     }
 
-                    vertices.push(start[0][0], 0, start[0][1], 0, -1, 0, 0, u1, ...parameters);
-                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 1, u1, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, u2, ...parameters);
-                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 0, u1, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, u2, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], 0, -1, 0, 0, u2, ...parameters);
+                    vertices.push(start[0][0], 0, start[0][1], 0, -1, 0, 0, 0, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 1, 0, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, 0, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 0, 0, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, 0, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], 0, -1, 0, 0, 0, ...parameters);
 
 
-                    vertices.push(start[0][0], height, start[0][1], 0, 1, 0, 0, u1, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 1, u1, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, u2, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 0, u1, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, u2, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], 0, 1, 0, 0, u2, ...parameters);
+                    vertices.push(start[0][0], height, start[0][1], 0, 1, 0, 0, 1, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 1, 1, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, 1, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 0, 1, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, 1, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], 0, 1, 0, 0, 1, ...parameters);
 
+                    vertices.push(start[0][0], 0, start[0][1], ...segment.normal, u1, 0, ...parameters);
+                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, u1, 0.5, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
+                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, u1, 0.5, ...parameters);
+                    vertices.push(end[0][0], height, end[0][1], ...segment.normal, u2, 0.5, ...parameters);
+                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
 
-                    vertices.push(start[0][0], 0, start[0][1], ...segment.normal, 0, u1, ...parameters);
-                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, 1, u1, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, 1, u2, ...parameters);
-                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, 0, u1, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], ...segment.normal, 1, u2, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, 0, u2, ...parameters);
-
-                    vertices.push(start[1][0], 0, start[1][1], ...scale(segment.normal, -1), 0, u1, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), 1, u1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), 1, u2, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), 0, u1, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], ...scale(segment.normal, -1), 1, u2, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), 0, u2, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], ...scale(segment.normal, -1), u3, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], ...scale(segment.normal, -1), u4, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
 
                     if ((!closed && i === this.segments.length - 1)
                         || this.segments[i].visible && !this.segments[n].visible) {
-                        vertices.push(end[0][0], 0, end[0][1], ...segment.endNormal, 0, u1, ...parameters);
-                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 1, u1, ...parameters);
-                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, u2, ...parameters);
-                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 0, u1, ...parameters);
-                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, u2, ...parameters);
-                        vertices.push(end[1][0], height, end[1][1], ...segment.endNormal, 0, u2, ...parameters);
+                        vertices.push(end[0][0], 0, end[0][1], ...segment.endNormal, 0, 0, ...parameters);
+                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 1, 0, ...parameters);
+                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, 1, ...parameters);
+                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 0, 0, ...parameters);
+                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, 1, ...parameters);
+                        vertices.push(end[1][0], height, end[1][1], ...segment.endNormal, 1, 1, ...parameters);
                     }
                 });
 
-                gl.vertexAttrib4f(app.pbrShader.textureParameters, app.white.x, app.white.y, app.white.width, app.white.height);
-
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 this.count = vertices.length / 12;
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
             render(time) {
+
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
+
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
+
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
+
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
+
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
                 gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.count);
@@ -6501,6 +6574,8 @@
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
             render(time) {
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
                 gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
@@ -6544,10 +6619,10 @@
             constructor(node, parent) {
                 super(node, parent, 'n-gon');
                 this.children = [];
-                this.textureParameters = [app.white.x, app.white.y, app.white.width, app.white.height];
+                this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.material = {
-                    colour: [0.6, 0.3, 0.8],
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
@@ -6558,6 +6633,7 @@
                 app.view[0].renderQueue.push(this);
             }
             initialiseBuffers() {
+                const position = getAttribute(this.node, 'position', [0, 0, 0]);
                 this.vertex = gl.createBuffer();
                 this.indices = gl.createBuffer();
 
@@ -6580,10 +6656,10 @@
                 gl.disableVertexAttribArray(app.pbrShader.model + 1);
                 gl.disableVertexAttribArray(app.pbrShader.model + 2);
                 gl.disableVertexAttribArray(app.pbrShader.model + 3);
-                gl.vertexAttrib4f(app.pbrShader.model + 0, this.width / 1000, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
                 gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
-                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, this.height / 1000, 0);
-                gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, position[0], position[1], position[2], 1);
 
                 gl.disableVertexAttribArray(app.pbrShader.normalMatrix);
                 gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 1);
@@ -6605,7 +6681,7 @@
                 gl.vertexAttrib4f(app.pbrShader.materialParameters, ...this.material.materialParameters);
 
                 gl.disableVertexAttribArray(app.pbrShader.textureParameters);
-                gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 gl.bindVertexArray(null);
             }
@@ -6623,18 +6699,17 @@
                         this.points.push(point.split(/\s+/).map(Number));
                     }
                 });
-                const minx = Math.min(...this.points.map((point) => point[0]));
-                const miny = Math.min(...this.points.map((point) => point[1]));
+                this.minx = Math.min(...this.points.map((point) => point[0]));
+                this.miny = Math.min(...this.points.map((point) => point[1]));
                 const maxx = Math.max(...this.points.map((point) => point[0]));
                 const maxy = Math.max(...this.points.map((point) => point[1]));
-                this.width = 0.5 * (maxx - minx);
-                this.height = 0.5 * (maxy - miny);
-                this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.height - 1]);
+                this.width = 0.5 * (maxx - this.minx);
+                this.depth = 0.5 * (maxy - this.miny);
             }
             makeSurface() {
                 const tessellation = tessellate(this.points);
                 const indices = tessellation.indices.flatMap((triangle) => triangle);
-                const vertices = this.points.flatMap((point) => [point[0], 0, point[1], point[0], point[1]]);
+                const vertices = this.points.flatMap((point) => [point[0], 0, point[1], (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.height]);
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indices);
@@ -6642,11 +6717,32 @@
                 this.pointCount = indices.length;
             }
             render(time) {
+                const position = getAttribute(this.node, 'position', [0, 0, 0]);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, position[0], position[1], position[2], 1);
+
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
+
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
+
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
+
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
+
+                gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 //gl.drawElements(gl.TRIANGLES, this.pointCount / 3, gl.UNSIGNED_SHORT, 0);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
-
+                gl.uniform1i(app.pbrShader.effects, app.effects);
             }
             get vertices() {
             }
@@ -6896,6 +6992,42 @@
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
         document.body.addEventListener('touchend', completeAction);
 
+        /**
+         * Show Tree
+         */
+        function showTree(model) {
+            const container = document.getElementById('tree');
+            container.innerHTML = '';
+
+            const options = {
+                headings: [{
+                    title: 'Name',
+                    get(node) { return node.name; },
+                    tip(node) { return node[meta].names?.join('\n') ?? ''; },
+                }],
+                actions: {
+                    click(event, node) {
+                        const item = app.view[0].addNode(node);
+                        showItem(item[0]);
+                        item[0].instances.forEach((instance) => instance.highlight());
+                        select(node);
+                    },
+                    dblclick(event, node) {
+                        const item = app.view[0].addNode(node);
+                        if (item[0]) {
+                            showItem(item[0]);
+                            item[0].instances.forEach((instance) => instance.highlight());
+                            select(node);
+                            setView([0, 0, 1]);
+                        }
+                    },
+                }
+            };
+
+            const view = new TreeView(container, app.graph[children], options);
+        }
+
+
 
         /**
          * Show Model
@@ -6934,21 +7066,21 @@
         /**
          * Create a popup window.
          */
-        let popup;
+        const popups = {};
         function openWindow(title = 'New Window') {
-            if (popup && !popup.closed) {
-                popup.focus();
+            if (popups[title] && !popups[title]) {
+                popups[title].focus();
                 /* or do something else, e.g. close the popup or alert a warning */
             } else {
-                popup = window.open('', 'Rolling Wave Planning', 'popup');
-                popup.document.write(`<html><head><title>${title}</title>
-                    <link rel="stylesheet" href="styles/structure.css">
+                popups[title] = window.open('', 'Rolling Wave Planning', 'popup');
+                popups[title].document.write(`<html><head><title>${title}</title>
+                    <link rel="stylesheet" href="model.css">
                 </head><body>`);
-                popup.document.write('</body></html>')
-                popup.document.close();
-                popup.document.body.append(template.content);
+                popups[title].document.write('</body></html>')
+                popups[title].document.close();
+                popups[title].document.body.append(template.content);
             }
-            return popup.document;
+            return popups[title].document;
         }
 
 
@@ -7031,8 +7163,11 @@
                     this.container.append(...row.cells);
                 }
                 row.cells[0].style.paddingLeft = `${depth + 0.5}em`;
+                row.cells[0].style.paddingRight = `0.5em`;
                 row.cells[0].style.textAlign = 'left';
-                row.cells[0].classList.add('table-grid-heading');
+                if (this.columns.length > 1) {
+                    row.cells[0].classList.add('table-grid-heading');
+                }
 
                 if (this.options.actions.dblclick) {
                     row.cells[0].addEventListener('dblclick', (event) =>
@@ -7654,7 +7789,7 @@
             document.body.style.cursor = 'progress';
             const response = await fetch(url);
             const content = await response.text();
-            processText(content, parent, replace);
+            loadStructure(content, parent, replace);
             document.body.style.cursor = 'auto';
             app.view.forEach((view) => view.updateMaterials());
         }
@@ -7682,13 +7817,7 @@
         /**
          * Convert lines to objects
          */
-        function processText(text, parent, replace) {
-            if (replace) {
-                app.view[0].items = [];
-                app.view[0].roots = [];
-                app.stock = {};
-            }
-
+        async function processText(text, parent) {
             const lines = text.split(/\r?\n/g);
             const roots = [];
             const stack = [];
@@ -7712,10 +7841,6 @@
             const customFunctions = {
                 zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
             }
-            app.graph = {
-                [meta]: { name: '', inherited: {} },
-                [children]: [],
-            };
 
             const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
             const templatePattern = /\s*\[([^\]]+)\]$/;
@@ -7783,7 +7908,6 @@
              * Parse a line, returning an object or updating the current object and returning an empty array.
              */
             const processLine = (line) => {
-
                 const { local, context } = scope.start();
 
                 // Create the potential object
@@ -7820,7 +7944,6 @@
                 //  - create object and update context
 
                 let fieldIndex = 0;
-
                 const processField = (node, field, first, last) => {
                     const getTarget = (name) =>
                         (name + '').startsWith('&') ?
@@ -7963,7 +8086,6 @@
                         .forEach((property) =>
                             node[property] = type[property]));
 
-                //*
                 Object.keys(node).forEach((property) => {
                     const descriptor = Object.getOwnPropertyDescriptor(node, property);
                     if (descriptor.configurable) {
@@ -7973,10 +8095,6 @@
                         });
                     }
                 });
-                /*/
-                Object.keys(node).forEach((property) =>
-                    node[property] = resolve(node[property]));
-                //*/
 
                 // Add children from types
                 node[children].push(...node[meta].types.flatMap((type) =>
@@ -8000,9 +8118,15 @@
             };
 
             // Create a tree structure based on indentation
-            lines.forEach((text, lineNumber) => {
-                if (/^!\s*stop/i.test(text)) {
+            let lineNumber = 0;
+            while (lines.length) {
+                lineNumber += 1;
+                text = lines.shift();
+            //lines.forEach((text, lineNumber) => {
+                if (text.trim() === '!stop') {
                     process = false;
+                } else if (text.trim() === '!start') {
+                    process = true;
                 }
 
                 if (process && text.trim() !== '' && !/^\s*#/.test(text)) {
@@ -8063,8 +8187,21 @@
                     const passParser = (line) => { return []; };
                     const commentParser = (line) => { return []; };
 
+                    // Import the file and add to parse tree
+                    const importParser = async (line) => {
+                        const url = line.trim().replace(/\+\s*/, '');
+                        const response = await fetch(url);
+                        if (response.ok) {
+                            const indent = line.replace(/\+.*/, '');
+                            const text = await response.text();
+                            const newLines = text.split(/\r?\n/).map((line) => `${indent}${line}`);
+                            lines.unshift(...newLines);
+                        }
+                        return [];
+                    }
+
                     const immediate = [
-                        settingsParser, commentParser,
+                        settingsParser, commentParser, importParser,
                     ];
 
                     const action = {
@@ -8074,10 +8211,11 @@
                         '`': passParser,
                         "'": passParser,
                         '#': commentParser,
+                        '+': importParser,
                     }[trimmed[0]] ?? processLine;
 
                     if (immediate.includes(action)) {
-                        action(text);
+                        await action(text);
                     } else {
                         const group = trimmed.match(groupPattern);
                         const template = trimmed.match(templatePattern);
@@ -8138,7 +8276,7 @@
                         stack.unshift(line);
                     }
                 }
-            });
+            }
 
             const expandTypes = (source, context) => {
 
@@ -8195,8 +8333,27 @@
                 return node;
             }
 
+            return roots.flatMap((line) => line.action(line));
+        }
+
+
+        async function loadStructure(text, parent, replace) {
+            if (replace) {
+                app.view[0].items = [];
+                app.view[0].roots = [];
+                app.stock = {};
+            }
+
+            app.graph = {
+                [meta]: {},//{ name: '', inherited: {} },
+                [children]: [],
+            };
+
+            document.getElementById('source');
+            source.innerHTML = text;
+
             // Generate the object graph
-            app.graph[children] = roots.flatMap((line) => line.action(line));
+            app.graph[children] = await processText(text);
             const nodes = [...app.graph[children]];
             while (nodes.length) {
                 const node = nodes.shift();
@@ -8206,6 +8363,7 @@
             }
 
             app.view[0].update(app.graph, parent, replace);
+            showTree();
             showModel(app.graph);
             updateText();
             showStructure();
@@ -8798,6 +8956,15 @@
             downloadText(lines.join('\n'));
         }
 
+
+        /**
+         * Save the current state
+         */
+        function saveSource(event) {
+            const source = document.getElementById('source').innerText;
+            downloadText(source, app.sourceFile);
+        }
+
         /**
          * Clear Selection
          */
@@ -9326,7 +9493,7 @@
          * Process definition
          */
         function processDefinition(definition, replace) {
-            processText(definition, undefined, replace);
+            loadStructure(definition, undefined, replace);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
         }
@@ -9335,6 +9502,7 @@
          * Load file
          */
         async function loadFile(url) {
+            app.sourceFile = url;
             const result = await fetch(url);
             const content = await result.text();
             processDefinition(content, true);
@@ -9411,7 +9579,7 @@
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
-                        processText(reader.result);
+                        loadStructure(reader.result);
                     });
                     reader.readAsText(file);
                 }
@@ -9427,6 +9595,17 @@
                 loadFile(source);
             });
 
+            const sourceView = document.getElementById('source-view');
+            addMoveControl(sourceView, sourceView.querySelector('h2'));
+
+            const source = document.getElementById('source');
+            source.addEventListener('blur', (event) =>
+                loadStructure(source.innerText, null, true));
+            const sourceSave = document.getElementById('source-view-save');
+            sourceSave.addEventListener('click', saveSource);
+
+            const treeView = document.getElementById('tree-view');
+            addMoveControl(treeView, treeView.querySelector('h2'));
             const modelView = document.getElementById('model-view');
             addMoveControl(modelView, modelView.querySelector('h2'));
             const structureView = document.getElementById('structure-view');
@@ -9449,7 +9628,7 @@
         /**
          * Add a new item to the model
          */
-        function addProperty_delete_me(text) {
+        function addProperty(text) {
             const groupPattern = /^\[([^\]]+)\]\s*(.*)/;
             const templatePattern = /\s*\[([^\]]+)\]$/;
 
@@ -9680,17 +9859,19 @@
          * Hide the items that obscure the given node.
          */
         function showItem(item) {
-            let parent = item.parent;
-            while (parent) {
-                if (parent.showInterior) {
-                    parent.showInterior();
+            if (item) {
+                let parent = item.parent;
+                while (parent) {
+                    if (parent.showInterior) {
+                        parent.showInterior();
+                    }
+                    parent = parent.parent;
                 }
-                parent = parent.parent;
+                const size = extractScale(item.transform);
+                const transform = multiply(item.transform, item.world);
+                const point = applyTransform([0, 0, 0], transform);
+                app.show = { item, point, size, toWorld: transform };
             }
-            const size = extractScale(item.transform);
-            const transform = multiply(item.transform, item.world);
-            const point = applyTransform([0, 0, 0], transform);
-            app.show = { item, point, size, toWorld: transform };
         }
 
 
