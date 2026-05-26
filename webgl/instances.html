@@ -497,6 +497,7 @@
                 <label>Field of View</label><input id="field-of-view" type="number" />
                 <label>Near</label><input id="near" type="number" />
                 <label>Far</label><input id="far" type="number" />
+                <label>Grid Size</label><input id="grid-size" type="number" />
             </div>
         </div>
 
@@ -580,8 +581,6 @@
     uniform mat4 viewProjection;
     uniform mat4 inverseViewProjection;
     uniform vec3 cameraPosition;
-    uniform float near;
-    uniform float far;
     uniform float gridSize;
 
     in vec4 v_position;
@@ -590,39 +589,7 @@
     void main() {
         vec4 pixelPosition = inverseViewProjection * v_position;
         vec3 direction = pixelPosition.xyz / pixelPosition.w - cameraPosition;
-        /*
-        float z;
-        fragmentColour = vec4(0.0, 0.0, 0.0, 1.0);
-        if ((direction.x * cameraPosition.x) < 0.0) {
-            float t = -cameraPosition.x / direction.x;
-            vec3 world = (cameraPosition + t * direction) / 10000.0;
-            // Basic infinite grid calculation
-            vec2 grid = fract(world.yz); // world is calculated from the ray intersection
-            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
-            fragmentColour.r = line;
-            z = world.z;
-        }
-        if ((direction.y * cameraPosition.y) < 0.0) {
-            float t = -cameraPosition.y / direction.y;
-            vec3 world = (cameraPosition + t * direction) / 10000.0;
-            // Basic infinite grid calculation
-            vec2 grid = fract(world.xz); // world is calculated from the ray intersection
-            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
-            fragmentColour.g = line;
-            z =  min(z, world.z);
-        }
-        if ((direction.z * cameraPosition.z) < 0.0) {
-            float t = -cameraPosition.z / direction.z;
-            vec3 world = (cameraPosition + t * direction) / 10000.0;
-            // Basic infinite grid calculation
-            vec2 grid = fract(world.xy); // world is calculated from the ray intersection
-            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
-            fragmentColour.b = line;
-            z =  min(z, world.z);
-        }
-        gl_FragDepth = ((1.0 / z) - (1.0 / near)) / ((1.0/far) - (1.0 / near));
-        fragmentColour.a = fragmentColour.r + fragmentColour.g + fragmentColour.b;
-*/
+
         if ((direction.y * cameraPosition.y) < 0.0) {
             float t = -cameraPosition.y / direction.y;
             vec3 world = cameraPosition + t * direction;
@@ -630,7 +597,9 @@
             float ht = max(grid.x, grid.y);
             float line = 0.5 + 0.5 * step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
             vec4 view = viewProjection * vec4(world, 1.0);
-            gl_FragDepth = ((1.0 / view.z) - (1.0 / near)) / ((1.0 / far) - (1.0 / near));
+            float zndc = view.z / view.w;
+            
+            gl_FragDepth = 0.5 * zndc + 0.5;
             fragmentColour = vec4(vec3(line), line);//clamp(1.0 - world.z / 1000.0, 0.0, line));
         } else {
             discard;
@@ -1456,6 +1425,8 @@
             near.value = app.initial.near;
             const far = document.getElementById('far');
             far.value = app.initial.far;
+            const gridSize = document.getElementById('grid-size');
+            gridSize.value = app.gridSize = app.initial.gridSize;
 
             const update = () => {
                 app.fov = fov.valueAsNumber;
@@ -1468,6 +1439,8 @@
             fov.addEventListener('change', (event) => update());
             near.addEventListener('change', (event) => update());
             far.addEventListener('change', (event) => update());
+            gridSize.addEventListener('change', (event) =>
+                app.gridSize = gridSize.valueAsNumber);
             update();
             const main = document.getElementById('view-control');
             const title = main.querySelector('h2');
@@ -2074,6 +2047,7 @@
                 this.roots = [];
                 this.named = {};
                 this.shapes = new Map();
+                this.drawGround = true;
             }
             addItem(node, parent) {
                 if (this.shapes.has(node)) {
@@ -2409,8 +2383,8 @@
                 aspect: gl.canvas.clientWidth / gl.canvas.clientHeight,
                 near: 1,
                 far: 10000,
+                gridSize: 1,
             },
-            gridSize: 10000,
             background: [0, 0, 0],
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
@@ -4321,16 +4295,14 @@
             // Get the view projection matrix
             const viewMatrix = [...app.viewMatrix];
 
-            const viewProjection = multiply(viewMatrix, app.projectionMatrix);
-            const inverseViewProjection = invert(multiply(viewMatrix, app.projectionMatrix));
+            const viewProjection = multiply(app.viewMatrix, app.projectionMatrix);
+            const inverseViewProjection = invert(viewProjection);
             //const inverseViewProjection = invert(app.viewMatrix);
             gl.useProgram(app.groundShader.program);
 
             gl.uniformMatrix4fv(app.groundShader.viewProjection, false, viewProjection);
             gl.uniformMatrix4fv(app.groundShader.inverseViewProjection, false, inverseViewProjection);
             gl.uniform3fv(app.groundShader.cameraPosition, app.camera.position);
-            gl.uniform1f(app.groundShader.near, app.near);
-            gl.uniform1f(app.groundShader.far, app.far);
             gl.uniform1f(app.groundShader.gridSize, app.gridSize);
 
             // 1. Define the 4 vertices of the quad
@@ -4429,7 +4401,9 @@
                 }
 
                 app.view[0].render(time);
-                drawGround();
+                if (app.view[0].drawGround) {
+                    drawGround();
+                }
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
@@ -6481,6 +6455,7 @@
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.count);
                 gl.uniform1i(app.pbrShader.effects, app.effects);
+                gl.bindVertexArray(null);
             }
             get vertices() {
             }
@@ -6704,6 +6679,7 @@
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
                 gl.uniform1i(app.pbrShader.effects, app.effects);
+                gl.bindVertexArray(null);
             }
             get vertices() {
             }
@@ -6856,6 +6832,7 @@
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
                 gl.uniform1i(app.pbrShader.effects, app.effects);
+                gl.bindVertexArray(null);
             }
             get vertices() {
             }
@@ -7841,6 +7818,11 @@
                 app.far = app.initial.far;
                 app.projectionMatrix = perspective(app.fov, app.aspect, app.near, app.far);
                 document.getElementById('far').valueAsNumber = app.far;
+            },
+            grid(value) {
+                app.initial.grid = parseFloat(value);
+                app.gridSize = app.initial.gridSize;
+                document.getElementById('grid-size').valueAsNumber = app.gridSize;
             },
             transform(value) {
                 app.transform = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
@@ -9650,7 +9632,7 @@
             const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specularIntensity', 'opacity'];
             app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
 
-            app.groundShader = makeProgram(groundShaderSource, ['position'], ['viewProjection', 'inverseViewProjection', 'cameraPosition', 'near', 'far', 'gridSize']);
+            app.groundShader = makeProgram(groundShaderSource, ['position'], ['viewProjection', 'inverseViewProjection', 'cameraPosition', 'gridSize']);
 
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
