@@ -556,6 +556,90 @@
     <div id="state"></div>
     <div id="info" class="hide"></div>
 
+    <script type="x-shader/x-vertex" id="ground-vertex-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform mat4 view;
+
+    in vec2 position;
+    out vec4 v_position;
+
+    // Pass through position
+    void main() {
+        v_position = vec4(position, 0.0, 1.0);
+        gl_Position = vec4(position, 0.0, 1.0);
+    }
+
+    </script>
+
+    <script type="x-shader/x-vertex" id="ground-fragment-shader">
+    #version 300 es
+    precision highp float;
+
+    uniform mat4 viewProjection;
+    uniform mat4 inverseViewProjection;
+    uniform vec3 cameraPosition;
+    uniform float near;
+    uniform float far;
+    uniform float gridSize;
+
+    in vec4 v_position;
+    out vec4 fragmentColour;
+
+    void main() {
+        vec4 pixelPosition = inverseViewProjection * v_position;
+        vec3 direction = pixelPosition.xyz / pixelPosition.w - cameraPosition;
+        /*
+        float z;
+        fragmentColour = vec4(0.0, 0.0, 0.0, 1.0);
+        if ((direction.x * cameraPosition.x) < 0.0) {
+            float t = -cameraPosition.x / direction.x;
+            vec3 world = (cameraPosition + t * direction) / 10000.0;
+            // Basic infinite grid calculation
+            vec2 grid = fract(world.yz); // world is calculated from the ray intersection
+            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
+            fragmentColour.r = line;
+            z = world.z;
+        }
+        if ((direction.y * cameraPosition.y) < 0.0) {
+            float t = -cameraPosition.y / direction.y;
+            vec3 world = (cameraPosition + t * direction) / 10000.0;
+            // Basic infinite grid calculation
+            vec2 grid = fract(world.xz); // world is calculated from the ray intersection
+            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
+            fragmentColour.g = line;
+            z =  min(z, world.z);
+        }
+        if ((direction.z * cameraPosition.z) < 0.0) {
+            float t = -cameraPosition.z / direction.z;
+            vec3 world = (cameraPosition + t * direction) / 10000.0;
+            // Basic infinite grid calculation
+            vec2 grid = fract(world.xy); // world is calculated from the ray intersection
+            float line = step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
+            fragmentColour.b = line;
+            z =  min(z, world.z);
+        }
+        gl_FragDepth = ((1.0 / z) - (1.0 / near)) / ((1.0/far) - (1.0 / near));
+        fragmentColour.a = fragmentColour.r + fragmentColour.g + fragmentColour.b;
+*/
+        if ((direction.y * cameraPosition.y) < 0.0) {
+            float t = -cameraPosition.y / direction.y;
+            vec3 world = cameraPosition + t * direction;
+            vec2 grid = fract(world.xz/ gridSize); // world is calculated from the ray intersection
+            float ht = max(grid.x, grid.y);
+            float line = 0.5 + 0.5 * step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
+            vec4 view = viewProjection * vec4(world, 1.0);
+            gl_FragDepth = ((1.0 / view.z) - (1.0 / near)) / ((1.0 / far) - (1.0 / near));
+            fragmentColour = vec4(vec3(line), line);//clamp(1.0 - world.z / 1000.0, 0.0, line));
+        } else {
+            discard;
+            return;
+        }
+    }
+    </script>
+
+
     <script type="x-shader/x-vertex" id="overlay-vertex-shader">
     #version 300 es
     precision highp float;
@@ -2245,7 +2329,6 @@
                     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
 
                 } else {
-
                     gl.activeTexture(gl.TEXTURE0);
                     gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
 
@@ -2259,7 +2342,6 @@
 
                     gl.uniformMatrix4fv(app.pbrShader.projection, false, app.projectionMatrix);
                     gl.uniformMatrix4fv(app.pbrShader.view, false, app.viewMatrix);
-
 
                     gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
@@ -2328,6 +2410,7 @@
                 near: 1,
                 far: 10000,
             },
+            gridSize: 10000,
             background: [0, 0, 0],
             movement: {},
             projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
@@ -2411,6 +2494,10 @@
         const shaderSource = {
             vertex: document.querySelector("#vertex-shader").innerHTML,
             fragment: document.querySelector("#fragment-shader").innerHTML,
+        }
+        const groundShaderSource = {
+            vertex: document.querySelector("#ground-vertex-shader").innerHTML,
+            fragment: document.querySelector("#ground-fragment-shader").innerHTML,
         }
         const textShaderSource = {
             vertex: document.querySelector("#text-vertex-shader").innerHTML,
@@ -4226,6 +4313,48 @@
             gl.enableVertexAttribArray(shader.emissivityColour);
         }
 
+
+        /**
+         * Draw the ground plane
+         */
+        function drawGround() {
+            // Get the view projection matrix
+            const viewMatrix = [...app.viewMatrix];
+
+            const viewProjection = multiply(viewMatrix, app.projectionMatrix);
+            const inverseViewProjection = invert(multiply(viewMatrix, app.projectionMatrix));
+            //const inverseViewProjection = invert(app.viewMatrix);
+            gl.useProgram(app.groundShader.program);
+
+            gl.uniformMatrix4fv(app.groundShader.viewProjection, false, viewProjection);
+            gl.uniformMatrix4fv(app.groundShader.inverseViewProjection, false, inverseViewProjection);
+            gl.uniform3fv(app.groundShader.cameraPosition, app.camera.position);
+            gl.uniform1f(app.groundShader.near, app.near);
+            gl.uniform1f(app.groundShader.far, app.far);
+            gl.uniform1f(app.groundShader.gridSize, app.gridSize);
+
+            // 1. Define the 4 vertices of the quad
+            const vertices = new Float32Array([
+                -1.0, 1.0,  // Top-left
+                -1.0, -1.0,  // Bottom-left
+                1.0, 1.0,  // Top-right
+                1.0, -1.0,  // Bottom-right
+            ]);
+
+            // 2. Create and bind the buffer
+            const buffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            // 3. Link the attribute in your shader
+            gl.enableVertexAttribArray(app.groundShader.position);
+            gl.vertexAttribPointer(app.groundShader.position, 2, gl.FLOAT, false, 0, 0);
+
+            // 4. Draw the quad
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            reportGLErrors(drawGround);
+        }
+
         /**
          * Render loop function to update the display
          */
@@ -4300,6 +4429,7 @@
                 }
 
                 app.view[0].render(time);
+                drawGround();
 
                 if (app.textItemCount > 0) {
                     gl.colorMask(true, true, true, false);
@@ -4771,7 +4901,8 @@
             }
             render(time) {
                 if (this.instances.length > 0) {
-                    gl.bindVertexArray(this.buffers.vao); if (this.initialise) {
+                    gl.bindVertexArray(this.buffers.vao);
+                    if (this.initialise) {
                         this.initialiseInstances();
                         this.initialise = false;
                     } else if (this.updateInstances) {
@@ -4787,6 +4918,7 @@
                     if (this.buffers.indices && this.points > 0) {
                         gl.drawElementsInstanced(gl.TRIANGLES, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
                     }
+                    gl.bindVertexArray(null);
                 }
             }
         }
@@ -9517,6 +9649,9 @@
 
             const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specularIntensity', 'opacity'];
             app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
+
+            app.groundShader = makeProgram(groundShaderSource, ['position'], ['viewProjection', 'inverseViewProjection', 'cameraPosition', 'near', 'far', 'gridSize']);
+
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
 
