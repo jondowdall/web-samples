@@ -324,7 +324,7 @@
             font-weight: bold;
         }
 
-        #structure {
+        #scene-data {
             display: grid;
             grid-template-columns: minmax(10em, min-content) repeat(10, max-content);
 
@@ -333,7 +333,7 @@
             padding-right: 10px;
         }
 
-        #structure .value {
+        #scene-data .value {
             text-align: center;
         }
 
@@ -470,6 +470,13 @@
             width: 16px;
             height: 16px;
         }
+
+        #status {
+            color: white;
+            position: fixed;
+            top: 1em;
+            right: 1em;
+        }
     </style>
 </head>
 
@@ -515,9 +522,9 @@
             <div id="model" class="hide expandable"></div>
         </div>
 
-        <div id="structure-view" class="window">
-            <h2 class="unselectable">Structure</h2>
-            <div id="structure" class="hide expandable"></div>
+        <div id="scene-data-view" class="window">
+            <h2 class="unselectable">Scene</h2>
+            <div id="scene-data" class="hide expandable"></div>
         </div>
     </div>
 
@@ -556,6 +563,7 @@
     </div>
     <div id="state"></div>
     <div id="info" class="hide"></div>
+    <div id="status"></div>
 
     <script type="x-shader/x-vertex" id="ground-vertex-shader">
     #version 300 es
@@ -583,24 +591,37 @@
     uniform vec3 cameraPosition;
     uniform float gridSize;
 
+    uniform vec3 origin;
+    uniform vec3 normal;
+
     in vec4 v_position;
     out vec4 fragmentColour;
 
     void main() {
         vec4 pixelPosition = inverseViewProjection * v_position;
         vec3 direction = pixelPosition.xyz / pixelPosition.w - cameraPosition;
+        vec3 n = normalize(normal);
+        float t = dot(origin - cameraPosition, n) / dot(direction, n);
 
-        if ((direction.y * cameraPosition.y) < 0.0) {
-            float t = -cameraPosition.y / direction.y;
+        if (t > 0.0) {
             vec3 world = cameraPosition + t * direction;
-            vec2 grid = fract(world.xz/ gridSize); // world is calculated from the ray intersection
-            float line = 0.5 + 0.5 * step(0.99, max(grid.x, grid.y)); // Creates a thin line every 1 unit
-            //float col = mod(floor(world.xz/ gridSize));
+            vec3 axis = cross(n, vec3(0.0, 1.0, 0.0));
+            float s = length(axis);
+            float c = cos(asin(s));
+            float oc = 1.0 - c;
+            mat4 rotation = mat4(
+                oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+                0.0,                                0.0,                                0.0,                                1.0
+            );
+            float x = dot(world - origin, (rotation * vec4(1.0, 0.0, 0.0, 0.0)).xyz) / gridSize;
+            float y = dot(world - origin, (rotation * vec4(0.0, 0.0, 1.0, 0.0)).xyz) / gridSize;
+            float col = mod(floor(x) + floor(y), 2.0);
             vec4 view = viewProjection * vec4(world, 1.0);
-            float zndc = view.z / view.w;
             
-            gl_FragDepth = 0.5 * zndc + 0.5;
-            fragmentColour = vec4(vec3(line), line);//clamp(1.0 - world.z / 1000.0, 0.0, line));
+            gl_FragDepth = 0.5 + 0.5 * view.z / view.w;
+            fragmentColour = vec4(vec3(col * 0.5), 0.5);
         } else {
             discard;
             return;
@@ -962,7 +983,7 @@
             }
 
             vec3 viewVector = normalize(cameraPosition - v_position);
-            vec3 normal = normalize(v_normal);// * max(dot(v_normal, viewVector), 0.0));
+            vec3 normal = normalize(v_normal);
 
             vec3 lightVector1 = normalize(lightPosition1);
             float intensity1 = 1.0;
@@ -1720,7 +1741,7 @@
             }
             app.updateMaterials = true;
             updateText();
-            showStructure();
+            showSceneData();
         }
 
         /**
@@ -1758,7 +1779,7 @@
             });
             app.updateMaterials = true;
             updateText();
-            showStructure();
+            showSceneData();
         }
 
         /**
@@ -1770,7 +1791,7 @@
             app.view[0].items = app.view[0].items.filter((item) => !selected.includes(item));
             app.updateMaterials = true;
             updateText();
-            showStructure();
+            showSceneData();
         }
 
         /**
@@ -1784,7 +1805,7 @@
                 const orientation = extractRotation(selected[0].world);
                 const lookAt = scale(sum(...selected.map((item) =>
                     applyTransform(product(getAttribute(item.node, 'size', [1, 1, 1]), getAttribute(item.node, 'offset', [0, 0, 0])), item.world))), 1 / selected.length);
-                const size = Math.max(...selected.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
+                const size = Math.max(...selected.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), item.transform.getScale()), lookAt))));
                 const dist = Math.max(1.5 * size / Math.tan(180 * app.fov / Math.PI), app.near * 2);
                 const viewDirection = applyTransform(direction, orientation);
                 const position = sum(lookAt, scale(viewDirection, dist));
@@ -2016,14 +2037,6 @@
             instances: [],
             render() {
                 if (app.connections.length > 0) {
-                    /*
-                    gl.uniformMatrix4fv(app.shader.projection, false, app.projectionMatrix);
-                    gl.uniformMatrix4fv(app.shader.view, false, app.viewMatrix);
-                    gl.uniform3fv(app.shader.cameraPosition, app.camera.position);
-                    gl.uniform3fv(app.shader.lightPosition1, app.lights[0].position);
-                    gl.uniform3fv(app.shader.lightPosition2, app.lights[1].position);
-                    gl.uniform3fv(app.shader.lightPosition3, app.lights[2].position);
-*/
                     gl.uniform1i(app.pbrShader.effects, 0);
 
                     gl.bindVertexArray(app.lineVertexArray);
@@ -2033,7 +2046,8 @@
                     gl.uniform1i(app.pbrShader.effects, app.effects);
                     reportGLErrors('rendering edges');
                 }
-            }
+            },
+            reset() { },
         }
 
         /**
@@ -2048,6 +2062,10 @@
                 this.named = {};
                 this.shapes = new Map();
                 this.drawGround = true;
+                this.ground = {
+                    origin: [0, 0, 0],
+                    normal: [0, 1, 0],
+                };
             }
             addItem(node, parent) {
                 if (this.shapes.has(node)) {
@@ -2058,7 +2076,8 @@
                     let descend = false;
                     const size = Math.hypot(...getAttribute(node, 'size', [0, 0, 0]));
                     if (getAttribute(node, 'obj')) {
-                        item = getOBJ(node, parent);
+                        //item = getOBJ(node, parent);
+                        item = new LightWaveObject(node, parent);
                     } else if (getAttribute(node, 'gltf')) {
                         item = loadGLTF(getAttribute(node, 'gltf'));
                     } else if (getAttribute(node, 'bevel')) {
@@ -2135,10 +2154,7 @@
             update(graph, parent, replace = true) {
                 if (replace) {
                     this.items = [];
-                    this.renderQueue.forEach((item) => {
-                        item.instances.length = 0;
-                        item.updateInstances = true;
-                    });
+                    this.renderQueue.forEach((item) => item.reset());
                 }
                 graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
             }
@@ -2384,6 +2400,10 @@
                 near: 1,
                 far: 10000,
                 gridSize: 1,
+            },
+            ground: {
+                origin: [0, 0, 0],
+                normal: [0, 1, 0],
             },
             background: [0, 0, 0],
             movement: {},
@@ -2661,14 +2681,6 @@
 
 
         /**
-         * Generate the vertex data for a rectangle.
-         */
-        function makeBanner() {
-            return [-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1];
-        }
-
-
-        /**
          * Tessellate a face into triangles.
          * 
          * This is simple tessellation based on forming triangles from the starting point,
@@ -2932,11 +2944,11 @@
                 height = image.height;
 
 
-                Block.collection.initialise = true;
-                //WalledBox.collection.initialise = true;
+                Block.primative.initialise = true;
+                //WalledBox.primative.initialise = true;
                 BevelledBlock.bevels.forEach((bevel) => bevel.initialise = true);
-                Cylinder.collections.forEach((collection) => collection.initialise = true);
-                Frustum.collections.forEach((collection) => collection.initialise = true);
+                Cylinder.primatives.forEach((primative) => primative.initialise = true);
+                Frustum.primatives.forEach((primative) => primative.initialise = true);
                 Icosphere.level.forEach((level) => level.initialise = true);
             }
             image.src = url;
@@ -3219,411 +3231,6 @@
             }
         }
 
-
-        /**
-         * Process data in wavefront obj file format.
-         */
-        async function processOBJ(text, path, obj) {
-            const positions = [];
-            const normals = [];
-            const texture = [];
-            const parameters = [];
-            const colours = [];
-            const polyLines = [];
-            const materials = {
-                initial: {
-                    ambientColour: [1, 1, 0],
-                    diffuseColour: [0.2, 0.2, 0.2],
-                    specularColour: [0.5, 1, 1],
-                    specularExponent: [1, 1, 0],
-                    opacity: [1, 1, 0],
-                }
-            }
-
-            const promisedMaterials = [];
-            let materialName;
-            // A patch represents a group of faces in the same material.
-            let faces = [];
-            const patches = { initial: { faces } };
-            const max = [-Infinity, -Infinity, -Infinity];
-            const min = [Infinity, Infinity, Infinity];
-
-            const lines = text.split(/\r?\n/g);
-            lines.map(async (line, i) => {
-                const trimmed = line.replace(/#.*/, '').trim();
-                const [command, ...stringValues] = trimmed.split(/\s+/g);
-                const values = stringValues.map((str) => parseFloat(str));
-                if (command === 'vn') {
-                    const start = values.length;
-                    values.length = 3;
-                    normals.push(normalised(values.fill(0, start)));
-                } else if (command === 'vt') {
-                    texture.push(values);
-                } else if (command === 'vp') {
-                    parameters.push(value);
-                } else if (command === 'v') {
-                    if (values.length > 4) {
-                        const colour = values.slice(4);
-                        positions.push(values.slice(0, 3));
-                        colour.length = 3;
-                        colours.push(colour.fill(0, start))
-                    } else if (values.length === 4) {
-                        positions.push(values.slice(0, 3).map((v) => v / values[3]));
-                    } else {
-                        const start = values.length;
-                        values.length = 3;
-                        positions.push(values.fill(0, start));
-                    }
-                } else if (command === 'f') {
-                    faces.push(stringValues.map((string) => {
-                        const values = string.split(/\//).map((str) => parseInt(str));
-                        return {
-                            positionIndex: values[0] < 0 ? positions.length - values[0] : values[0] - 1,
-                            textureIndex: values[1] < 0 ? texture.length - values[1] : values[1] - 1,
-                            normalIndex: values[2] < 0 ? normals.length - values[2] : values[2] - 1
-                        };
-                    }));
-                } else if (command === 'o') {
-                } else if (command === 'g') {
-                } else if (command === 'mtllib') {
-                    const root = path.split(/\//g).slice(0, -1).join('/') + '/';
-                    promisedMaterials.push(loadMaterials(root + stringValues[0].replace(/\^.\//, '')));
-                } else if (command === 'usemtl') {
-                    materialName = stringValues[0];
-                    const patch = patches[materialName] || { faces: [] };
-                    faces = patch.faces;
-                    patches[materialName] = patch;
-                }
-                if (app.debug && ((i % 1000) === 0)) {
-                    console.log(i);
-                }
-            });
-
-
-            // Normalise the data
-            positions.forEach((point) => {
-                min[0] = Math.min(min[0], point[0]);
-                min[1] = Math.min(min[1], point[1]);
-                min[2] = Math.min(min[2], point[2]);
-                max[0] = Math.max(max[0], point[0]);
-                max[1] = Math.max(max[1], point[1]);
-                max[2] = Math.max(max[2], point[2]);
-            });
-
-            const offset = scale(min, -1);
-            const size = subtract(max, min);
-            const invSize = size.map((v) => 1 / v);
-            positions.forEach((point) => {
-                vectorScale(add(point, offset), invSize);
-            });
-
-            await Promise.all(promisedMaterials).then((values) =>
-                values.forEach((value) => Object.assign(materials, value)));
-
-            const buffers = {
-                vertex: gl.createBuffer(),
-                instances: gl.createBuffer(),
-            };
-            const vertexData = [];
-
-            const materialData = [];
-            Object.values(materials).forEach((material) => {
-                material.offset = materialData.length;
-                materialData.push(...material.colour ?? [0.8, 0.1, 0.7]);
-                materialData.push(...material.emissivityColour ?? [0, 0, 0]);
-                materialData.push(...material.specularColour ?? [0.98, 0.98, 0.98]);
-                materialData.push(material.roughness ?? 0.5);
-                materialData.push(material.opacity ?? 1);
-                materialData.push(material.metallic ?? 0);
-                materialData.push(material.mirror ?? 1);
-            });
-            const materialBuffer = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, materialBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(materialData), gl.STATIC_DRAW);
-
-            Object.entries(patches).slice(1).forEach(([materialName, patch]) => {
-                let len = patch.faces.length;
-                const triangles = patch.faces.flatMap((face, i) => {
-                    if (app.debug && ((i % 1000) === 0)) {
-                        console.log(`${(100 * i / len).toFixed(2)}% ${i} / ${len}`);
-                    }
-
-                    if (face.length === 3) {
-                        return [face];
-                    } else if (face.length === 4) {
-                        return [[face[0], face[1], face[2]], [face[2], face[3], face[0]]];
-                    }
-                    const points = face.map((vertex) => positions[vertex.positionIndex]);
-                    const tessellation = tessellate(points);
-                    return tessellation.indices.map((triangle) => triangle.map((index) => face[index]));
-                });
-                patch.offset = vertexData.length / 6;
-                for (const triangle of triangles) {
-                    vertexData.push(...positions[triangle[0].positionIndex], ...normals[triangle[0].normalIndex]);
-                    vertexData.push(...positions[triangle[1].positionIndex], ...normals[triangle[1].normalIndex]);
-                    vertexData.push(...positions[triangle[2].positionIndex], ...normals[triangle[2].normalIndex]);
-                }
-
-                patch.points = triangles.length * 3;
-
-                patch.objBuffer = gl.createVertexArray();
-                gl.bindVertexArray(patch.objBuffer);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
-
-                gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 24, 0);
-                gl.enableVertexAttribArray(app.pbrShader.position);
-
-                gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, false, 24, 12);
-                gl.enableVertexAttribArray(app.pbrShader.normal);
-
-                gl.disableVertexAttribArray(app.pbrShader.coord);
-                gl.vertexAttrib2f(app.pbrShader.coord, 0.0, 0.0);
-
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
-
-                obj.transform = identityMatrix();
-                obj.transform[0] = size[0];
-                obj.transform[5] = size[1];
-                obj.transform[10] = size[2];
-
-                obj.transform[12] = -size[0] / 2;
-                obj.transform[13] = -size[1] / 2;
-                obj.transform[14] = -size[2] / 2;
-
-                const matrix = [...obj.transform, 1, 0, 0, 0, 1, 0, 0, 0, 1];
-
-                // Matrices are passed as 4 vertex attributes
-                for (let i = 0; i < 4; ++i) {
-                    const location = app.pbrShader.model + i;
-                    gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 4 * (16 + 9), 4 * (i * 4));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                for (let i = 0; i < 3; ++i) {
-                    const location = app.pbrShader.normalMatrix + i;
-                    gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 4 * (16 + 9), 4 * (16 + i * 3));
-                    gl.vertexAttribDivisor(location, 1);
-                    gl.enableVertexAttribArray(location);
-                }
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrix), gl.DYNAMIC_DRAW);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, materialBuffer);
-
-                const offset = materials[materialName].offset * 4;
-
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 68, offset);
-                gl.vertexAttribDivisor(app.pbrShader.colour, obj.instances.length);
-
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 68, offset + 12);
-                gl.vertexAttribDivisor(app.pbrShader.emissivityColour, obj.instances.length);
-
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 68, offset + 24);
-                gl.vertexAttribDivisor(app.pbrShader.reflectivity, obj.instances.length);
-
-                gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-                gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 68, offset + 36);
-                gl.vertexAttribDivisor(app.pbrShader.materialParameters, obj.instances.length);
-
-                gl.enableVertexAttribArray(app.pbrShader.textureParameters);
-                gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, 68, offset + 52);
-                gl.vertexAttribDivisor(app.pbrShader.textureParameters, obj.instances.length);
-
-                gl.bindVertexArray(null);
-
-                patch.material = materials[materialName];
-            });
-
-            obj.updateMaterials = () => {
-                Object.entries(patches).slice(1).forEach(([materialName, patch]) => {
-                    gl.bindVertexArray(patch.vao);
-
-                    gl.bindBuffer(gl.ARRAY_BUFFER, materialBuffer);
-
-                    const offset = materials[materialName].offset * 4;
-
-                    gl.enableVertexAttribArray(app.pbrShader.colour);
-                    gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, 52, offset);
-                    gl.vertexAttribDivisor(app.pbrShader.colour, obj.instances.length);
-
-                    gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-                    gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, 52, offset + 12);
-                    gl.vertexAttribDivisor(app.pbrShader.emissivityColour, obj.instances.length);
-
-                    gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-                    gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, 52, offset + 28);
-                    gl.vertexAttribDivisor(app.pbrShader.reflectivity, obj.instances.length);
-
-                    gl.enableVertexAttribArray(app.pbrShader.materialParameters);
-                    gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, 52, offset + 40);
-                    gl.vertexAttribDivisor(app.pbrShader.materialParameters, obj.instances.length);
-
-                    gl.enableVertexAttribArray(app.pbrShader.textureParameters);
-                    gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, 52, offset + 40);
-                    gl.vertexAttribDivisor(app.pbrShader.textureParameters, obj.instances.length);
-
-                    gl.bindVertexArray(null);
-                });
-            }
-
-            app.materials = materials;
-            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexData), gl.DYNAMIC_DRAW);
-
-            const meshes = Object.values(patches).flatMap((patch) => patch.faces.length ? patch : []);
-
-            obj.initialiseInstances = () => {
-                // Create an array with the data for all instances
-                const data = [];
-                obj.instances.forEach((instance) => {
-                    const transform = multiply(instance.transform, instance.world);
-                    data.push(...transform);                          // offset:  0, size: 16
-                    data.push(...instance.orientation);               // offset: 16, size: 12
-                });
-
-                // Create a buffer
-                const buffer = new ArrayBuffer(data.length * 4);
-                // Add a float 32 view
-                obj.instanceData = new Float32Array(buffer, 0, data.length);
-                // Load the data using the view
-                obj.instanceData.set(data);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, obj.instanceData, gl.DYNAMIC_DRAW);
-
-                // Provide reference for each instances to their data
-                obj.instances.forEach((instance, index) =>
-                    instance.instanceData = new Float32Array(buffer, index * 25, 25));
-
-                obj.updateInstanceData();
-            }
-            obj.updateInstanceData = () => {
-                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
-                gl.bufferData(gl.ARRAY_BUFFER, obj.instanceData, gl.DYNAMIC_DRAW);
-            }
-
-            obj.render = () => {
-                if (obj.instances.length > 0) {
-                    if (obj.initialise) {
-                        obj.initialiseInstances();
-                        obj.initialise = false;
-                    } else if (obj.updateInstances) {
-                        obj.updateInstanceData();
-                        obj.updateInstances = false;
-                    }
-
-                    meshes.forEach((patch) => {
-                        gl.bindVertexArray(patch.objBuffer);
-                        gl.drawArraysInstanced(gl.TRIANGLES, patch.offset, patch.points, obj.instances.length);
-                    });
-                }
-            };
-        }
-
-        /**
-         * Load data from a wavefront obj file
-         */
-        async function loadOBJ(url, obj) {
-            const response = await fetch(url);
-            if (response.ok) {
-                const content = await response.text();
-                Object.assign(obj, processOBJ(content, url, obj));
-            }
-        }
-
-        const loadedObjs = {};
-        /**
-         * Load data from a wavefront obj file
-         */
-        function getOBJ(node, parent) {
-            const url = getAttribute(node, 'obj');
-            const name = url.split('/').at(-1).replace(/\.obj$/i, '');
-            if (!loadedObjs[url]) {
-                const obj = {
-                    instances: [],
-                    scale() { },
-                    render() { },
-                    updateMaterials() { },
-                    transform: identityMatrix(),
-                };
-                loadedObjs[url] = obj;
-
-                const scale = getAttribute(node, 'size', [1, 1, 1]);
-                loadOBJ(url, obj).then((result) => {
-                    obj.loaded = true;
-                    obj.scale(...scale);
-                    app.view[0].renderQueue.push(obj);
-                });
-            }
-            const indexedName = loadedObjs[url].instances.length ? `${url.split('/').at(-1).replace(/\.obj$/i, '')} ${loadedObjs[url].instances.length}` : name;
-            const instance = Object.assign(Object.create(new Instance(node, parent, null, indexedName)), {
-                children: [],
-                material: { opacity: 1 },
-                geometry: loadedObjs[url],
-                intersects(line, all) {
-                    const transform = this.world;
-                    const size = extractScale(this.transform);
-                    const radius = Math.hypot(...size);
-
-                    const centre = applyTransform([0, 0, 0], this.world);
-
-                    const l = dot(line.direction, subtract(centre, line.point));
-                    const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
-                    const v = subtract(p, centre);
-                    const dist = Math.hypot(...v);
-                    if (dist < radius) {
-                        const corner1 = applyTransform(scale(size, -0.5), this.world);
-                        const corner2 = applyTransform(scale(size, 0.5), this.world);
-                        const orientation = extractRotation(this.world);
-                        const planes = [
-                            { point: corner1, normal: applyTransform([-1, 0, 0], orientation) },
-                            { point: corner1, normal: applyTransform([0, -1, 0], orientation) },
-                            { point: corner1, normal: applyTransform([0, 0, -1], orientation) },
-                            { point: corner2, normal: applyTransform([1, 0, 0], orientation) },
-                            { point: corner2, normal: applyTransform([0, 1, 0], orientation) },
-                            { point: corner2, normal: applyTransform([0, 0, 1], orientation) },
-                        ];
-                        const points = convexHullIntercept(line, planes);
-                        if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
-
-                            this.points = [p1, p2];
-                            return true;
-                        }
-                    }
-                },
-                highlightFace(line) { },
-                showInfo() { },
-            });
-            Object.defineProperties(instance, {
-                opacity: {
-                    enumerable: true,
-                    set(value) { },
-                },
-                emissivityColour: {
-                    enumerable: true,
-                    set(value) { },
-                }
-            });
-            loadedObjs[url].updateMaterials();
-            Object.defineProperties(instance, {
-                transform: {
-                    enumerable: true,
-                    get() { return this.geometry.transform; },
-                }
-
-            })
-            instance.geometry.initialise = true;
-            loadedObjs[url].instances.push(instance);
-            return loadedObjs[url].instances.at(-1);
-        }
-
         /**
          * Process data from a gltf
          * Loading any additional resources
@@ -3799,6 +3406,31 @@
         }
 
         /**
+         * Load a cube map as a texture
+         */
+        function initCubeMap(texture) {
+            texture = texture || gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+
+            const targets = [
+                gl.TEXTURE_CUBE_MAP_POSITIVE_X,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+                gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+                gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
+                gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+            ];
+            let count = 0;
+            targets.forEach((target, index) => {
+                // setup each face so it's immediately renderable
+                gl.texImage2D(target, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([190, 190, 255, 255]));
+            });
+            gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+            gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+            return texture;
+        }
+
+        /**
          * Make a sky box from the given images.
          */
         function skybox(images) {
@@ -3889,7 +3521,7 @@
             app.textVertexArray = gl.createVertexArray();
             gl.bindVertexArray(app.textVertexArray);
 
-            const shape = makeBanner();
+            const shape = [-1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1];
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.textInstance);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
 
@@ -4293,17 +3925,17 @@
          */
         function drawGround() {
             // Get the view projection matrix
-            const viewMatrix = [...app.viewMatrix];
-
             const viewProjection = multiply(app.viewMatrix, app.projectionMatrix);
             const inverseViewProjection = invert(viewProjection);
-            //const inverseViewProjection = invert(app.viewMatrix);
             gl.useProgram(app.groundShader.program);
 
             gl.uniformMatrix4fv(app.groundShader.viewProjection, false, viewProjection);
             gl.uniformMatrix4fv(app.groundShader.inverseViewProjection, false, inverseViewProjection);
             gl.uniform3fv(app.groundShader.cameraPosition, app.camera.position);
             gl.uniform1f(app.groundShader.gridSize, app.gridSize);
+
+            gl.uniform3fv(app.groundShader.origin, app.view[0].ground.origin);
+            gl.uniform3fv(app.groundShader.normal, app.view[0].ground.normal);
 
             // 1. Define the 4 vertices of the quad
             const vertices = new Float32Array([
@@ -4401,7 +4033,7 @@
                 }
 
                 app.view[0].render(time);
-                if (app.view[0].drawGround) {
+                if (app.gridSize && app.view[0].drawGround) {
                     drawGround();
                 }
 
@@ -4744,60 +4376,134 @@
          * Manage cartesian transform matrix
          */
         class Transform {
-            constructor(context, initial = identityMatrix()) {
-                this.context = context;
-                if (this.context) {
-                    this.matrix = this.context.referenceFrame.multiply(initial);
-                } else {
-                    this.matrix = [...initial];
-                }
+            constructor(initial = identityMatrix()) {
+                this.matrix = [...initial];
             }
             move(offset) {
                 this.matrix[12] += offset[0];
                 this.matrix[13] += offset[1];
                 this.matrix[14] += offset[2];
+                return this;
             }
             scale(size) {
                 const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
-                this.matrix = multiply(scale, this.matrix);
+                this.multiply(scale);
+                return this;
             }
             rotate(angle, axis) {
                 const rotation = getRotation(angle, axis);
-                this.matrix = multiply(rotation, this.matrix);
+                this.multiply(rotation);
+                return this;
             }
             multiply(matrix) {
-                return multiply(matrix, this.matrix);
+                this.matrix = multiply(matrix, this.matrix);
+                return this;
+            }
+            apply(vector) {
+                return applyTransform(vector, this.matrix);
+            }
+            /**
+             * Extract translation from a transformation matrix
+             */
+            getTranslation() {
+                return [this.matrix[12], this.matrix[13], this.matrix[14]];
+            }
+
+            /**
+             * get scale vector from a transformation matrix
+             */
+            getScale() {
+                return [
+                    Math.hypot(this.matrix[0], this.matrix[1], this.matrix[2]),
+                    Math.hypot(this.matrix[4], this.matrix[5], this.matrix[6]),
+                    Math.hypot(this.matrix[8], this.matrix[9], this.matrix[10])];
+            }
+
+            /**
+             * get rotation from a transformation matrix
+             */
+            getRotation(scale) {
+                scale = scale || this.getScale();
+                return [
+                    this.matrix[0] / scale[0], this.matrix[1] / scale[0], this.matrix[2] / scale[0], 0,
+                    this.matrix[4] / scale[1], this.matrix[5] / scale[1], this.matrix[6] / scale[1], 0,
+                    this.matrix[8] / scale[2], this.matrix[9] / scale[2], this.matrix[10] / scale[2], 0,
+                    0, 0, 0, 1,
+                ];
+            }
+
+            /**
+             * get quaternion from a rotation matrix
+             */
+            getQuaternion(rotation) {
+                rotation = rotation || this.getRotation();
+                const tr = rotation[0] + rotation[5] + rotation[10];
+                const quaternion = {};
+
+                // From: https://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/
+                if (tr > 0) {
+                    const S = Math.sqrt(tr + 1.0) * 2; // S=4*quaternion.w 
+                    quaternion.w = 0.25 * S;
+                    quaternion.x = (rotation[9] - rotation[6]) / S;
+                    quaternion.y = (rotation[2] - rotation[8]) / S;
+                    quaternion.z = (rotation[4] - rotation[1]) / S;
+                } else if ((rotation[0] > rotation[5]) & (rotation[0] > rotation[10])) {
+                    const S = Math.sqrt(1.0 + rotation[0] - rotation[5] - rotation[10]) * 2; // S=4*quaternion.x 
+                    quaternion.w = (rotation[9] - rotation[6]) / S;
+                    quaternion.x = 0.25 * S;
+                    quaternion.y = (rotation[1] + rotation[4]) / S;
+                    quaternion.z = (rotation[2] + rotation[8]) / S;
+                } else if (rotation[5] > rotation[10]) {
+                    const S = Math.sqrt(1.0 + rotation[5] - rotation[0] - rotation[10]) * 2; // S=4*quaternion.y
+                    quaternion.w = (rotation[2] - rotation[8]) / S;
+                    quaternion.x = (rotation[1] + rotation[4]) / S;
+                    quaternion.y = 0.25 * S;
+                    quaternion.z = (rotation[6] + rotation[9]) / S;
+                } else {
+                    const S = Math.sqrt(1.0 + rotation[10] - rotation[0] - rotation[5]) * 2; // S=4*quaternion.z
+                    quaternion.w = (rotation[4] - rotation[1]) / S;
+                    quaternion.x = (rotation[2] + rotation[8]) / S;
+                    quaternion.y = (rotation[6] + rotation[9]) / S;
+                    quaternion.z = 0.25 * S;
+                }
+                return quaternion;
             }
         }
 
         /**
-         * Class to manage a collection of instances.
+         * Class to manage a primative of instances.
          */
-        class Collection {
-            constructor(points, indices) {
+        class Primative {
+            constructor(mode, count, data, offset = 0, indices) {
                 this.instances = [];
                 this.buffers = {
-                    vertices: gl.createBuffer(),
+                    vertices: data.buffer || gl.createBuffer(),
                     instances: gl.createBuffer(),
                     vao: gl.createVertexArray(),
                 };
-                this.triangles = points.triangles;
-                this.lines = points.lines;
-                this.initialiseBuffers(points.shape);
+                if (data.vertexData) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.vertices);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.vertexData), gl.STATIC_DRAW);
+                }
+                this.mode = mode;
+                this.count = count;
+                this.offset = offset;
+                this.initialiseBuffers();
                 if (indices) {
                     this.buffers.indices = gl.createBuffer();
                     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.indices);
-                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER
-                        , new Uint16Array(indices), gl.STATIC_DRAW);
+                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
                     this.points = indices.length;
                 }
                 gl.bindVertexArray(null);
                 app.view[0].renderQueue.push(this);
             }
-            initialiseBuffers(shape) {
+            reset() {
+                this.instances.length = 0;
+                this.updateInstances = true;
+            }
+            initialiseBuffers() {
                 gl.bindVertexArray(this.buffers.vao);
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.vertices);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shape), gl.STATIC_DRAW);
 
                 gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, 32, 0);
                 gl.enableVertexAttribArray(app.pbrShader.position);
@@ -4844,8 +4550,8 @@
                 gl.vertexAttribDivisor(app.pbrShader.textureParameters, 1);
                 gl.enableVertexAttribArray(app.pbrShader.textureParameters);
             }
-            addInstance(node, parent, name) {
-                const instance = new Instance(node, parent, this, name);
+            addInstance(node, shape, label) {
+                const instance = new Instance(node, shape, this, label);
                 this.instances.push(instance);
                 this.initialise = true;
                 return instance;
@@ -4883,11 +4589,9 @@
                         this.updateInstanceData();
                         this.updateInstances = false;
                     }
-                    if (this.triangles > 0 && !app.wireframe) {
-                        gl.drawArraysInstanced(gl.TRIANGLES, 0, this.triangles * 3, this.instances.length);
-                    }
-                    if (this.lines > 0 && (app.wireframe || !app.solid)) {
-                        gl.drawArraysInstanced(gl.LINES, this.triangles * 3, this.lines * 2, this.instances.length);
+                    gl.uniform1i(app.pbrShader.effects, this.effects ?? 0);
+                    if (this.count > 0) {
+                        gl.drawArraysInstanced(this.mode, this.offset, this.count, this.instances.length);
                     }
                     if (this.buffers.indices && this.points > 0) {
                         gl.drawElementsInstanced(gl.TRIANGLES, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
@@ -4898,13 +4602,14 @@
         }
 
         /**
-         * Parent class for object visual representations
+         * Class to manage association of a particular instance of a primative and a 'shape'.
          */
         class Instance {
-            constructor(node, parent, collection, name) {
+            constructor(node, shape, primative, label, offset = [0, 0, 0]) {
                 this.node = node;
-                this.parent = parent;
-                this.collection = collection;
+                this.shape = shape;
+                this.primative = primative;
+                this.label = label;
                 this.hidden = false;
 
                 this.material = {
@@ -4920,72 +4625,68 @@
                 this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.origin = [0, 0, 0];
-                this.referenceFrame = new Transform();
-                this.transform = identityMatrix();
+                this.transform = new Transform();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
-                name = this.node[meta].name[0] || name;
-                this.name = name;
-                this.node[meta].name[0] = name;
                 this.state = {};
-
-                this.referenceFrame.move(getAttribute(node, 'position', [0, 0, 0]));
-                this.referenceFrame.rotate(getAttribute(node, 'angle', 0),
-                    getAttribute(node, 'axis', [0, 1, 0]));
-
-                this.offset(getAttribute(node, 'offset', [0, 0, 0]));
-                this.scale(getAttribute(node, 'size', [1, 1, 1]));
             }
             set opacity(value) {
                 this.material.opacity = value;
-                this.collection.instanceData[this.offset + 35] = this.material.opacity;               // offset: 35, size: 1
+                this.primative.instanceData[this.offset + 35] = this.material.opacity;               // offset: 35, size: 1
             }
             set emissivityColour(value) {
                 this.material.emissivityColour = value;
-                this.collection.instanceData.set(this.material.emissivityColour, this.offset + 28);   // offset: 28, size: 3
+                this.primative.instanceData.set(this.material.emissivityColour, this.offset + 28);   // offset: 28, size: 3
             }
             hide() {
                 if (!this.hidden) {
-                    this.collection.instanceData[this.offset + 35] = 0.5;
+                    this.primative.instanceData[this.offset + 35] = 0.5;
                     this.hidden = true;
                 }
-                this.collection.updateInstances = true;
+                this.primative.updateInstances = true;
             }
             show() {
                 if (this.hidden) {
-                    this.collection.instanceData[this.offset + 35] = this.material.opacity;
-                    this.collection.updateInstances = true;
+                    this.primative.instanceData[this.offset + 35] = this.material.opacity;
+                    this.primative.updateInstances = true;
                     this.hidden = false;
                 }
             }
             highlight() {
                 if (!this.highlighted) {
-                    this.collection.instanceData.set([1, 1, 0.2], this.offset + 28);
-                    this.collection.updateInstances = true;
+                    this.primative.instanceData.set([1, 1, 0.2], this.offset + 28);
+                    this.primative.updateInstances = true;
                     this.highlighted = true;
                 }
             }
             unhighlight() {
                 if (this.highlighted) {
-                    this.collection.instanceData.set(this.material.emissivityColour, this.offset + 28);
-                    this.collection.updateInstances = true;
+                    this.primative.instanceData.set(this.material.emissivityColour, this.offset + 28);
+                    this.primative.updateInstances = true;
                     this.highlighted = false;
                 }
             }
             update(point) { }
             updateInstanceData() {
-                if (!this.collection.instanceData) {
+                if (!this.primative.instanceData) {
                     return;
                 }
                 //const transform = this.hidden ? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : multiply(this.transform, this.world);
-                const transform = multiply(this.transform, this.world);
+                const transform = this.world;
                 const emissivity = this.highlighted ? [1, 1, 0.3] : this.material.emissivityColour;
                 const opacity = this.hidden ? 0.5 : this.material.opacity;
 
-                const instanceData = this.collection.instanceData;
+                const orientation4 = extractRotation(transform);
+                const orientation = [
+                    orientation4[0], orientation4[1], orientation4[2],
+                    orientation4[4], orientation4[5], orientation4[6],
+                    orientation4[8], orientation4[9], orientation4[10],
+                ]
+
+                const instanceData = this.primative.instanceData;
                 instanceData.set(transform, this.offset + 0);                         // offset:  0, size: 16
-                instanceData.set(this.orientation, this.offset + 16);                 // offset: 16, size: 9
-                instanceData.set(getAttribute(this.node, 'colour', [1, 1, 1]), this.offset + 25);             // offset: 26, size: 3
+                instanceData.set(orientation, this.offset + 16);                      // offset: 16, size: 9
+                instanceData.set(this.material.colour, this.offset + 25);             // offset: 26, size: 3
                 instanceData.set(emissivity, this.offset + 28);                       // offset: 28, size: 3
                 instanceData.set(this.material.reflectivity, this.offset + 31);       // offset: 31, size: 3
                 instanceData[this.offset + 34] = this.material.roughness;             // offset: 34, size: 1
@@ -4997,42 +4698,23 @@
                 instanceData[this.offset + 40] = this.texture.width;
                 instanceData[this.offset + 41] = this.texture.height;
 
-                this.collection.updateInstances = true;
+                this.primative.updateInstances = true;
             }
             get world() {
-                if (this.parent) {
-                    return multiply(this.referenceFrame.matrix, this.parent.world);
-                }
-                return this.referenceFrame.matrix;
-            }
-            get path() {
-                if (this.parent) {
-                    return [...this.parent.path, this];
-                }
-                return [this];
+                return multiply(this.transform.matrix, this.shape.world);
             }
             apply(action) {
                 action(this);
                 this.children.forEach((child) => child.apply(action));
             }
             move(offset) {
-                this.transform[12] += offset[0];
-                this.transform[13] += offset[1];
-                this.transform[14] += offset[2];
+                this.transform.move(offset);
             }
             scale(size) {
-                const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
-                this.transform = multiply(scale, this.transform);
+                this.transform.scale(size);
             }
             rotate(angle, axis) {
-                const rotation = getRotation(angle, axis);
-                this.transform = multiply(rotation, this.transform);
-            }
-            offset(offset) {
-                const size = getAttribute(this.node, 'size', [1, 1, 1]);
-                this.transform[12] += size[0] * offset[0];
-                this.transform[13] += size[1] * offset[1];
-                this.transform[14] += size[2] * offset[2];
+                this.transform.rotate(angle, axis);
             }
         }
 
@@ -5043,10 +4725,11 @@
             constructor(node, parent, name) {
                 this.node = node;
                 this.parent = parent;
+                this.children = [];
+                this.instances = [];
 
                 this.origin = [0, 0, 0];
-                this.referenceFrame = new Transform();
-                this.transform = identityMatrix();
+                this.transform = new Transform();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
                 name = this.node[meta].name[0] || name;
@@ -5054,40 +4737,50 @@
                 this.node[meta].name[0] = name;
                 this.state = {};
 
-                this.referenceFrame.move(getAttribute(node, 'position', [0, 0, 0]));
-                this.referenceFrame.rotate(getAttribute(node, 'angle', 0),
+                const size = getAttribute(node, 'size', [1, 1, 1]);
+                const offset = product(getAttribute(node, 'offset', [0, 0, 0]), size);
+                const objScale = parent ? reciprical(extractScale(parent.world)) : [1, 1, 1];
+                if (parent) {
+                    // Convert the position to local proportional coordinates based on the scale.
+                    const origin = scale(getAttribute(parent.node, 'offset', [0, 0, 0]), -1);
+                    const position = product(sum(getAttribute(node, 'position', [0, 0, 0]), offset), objScale);
+                    this.transform.move(sum(position, origin));
+                } else {                    
+                    this.transform.move(sum(getAttribute(node, 'position', [0, 0, 0]), offset));
+                }
+                if (Math.hypot(...size) > 0) {
+                    this.transform.scale(product(size, objScale));
+                }
+                    
+                this.transform.rotate(getAttribute(node, 'angle', 0),
                     getAttribute(node, 'axis', [0, 1, 0]));
 
                 this.offset(getAttribute(node, 'offset', [0, 0, 0]));
-                this.scale(getAttribute(node, 'size', [1, 1, 1]));
 
                 const texture = getAttribute(node, 'texture');
                 if (texture) {
                     this.texture = getTexture(texture);
                 }
-                this.children = [];
-                this.instances = [];
             }
             set opacity(value) {
                 this.instances.forEach((instance) => instance.opacity = value);
-                this.collection.updateInstances = true;
+                this.primative.updateInstances = true;
             }
             set emissivityColour(value) {
                 this.instances.forEach((instance) => instance.emissivityColour = value);
-                this.collection.updateInstances = true;
+                this.primative.updateInstances = true;
             }
             update() {
                 if (this.node[meta].dynamic) {
-                    this.instances.forEach((instance) => {
-                        instance.referenceFrame = new Transform();
 
-                        instance.referenceFrame.move(getAttribute(this.node, 'position', [0, 0, 0]));
-                        instance.referenceFrame.rotate(getAttribute(this.node, 'angle', 0),
-                            getAttribute(this.node, 'axis', [0, 1, 0]));
+                    this.transform = new Transform();
 
-                        instance.referenceFrame.scale(getAttribute(this.node, 'size', [1, 1, 1]));
-                        instance.updateInstanceData();
-                    });
+                    this.transform.move(getAttribute(this.node, 'position', [0, 0, 0]));
+                    this.transform.rotate(getAttribute(this.node, 'angle', 0),
+                        getAttribute(this.node, 'axis', [0, 1, 0]));
+
+                    this.transform.scale(getAttribute(this.node, 'size', [1, 1, 1]));
+                    this.instances.forEach((instance) => instance.updateInstanceData());
                 }
                 if (this.node.selected) {
                     this.instances.forEach((instance) => instance.highlight());
@@ -5095,14 +4788,14 @@
                     this.instances.forEach((instance) => instance.unhighlight());
                 }
                 if (app.show && app.show.item !== this) {
-                    const transform = multiply(this.transform, this.world);
+                    const transform = this.world;
                     // Get the origin of this element
                     const origin = applyTransform([0, 0, 0], transform);
                     const dist = Math.hypot(...subtract(origin, app.camera.position));
 
                     if (dist < app.show.distance) {
                         const point = applyTransform4([...origin, 1], app.show.transform);
-                        const size = extractScale(this.transform);
+                        const size = this.transform.getScale();
                         const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
                         const radius = Math.hypot(...size) / point[3];
 
@@ -5130,17 +4823,17 @@
                 this.instances.forEach((instance) => instance.show());
             }
             remove() {
-                this.instances.forEach((instance) => this.collection.removeInstance(instance));
+                this.instances.forEach((instance) => this.primative.removeInstance(instance));
                 this.instances = [];
             }
             updateInstanceData() {
-                this.collection.updateInstances = true;
+                this.primative.updateInstances = true;
             }
             get world() {
                 if (this.parent) {
-                    return multiply(this.referenceFrame.matrix, this.parent.world);
+                    return multiply(this.transform.matrix, this.parent.world);
                 }
-                return this.referenceFrame.matrix;
+                return this.transform.matrix;
             }
             get path() {
                 if (this.parent) {
@@ -5152,26 +4845,54 @@
                 action(this);
                 this.children.forEach((child) => child.apply(action));
             }
+            localMove(offset) {
+                // Translate the movement from world to local coordinates.
+                this.transform.move(offset);
+
+                this.instances.forEach((instance) => {
+                    //instance.move(offset);
+                    instance.updateInstanceData();
+                });
+            }
             move(offset) {
-                this.transform[12] += offset[0];
-                this.transform[13] += offset[1];
-                this.transform[14] += offset[2];
+                // Translate the movement from world to local coordinates.
+                const transform = this.parent ? this.parent.world : identityMatrix();
+                const inverted = invert(transform);
+                const delta = applyTransform4([...offset, 1], inverted);
+
+                this.transform.move(delta);
+                this.instances.forEach((instance) =>
+                    instance.updateInstanceData());
+
             }
             scale(size) {
-                const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
-                this.transform = multiply(scale, this.transform);
+                this.transform.scale(size);
+                this.instances.forEach((instance) =>
+                    instance.updateInstanceData());
+
             }
             rotate(angle, axis) {
-                const rotation = getRotation(angle, axis);
-                this.transform = multiply(rotation, this.transform);
+                this.transform.rotate(angle, axis);
+                this.instances.forEach((instance) =>
+                    instance.updateInstanceData());
             }
             offset(offset) {
+                return;
+                const reference = this.parent ? this.parent.world : identityMatrix();
+                const scale = extractScale(reference);
                 const size = getAttribute(this.node, 'size', [1, 1, 1]);
-                this.transform[12] += size[0] * offset[0];
-                this.transform[13] += size[1] * offset[1];
-                this.transform[14] += size[2] * offset[2];
+                this.transform.matrix[12] += size[0] * offset[0] / scale[0];
+                this.transform.matrix[13] += size[1] * offset[1] / scale[1];
+                this.transform.matrix[14] += size[2] * offset[2] / scale[2];
+                this.instances.forEach((instance) =>
+                    instance.updateInstanceData());
             }
             highlightFace(line) {
+            }
+            showInfo() {
+            }
+            reset() {
+
             }
         }
 
@@ -5203,7 +4924,7 @@
                     positions[2], positions[0],
                 ];
                 const normal = [0, 0, 1];
-                const shape = [
+                const vertexData = [
                     ...positions[0], ...normal, 0, 0,
                     ...positions[1], ...normal, 1, 0,
                     ...positions[2], ...normal, 0, 1,
@@ -5212,20 +4933,20 @@
                     ...positions[3], ...normal, 1, 1,
                     ...positions[2], ...normal, 0, 1,
                 ];
-                const collection = new Collection({ shape, triangles: 2, });
-                Block.collection = collection;
-                return collection;
+                const primative = new Primative(gl.TRIANGLES, 6, { vertexData });
+                Block.primative = primative;
+                return primative;
             }
             constructor(node, parent) {
                 super(node, parent, `quad`);
 
-                this.collection = Quad.collection || Quad.make();
+                this.primative = Quad.primative || Quad.make();
                 this.children = [];
-                this.instances = [this.collection.addInstance(node, parent, `quad`)];
+                this.instances = [this.primative.addInstance(node, this, `quad`)];
             }
             intersects(line, all) {
-                const transform = multiply(this.transform, this.world);
-                const size = extractScale(this.transform);
+                const transform = this.world;
+                const size = extractScale(this.transform.scale);
                 const radius = Math.hypot(...size);
 
                 const centre = applyTransform([0, 0, 0], transform);
@@ -5333,26 +5054,27 @@
                     positions[7], positions[6],
                     positions[6], positions[4],
                 ];
-                const shape = [...triangles.flatMap((t, i) => [
+                const vertexData = [...triangles.flatMap((t, i) => [
                     ...t.p1, ...t.n, i % 2, i % 2,
                     ...t.p2, ...t.n, 1, 0,
                     ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                Block.collection = new Collection({ shape, triangles: 12, lines: 12 });
-                return Block.collection;
+                //Block.primative = new Primative({ shape, triangles: 12, lines: 12 });
+                Block.primative = new Primative(gl.TRIANGLES, 36, { vertexData });
+                new Primative(gl.LINES, 24, { buffer: Block.primative.buffers.vertices }, 36);
+                return Block.primative;
             }
             constructor(node, parent) {
                 super(node, parent, `block`);
 
-                this.collection = Block.collection || Block.make();
+                this.primative = Block.primative || Block.make();
                 this.children = [];
-                this.instances = [this.collection.addInstance(node, parent, `block`)];
+                this.instances = [this.primative.addInstance(node, this, `block`)];
             }
             intersects(line, all) {
-                const transform = multiply(this.transform, this.world);
-                const size = extractScale(this.transform);
-                const radius = Math.hypot(...size);
+                const transform = this.world;
+                const radius = Math.hypot(...this.transform.getScale());
 
                 const centre = applyTransform([0, 0, 0], transform);
 
@@ -5389,8 +5111,6 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
         }
 
         /**
@@ -5400,10 +5120,10 @@
             constructor(node, parent) {
                 super(node, parent, `WalledBox`);
 
-                this.collection = Block.collection || Block.make();
+                this.primative = Block.primative || Block.make();
                 this.children = [];
                 const t = 0.1;
-                this.instances = [this.collection.addInstance(node, parent, `WalledBox`)];
+                this.instances = [this.primative.addInstance(node, this, `WalledBox`)];
             }
             showInterior() {
                 if (this.interiorView) {
@@ -5413,15 +5133,41 @@
                 this.instances[0].highlighted = false;
                 const material = this.instances[0].material;
                 const t = getAttribute(this.node, 'walls');
-                this.reset = [...this.instances[0].transform];
-                const node = this.node;
+                this.reset = [...this.instances[0].transform.matrix];
+                const size = getAttribute(this.node, 'size');
                 this.instances.push(
-                    this.collection.addInstance(node, this.parent, 'WalledBox 1'),
-                    this.collection.addInstance(node, this.parent, 'WalledBox 2'),
-                    this.collection.addInstance(node, this.parent, 'WalledBox 3'),
-                    this.collection.addInstance(node, this.parent, 'WalledBox 4'),
-                    this.collection.addInstance(node, this.parent, 'WalledBox 5'));
+                    this.primative.addInstance(this.node, this, 'WalledBox 1'),
+                    this.primative.addInstance(this.node, this, 'WalledBox 2'),
+                    this.primative.addInstance(this.node, this, 'WalledBox 3'),
+                    this.primative.addInstance(this.node, this, 'WalledBox 4'),
+                    this.primative.addInstance(this.node, this, 'WalledBox 5'));
 
+                this.instances[0].move([t / size[0] - 0.5, 0, 0]);
+                this.instances[0].scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
+                this.instances[0].material = material;
+
+                this.instances[1].move([0, t / size[1] - 0.5, 0]);
+                this.instances[1].scale([1, t / size[1], 1]);
+                this.instances[1].material = material;
+
+                this.instances[2].move([0, 0, t / size[2] - 0.5]);
+                this.instances[2].scale([1, 1 - 2 * t / size[1], t / size[2]]);
+                this.instances[2].material = material;
+
+                this.instances[3].move([0.5 - t / size[0], 0, 0]);
+                this.instances[3].scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
+                this.instances[3].material = material;
+
+                this.instances[4].move([0, 0.5 - t / size[1], 0]);
+                this.instances[4].scale([1, t / size[1], 1]);
+                this.instances[4].material = material;
+
+                this.instances[5].move([0, 0, 0.5 - t / size[2]]);
+                this.instances[5].scale([1, 1 - 2 * t / size[1], t / size[2]]);
+                this.instances[5].material = material;
+
+
+/*
                 this.instances[0].move([(t - node.size[0]) * 0.5, 0, 0]);
                 this.instances[0].scale([t / node.size[0], 1 - 2 * t / node.size[1], 1 - 2 * t / node.size[2]]);
                 this.instances[0].material = material;
@@ -5445,6 +5191,7 @@
                 this.instances[5].move([0, 0, 0.5 * (node.size[2] - t)]);
                 this.instances[5].scale([1, 1 - 2 * t / node.size[1], t / node.size[2]]);
                 this.instances[5].material = material;
+*/
             }
             hideInterior() {
                 if (!this.interiorView) {
@@ -5453,18 +5200,17 @@
                 this.interiorView = false;
                 this.instances[0].highlighted = false;
                 this.instances.slice(1).forEach((instance) =>
-                    this.collection.removeInstance(instance));
+                    this.primative.removeInstance(instance));
                 this.instances.length = 1;
 
                 this.node[children].forEach((child) =>
                     app.view[0].removeItem(child));
 
-                this.instances[0].transform = this.reset;
+                this.instances[0].transform.matrix = this.reset;
             }
             intersects(line, all) {
-                const transform = multiply(this.transform, this.world);
-                const size = extractScale(this.transform);
-                const radius = Math.hypot(...size);
+                const transform = this.world;
+                const radius = Math.hypot(...this.transform.getScale());
 
                 const centre = applyTransform([0, 0, 0], transform);
 
@@ -5500,8 +5246,6 @@
                 }
             }
             highlightFace(line) {
-            }
-            showInfo() {
             }
             update() {
                 if (this.node.selected || (app.show && app.show.item === this)) {
@@ -5699,16 +5443,15 @@
                     positions[7], positions[6],
                     positions[6], positions[4],
                 ];
-                const shape = [...triangles.flatMap((t, i) => [...t.p1, ...normalised(t.n), i % 2, i % 2, ...t.p2, ...normalised(t.n), 1 - i % 2, i % 2, ...t.p3, ...normalised(t.n), i % 2, 1 - i % 2]),
+                const vertexData = [...triangles.flatMap((t, i) => [...t.p1, ...normalised(t.n), i % 2, i % 2, ...t.p2, ...normalised(t.n), 1 - i % 2, i % 2, ...t.p3, ...normalised(t.n), i % 2, 1 - i % 2]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
 
-                const collection = new Collection({ shape, triangles: 44, lines: 12 });
-                collection.key = bevel;
-                BevelledBlock.bevels.push(collection);
-                collection.triangles = 44;
-                collection.lines = 12;
-                return collection;
+                const primative = new Primative(gl.TRIANGLES, 132, { vertexData });
+                new primative(gl.LINES, 24, { buffer: primative.buffers.vertices }, 132);
+                primative.key = bevel;
+                BevelledBlock.bevels.push(primative);
+                return primative;
             }
             constructor(node, parent) {
                 super(node, parent, `BevelledBlock`);
@@ -5726,14 +5469,14 @@
                 const shortest = Math.min(...size) || 1;
                 const scaledBevel = size.map((length, index) => bevel[index] * shortest / (length || 1));
 
-                this.collection = BevelledBlock.bevels.find((collection) =>
-                    collection.key.every((value, index) => value === scaledBevel[index]));
+                this.primative = BevelledBlock.bevels.find((primative) =>
+                    primative.key.every((value, index) => value === scaledBevel[index]));
 
-                if (this.collection === undefined) {
-                    this.collection = BevelledBlock.make(scaledBevel);
+                if (this.primative === undefined) {
+                    this.primative = BevelledBlock.make(scaledBevel);
                 }
                 this.children = [];
-                this.instances = [this.collection.addInstance(node, parent, 'BavelledBlock')];
+                this.instances = [this.primative.addInstance(node, this, 'BavelledBlock')];
             }
             intersects(line, all) {
                 let size;
@@ -5780,24 +5523,22 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
         }
 
         /**
          * create a cylinder
          */
         class Cylinder extends Shape {
-            static collections = [];
+            static primatives = [];
             static make(sides) {
-                const triangles = [];
+                const vertexData = [];
 
                 for (let i = 0; i < sides; ++i) {
                     const angle1 = Math.PI * 2 * i / sides;
                     const angle2 = Math.PI * 2 * (i + 0.5) / sides;
                     const angle3 = Math.PI * 2 * (i + 1) / sides;
                     const angle4 = Math.PI * 2 * (i + 1.5) / sides;
-                    triangles.push(
+                    vertexData.push(
                         0, -0.5, 0, 0, -1, 0, 0.5, 0,
                         0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
                         0.5 * Math.sin(angle3), -0.5, 0.5 * Math.cos(angle3), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle3), 0,
@@ -5816,22 +5557,23 @@
                     );
                 }
 
-                const collection = new Collection({ shape: triangles, triangles: triangles.length / 24 });
-                collection.key = sides;
-                Cylinder.collections[sides] = collection;
-                return collection;
+                //const primative = new Primative({ shape: triangles, triangles: triangles.length / 24 });
+                const primative = new Primative(gl.TRIANGLES, vertexData.length / 8, { vertexData });
+                primative.key = sides;
+                Cylinder.primatives[sides] = primative;
+                return primative;
             }
             constructor(node, parent, sides = 12) {
                 super(node, parent, 'cylinder');
 
-                this.collection = Cylinder.collections[sides] || Cylinder.make(sides);
+                this.primative = Cylinder.primatives[sides] || Cylinder.make(sides);
 
                 this.children = [];
-                this.instances = [this.collection.addInstance(node, parent, 'Cylinder')];
+                this.instances = [this.primative.addInstance(node, this, 'Cylinder')];
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Cylinder space
-                const world = multiply(this.transform, this.world);
+                const world = this.world;
                 const toLocal = invert(world);
                 const orientation = [...toLocal];
                 orientation[12] = 0;
@@ -5856,23 +5598,21 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
         }
 
         /**
          * Manage conic Frustums
          */
         class Frustum extends Shape {
-            static collections = [];
+            static primatives = [];
             static make(ratio, sides) {
 
-                const triangles = [];
+                const vertexData = [];
                 for (let i = 0; i < sides; ++i) {
                     const angle1 = Math.PI * 2 * i / sides;
                     const angle2 = Math.PI * 2 * (i + 1) / sides;
                     const ny = Math.sin(Math.atan(1 - ratio, 2));
-                    triangles.push(
+                    vertexData.push(
                         0, -0.5, 0, 0, -1, 0, 0.5, 0,
                         0.5 * Math.sin(angle1), -0.5, 0.5 * Math.cos(angle1), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle1), 0,
                         0.5 * Math.sin(angle2), -0.5, 0.5 * Math.cos(angle2), 0, -1, 0, 0.5 + 0.5 * Math.sin(angle2), 0,
@@ -5891,21 +5631,22 @@
                     );
                 }
 
-                const collection = new Collection({ shape: triangles, triangles: triangles.length / 24 });
-                collection.key = [ratio, sides];
-                Frustum.collections[sides] = collection;
-                return collection;
+                //const primative = new Primative({ shape: triangles, triangles: triangles.length / 24 });
+                const primative = new Primative(gl.TRIANGLES, vertexData.length / 8, { vertexData });
+                primative.key = [ratio, sides];
+                Frustum.primatives[sides] = primative;
+                return primative;
             }
             constructor(node, parent, ratio, sides = 12) {
                 super(node, parent);
-                if (Frustum.collections[sides] === undefined) {
+                if (Frustum.primatives[sides] === undefined) {
                     Frustum.make(ratio, sides);
                 }
                 this.ratio = ratio;
                 this.children = [];
-                this.name = `frustum (${sides}:${Frustum.collections[sides].instances.length})`;
-                this.collection = Frustum.collections[sides];
-                this.instances = [this.collection.addInstance(node, parent, 'Frustum')];
+                this.name = `frustum (${sides}:${Frustum.primatives[sides].instances.length})`;
+                this.primative = Frustum.primatives[sides];
+                this.instances = [this.primative.addInstance(node, this, 'Frustum')];
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to Frustum space
@@ -5934,8 +5675,6 @@
                 return Math.hypot(...subtract(p1, p2)) <= dist;
             }
             highlightFace(line) {
-            }
-            showInfo() {
             }
         }
 
@@ -6015,7 +5754,7 @@
                 let i = 0;
                 while (i <= subdivisions) {
                     if (Icosphere.level[i] === undefined) {
-                        const positions = points.flatMap((point) => [
+                        const vertexData = points.flatMap((point) => [
                             ...point.map((p) => p * 0.5), ...point,
                             0.5 * (1 + Math.atan2(point[0], point[2]) / Math.PI),
                             1 + point[1] * 0.5]);
@@ -6025,14 +5764,15 @@
                             return points;
                         });
 
-                        const collection = new Collection({ shape: positions }, indices);
+                        //const primative = new Primative({ shape: positions }, indices);
+                        const primative = new Primative(gl.TRIANGLES, null, { vertexData }, null, indices);
 
                         edges = edges.flatMap((edge) => divideEdge(edge));
                         faces = faces.flatMap((face) => divideFace(face));
 
-                        collection.key = i;
+                        primative.key = i;
 
-                        Icosphere.level[i] = collection;
+                        Icosphere.level[i] = primative;
                     }
                     ++i;
                 }
@@ -6040,8 +5780,8 @@
             }
             constructor(node, parent, subdivisions = 0) {
                 super(node, parent, 'icosphere');
-                this.collection = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
-                this.instances = [this.collection.addInstance(node, parent, 'icosphere')];
+                this.primative = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
+                this.instances = [this.primative.addInstance(node, this, 'icosphere')];
                 const scale = getAttribute(node, 'radius') * 2;
                 this.instances[0].scale([scale, scale, scale]);
 
@@ -6074,8 +5814,6 @@
                 return dist <= radius;
             }
             highlightFace(line) {
-            }
-            showInfo() {
             }
             update() {
                 if (this.node.selected) {
@@ -6165,7 +5903,7 @@
         /**
           * Manage walls.
           * 
-          * Walls are not managed as collections as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
+          * Walls are not managed as primatives as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
           */
         class Walls extends Shape {
             constructor(node, parent) {
@@ -6186,6 +5924,9 @@
                 this.initialiseBuffers();
                 this.makeWalls();
                 app.view[0].renderQueue.push(this);
+            }
+            reset() {
+
             }
             initialiseBuffers() {
                 this.vertex = gl.createBuffer();
@@ -6486,8 +6227,6 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
             update() {
                 if (app.show && app.show.item !== this) {
                     const transform = multiply(this.transform, this.world);
@@ -6537,7 +6276,7 @@
         /**
           * Manage Prisms.
           * 
-          * Prisms are not managed as collections as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
+          * Prisms are not managed as primatives as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
           */
         class Prism extends Shape {
             constructor(node, parent) {
@@ -6709,8 +6448,6 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
             update() {
             }
         }
@@ -6863,9 +6600,241 @@
             }
             highlightFace(line) {
             }
-            showInfo() {
-            }
             update() {
+            }
+        }
+
+        /**
+         * Class for light wave objects
+         */
+        class LightWaveObject extends Shape {
+            static loaded = {};
+            static pending = {};
+            constructor(node, parent) {
+                super(node, parent, `block`);
+
+                this.url = getAttribute(node, 'obj');
+                this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
+
+                this.patches = LightWaveObject.loaded[this.url];
+                if (this.patches) {
+                    if (this.patches.length === 0) {
+                        LightWaveObject.pending[this.url].push(this);
+                    } else {
+                        this.patches.forEach((patch) => {
+                            const instance = patch.addInstance(node, this, '');
+                            this.instances.push(instance);
+                            instance.material = Object.assign({}, patch.material);
+                        });
+                    }
+                } else {
+                    LightWaveObject.loaded[this.url] = [];
+                    LightWaveObject.pending[this.url] = [this];
+                    this.load(this.url);
+                }
+            }
+            /**
+             * Load data from a wavefront obj file
+             */
+            async load(url) {
+                const response = await fetch(url);
+                if (response.ok) {
+                    const content = await response.text();
+                    this.parse(content, url);
+                }
+            }
+
+            /**
+             * Process data in wavefront obj file format.
+             */
+            async parse(text, path) {
+                const positions = [];
+                const normals = [];
+                const texture = [];
+                const parameters = [];
+                const colours = [];
+                const polyLines = [];
+                const materials = {
+                    initial: {
+                        ambientColour: [1, 1, 0],
+                        diffuseColour: [0.2, 0.2, 0.2],
+                        specularColour: [0.5, 1, 1],
+                        specularExponent: [1, 1, 0],
+                        opacity: [1, 1, 0],
+                    }
+                }
+
+                const promisedMaterials = [];
+                let materialName;
+                // A patch represents a group of faces in the same material.
+                let faces = [];
+                const patches = { initial: { faces } };
+                const max = [-Infinity, -Infinity, -Infinity];
+                const min = [Infinity, Infinity, Infinity];
+
+                const lines = text.split(/\r?\n/g);
+                lines.map(async (line, i) => {
+                    const trimmed = line.replace(/#.*/, '').trim();
+                    const [command, ...stringValues] = trimmed.split(/\s+/g);
+                    const values = stringValues.map((str) => parseFloat(str));
+                    if (command === 'vn') {
+                        const start = values.length;
+                        values.length = 3;
+                        normals.push(normalised(values.fill(0, start)));
+                    } else if (command === 'vt') {
+                        texture.push(values);
+                    } else if (command === 'vp') {
+                        parameters.push(value);
+                    } else if (command === 'v') {
+                        if (values.length > 4) {
+                            const colour = values.slice(4);
+                            positions.push(values.slice(0, 3));
+                            colour.length = 3;
+                            colours.push(colour.fill(0, start))
+                        } else if (values.length === 4) {
+                            positions.push(values.slice(0, 3).map((v) => v / values[3]));
+                        } else {
+                            const start = values.length;
+                            values.length = 3;
+                            positions.push(values.fill(0, start));
+                        }
+                    } else if (command === 'f') {
+                        faces.push(stringValues.map((string) => {
+                            const values = string.split(/\//).map((str) => parseInt(str));
+                            return {
+                                positionIndex: values[0] < 0 ? positions.length - values[0] : values[0] - 1,
+                                textureIndex: values[1] < 0 ? texture.length - values[1] : values[1] - 1,
+                                normalIndex: values[2] < 0 ? normals.length - values[2] : values[2] - 1
+                            };
+                        }));
+                    } else if (command === 'o') {
+                    } else if (command === 'g') {
+                    } else if (command === 'mtllib') {
+                        const root = path.split(/\//g).slice(0, -1).join('/') + '/';
+                        promisedMaterials.push(loadMaterials(root + stringValues[0].replace(/\^.\//, '')));
+                    } else if (command === 'usemtl') {
+                        materialName = stringValues[0];
+                        const patch = patches[materialName] || { faces: [] };
+                        faces = patch.faces;
+                        patches[materialName] = patch;
+                    }
+                    if (app.debug && ((i % 1000) === 0)) {
+                        console.log(i);
+                    }
+                });
+
+                // Normalise the data
+                positions.forEach((point) => {
+                    min[0] = Math.min(min[0], point[0]);
+                    min[1] = Math.min(min[1], point[1]);
+                    min[2] = Math.min(min[2], point[2]);
+                    max[0] = Math.max(max[0], point[0]);
+                    max[1] = Math.max(max[1], point[1]);
+                    max[2] = Math.max(max[2], point[2]);
+                });
+
+                const offset = scale(min, -1);
+                const size = subtract(max, min);
+                const modelScale = 1 / Math.max(...size);
+                const invSize = size.map((v) => 1 / v);
+                positions.forEach((point) => {
+                    vectorScale(add(point, offset), invSize);
+                });
+                LightWaveObject.pending[this.url].forEach((obj) => {
+                    obj.transform.scale(scale(size, modelScale));
+                });
+
+                await Promise.all(promisedMaterials).then((values) =>
+                    values.forEach((value) => Object.assign(materials, value)));
+
+                const vertexData = [];
+                Object.entries(patches).slice(1).forEach(([materialName, patch]) => {
+                    let len = patch.faces.length;
+                    const triangles = patch.faces.flatMap((face, i) => {
+                        if (app.debug && ((i % 1000) === 0)) {
+                            console.log(`${(100 * i / len).toFixed(2)}% ${i} / ${len}`);
+                        }
+                        if (face.length === 3) {
+                            return [face];
+                        } else if (face.length === 4) {
+                            return [[face[0], face[1], face[2]], [face[2], face[3], face[0]]];
+                        }
+                        const points = face.map((vertex) => positions[vertex.positionIndex]);
+                        const tessellation = tessellate(points);
+                        return tessellation.indices.map((triangle) => triangle.map((index) => face[index]));
+                    });
+                    patch.offset = vertexData.length / 8;
+                    for (const triangle of triangles) {
+                        const texture1 = isNaN(triangle[0].textureIndex) ? [0, 0] : texture[triangle[0].textureIndex]
+                        const texture2 = isNaN(triangle[1].textureIndex) ? [0, 0] : texture[triangle[1].textureIndex]
+                        const texture3 = isNaN(triangle[2].textureIndex) ? [0, 0] : texture[triangle[2].textureIndex]
+                        vertexData.push(
+                            ...positions[triangle[0].positionIndex],
+                            ...scale(normals[triangle[0].normalIndex], 1),
+                            ...texture1);
+                        vertexData.push(
+                            ...positions[triangle[1].positionIndex],
+                            ...scale(normals[triangle[1].normalIndex], 1),
+                            ...texture2);
+                        vertexData.push(
+                            ...positions[triangle[2].positionIndex],
+                            ...scale(normals[triangle[2].normalIndex], 1),
+                            ...texture3);
+                    }
+                    const buffer = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexData), gl.STATIC_DRAW);
+                    patch.points = triangles.length * 3;
+                    patch.primative = new Primative(gl.TRIANGLES, patch.points, { buffer }, patch.offset);
+                    patch.effects = 0;
+                    LightWaveObject.pending[this.url].forEach((obj) => {
+                        const instance = patch.primative.addInstance(obj.node, obj, materialName);
+                        obj.instances.push(instance);
+                        instance.material = {
+                            colour: materials[materialName].colour ?? materials[materialName].diffuseColour,
+                            emissivityColour: scale(materials[materialName].colour, materials[materialName].emissive ?? 0),
+                            reflectivity: materials[materialName].specularColour ?? [0.98, 0.98, 0.98],
+                            roughness: materials[materialName].roughness ?? 1 / materials[materialName].specularExponent ?? 0.5,
+                            opacity: materials[materialName].opacity ?? 1,
+                            metallic: materials[materialName].metallic ?? 0,
+                            mirror: materials[materialName].mirror ?? 1,
+                        };
+                    })
+                });
+            }
+            intersects(line, all) {
+                const transform = this.world;
+                const size = this.transform.getScale();
+                const radius = Math.hypot(...size) / 2;
+
+                const centre = applyTransform([0.5, 0.5, 0.5], this.world);
+
+                const l = dot(line.direction, subtract(centre, line.point));
+                const n = l / line.direction.reduce((s, v) => s + v * v, 0);
+                const p = sum(line.point, scale(line.direction, n));
+                const v = subtract(p, centre);
+                const dist = Math.hypot(...v);
+                if (dist < radius) {
+                    const corner1 = applyTransform([0, 0, 0], this.world);
+                    const corner2 = applyTransform([1, 1, 1], this.world);
+                    const orientation = extractRotation(this.world);
+                    const planes = [
+                        { point: corner1, normal: applyTransform([-1, 0, 0], orientation) },
+                        { point: corner1, normal: applyTransform([0, -1, 0], orientation) },
+                        { point: corner1, normal: applyTransform([0, 0, -1], orientation) },
+                        { point: corner2, normal: applyTransform([1, 0, 0], orientation) },
+                        { point: corner2, normal: applyTransform([0, 1, 0], orientation) },
+                        { point: corner2, normal: applyTransform([0, 0, 1], orientation) },
+                    ];
+                    const points = convexHullIntercept(line, planes);
+                    if (points && (all || points[0] > 0 || points[1] > 0)) {
+                        const p1 = sum(line.point, scale(line.direction, points[0]));
+                        const p2 = sum(line.point, scale(line.direction, points[1]));
+
+                        this.points = [p1, p2];
+                        return true;
+                    }
+                }
             }
         }
 
@@ -7023,6 +6992,8 @@
          */
         function highlightFace(event) {
             const line = getRay(event.clientX, event.clientY);
+            const point = planeIntercept(line, { point: [0, 0, 0], normal: [0, 1, 0] });
+            document.getElementById('status').innerHTML = `${point[0].toFixed(2)}, ${point[1].toFixed(2)}, ${point[2].toFixed(2)}`;
             app.view[0].items.forEach((item) => item.highlight = 0);
             const hits = sortSelection(getIntersection(line));
             if (hits.length > 0) {
@@ -7052,19 +7023,21 @@
                     item, end: extractTranslation(action.item.origin),
                 }));
                 const start = [...action.item.start];
-                const end = [...action.item.referenceFrame.matrix];
+                const end = [...action.item.transform.matrix];
                 history.push({
                     undo: () =>
                         undo.forEach((action) => {
-                            action.instance.referenceFrame.matrix = action.start;
+                            action.instance.transform.matrix = action.start;
                             action.instance.update();
                         }),
                     redo: () => redo.forEach((action) => {
-                        action.instance.referenceFrame.matrix = action.end;
+                        action.instance.transform.matrix = action.end;
                         action.instance.update();
                     }),
                 });
             }
+            app.view[0].ground.origin = app.ground.origin;
+            app.view[0].ground.normal = app.ground.normal;
             action.move = highlightFace;
             historyPosition = null;
             app.view[0].items.forEach((item) => item.state = {});
@@ -7349,11 +7322,11 @@
         }
 
         /**
-         * Show structure
+         * Show scene data
          */
-        function showStructure() {
-            const structure = document.getElementById('structure');
-            structure.innerHTML = '';
+        function showSceneData() {
+            const sceneData = document.getElementById('scene-data');
+            sceneData.innerHTML = '';
             const headings = [
                 { title: 'Name', get(data) { return data.name; }, tip(node) { return node.constructor.name; } },
                 {
@@ -7382,7 +7355,7 @@
             const options = {
                 headings,
                 data(node) {
-                    const result = decompose(multiply(node.transform, node.world));
+                    const result = decompose(node.world);
                     result.name = node.node.name;
                     return result;
                 },
@@ -7400,238 +7373,7 @@
                 },
             };
             const roots = app.view[0].roots;
-            const view = new TreeView(structure, roots, options);
-            return;
-
-
-            const addShape = (shape, level = 0) => {
-                const nodes = [];
-                const addControls = (node, item, element, scaled) => {
-                    node.contentEditable = true;
-                    node.addEventListener('focus', (event) => {
-                        if (!event.shiftKey) {
-                            app.view[0].items.forEach((item) => item.node.selected = false);
-                        }
-                        shape.node.selected = true;
-                        app.updateMaterials = true;
-                    });
-
-                    node.addEventListener('blur', (event) => {
-                        if (isNaN(Number(item[element]))) {
-                            item[element] = node.innerText;
-                        } else {
-                            item[element] = Number(node.innerText);
-                        }
-                    });
-                    node.addEventListener('keydown', (event) => {
-                        if (event.key === 'Escape') {
-                            if (isNaN(Number(item[element]))) {
-                                node.innerHTML = item[element];
-                            } else {
-                                node.innerHTML = item[element].toFixed();
-                            }
-                        }
-                        if (event.key === 'Enter') {
-                            event.preventDefault();
-                            if (event.shiftKey) {
-                                // ToDo: add element?
-                                showStructure();
-                            } else {
-                                if (isNaN(Number(node.innerText))) {
-                                    item[element] = node.innerText;
-                                } else {
-                                    item[element] = Number(node.innerText);
-                                }
-                                shape.update();
-                            }
-                        }
-                        if (event.ctrlKey) {
-                            if (event.key === 'ArrowLeft') {
-                                shape.promote();
-                                showStructure();
-                            }
-                            if (event.key === 'ArrowRight') {
-                                shape.demote();
-                                showStructure();
-                            }
-                            if (event.key === 'ArrowUp') {
-                                shape.up();
-                                showStructure();
-                            }
-                            if (event.key === 'ArrowDown') {
-                                shape.down();
-                                showStructure();
-                            }
-                        }
-                    });
-
-                    if (!isNaN(Number(item[element]))) {
-                        const places = Math.floor(Math.log10(1 / scaled));
-                        node.addEventListener('mousedown', (event) => {
-                            action.last = event.clientY;
-                            action.moved = false;
-                            action.move = (event) => {
-                                action.moved = true;
-                                const delta = (event.clientY - action.last) * scaled;
-                                action.last = event.clientY;
-                                item[element] += delta;
-                                node.innerText = item[element].toFixed(places);
-                                shape.setTransform();
-                                shape.update();
-                            };
-                            const initial = item[element];
-                            action.end = () => {
-                                action.move = highlightFace;
-                                if (action.moved) {
-                                    const end = item[element];
-                                    history.push({
-                                        undo: () => {
-                                            item[element] = initial;
-                                            shape.setTransform();
-                                            shape.update();
-                                        },
-                                        redo: () => {
-                                            item[element] = initial;
-                                            shape.setTransform();
-                                            shape.update();
-                                        },
-                                    });
-                                }
-                            };
-                        });
-                        node.addEventListener('touchstart', (event) => {
-                            event = touch(event);
-                            action.last = event.clientY;
-                            action.moved = false;
-                            action.move = (event) => {
-                                action.moved = true;
-                                const delta = (event.clientY - action.last) * scaled;
-                                action.last = event.clientY;
-                                item[element] += delta;
-                                node.innerText = item[element].toFixed(places);
-                                shape.update();
-                            };
-                            const initial = item[element];
-                            action.end = () => {
-                                action.move = highlightFace;
-                                if (action.moved) {
-                                    const end = item[element];
-                                    history.push({
-                                        undo: () => {
-                                            item[element] = initial;
-                                            shape.update();
-                                        },
-                                        redo: () => {
-                                            item[element] = initial;
-                                            shape.update();
-                                        },
-                                    });
-                                }
-                            };
-                        });
-                    }
-                }
-                const addSpan = (value, scaled = 0.1) => {
-                    const places = Math.floor(Math.log10(1 / scaled));
-
-                    const node = document.createElement('span');
-                    nodes.push(node);
-                    if (scaled < 0 || isNaN(Number(value))) {
-                        node.innerHTML = value;
-                    } else {
-                        node.innerHTML = value.toFixed();
-                        node.classList.add('value');
-                    }
-                    //addControls(node, shape, argument, scaled);
-                    return node;
-                }
-                const addColour = (argument, scaled = 0.1) => {
-                    const node = document.createElement('input');
-                    nodes.push(node);
-                    node.type = 'color';
-                    const value = shape[argument];
-                    const string = `#${toHex(value[0] * 255, 2)}${toHex(value[1] * 255, 2)}${toHex(value[2] * 255, 2)}`;
-                    node.value = string;
-
-                    node.addEventListener('change', (event) => {
-                        const string = node.value;
-                        const value = [parseInt(string.slice(1, 3), 16) / 255, parseInt(string.slice(3, 5), 16) / 255, parseInt(string.slice(5), 16) / 255];
-                        shape[argument] = value;
-                        app.updateMaterials = true;
-                    });
-                    return node;
-                }
-                const addVec = (vector, scaled = 0.1) => {
-                    const places = Math.floor(Math.log10(1 / scaled));
-
-                    return vector.map((item, index) => {
-                        const node = document.createElement('span');
-                        nodes.push(node);
-                        node.classList.add('value');
-                        node.innerHTML = item.toFixed(places);
-                        addControls(node, vector, index, scaled);
-                        return node;
-                    });
-                }
-
-                if (shape.nodes) {
-                    structure.append(...shape.nodes);
-                    shape.children.map((child) => addShape(child, level + 1));
-                } else if (shape.world) {
-                    const expander = document.createElement('span');
-                    expander.innerHTML = shape.children?.length ? '&#9660;' : '';
-                    expander.classList.add('expander');
-
-                    const name = document.createElement('span');
-                    name.style.whiteSpace = 'pre';
-                    name.append(''.padStart(level * 2, ' '), expander, addSpan(shape.name, -1));
-
-                    nodes.push(name);
-                    app.nodeMap.set(shape, nodes);
-                    const { translation, scale, angle, axis } = decompose(shape.world);
-                    structure.append(name,
-                        ...addVec(translation),
-                        ...addVec(scale),
-                        addSpan(angle),
-                        ...addVec(axis),
-                    );
-                    shape.children.map((child) => addShape(child, level + 1));
-
-                    const descend = (node, action) => {
-                        action(node);
-                        node.children.forEach((child) => descend(child, action));
-                    }
-
-                    expander.addEventListener('click', (event) => {
-                        const recursive = event.ctrlKey;
-                        expander.classList.toggle('collapsed');
-                        if (expander.classList.contains('collapsed')) {
-                            expander.innerHTML = shape.children.length ? '&#9654;' : '';
-                            shape.children.forEach((child) =>
-                                descend(child, (node) => {
-                                    if (recursive && node.children.length > 0) {
-                                        node.nodes[1].querySelector('.expander').classList.add('collapsed');
-                                    }
-                                    (node.nodes || []).forEach((node) => node.classList.add('hide'));
-                                }));
-                        } else {
-                            expander.innerHTML = shape.children.length ? '&#9660;' : '';
-                            shape.children.forEach((child) =>
-                                descend(child, (node) => {
-                                    if (recursive && node.children.length > 0) {
-                                        node.nodes[1].querySelector('.expander').classList.remove('collapsed');
-                                    }
-                                    if (!node.nodes[1].querySelector('.expander').classList.contains('collapsed')) {
-                                        node.nodes.forEach((node) => node.classList.remove('hide'));
-                                    }
-                                }));
-                        }
-                    });
-                } else {
-                    shape.children.map((child) => addShape(child, level));
-                }
-            }
-            app.view[0].roots.forEach((child) => addShape(child));
+            const view = new TreeView(sceneData, roots, options);
         }
 
         /**
@@ -8471,7 +8213,7 @@
             showTree();
             showModel(app.graph);
             updateText();
-            showStructure();
+            showSceneData();
             showStock();
             app.view.forEach((view) => view.updateMaterials());
         }
@@ -8540,7 +8282,7 @@
                 app.boxes.push(root);
                 app.view[0].roots.push(root);
             }
-            showStructure();
+            showSceneData();
             updateText();
         }
 
@@ -8611,6 +8353,13 @@
          */
         function product(v1, v2) {
             return v1.map((v, i) => v * v2[i]);
+        }
+
+        /**
+         * Component-wise reciprical of vector
+         */
+        function reciprical(v) {
+            return v.map((v) => 1 / v);
         }
 
         /**
@@ -8927,12 +8676,19 @@
         }
 
         /**
-         * Get the point of intersection of a plane and line
+         * Get the distance along a line to a plane.
+         */
+        function distanceToPlane(line, plane) {
+            const v = subtract(plane.point, line.point);
+            return dot(plane.normal, v) / dot(plane.normal, line.direction);
+        }
+
+        /**
+         * Return the intercept point of a line and plane.
          */
         function planeIntercept(line, plane) {
-            const v = subtract(plane.point, line.point);
-            const n = dot(plane.normal, v) / dot(plane.normal, line.direction);
-            return n;
+            const t = distanceToPlane(line, plane);
+            return sum(line.point, scale(line.direction, t));
         }
 
         /**
@@ -8942,7 +8698,7 @@
             let start = -Infinity, end = Infinity;
             line.direction = normalised(line.direction);
             planes.forEach((plane) => {
-                const d = planeIntercept(line, plane);
+                const d = distanceToPlane(line, plane);
                 if (d !== undefined) {
                     const moveEnd = dot(line.direction, plane.normal) > 0;
                     if (moveEnd) {
@@ -9187,7 +8943,7 @@
                 } else if (node.click === 'reset') {
                     load(node.url, undefined, true);
                     updateText();
-                    showStructure();
+                    showSceneData();
                     showStock();
                 } else if (event.crtlKey || node.load !== true) {
                     load(node.url, shape[0], event.shiftKey);
@@ -9378,17 +9134,20 @@
                             }
                             const selected = app.view[0].items.filter((item) => item.node.selected);
                             selected.forEach((item) =>
-                                item.apply((item) => item.start = [...item.referenceFrame.matrix]));
+                                item.apply((item) => item.start = [...item.transform.matrix]));
+                            app.view[0].ground.origin = action.plane.point;
+                            app.view[0].ground.normal = action.plane.normal;
+
                             action.move = (event) => {
                                 app.view[0].items.forEach((item) => item.state.ghost = true);
-                                action.item.siblings.forEach((item) => item.state.constraint = true);
+                                //action.item.siblings.forEach((item) => item.state.constraint = true);
                                 action.item.state.moving = true;
 
                                 action.moved = true;
                                 const mouseLine = getRay(event.clientX, event.clientY);
-                                const n = planeIntercept(mouseLine, action.plane);
-                                const point = sum(mouseLine.point, scale(mouseLine.direction, n));
+                                const point = planeIntercept(mouseLine, action.plane);
                                 const delta = subtract(point, action.plane.point);
+                                action.plane.point = point;
 
                                 selected.forEach((selected) => {
                                     selected.statusColour = null;
@@ -9397,6 +9156,7 @@
                                 });
                             };
                             action.end = endMove;
+                            report(`Moving ${action.item.name}`);
                         } else {
                             const start = {
                                 position: [...app.camera.position],
@@ -9409,7 +9169,7 @@
                             const { xAxis, yAxis, zAxis, distance } = viewVectors();
                             const sightLine = subtract(app.camera.lookAt, app.camera.position);
                             hits.forEach((item) =>
-                                item.apply((item) => item.start = [...item.referenceFrame.matrix]));
+                                item.apply((item) => item.start = [...item.transform.matrix]));
 
                             // Rotate the view
                             action.move = (event) => {
@@ -9636,7 +9396,8 @@
             const attributes = ['position', 'normal', 'model', 'ambientColour', 'diffuseColour', 'specularColour', 'specularIntensity', 'opacity'];
             app.shader = makeProgram(shaderSource, attributes, ['projection', 'view', 'lightPosition1', 'lightPosition2', 'lightPosition3', 'cameraPosition']);
 
-            app.groundShader = makeProgram(groundShaderSource, ['position'], ['viewProjection', 'inverseViewProjection', 'cameraPosition', 'gridSize']);
+            app.groundShader = makeProgram(groundShaderSource, ['position'],
+                ['viewProjection', 'inverseViewProjection', 'cameraPosition', 'gridSize', 'origin', 'normal']);
 
             app.textShader = makeProgram(textShaderSource, ['position', 'model', 'offset', 'size', 'textureSize', 'textureOrigin', 'colour',],
                 ['projection', 'view', 'texture']);
@@ -9716,13 +9477,14 @@
             addMoveControl(treeView, treeView.querySelector('h2'));
             const modelView = document.getElementById('model-view');
             addMoveControl(modelView, modelView.querySelector('h2'));
-            const structureView = document.getElementById('structure-view');
-            addMoveControl(structureView, structureView.querySelector('h2'));
+            const sceneDataView = document.getElementById('scene-data-view');
+            addMoveControl(sceneDataView, sceneDataView.querySelector('h2'));
 
             if (app.useDeferredRender) {
                 app.renderTarget = createRenderTarget(gl.drawingBufferWidth, gl.drawingBufferHeight);
             }
             app.white = makeColourTexture('white');
+            //app.envTexture = initCubeMap();
         }
 
         /**
@@ -9762,7 +9524,7 @@
 
             showModel(app.graph);
             updateText();
-            showStructure();
+            showSceneData();
             showStock();
             app.view.forEach((view) => view.updateMaterials());
         }
@@ -9907,6 +9669,17 @@
                 action(text) {
                     const ammount = text;
                 },
+            },
+            {
+                name: 'edit',
+                description: 'Toggle editing',
+                action(text) {
+                    if (app.mode === 'edit') {
+                        app.mode = 'view';
+                    } else {
+                        app.mode = 'edit';
+                    }
+                }
             },
             {
                 name: 'toggle errors',
