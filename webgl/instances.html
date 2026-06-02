@@ -1042,11 +1042,6 @@
             }
 
             fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
-            //fragmentColour = vec4(abs(v_normal), opacity);
-            //fragmentColour = vec4(v_coord2, 0.0, 1.0)* texture(surfaceTexture, v_coord);
-            //fragmentColour = vec4(vec2(0.5, 0.5) + 0.5 * v_coord2, 0.0, 1.0)* texture(surfaceTexture, v_coord);
-            //fragmentColour = vec4(s1, s2, s3, opacity) * texture(surfaceTexture, v_coord);
-            //fragmentColour = vec4(float(effects), fragmentColour.g, fragmentColour.b, fragmentColour.a);
         }
     </script>
 
@@ -5260,7 +5255,7 @@
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
                 }
-                const orientation = this.transform.getRotation();
+                const orientation = extractRotation(this.world);
                 const normals = [
                     [-1, 0, 0], [0, -1, 0], [0, 0, -1],
                     [1, 0, 0], [0, 1, 0], [0, 0, 1],
@@ -5907,7 +5902,7 @@
           */
         class Walls extends Shape {
             constructor(node, parent) {
-                super(node, parent, 'prism');
+                super(node, parent, 'Walls');
                 this.children = [];
 
                 this.texture = addTexture(getAttribute(node, 'texture', 'white'));
@@ -6191,7 +6186,7 @@
                 gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
 
                 gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
-
+                gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.count);
                 gl.bindVertexArray(null);
@@ -6227,7 +6222,7 @@
             }
             update() {
                 if (app.show && app.show.item !== this) {
-                    const transform = multiply(this.transform, this.world);
+                    const transform = this.world;
 
                     this.segments.forEach((segment) => {
                         // Get the origin of this element
@@ -6352,7 +6347,17 @@
                 const maxy = Math.max(...this.points.map((point) => point[1]));
                 this.width = 0.5 * (maxx - minx);
                 this.depth = 0.5 * (maxy - miny);
-                this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.depth - 1]);
+                //this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.depth - 1]);
+
+                this.segments = this.points.map((point, i) => {
+                    const next = (i + 1) % this.points.length;
+                    return {
+                        centre: [(point[0] + this.points[next][0]) / 2, this.height / 2, (point[1] + this.points[next][1]) / 2],
+                        radius: Math.hypot(this.points[next][0] - point[0], this.height, this.points[next][1] - point[1]),
+                        visible: true,
+                    };
+                });
+
             }
             makeWalls() {
                 const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
@@ -6374,7 +6379,12 @@
                 const dir = -sum < 0 ? -1 : 1;
 
                 let length = 0;
-                this.points.forEach((point, i) => {
+                this.segments.forEach((segment, i) => {
+                //this.points.forEach((point, i) => {
+                    if (segment.visible === false) {
+                        return;
+                    }
+                    const point = this.points[i];
                     const next = (i + 1) % this.points.length;
                     const nextPoint = this.points[next];
                     const d1 = vectors[i];
@@ -6411,12 +6421,14 @@
             }
             render(time) {
                 gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+                gl.uniform1i(app.pbrShader.effects, 0);
 
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
                 gl.bindVertexArray(null);
             }
             get vertices() {
+                return this._vertices;
             }
             intersects(line, all) {
                 const world = this.world;
@@ -6445,6 +6457,48 @@
             highlightFace(line) {
             }
             update() {
+                if (app.show && app.show.item !== this) {
+                    const transform = this.world;
+
+                    this.segments.forEach((segment) => {
+                        // Get the origin of this element
+                        const origin = applyTransform(segment.centre, transform);
+                        const dist = Math.hypot(...subtract(origin, app.camera.position));
+                        if (dist < app.show.distance) {
+
+                            const point = applyTransform4([...segment.centre, 1], app.show.transform);
+                            const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                            const radius = segment.radius / point[3];
+
+                            const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                            if (gap < (radius + app.show.radius)) {
+                                segment.visible = false;
+                            } else {
+                                segment.visible = true;
+                            }
+
+                            if (app.showConstruction) {
+                                const width = ctx.canvas.width;
+                                const height = ctx.canvas.height;
+                                const x = 0.5 * width * (position[0] / app.aspect + 1);
+                                const y = 0.5 * height * (1 - position[1]);
+
+                                ctx.strokeStyle = segment.visible ? 'grey' : 'red';
+                                ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                                ctx.beginPath();
+                                ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                                ctx.stroke();
+                            }
+
+                        } else {
+                            segment.visible = true;
+                        }
+                    });
+                } else {
+                    this.segments.forEach((segment) => segment.visible = true);
+                }
+                this.makeWalls();
             }
         }
 
@@ -6559,6 +6613,7 @@
 
                 gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
+                gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(this.vao);
                 //gl.drawElements(gl.TRIANGLES, this.pointCount / 3, gl.UNSIGNED_SHORT, 0);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
@@ -6992,7 +7047,7 @@
             if (hits.length > 0) {
                 hits[0].highlightFace(line);
                 app.showName = hits[0];
-                canvas.title = `${hits[0].node[meta].name[0]} ${hits[0].interiorView}`;
+                canvas.title = `${hits[0].node[meta].name[0]}`;
                 report(hits[0].node[meta].name[0]);
             } else {
                 app.showName = null;
