@@ -285,6 +285,10 @@
             margin-left: 1em;
         }
 
+        #source {
+            padding: 3px;
+        }
+
         #source-view-save {
             position: absolute;
             top: 0;
@@ -486,6 +490,11 @@
 
     <input id="command-entry" type="text" />
 
+    <div id="top-right">
+        <input type="file" id="load-file" multiple />
+        <div id="stock"></div>
+    </div>
+
     <div id="controls">
         <div id="source-view" class="window">
             <h2 class="unselectable">Source</h2>
@@ -531,10 +540,6 @@
     <div id="top-left">
     </div>
 
-    <div id="top-right">
-        <input type="file" id="load-file" multiple />
-        <div id="stock"></div>
-    </div>
     <div id="movement">
         <button id="anti-clockwise">&#8634;</button>
         <button id="move-up">&#8593;</button>
@@ -1800,7 +1805,7 @@
             if (selected.length) {
                 const orientation = extractRotation(selected[0].world);
                 const transforms = selected.map((item) => item.world);
-                const centres = selected.map((item) => applyTransform(item.labelPosition || [0, 0, 0], item.world));
+                const centres = selected.map((item) => applyTransform(item.origin, item.world));
                 const lookAt = scale(sum(...centres), 1 / transforms.length);
                 const radius = Math.max(...transforms.map((matrix) => Math.hypot(...extractScale(matrix))));
                 const delta = [
@@ -3711,7 +3716,7 @@
             selected.filter((item) => app.text[item.name])
                 .forEach((item) => {
                     const text = app.text[item.name];
-                    const position = item.labelPosition ?? [0.0, 0.0, 0.0];
+                    const position = item.origin;
                     const scale = item.labelScale ?? 1;
                     const size = [scale * text.size[0], scale * text.size[1]];
                     const colour = item.labelColour ?? [1, 1, 1, 1];
@@ -4436,6 +4441,9 @@
             constructor(initial = identityMatrix()) {
                 this.matrix = [...initial];
             }
+            clone() {
+                return new Transform(this.matrix);
+            }
             move(offset) {
                 this.matrix[12] += offset[0];
                 this.matrix[13] += offset[1];
@@ -4782,6 +4790,7 @@
          */
         class Shape {
             constructor(node, parent, name) {
+                this.view = app.view[0];
                 this.node = node;
                 this.parent = parent;
                 this.children = [];
@@ -4917,30 +4926,35 @@
                     instance.updateInstanceData();
                 });
             }
-            move(offset) {
-                // Translate the movement from world to local coordinates.
-                const transform = this.parent ? this.parent.world : identityMatrix();
-                const inverted = invert(transform);
-                const delta = applyTransform4([...offset, 1], inverted);
+            getEdges() {
 
+            }
+            move(offset) {
+                const siblings = this.view.items.filter((item) => item !== this && item.parent === this.parent);
+
+                // Translate the movement from world to local coordinates.
+                const inverted = invert(this.parent ? this.parent.world : identityMatrix());
+                const delta = applyTransform(offset, inverted);
+
+                const current = [...this.transform.matrix];
                 this.transform.move(delta);
                 this.setWorld(this.parent ? this.parent.world : identityMatrix());
-                this.instances.forEach((instance) =>
-                    instance.updateInstanceData());
-
+   
+                if (siblings.some((sibling) => interferes(this, sibling))) {
+                    this.transform.matrix = current;
+                } else {
+                    this.instances.forEach((instance) => instance.updateInstanceData());
+                }
             }
             scale(size) {
                 this.transform.scale(size);
                 this.setWorld(this.parent ? this.parent.world : identityMatrix());
-                this.instances.forEach((instance) =>
-                    instance.updateInstanceData());
-
+                this.instances.forEach((instance) => instance.updateInstanceData());
             }
             rotate(angle, axis) {
                 this.transform.rotate(angle, axis);
                 this.setWorld(this.parent ? this.parent.world : identityMatrix());
-                this.instances.forEach((instance) =>
-                    instance.updateInstanceData());
+                this.instances.forEach((instance) => instance.updateInstanceData());
             }
             offset(offset) {
                 return;
@@ -4950,8 +4964,7 @@
                 this.transform.matrix[12] += size[0] * offset[0] / scale[0];
                 this.transform.matrix[13] += size[1] * offset[1] / scale[1];
                 this.transform.matrix[14] += size[2] * offset[2] / scale[2];
-                this.instances.forEach((instance) =>
-                    instance.updateInstanceData());
+                this.instances.forEach((instance) => instance.updateInstanceData());
             }
             closestVertex(line) {
                 return { distance: Infinity, point: null };
@@ -5187,6 +5200,84 @@
             }
             closestVertex(line) {
                 return { distance: Infinity, point: null };
+            }
+            edges() {
+                const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
+                const corner2 = applyTransform([0.5, -0.5, -0.5], this.world);
+                const corner3 = applyTransform([0.5, 0.5, -0.5], this.world);
+                const corner4 = applyTransform([-0.5, 0.5, -0.5], this.world);
+
+                const corner5 = applyTransform([-0.5, -0.5, 0.5], this.world);
+                const corner6 = applyTransform([0.5, -0.5, 0.5], this.world);
+                const corner7 = applyTransform([-0.5, 0.5, 0.5], this.world);
+                const corner8 = applyTransform([0.5, 0.5, 0.5], this.world);
+
+                const rotation = extractRotation(this.world);
+                const d1 = applyTransform([1, 0, 0], rotation);
+                const d2 = applyTransform([0, 1, 0], rotation);
+                const d3 = applyTransform([0, 0, 1], rotation);
+                return [
+                    { point: corner1, direction: d3 },
+                    { point: corner2, direction: d3 },
+                    { point: corner3, direction: d3 },
+                    { point: corner4, direction: d3 },
+
+                    { point: corner1, direction: d1 },
+                    { point: corner2, direction: d2 },
+                    { point: corner3, direction: scale(d1, -1) },
+                    { point: corner4, direction: scale(d2, -1) },
+
+                    { point: corner5, direction: d1 },
+                    { point: corner6, direction: d2 },
+                    { point: corner7, direction: scale(d1, -1) },
+                    { point: corner8, direction: scale(d2, -1) },
+                ];
+            }
+            planes() {
+                const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
+                const corner2 = applyTransform([0.5, 0.5, 0.5], this.world);
+                const rotation = extractRotation(this.world);
+                const planes = [
+                    { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                    { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                    { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                    { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                    { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
+                    { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
+                ];
+            }
+            blockTest(other) {
+                const r1 = Math.hypot(...extractScale(this.world));
+                const r2 = Math.hypot(...extractScale(other.world));
+
+                const c1 = applyTransform(this.origin, this.world);
+                const c2 = applyTransform(other.origin, other.world);
+
+                const distance = Math.hypot(...subtract(c1, c2));
+                if (distance < (r1 + r2)) {
+                    return true;
+                }
+                return false;
+            }
+            sphereTest(sphere) {
+                const r1 = Math.hypot(...extractScale(this.world)) / 2;
+
+                const c1 = applyTransform(this.origin, this.world);
+                const c2 = applyTransform(sphere.origin, sphere.world);
+
+                const distance = Math.hypot(...subtract(c1, c2));
+
+                const test = (line, point) => {
+                    const v = subtract(c2, line.point);
+                    const t = dot(line.direction, v) / dot(line.direction, line.direction);
+                    const distance = Math.hypot(...subtract(sum(line.point, scale(line.direction, t)), c2));
+                    return distance <= sphere.radius && t >=0 && t <= 1;
+                }
+
+                if (distance < (r1 + sphere.radius)) {
+                    return this.edges().some((edge) => test(edge));
+                }
+                return false;
             }
         }
 
@@ -5664,6 +5755,7 @@
                 const sides = getAttribute(node, 'sides', 12);
                 this.radius = getAttribute(node, 'radius');
                 this.height = getAttribute(node, 'height');
+                this.points = [this.origin]
                 const size = [this.radius, this.height, this.radius];
                 this.scale(size);
                 this.primative = Cylinder.primatives[sides] || Cylinder.make(sides);
@@ -5742,6 +5834,7 @@
             }
             constructor(node, parent) {
                 super(node, parent);
+                this.points = [this.origin];
                 const sides = getAttribute(node, 'sides', 12);
                 this.radius1 = getAttribute(node, 'radius1');
                 this.radius2 = getAttribute(node, 'radius2');
@@ -5885,8 +5978,10 @@
                 super(node, parent, 'icosphere');
                 this.primative = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
                 this.instances = [this.primative.addInstance(node, this, 'icosphere')];
-                const scale = getAttribute(node, 'radius') * 2;
-                this.instances[0].scale([scale, scale, scale]);
+                this.radius = getAttribute(node, 'radius');
+                const diameter = this.radius * 2;
+                this.points = [this.origin];
+                this.instances[0].scale([diameter, diameter, diameter]);
 
                 this.children = [];
                 this.name = node.name || `icosphere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
@@ -5921,7 +6016,7 @@
                 let closest = { point: null, distance: Infinity };
                 this.points.forEach((point) => {
                     const world = applyTransform(point, this.world);
-                    const dist = dist(world, line);
+                    const dist = distanceToPoint(line, world);
                     if (dist < closest.distance) {
                         closest.point = world;
                         closest.local = point;
@@ -5975,6 +6070,12 @@
                     }
                     this.instances.forEach((instance) => instance.show());
                 }
+            }
+            sphereTest(other) {
+                const p1 = applyTransform(this.origin, this.world);
+                const p2 = applyTransform(other.origin, other.world);
+                const dist = Math.hypot(...subtract(p1, p2));
+                return dist < this.radius + other.radius;
             }
         }
 
@@ -6150,7 +6251,6 @@
                 this.corners = this.points.map(getCorner);
                 if (!getAttribute(this.node, 'closed')) {
                     // First and last corners are perpendicular to segment
-
                     const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
                     const l1 = Math.hypot(...d1);
 
@@ -6204,7 +6304,7 @@
                     };
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
-                this.labelPosition = [centre[0], height / 2, centre[1]];
+                this.origin = [centre[0], height / 2, centre[1]];
                 if (!getAttribute(this.node, 'closed')) {
                     this.segments.pop();
                 }
@@ -6379,7 +6479,7 @@
                         // Get the origin of this element
                         const origin = applyTransform(segment.centre, this.world);
                         const dist = Math.hypot(...subtract(origin, app.camera.position));
-                        if (dist < app.show.distance) {
+                        if ((dist - segment.radius) < app.show.distance) {
 
                             const point = applyTransform4([...origin, 1], app.show.transform);
                             const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
@@ -6901,6 +7001,183 @@
             }
         }
 
+
+        /*
+        quad
+        block
+        bevelledBlock
+        walledBox
+        cylinder
+        frustum
+        icosphere
+        walls
+        prism
+        ngon
+        */
+
+
+        // Create the array of functions required to perform double dispatch for interference detection
+        const InterferenceTests = {
+            Quad: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Block: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => s1.blockTest(s2),
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => s1.sphereTest(s2),
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            BevelledBlock: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            WalledBox: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Cylinder: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Frustum: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Icosphere: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => s2.sphereTest(s1),
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => s1.sphereTest(s2),
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,            
+            },
+            Walls: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Prism: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            Ngon: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            },
+            LightWaveObject: {
+                Quad: (s1, s2) => false,
+                Block: (s1, s2) => false,
+                BevelledBlock: (s1, s2) => false,
+                WalledBox: (s1, s2) => false,
+                Cylinder: (s1, s2) => false,
+                Frustum: (s1, s2) => false,
+                Icosphere: (s1, s2) => false,
+                Walls: (s1, s2) => false,
+                Prism: (s1, s2) => false,
+                Ngon: (s1, s2) => false,
+                LightWaveObject: (s1, s2) => false,
+            }
+        };
+
+        /**
+         * Test whether 2 shapes overlap in 3d space
+         */
+        function interferes(shape1, shape2) {
+            // Interference test is dependent on types of shape.
+            const resolve = InterferenceTests[shape1.constructor.name];
+            if (resolve) {
+                const test = resolve[shape2.constructor.name];
+                if (test) {
+                    return test(shape1, shape2);
+                }
+            }
+            return false;
+        }
+
         /**
          * Class for light wave objects
          */
@@ -6966,8 +7243,6 @@
                 // A patch represents a group of faces in the same material.
                 let faces = [];
                 const patches = { initial: { faces } };
-                const max = [-Infinity, -Infinity, -Infinity];
-                const min = [Infinity, Infinity, Infinity];
 
                 const lines = text.split(/\r?\n/g);
                 lines.map(async (line, i) => {
@@ -7020,26 +7295,25 @@
                     }
                 });
 
-                // Normalise the data
-                positions.forEach((point) => {
+                const min = positions.reduce((min, point) => {
                     min[0] = Math.min(min[0], point[0]);
                     min[1] = Math.min(min[1], point[1]);
                     min[2] = Math.min(min[2], point[2]);
+                    return min;
+                }, [Infinity, Infinity, Infinity]);
+                const max = positions.reduce((max, point) => {
                     max[0] = Math.max(max[0], point[0]);
                     max[1] = Math.max(max[1], point[1]);
                     max[2] = Math.max(max[2], point[2]);
-                });
-
-                const offset = scale(min, -1);
+                    return max;
+                }, [-Infinity, -Infinity, -Infinity]);
                 const size = subtract(max, min);
                 const modelScale = 1 / Math.max(...size);
                 const invSize = size.map((v) => 1 / v);
-                positions.forEach((point) => {
-                    vectorScale(add(point, offset), invSize);
-                });
-                LightWaveObject.pending[this.url].forEach((obj) => {
-                    obj.transform.scale(scale(size, modelScale));
-                });
+                const offset = [0, 0, 0];
+                positions.forEach((point) =>
+                    vectorScale(add(point, offset), reciprical(size)));
+
 
                 await Promise.all(promisedMaterials).then((values) =>
                     values.forEach((value) => Object.assign(materials, value)));
@@ -7098,6 +7372,9 @@
                         };
                     })
                 });
+                LightWaveObject.pending[this.url].forEach((obj) =>
+                    obj.scale(scale(size, modelScale)));
+
             }
             intersects(line, all) {
                 const transform = this.world;
@@ -7131,6 +7408,9 @@
                     }
                 }
                 return [];
+            }
+            closestVertex(line) {
+                return { distance: Infinity, point: null };
             }
         }
 
@@ -7341,15 +7621,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 history.push({
                     undo: () =>
                         undo.forEach((action) => {
-                            action.instance.transform.matrix = action.start;
-                            action.instance.update();
+                            action.item.transform.matrix = action.start;
+                            action.item.update();
                         }),
                     redo: () => redo.forEach((action) => {
-                        action.instance.transform.matrix = action.end;
-                        action.instance.update();
+                        action.item.transform.matrix = action.end;
+                        action.item.update();
                     }),
                 });
             }
+            app.show = null;
             app.view[0].ground.origin = app.ground.origin;
             app.view[0].ground.normal = app.ground.normal;
             action.move = closestVertex;
@@ -9153,7 +9434,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             app.view[0].items.filter((item) => item.node.selected)
                 .forEach((item) => {
                     if (local) {
-                        axis = applyTransform(axis, extractRotation(item.origin));
+                        axis = applyTransform(axis, extractRotation(item.world));
                     }
                     item.rotate(angle, axis);
                 });
@@ -9340,7 +9621,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     A: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
                     b: (event) => setView([0, -1, 0], [0, 0, -1]),
                     c: (event) => { app.points = []; updatePoints(); },
-                    e: (event) => editLine(event),
+                    e: (event) => toggleEdit(event),
+                    E: (event) => editLine(event),
                     d: (event) => { app.showPoints = !app.showPoints; },
                     D: (event) => { app.drawPoints = !app.drawPoints; },
                     f: (event) => setView([0, 0, 1]),
@@ -9419,7 +9701,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                         if (app.mode === 'edit') {
                             action.plane = { point: hits[0].points[0] };
-                            if (Math.abs(dot(app.camera.up, [0, 1, 0])) > 0.9) {
+                            if (Math.abs(dot(app.camera.up, [0, 1, 0])) < 0.3) {
                                 action.plane.normal = zAxis;
                             } else {
                                 action.plane.normal = [0, 1, 0];
@@ -9436,13 +9718,23 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                             showItem(selected[0]);
 
+                            let screenspace = false;
                             action.move = (event) => {
-                                app.view[0].items.forEach((item) => item.state.ghost = true);
-                                //action.item.siblings.forEach((item) => item.state.constraint = true);
+                                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
+
+                                if (event.altKey) {
+                                    if (!screenspace) {
+                                        action.plane.normal = normalised(subtract(app.camera.position, app.camera.lookAt));
+                                        app.view[0].ground.normal = action.plane.normal;
+                                        screenspace = true;
+                                    }
+                                } else if (screenspace) {
+                                    app.view[0].ground.normal = action.plane.normal = [0, 1, 0];
+                                    screenspace = false;
+                                }
                                 action.item.state.moving = true;
 
                                 action.moved = true;
-                                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
                                 const point = planeIntercept(mouseLine, action.plane);
                                 const delta = subtract(point, action.plane.point);
                                 action.plane.point = point;
@@ -9452,7 +9744,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                     selected.move(delta);
                                     selected.update();
                                 });
-                                const pt = applyTransform([0, 0, 0], selected[0].world);
+                                const pt = applyTransform(selected[0].origin, selected[0].world);
                                 app.show.point = pt;
                                 app.show.toWorld = selected[0].world;
                             };
@@ -9853,6 +10145,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     node.classList.remove('hide');
                 }
                 sourceView.style.resize = 'both';
+                sourceView.style.maxWidth = '100vw';
 
                 const source = document.getElementById('source');
 
@@ -9927,6 +10220,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             showStock();
             app.view.forEach((view) => view.updateMaterials());
         }
+
+        function toggleEdit() {
+            if (app.mode === 'edit') {
+                app.mode = 'view';
+            } else {
+                app.mode = 'edit';
+            }
+        }
+
 
         /**
          * List of coomands
@@ -10073,11 +10375,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'edit',
                 description: 'Toggle editing',
                 action(text) {
-                    if (app.mode === 'edit') {
-                        app.mode = 'view';
-                    } else {
-                        app.mode = 'edit';
-                    }
+                    toggleEdit();
                 }
             },
             {
@@ -10148,7 +10446,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     parent = parent.parent;
                 }
                 const size = extractScale(item.world);
-                const point = applyTransform([0, 0, 0], item.world);
+                const point = applyTransform(item.origin, item.world);
                 app.show = { item, point, size, toWorld: item.world };
             }
         }
