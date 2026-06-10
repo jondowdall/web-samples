@@ -2378,9 +2378,6 @@
                     if (app.points.length > 0) {
                         drawPoints();
                     }
-                    if (app.vectors.length > 0) {
-                        drawVectors();
-                    }
                     gl.uniform1i(app.pbrShader.pass, 1);
                     gl.depthMask(false);
                     this.renderQueue.forEach((item) => item.render(time));
@@ -2443,7 +2440,6 @@
             stock: {},
             nodes: [],
             points: [],
-            vectors: [],
             connections: [],
             text: [],
             roots: [],
@@ -3974,15 +3970,14 @@
                 0.5 * width * (point[0] / point[3] + 1),
                 0.5 * height * (1 - point[1] / point[3])];
 
+            ctx.fillStyle = 'magenta';
+            ctx.beginPath();
             app.points.forEach((point) => {
                 const projected = screen(applyTransform4([...point.position, 1], transform));
-                ctx.fillStyle = point.colour || 'magenta';
-                ctx.beginPath();
-                ctx.moveTo(...projected);
                 ctx.arc(...projected, 5, 0, 2 * Math.PI);
-                ctx.fill();
             });
-/*
+            ctx.fill();
+
             gl.bindVertexArray(app.pointVertexArray);
 
             gl.disable(gl.DEPTH_TEST);
@@ -3991,36 +3986,6 @@
 
             gl.drawArrays(gl.POINTS, 0, app.points.length);
             gl.enable(gl.DEPTH_TEST);
-            */
-        }
-
-
-        /**
-         * Draw vectors used for debugging.
-         */
-        function drawVectors() {
-            const width = ctx.canvas.width;
-            const height = ctx.canvas.height;
-            const transform = multiply(app.viewMatrix, app.projectionMatrix);
-            const screen = (point) => {
-                const projectedPoint = applyTransform4([...point, 1], transform);
-                return [
-                    0.5 * width * (projectedPoint[0] / projectedPoint[3] + 1),
-                    0.5 * height * (1 - projectedPoint[1] / projectedPoint[3])];
-            }
-
-            ctx.strokeStyle = 'magenta';
-            ctx.fillStyle = 'magenta';
-            ctx.beginPath();
-            app.vectors.forEach((vector) => {
-                const start = screen(vector.point);
-                const end = screen(sum(vector.point, vector.direction));
-                ctx.moveTo(...end);
-                ctx.lineTo(...start);
-                ctx.arc(...start, 3, 0, 2 * Math.PI);
-            });
-            ctx.stroke();
-            ctx.fill();
         }
 
         /**
@@ -4496,7 +4461,7 @@
                 return this;
             }
             multiply(matrix) {
-                this.matrix = multiply(this.matrix, matrix);
+                this.matrix = multiply(matrix, this.matrix);
                 return this;
             }
             apply(vector) {
@@ -4767,10 +4732,6 @@
                     this.highlighted = false;
                 }
             }
-            emit(colour) {
-                this.material.emissivityColour = colour;
-                this.primative.updateInstances = true;
-            }
             update(point) { }
             updateInstanceData() {
                 if (!this.primative.instanceData) {
@@ -4847,9 +4808,6 @@
                 const size = getAttribute(node, 'size', [1, 1, 1]);
                 const offset = product(getAttribute(node, 'offset', [0, 0, 0]), size);
                 const objScale = parent ? reciprical(extractScale(parent.world)) : [1, 1, 1];
-                if (Math.hypot(...size) > 0) {
-                    this.transform.scale(product(size, objScale)); // Why is objScale applied here?
-                }
                 if (parent) {
                     // Convert the position to local proportional coordinates based on the scale.
                     const origin = scale(getAttribute(parent.node, 'offset', [0, 0, 0]), -1);
@@ -4857,6 +4815,9 @@
                     this.transform.move(sum(position, origin));
                 } else {
                     this.transform.move(sum(getAttribute(node, 'position', [0, 0, 0]), offset));
+                }
+                if (Math.hypot(...size) > 0) {
+                    this.transform.scale(product(size, objScale));
                 }
 
                 this.transform.rotate(getAttribute(node, 'angle', 0),
@@ -4968,7 +4929,7 @@
             getEdges() {
 
             }
-            move(offset, constrained = true) {
+            move(offset) {
                 const siblings = this.view.items.filter((item) => item !== this && item.parent === this.parent);
 
                 // Translate the movement from world to local coordinates.
@@ -4979,7 +4940,7 @@
                 this.transform.move(delta);
                 this.setWorld(this.parent ? this.parent.world : identityMatrix());
 
-                if (constrained && siblings.some((sibling) => interferes(this, sibling))) {
+                if (siblings.some((sibling) => interferes(this, sibling))) {
                     this.transform.matrix = current;
                 } else {
                     this.instances.forEach((instance) => instance.updateInstanceData());
@@ -5012,22 +4973,6 @@
             }
             reset() {
 
-            }
-            constraint() {
-                if (!this._constraint) {
-                    this._constraint = true;
-                    this.instances.forEach((instance) => {
-                        instance.emit([1, 0.5, 0.5]);
-                    });
-                }
-            }
-            nonConstraint() {
-                if (this._constraint) {
-                    this._constraint = false;
-                    this.instances.forEach((instance) => {
-                        instance.emit(this.material.emissivityColour);
-                    });
-                }
             }
         }
 
@@ -5216,7 +5161,6 @@
                 this.primative.effects = 1;
                 this.children = [];
                 this.instances = [this.primative.addInstance(node, this, `block`)];
-                this.radius = Math.hypot(...extractScale(this.world)) / 2;
             }
             intersects(line, all) {
                 const radius = Math.hypot(...this.transform.getScale());
@@ -5257,18 +5201,6 @@
             closestVertex(line) {
                 return { distance: Infinity, point: null };
             }
-            corners() {
-                return [
-                    applyTransform([-0.5, -0.5, -0.5], this.world),
-                    applyTransform([0.5, -0.5, -0.5], this.world),
-                    applyTransform([0.5, 0.5, -0.5], this.world),
-                    applyTransform([-0.5, 0.5, -0.5], this.world),
-                    applyTransform([-0.5, -0.5, 0.5], this.world),
-                    applyTransform([0.5, -0.5, 0.5], this.world),
-                    applyTransform([-0.5, 0.5, 0.5], this.world),
-                    applyTransform([0.5, 0.5, 0.5], this.world),
-                ];
-            }
             edges() {
                 const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
                 const corner2 = applyTransform([0.5, -0.5, -0.5], this.world);
@@ -5277,24 +5209,28 @@
 
                 const corner5 = applyTransform([-0.5, -0.5, 0.5], this.world);
                 const corner6 = applyTransform([0.5, -0.5, 0.5], this.world);
-                const corner7 = applyTransform([0.5, 0.5, 0.5], this.world);
-                const corner8 = applyTransform([-0.5, 0.5, 0.5], this.world);
+                const corner7 = applyTransform([-0.5, 0.5, 0.5], this.world);
+                const corner8 = applyTransform([0.5, 0.5, 0.5], this.world);
 
+                const rotation = extractRotation(this.world);
+                const d1 = applyTransform([1, 0, 0], rotation);
+                const d2 = applyTransform([0, 1, 0], rotation);
+                const d3 = applyTransform([0, 0, 1], rotation);
                 return [
-                    { point: corner1, direction: subtract(corner5, corner1) },
-                    { point: corner2, direction: subtract(corner6, corner2) },
-                    { point: corner3, direction: subtract(corner7, corner3) },
-                    { point: corner4, direction: subtract(corner8, corner4) },
+                    { point: corner1, direction: d3 },
+                    { point: corner2, direction: d3 },
+                    { point: corner3, direction: d3 },
+                    { point: corner4, direction: d3 },
 
-                    { point: corner1, direction: subtract(corner2, corner1) },
-                    { point: corner2, direction: subtract(corner3, corner2) },
-                    { point: corner3, direction: subtract(corner4, corner3) },
-                    { point: corner4, direction: subtract(corner1, corner4) },
+                    { point: corner1, direction: d1 },
+                    { point: corner2, direction: d2 },
+                    { point: corner3, direction: scale(d1, -1) },
+                    { point: corner4, direction: scale(d2, -1) },
 
-                    { point: corner5, direction: subtract(corner6, corner5) },
-                    { point: corner6, direction: subtract(corner7, corner6) },
-                    { point: corner7, direction: subtract(corner8, corner7) },
-                    { point: corner8, direction: subtract(corner5, corner8) },
+                    { point: corner5, direction: d1 },
+                    { point: corner6, direction: d2 },
+                    { point: corner7, direction: scale(d1, -1) },
+                    { point: corner8, direction: scale(d2, -1) },
                 ];
             }
             planes() {
@@ -5303,14 +5239,14 @@
                 const rotation = extractRotation(this.world);
                 const planes = [
                     { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
-                    { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
                     { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
-                    { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
                     { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                    { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                    { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
                     { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
                 ];
             }
-            boxTest(other) {
+            blockTest(other) {
                 const r1 = Math.hypot(...extractScale(this.world));
                 const r2 = Math.hypot(...extractScale(other.world));
 
@@ -5319,55 +5255,7 @@
 
                 const distance = Math.hypot(...subtract(c1, c2));
                 if (distance < (r1 + r2)) {
-                    const toThis = invert(this.world);
-                    const thisOrientation = [...toThis];
-                    thisOrientation[12] = 0;
-                    thisOrientation[13] = 0;
-                    thisOrientation[14] = 0;
-
-                    const toOther = invert(other.world);
-                    const otherOrientation = [...toOther];
-                    otherOrientation[12] = 0;
-                    otherOrientation[13] = 0;
-                    otherOrientation[14] = 0;
-
-                    const planes = [
-                        { point: [-0.5, -0.5, -0.5], normal: [-1, 0, 0] },
-                        { point: [-0.5, -0.5, -0.5], normal: [0, -1, 0] },
-                        { point: [-0.5, -0.5, -0.5], normal: [0, 0, -1] },
-                        { point: [0.5, 0.5, 0.5], normal: [1, 0, 0] },
-                        { point: [0.5, 0.5, 0.5], normal: [0, 1, 0] },
-                        { point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
-                    ];
-
-                    const first = this.edges().some((edge) => {
-                        const line = {
-                            point: applyTransform(edge.point, toOther),
-                            direction: applyTransform(edge.direction, otherOrientation),
-                        };
-                        return planes.some((plane) => {
-                            const point = planeSegmentIntercept(line, plane);
-                            return point && point[0] >= -0.5 && point[0] <= 0.5 &&
-                                point[1] >= -0.5 && point[1] <= 0.5 &&
-                                point[2] >= -0.5 && point[2] <= 0.5;
-                        });
-                    });
-                    if (first) {
-                        return true;
-                    }
-                    const second = other.edges().some((edge) => {
-                        const line = {
-                            point: applyTransform(edge.point, toThis),
-                            direction: applyTransform(edge.direction, thisOrientation),
-                        };
-                        return planes.some((plane) => {
-                            const point = planeSegmentIntercept(line, plane);
-                            return point && point[0] >= -0.5 && point[0] <= 0.5 &&
-                                point[1] >= -0.5 && point[1] <= 0.5 &&
-                                point[2] >= -0.5 && point[2] <= 0.5;
-                        });
-                    });
-                    return second;
+                    return true;
                 }
                 return false;
             }
@@ -6408,7 +6296,7 @@
                     const length = Math.hypot(...vector);
                     return [vector[1] / length, 0, -vector[0] / length];
                 }
-                const get3d = (point, height) => [point[0], height, point[1]];
+
                 this.segments = this.points.map((point, i) => {
                     const next = (i + 1) % this.points.length;
                     const inner = Math.hypot(this.corners[next][0][0] - this.corners[i][0][0],
@@ -6426,15 +6314,6 @@
                         visible: true,
                         normal, startNormal, endNormal,
                         inner, outer,
-                        corner1: get3d(this.corners[i][0], 0),
-                        corner2: get3d(this.corners[i][1], 0),
-                        corner3: get3d(this.corners[i][1], this.height),
-                        corner4: get3d(this.corners[i][0], this.height),
-
-                        corner5: get3d(this.corners[next][0], 0),
-                        corner6: get3d(this.corners[next][1], 0),
-                        corner7: get3d(this.corners[next][1], this.height),
-                        corner8: get3d(this.corners[next][0], this.height),
                     };
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
@@ -6668,123 +6547,6 @@
                     ctx.arc(...screen([point[0], this.height, point[1]]), radius, 0, 2 * Math.PI);
                     ctx.fill();
                 });
-            }
-            edges(segment) {
-                const corner1 = applyTransform(segment.corner1, this.world);
-                const corner2 = applyTransform(segment.corner2, this.world);
-                const corner3 = applyTransform(segment.corner3, this.world);
-                const corner4 = applyTransform(segment.corner4, this.world);
-
-                const corner5 = applyTransform(segment.corner5, this.world);
-                const corner6 = applyTransform(segment.corner6, this.world);
-                const corner7 = applyTransform(segment.corner7, this.world);
-                const corner8 = applyTransform(segment.corner8, this.world);
-
-                return [
-                    { point: corner1, direction: subtract(corner5, corner1) },
-                    { point: corner2, direction: subtract(corner6, corner2) },
-                    { point: corner3, direction: subtract(corner7, corner3) },
-                    { point: corner4, direction: subtract(corner8, corner4) },
-
-                    { point: corner1, direction: subtract(corner2, corner1) },
-                    { point: corner2, direction: subtract(corner3, corner2) },
-                    { point: corner3, direction: subtract(corner4, corner3) },
-                    { point: corner4, direction: subtract(corner1, corner4) },
-
-                    { point: corner5, direction: subtract(corner6, corner5) },
-                    { point: corner6, direction: subtract(corner7, corner6) },
-                    { point: corner7, direction: subtract(corner8, corner7) },
-                    { point: corner8, direction: subtract(corner5, corner8) },
-                ];
-            }
-            faces(segment) {
-                const corner1 = applyTransform(segment.corner1, this.world);
-                const corner2 = applyTransform(segment.corner2, this.world);
-                const corner3 = applyTransform(segment.corner3, this.world);
-                const corner4 = applyTransform(segment.corner4, this.world);
-
-                const corner5 = applyTransform(segment.corner5, this.world);
-                const corner6 = applyTransform(segment.corner6, this.world);
-                const corner7 = applyTransform(segment.corner7, this.world);
-                const corner8 = applyTransform(segment.corner8, this.world);
-
-                return [
-                    { point1: corner1, point2: corner2, point3: corner3 },
-                    { point1: corner5, point2: corner6, point3: corner7 },
-                    { point1: corner1, point2: corner2, point3: corner6 },
-                    { point1: corner2, point2: corner3, point3: corner7 },
-                    { point1: corner3, point2: corner4, point3: corner8 },
-                    { point1: corner4, point2: corner1, point3: corner5 },
-                ];
-            }
-            boxTest(box) {
-                return this.segments.some((segment) => {
-                    const centre = applyTransform(segment.centre, this.world);
-                    const boxCentre = applyTransform(box.origin, box.world);
-
-                    const distance = Math.hypot(...subtract(centre, boxCentre));
-                    if (distance < segment.radius + box.radius) {
-                        const toThis = invert(this.world);
-                        const thisOrientation = [...toThis];
-                        thisOrientation[12] = 0;
-                        thisOrientation[13] = 0;
-                        thisOrientation[14] = 0;
-
-                        const toBox = invert(box.world);
-                        const boxOrientation = [...toBox];
-                        boxOrientation[12] = 0;
-                        boxOrientation[13] = 0;
-                        boxOrientation[14] = 0;
-
-                        const planes = [
-                            { point: [-0.5, -0.5, -0.5], normal: [-1, 0, 0] },
-                            { point: [-0.5, -0.5, -0.5], normal: [0, -1, 0] },
-                            { point: [-0.5, -0.5, -0.5], normal: [0, 0, -1] },
-                            { point: [0.5, 0.5, 0.5], normal: [1, 0, 0] },
-                            { point: [0.5, 0.5, 0.5], normal: [0, 1, 0] },
-                            { point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
-                        ];
-
-                        const first = this.edges(segment).some((edge) => {
-                            const line = {
-                                point: applyTransform(edge.point, toBox),
-                                direction: applyTransform(edge.direction, boxOrientation),
-                            };
-                            return planes.some((plane) => {
-                                const point = planeSegmentIntercept(line, plane);
-                                return point && point[0] >= -0.5 && point[0] <= 0.5 &&
-                                    point[1] >= -0.5 && point[1] <= 0.5 &&
-                                    point[2] >= -0.5 && point[2] <= 0.5;
-                            });
-                        });
-                        if (first) {
-                            return true;
-                        }
-                        const second = box.edges().some((edge) =>
-                            this.faces(segment).some((face) =>
-                                edgeFaceIntercept(edge, face)));
-                        return second;
-                    }
-                    return false;
-                });
-            }
-            wallTest(other) {
-                return this.segments.some((segment) =>
-                    other.segments.some((otherSegment) => {
-                        const centre = applyTransform(segment.centre, this.world);
-                        const otherCentre = applyTransform(otherSegment.centre, other.world);
-
-                        const distance = Math.hypot(...subtract(centre, otherCentre));
-                        if (distance < segment.radius + otherSegment.radius) {
-                            return other.edges(otherSegment).some((edge) =>
-                                this.faces(segment).some((face) =>
-                                    edgeFaceIntercept(edge, face))) ||
-                                this.edges(segment).some((edge) =>
-                                    other.faces(otherSegment).some((face) =>
-                                        edgeFaceIntercept(edge, face)));
-                        }
-                        return false;
-                    }));
             }
         }
 
@@ -7130,16 +6892,15 @@
                 this.pointCount = indices.length;
             }
             render(time) {
-                
-                const orientation = extractRotation(this.world);
-                gl.vertexAttrib4f(app.pbrShader.model + 0, this.world[0], this.world[1], this.world[2], this.world[3]);
-                gl.vertexAttrib4f(app.pbrShader.model + 1, this.world[4], this.world[5], this.world[6], this.world[7]);
-                gl.vertexAttrib4f(app.pbrShader.model + 2, this.world[8], this.world[9], this.world[10], this.world[11]);
-                gl.vertexAttrib4f(app.pbrShader.model + 3, this.world[12], this.world[13], this.world[14], this.world[15]);
+                const position = getAttribute(this.node, 'position', [0, 0, 0]);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, position[0], position[1], position[2], 1);
 
-                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, orientation[0], orientation[1], orientation[2]);
-                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, orientation[4], orientation[5], orientation[6]);
-                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, orientation[8], orientation[9], orientation[10]);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
 
                 gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
 
@@ -7172,7 +6933,7 @@
                 const local = applyTransform(point, invert(this.world));
                 const local2d = [local[0], local[2]];
 
-                // count number of intersections of ray from point to infinity with edges of ngon
+                // count nuber of intersections of ray from point to infinity with edges of ngon
                 const count = this.points.reduce((count, point, i) => {
                     const next = (i + 1) % this.points.length;
                     const edge = subtract(this.points[next], point);
@@ -7192,6 +6953,7 @@
                     }
 
                     return count + 1;
+
                 }, 0);
 
                 if (count % 2) {
@@ -7284,13 +7046,13 @@
             },
             Block: {
                 Quad: (s1, s2) => false,
-                Block: (s1, s2) => s1.boxTest(s2),
+                Block: (s1, s2) => s1.blockTest(s2),
                 BevelledBlock: (s1, s2) => false,
                 WalledBox: (s1, s2) => false,
                 Cylinder: (s1, s2) => false,
                 Frustum: (s1, s2) => false,
                 Icosphere: (s1, s2) => s1.sphereTest(s2),
-                Walls: (s1, s2) => s2.boxTest(s1),
+                Walls: (s1, s2) => false,
                 Prism: (s1, s2) => false,
                 Ngon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
@@ -7362,13 +7124,13 @@
             },
             Walls: {
                 Quad: (s1, s2) => false,
-                Block: (s1, s2) => s1.boxTest(s2),
+                Block: (s1, s2) => false,
                 BevelledBlock: (s1, s2) => false,
                 WalledBox: (s1, s2) => false,
                 Cylinder: (s1, s2) => false,
                 Frustum: (s1, s2) => false,
                 Icosphere: (s1, s2) => false,
-                Walls: (s1, s2) => s1.wallTest(s2),
+                Walls: (s1, s2) => false,
                 Prism: (s1, s2) => false,
                 Ngon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
@@ -7422,9 +7184,8 @@
             const resolve = InterferenceTests[shape1.constructor.name];
             if (resolve) {
                 const test = resolve[shape2.constructor.name];
-                if (test && test(shape1, shape2)) {
-                    shape2.constraint();
-                    return true;
+                if (test) {
+                    return test(shape1, shape2);
                 }
             }
             return false;
@@ -9556,37 +9317,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Return the intercept point of a line and plane.
-         */
-        function planeSegmentIntercept(line, plane) {
-            const t = distanceToPlane(line, plane);
-            if (t >= 0 && t <= 1) {
-                return sum(line.point, scale(line.direction, t));
-            }
-        }
-
-        /**
-         * Return true if the edge intercepts the quad face.
-         */
-        function edgeFaceIntercept(edge, face) {
-            const side1 = subtract(face.point1, face.point2);
-            const side2 = subtract(face.point3, face.point2);
-            const normal = cross(side1, side2);
-
-            const t = distanceToPlane(edge, { point: face.point2, normal });
-            if (t >= 0 && t <= 1) {
-                const point = sum(edge.point, scale(edge.direction, t));
-                const vector = subtract(point, face.point2);
-                const u = dot(vector, side1) / dot(side1, side1);
-                const v = dot(vector, side2) / dot(side2, side2);
-                const sgn = dot(normal, cross(side1, vector)) * dot(normal, cross(vector, side2));
-                return sgn > 0 && u >= 0 && u <= 1 && v >= 0 && v <= 1;
-            }
-            return false;
-        }
-
-
-        /**
          * Determine the intercept of a line and convex hull defined by a list of planes
          */
         function convexHullIntercept(line, planes) {
@@ -9968,7 +9698,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     action.item = hits[0].item;
                     action.item.showInfo();
-                    if (event.metaKey && action.item.material) {
+                    if (event.shiftKey && action.item.material) {
                         materialControl(action.item.material, [action.item]);
                     }
 
@@ -9998,7 +9728,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             const selected = app.view[0].items.filter((item) => item.node.selected);
                             selected.forEach((item) =>
                                 item.apply((item) => item.start = [...item.transform.matrix]));
-                            //app.view[0].ground.origin = action.plane.point;
+                            app.view[0].ground.origin = action.plane.point;
                             app.view[0].ground.normal = action.plane.normal;
 
                             showItem(selected[0]);
@@ -10026,7 +9756,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                                 selected.forEach((selected) => {
                                     selected.statusColour = null;
-                                    selected.move(delta, !event.shiftKey);
+                                    selected.move(delta);
                                     selected.update();
                                 });
                                 const pt = applyTransform(selected[0].origin, selected[0].world);
