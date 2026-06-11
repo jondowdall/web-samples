@@ -2442,6 +2442,7 @@
             items: [],
             stock: {},
             nodes: [],
+            named: {},
             points: [],
             vectors: [],
             connections: [],
@@ -3982,16 +3983,16 @@
                 ctx.arc(...projected, 5, 0, 2 * Math.PI);
                 ctx.fill();
             });
-/*
-            gl.bindVertexArray(app.pointVertexArray);
-
-            gl.disable(gl.DEPTH_TEST);
-            gl.uniform1i(app.pbrShader.effects, 0);
-            gl.uniform1i(app.pbrShader.pass, 0);
-
-            gl.drawArrays(gl.POINTS, 0, app.points.length);
-            gl.enable(gl.DEPTH_TEST);
-            */
+            /*
+                        gl.bindVertexArray(app.pointVertexArray);
+            
+                        gl.disable(gl.DEPTH_TEST);
+                        gl.uniform1i(app.pbrShader.effects, 0);
+                        gl.uniform1i(app.pbrShader.pass, 0);
+            
+                        gl.drawArrays(gl.POINTS, 0, app.points.length);
+                        gl.enable(gl.DEPTH_TEST);
+                        */
         }
 
 
@@ -4838,6 +4839,11 @@
                 this.origin = [0, 0, 0];
                 this.transform = new Transform();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+                const transform = getAttribute(node, 'transform');
+                if (transform) {
+                    this.transform.multiply(transform);
+                }
 
                 name = this.node[meta].name[0] || name;
                 this.name = name;
@@ -6250,7 +6256,6 @@
             constructor(node, parent) {
                 super(node, parent, 'Walls');
                 this.children = [];
-
                 this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.material = {
@@ -7130,7 +7135,7 @@
                 this.pointCount = indices.length;
             }
             render(time) {
-                
+
                 const orientation = extractRotation(this.world);
                 gl.vertexAttrib4f(app.pbrShader.model + 0, this.world[0], this.world[1], this.world[2], this.world[3]);
                 gl.vertexAttrib4f(app.pbrShader.model + 1, this.world[4], this.world[5], this.world[6], this.world[7]);
@@ -8531,7 +8536,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             let process = true;
-            app.named = {};
             const customFunctions = {
                 zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
             }
@@ -10245,13 +10249,223 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * parse an svg path to a wall definition.
+         */
+        function parsePath(text) {
+            let mode;
+            let state;
+            let result = '';
+            const setState = (newState, char='') => {
+                state = newState;
+                state.value = char;
+                state.started = char !== '';
+            }
+            const states = {
+                initial(char) {
+                    if (char === 'm') {
+                        mode = 'relative';
+                        state = states.readX;
+                        state.value = '';
+                    }
+                    if (char === 'M') {
+                        mode = 'absolute';
+                        setState(states.readX);
+                    }
+                },
+                readX(char) {
+                    if (/[-0-9.]/.test(char)) {
+                        state.value += char;
+                        state.started = true;
+                    } else if (state.started) {
+                        /*
+                        if (state.value[0] === '-') {
+                            result += ` -${state.value.slice(1)}`;
+                        } else {
+                            result += ` -${state.value}`;
+                        }
+                            */
+                        result += ` ${state.value} `;
+                        setState(states.readY);
+                    }
+                },
+                readY(char) {
+                    if (/[-0-9.]/.test(char)) {
+                        state.value += char;
+                        state.started = true;
+                    } else if (state.started) {
+                        result += ` ${state.value}`;
+                        setState(states.nextCommand);
+                    }
+                },
+                negateValue(char) {
+                    if (/[-0-9.]/.test(char)) {
+                        state.value += char;
+                        state.started = true;
+                    } else if (state.started) {
+                        /*
+                        if (state.value[0] === '-') {
+                            result += ` -${state.value.slice(1)} `;
+                        } else {
+                            result += ` -${state.value} `;
+                        }
+                            */
+                        result += ` ${state.value} `;
+                        setState(states.nextCommand);
+                    }
+                },
+                nextCommand(char) {
+                    if (/[-0-9.]/.test(char)) {
+                        if (mode === 'relative') {
+                            result += ', d';
+                            state = states.readX;
+                            state.value = char;
+                            state.started = true;
+                        } else if (mode === 'absolute') {
+                            result += ', ';
+                            setState(states.readX, char);
+                        } else {
+                            result += `, ${mode}`;
+                            setState(states.readY, char);
+                        }
+                    } else if (char === 'L') {
+                        result += ', ';
+                        setState(states.readX);
+                    } else if (char === 'l') {
+                        result += ', d ';
+                        setState(states.readX);
+                    } else if (/[vV]/.test(char)) {
+                        mode = char;
+                        result += `, ${char}`;
+                        setState(states.readY);
+                    } else if (/[hH]/.test(char)) {
+                        mode = char;
+                        result += `, ${char}`;
+                        setState(states.negateValue);
+                    }
+                },
+            }
+            state = states.initial;
+
+            for (const char of text) {
+                state(char);                    
+            }
+            // Add a space to process the last value
+            if (state.value) {
+                state(' ');
+            }
+
+            return result;
+        }
+
+        /**
+         * parse an svg path to a wall definition.
+         */
+        function parseTransform(text) {
+            const match = text.match(/matrix\(([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)\)/);
+            if (match) {
+                return [
+                    match[1], 0, match[2], 0,
+                    0, 1, 0, 0,
+                    match[3], 0, match[4], 0,
+                    match[5], 0, match[6], 1].map((s) => Number(s));
+            }
+            return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        }
+
+        /**
+         * Process an svg file to generate a 3D model
+         * 
+         * Currently only parses path objects, ignoring context.
+         */
+        function processSVG(text) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(text, 'image/svg+xml');
+
+            app.graph = {
+                [meta]: {},//{ name: '', inherited: {} },
+                [children]: [],
+            };
+
+            let groupNode;
+            for (const group of doc.lastElementChild.getElementsByTagName('g')) {
+                const label = group.getAttribute('inkscape:label');
+                if (label) {
+                    const name = label.replace(/[^\|]+\|/, '');
+                    if (name.includes('TEXT')) {
+                        grouNode = null;
+                    } else {
+                        groupNode = {
+                            name,
+                            position: [0, 0, 0],
+                            size: [0, 0, 0],
+                            [meta]: {
+                                source: {text: ''},
+                                name: [name],
+                                data: [],
+                                typeNames: [],
+                                parent: null,
+                                states: {},
+                                currentState: new Set(),
+                            },
+                            [children]: [],
+                        };
+                        if (group.getAttribute('transform')) {
+                            groupNode.transform = parseTransform(group.getAttribute('transform'));
+                        }
+
+                        app.graph[children].push(groupNode);
+                    }
+                }
+                for (const path of group.getElementsByTagName('path')) {
+                    const svgPath = path.getAttribute('d');
+                    if (groupNode && !/ [cC] /.test(svgPath)) {
+                        const local = parsePath(svgPath);
+                        const pathNode = {
+                            name: path.id,
+                            position: [0, 0, 0],
+                            path: local.trim().split(/\s*,\s*/g),
+                            height: 100,
+                            thickness: 10,
+                            [meta]: {
+                                source: {text: ''},
+                                name: [path.id],
+                                data: [],
+                                typeNames: [],
+                                parent: groupNode,
+                                states: {},
+                                currentState: new Set(),
+                            },
+                            [children]: [],
+                        };
+                        if (path.getAttribute('transform')) {
+                            pathNode.transform = parseTransform(path.getAttribute('transform'));
+                        }
+                        app.named[path.id] = pathNode;
+                        groupNode[children].push(pathNode);
+                    }
+                }
+            }
+            app.view[0].update(app.graph, null, true);
+            showTree();
+            showModel(app.graph);
+            updateText();
+            showSceneData();
+            showStock();
+            app.view.forEach((view) => view.updateMaterials());
+        }
+
+        /**
          * Load file
          */
         async function loadFile(url) {
             app.sourceFile = url;
             const result = await fetch(url);
             const content = await result.text();
-            processDefinition(content, true);
+            if (app.sourceFile.endsWith('.svg')) {
+                processSVG(content, true);
+            } else {
+                processDefinition(content, true);
+            }
         }
 
         /**
