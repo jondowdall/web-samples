@@ -2107,10 +2107,11 @@
                     let descend = false;
                     const size = Math.hypot(...getAttribute(node, 'size', [0, 0, 0]));
                     if (getAttribute(node, 'obj')) {
-                        //item = getOBJ(node, parent);
                         item = new LightWaveObject(node, parent);
                     } else if (getAttribute(node, 'gltf')) {
                         item = loadGLTF(getAttribute(node, 'gltf'));
+                    } else if (getAttribute(node, 'svg')) {
+                        item = new SVGObject(node, parent);
                     } else if (getAttribute(node, 'bevel')) {
                         item = new BevelledBlock(node, parent);
                     } else if (getAttribute(node, 'walls') && size > 0) {
@@ -2185,7 +2186,7 @@
                     this.items = [];
                     this.renderQueue.forEach((item) => item.reset());
                 }
-                graph[children].forEach((node) => this.addItem(node, parent, parent === undefined));
+                graph[children].forEach((node) => this.addItem(node, parent));
             }
             render(time) {
                 const width = ctx.canvas.width;
@@ -6233,14 +6234,17 @@
                     const curvePoints = 15;
                     const [dx1, dy1, dx2, dy2, dx, dy] = point.replace(/c\s*/, '').split(/\s+/g).map((v) => Number(v));
                     const c1 = [last[0] + dx1, last[1] + dy1];
-                    const c2 = [c1[0] + dx2, c1[1] + dy2]
+                    const c2 = [last[0] + dx2, last[1] + dy2]
                     const start = last;
-                    const end = [c2[0] + dx, c2[1] + dy];
+                    const end = [last[0] + dx, last[1] + dy];
                     for (let i = 1; i <= curvePoints; ++i) {
                         const p = i / curvePoints;
                         const p1 = sum(start, scale(subtract(c1, start), p));
-                        const p2 = sum(c2, scale(subtract(end, c2), p));
-                        const point = sum(p1, scale(subtract(p2, p1), p));
+                        const p2 = sum(c1, scale(subtract(c2, c1), p));
+                        const p3 = sum(c2, scale(subtract(end, c2), p));
+                        const p21 = sum(p1, scale(subtract(p2, p1), p));
+                        const p22 = sum(p2, scale(subtract(p3, p2), p));
+                        const point = sum(p21, scale(subtract(p22, p21), p));
                         points.push(point);
                     }
                 } else if (point.startsWith('C')) {
@@ -6253,8 +6257,11 @@
                     for (let i = 1; i <= curvePoints; ++i) {
                         const p = i / curvePoints;
                         const p1 = sum(start, scale(subtract(c1, start), p));
-                        const p2 = sum(c2, scale(subtract(end, c2), p));
-                        const point = sum(p1, scale(subtract(p2, p1), p));
+                        const p2 = sum(c1, scale(subtract(c2, c1), p));
+                        const p3 = sum(c2, scale(subtract(end, c2), p));
+                        const p21 = sum(p1, scale(subtract(p2, p1), p));
+                        const p22 = sum(p2, scale(subtract(p3, p2), p));
+                        const point = sum(p21, scale(subtract(p22, p21), p));
                         points.push(point);
                     }
                 } else if (point.startsWith('z')) {
@@ -7318,13 +7325,18 @@
             constructor(node, parent) {
                 super(node, parent, 'prism');
                 this.children = [];
-                this.textureParameters = [app.white.x, app.white.y, app.white.width, app.white.height];
+                this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
                 this.material = {
-                    colour: [0.6, 0.3, 0.8],
+                    colour: getAttribute(node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
-                    materialParameters: [0.1, 1, 0.1, 0.3],
+                    materialParameters: [
+                        getAttribute(node, 'roughness', 0.1),
+                        getAttribute(node, 'opacity', 1),
+                        getAttribute(node, 'metalic', 0.1),
+                        getAttribute(node, 'mirror', 0.3),
+                    ],
                 }
                 this.height = getAttribute(node, 'height', 1);
                 this.getPoints();
@@ -7358,9 +7370,9 @@
                 gl.disableVertexAttribArray(app.pbrShader.model + 1);
                 gl.disableVertexAttribArray(app.pbrShader.model + 2);
                 gl.disableVertexAttribArray(app.pbrShader.model + 3);
-                gl.vertexAttrib4f(app.pbrShader.model + 0, this.width / 1000, 0, 0, 0);
-                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, this.height, 0, 0);
-                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, this.depth / 1000, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, 1, 0, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, 0, 1, 0, 0);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, 0, 0, 1, 0);
                 gl.vertexAttrib4f(app.pbrShader.model + 3, 0, 0, 0, 1);
 
                 gl.disableVertexAttribArray(app.pbrShader.normalMatrix);
@@ -7382,8 +7394,8 @@
                 gl.disableVertexAttribArray(app.pbrShader.materialParameters);
                 gl.vertexAttrib4f(app.pbrShader.materialParameters, ...this.material.materialParameters);
 
-                gl.disableVertexAttribArray(app.pbrShader.textureParameters);
-                gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
+                gl.disableVertexAttribArray(app.pbrShader.texture);
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 gl.bindVertexArray(null);
             }
@@ -7398,7 +7410,7 @@
                 this.depth = 0.5 * (maxy - miny);
                 //this.points = this.points.map((point) => [(point[0] - minx) / this.width - 1, (point[1] - miny) / this.depth - 1]);
 
-                this.segments = this.points.map((point, i) => {
+                this.segments = this.points.slice(0, -1).map((point, i) => {
                     const next = (i + 1) % this.points.length;
                     return {
                         centre: [(point[0] + this.points[next][0]) / 2, this.height / 2, (point[1] + this.points[next][1]) / 2],
@@ -7457,23 +7469,45 @@
                     length += Math.hypot(...vectors[i]);
                     const u2 = length / perimeter;
 
-                    vertices.push(point[0], -1, point[1], ...normal, 0, u1);
-                    vertices.push(point[0], 1, point[1], ...normal, 1, u1);
-                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, 1, u2);
-                    vertices.push(point[0], -1, point[1], ...normal, 0, u1);
-                    vertices.push(nextPoint[0], 1, nextPoint[1], ...normal, 1, u2);
-                    vertices.push(nextPoint[0], -1, nextPoint[1], ...normal, 0, u2);
+                    vertices.push(point[0], 0, point[1], ...normal, 0, u1);
+                    vertices.push(point[0], this.height, point[1], ...normal, 1, u1);
+                    vertices.push(nextPoint[0], this.height, nextPoint[1], ...normal, 1, u2);
+                    vertices.push(point[0], 0, point[1], ...normal, 0, u1);
+                    vertices.push(nextPoint[0], this.height, nextPoint[1], ...normal, 1, u2);
+                    vertices.push(nextPoint[0], 0, nextPoint[1], ...normal, 0, u2);
                 });
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
             render(time) {
+
+                const orientation = extractRotation(this.world);
+                gl.vertexAttrib4f(app.pbrShader.model + 0, this.world[0], this.world[1], this.world[2], this.world[3]);
+                gl.vertexAttrib4f(app.pbrShader.model + 1, this.world[4], this.world[5], this.world[6], this.world[7]);
+                gl.vertexAttrib4f(app.pbrShader.model + 2, this.world[8], this.world[9], this.world[10], this.world[11]);
+                gl.vertexAttrib4f(app.pbrShader.model + 3, this.world[12], this.world[13], this.world[14], this.world[15]);
+
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, orientation[0], orientation[1], orientation[2]);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, orientation[4], orientation[5], orientation[6]);
+                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, orientation[8], orientation[9], orientation[10]);
+
                 gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
+
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
+
+                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
+
+                gl.vertexAttrib4f(app.pbrShader.materialParameters, ...this.material.materialParameters);
+
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
+
                 gl.uniform1i(app.pbrShader.effects, 0);
 
                 gl.bindVertexArray(this.vao);
-                gl.drawArrays(gl.TRIANGLES, 0, this.points.length * 6);
+                gl.drawArrays(gl.TRIANGLES, 0, this.segments.length * 6);
                 gl.bindVertexArray(null);
             }
             get vertices() {
@@ -8258,7 +8292,7 @@
         }
 
         /**
-         * Class for light wave objects
+         * Class for lightwave objects
          */
         class LightWaveObject extends Shape {
             static loaded = {};
@@ -8393,7 +8427,6 @@
                 positions.forEach((point) =>
                     vectorScale(add(point, offset), reciprical(size)));
 
-
                 await Promise.all(promisedMaterials).then((values) =>
                     values.forEach((value) => Object.assign(materials, value)));
 
@@ -8453,7 +8486,6 @@
                 });
                 LightWaveObject.pending[this.url].forEach((obj) =>
                     obj.scale(scale(size, modelScale)));
-
             }
             intersects(line, all) {
                 const transform = this.world;
@@ -8490,6 +8522,134 @@
             }
             closestVertex(line) {
                 return { distance: Infinity, point: null };
+            }
+        }
+
+        /**
+         * Class for svg objects
+         */
+        class SVGObject extends Shape {
+            static loaded = {};
+            static pending = {};
+            constructor(node, parent) {
+                super(node, parent, `block`);
+
+                this.url = getAttribute(node, 'svg');
+                this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
+
+                const nodes = SVGObject.loaded[this.url];
+                // If nodes non-null load has started
+                if (nodes) {
+                    // Check whether load is complete
+                    if (nodes.length) {
+                        // Duplicate the nodes
+                        this.node[children].push(...nodes.map((node) => Object.assign({}, node)));
+                    } else {
+                        // Add this object to the list to be populated when load complete
+                        SVGObject.pending[this.url].push(this);
+                    }
+                } else {
+                    SVGObject.loaded[this.url] = [];
+                    SVGObject.pending[this.url] = [this];
+                    this.load(this.url);
+                }
+            }
+            /**
+             * Load data from an svg file
+             */
+            async load(url) {
+                const response = await fetch(url);
+                if (response.ok) {
+                    const content = await response.text();
+                    this.parse(content, url);
+                }
+            }
+            /**
+             * Process data an svg file to make child objects.
+             */
+            async parse(text) {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'image/svg+xml');
+
+                const nodes = [];
+                let groupNode;
+                let style = {};
+                const styles = getAttribute(this.node, 'group styles', []).reduce((styles, style) => {
+                    styles[style.name] = style;
+                    return styles;
+                }, {});
+                for (const group of doc.lastElementChild.getElementsByTagName('g')) {
+                    const label = group.getAttribute('inkscape:label');
+                    if (label) {
+                        const name = label.replace(/[^\|]+\|/, '');
+                        // Check for processing of SVG element based on group name.
+                        style = styles[name] || {};
+                        if (style.hidden) {
+                            groupNode = null;
+                        } else {
+                            groupNode = {
+                                name,
+                                position: [0, 0, 0],
+                                size: [0, 0, 0],
+                                [meta]: {
+                                    source: { text: '' },
+                                    name: [name],
+                                    data: [],
+                                    typeNames: [],
+                                    parent: null,
+                                    states: {},
+                                    currentState: new Set(),
+                                },
+                                [children]: [],
+                            };
+                            if (group.getAttribute('transform')) {
+                                groupNode.transform = parseTransform(group.getAttribute('transform'));
+                            }
+                            nodes.push(groupNode);
+                        }
+                    }
+                    for (const path of group.getElementsByTagName('path')) {
+                        const svgPath = path.getAttribute('d');
+                        if (groupNode) { //} && !/ [cC] /.test(svgPath)) {
+                            const local = parsePath(svgPath);
+                            let pathNode = Object.assign(
+                                {},
+                                style,
+                                {
+                                    name: path.id,
+                                    position: style.position || [0, 0, 0],
+                                    path: local.trim().split(/\s*,\s*/g),
+                                    [meta]: {
+                                        source: { text: '' },
+                                        name: [path.id],
+                                        data: [],
+                                        typeNames: [],
+                                        parent: groupNode,
+                                        states: {},
+                                        currentState: new Set(),
+                                    },
+                                    [children]: [],
+                                }
+                            );
+                            if (path.getAttribute('transform')) {
+                                pathNode.transform = parseTransform(path.getAttribute('transform'));
+                            }
+                            app.named[path.id] = pathNode;
+                            groupNode[children].push(pathNode);
+                        }
+                    }
+                }
+
+                SVGObject.pending[this.url].forEach((pending) =>
+                    pending.node[children].push(...nodes.map((node) => Object.assign({}, node))));
+
+                // Reprocess the graph
+                app.view[0].update(this.node, this.node.parent, false);
+                showTree();
+                showModel(app.graph);
+                updateText();
+                showSceneData();
+                showStock();
             }
         }
 
@@ -9405,7 +9565,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         path: this.stack.map((local) => local.object),
                         defaultParameters: [...defaultParameters],
                         object: this.stack.findLast((local) => local.object)?.object,
-                        parameter: this.stack.findLast((local) => local.parameter)?.parameter,
                         names: scope.stack.flatMap((local) => local.name ?? []).reverse(),
                         index: scope.stack.flatMap((local) => local.index ?? []).reverse(),
                     };
@@ -9506,8 +9665,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             }
                         } else if (first) {
                             local.object[meta].name.push(field);
-                        } else if (last) {
-                            local.parameter = field;
                         } else {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
@@ -9519,7 +9676,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 if (line.fields.length === 1) {
                     if (line.fields[0].endsWith('=')) { // line ends in '=' add children as attributes for last parameter
                         const parameter = line.fields[0].replace(/\s*=$/, '');
-                        const parent = node[meta].context.path.at(-2);
+                        const parent = node[meta].parent;
+                        const { context, local } = scope.start();
+                        local.object = {};
+                        const children = line.children.flatMap((line) => line.action(line));
                         parent[parameter] = line.children.flatMap((line) => line.action(line));
                         scope.end();
                         return [];
@@ -9533,7 +9693,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 } else if (line.fields.length > 1) {
                     local.object = node;
                     if (line.fields.at(-1).endsWith('=')) {
-                        local.parameter = line.fields.at(-1).replace(/\s*=$/, '');
                         line.fields.pop();
                     }
                     line.fields.forEach((field, index) => processField(node, field, index === 0, index === line.fields.length - 1));
@@ -11077,62 +11236,34 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             let mode;
             let state;
             let result = '';
-            const setState = (newState, char = '') => {
+            const setState = (newState, count = 1, char = '') => {
                 state = newState;
                 state.value = char;
                 state.started = char !== '';
+                state.remaining = count;
             }
             const states = {
                 initial(char) {
                     if (char === 'm') {
                         mode = 'relative';
-                        state = states.readX;
+                        setState(states.readValues, 2);
                         state.value = '';
                     }
                     if (char === 'M') {
                         mode = 'absolute';
-                        setState(states.readX);
+                        setState(states.readValues, 2);
                     }
                 },
-                readX(char) {
+                readValues(char) {
                     if (/[-0-9.]/.test(char)) {
                         state.value += char;
                         state.started = true;
                     } else if (state.started) {
                         result += ` ${state.value} `;
-                        setState(states.readY);
-                    }
-                },
-                readY(char) {
-                    if (/[-0-9.]/.test(char)) {
-                        state.value += char;
-                        state.started = true;
-                    } else if (state.started) {
-                        result += ` ${state.value}`;
-                        setState(states.nextCommand);
-                    }
-                },
-                negateValue(char) {
-                    if (/[-0-9.]/.test(char)) {
-                        state.value += char;
-                        state.started = true;
-                    } else if (state.started) {
-                        result += ` ${state.value} `;
-                        setState(states.nextCommand);
-                    }
-                },
-                curvePoints(char) {
-                    if (/[-0-9.]/.test(char)) {
-                        state.value += char;
-                        if (!state.started) {
-                            state.count = 1;
-                        }
-                        state.started = true;
-                    } else if (state.started) {
-                        result += ` ${state.value} `;
-                        state.count += 1;
                         state.value = '';
-                        if (state.count > 6) {
+                        state.started = false;
+                        state.remaining -= 1;
+                        if (state.remaining <= 0) {
                             setState(states.nextCommand);
                         }
                     }
@@ -11141,38 +11272,37 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     if (/[-0-9.]/.test(char)) {
                         if (mode === 'relative') {
                             result += ', d';
-                            state = states.readX;
-                            state.value = char;
+                            setState(states.readValues, 2, char);
                             state.started = true;
                         } else if (mode === 'absolute') {
                             result += ', ';
-                            setState(states.readX, char);
+                            setState(states.readValues, 2, char);
                         } else {
                             result += `, ${mode}`;
                             if (/[cC]/.test(mode)) {
-                                setState(states.curvePoints);
+                                setState(states.readValues, 6, char);
                             } else {
-                                setState(states.readY, char);
+                                setState(states.readValues, 1, char);
                             }
                         }
                     } else if (char === 'L') {
                         result += ', ';
-                        setState(states.readX);
+                        setState(states.readValues, 2);
                     } else if (char === 'l') {
                         result += ', d ';
-                        setState(states.readX);
+                        setState(states.readValues, 2);
                     } else if (/[vV]/.test(char)) {
                         mode = char;
                         result += `, ${char}`;
-                        setState(states.readY);
+                        setState(states.readValues);
                     } else if (/[hH]/.test(char)) {
                         mode = char;
                         result += `, ${char}`;
-                        setState(states.negateValue);
+                        setState(states.readValues);
                     } else if (/[cC]/.test(char)) {
                         mode = char;
                         result += `, ${char}`;
-                        setState(states.curvePoints);
+                        setState(states.readValues, 6);
                     }
                 },
             }
@@ -11190,7 +11320,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * parse an svg path to a wall definition.
+         * Convert an SVG transform into a general transform matrix.
          */
         function parseTransform(text) {
             const match = text.match(/matrix\(([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)\)/);
