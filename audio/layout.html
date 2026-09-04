@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width" />
+    <title>Layout</title>
+    <style>
+        html {
+            box-sizing: border-box;
+            font-family: sans-serif;
+            font-size: 10pt;
+        }
+
+        *,
+        *:before,
+        *:after {
+            box-sizing: inherit;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100dvw;
+            height: 100dvh;
+            background-color: rgb(15, 15, 50);
+            position: relative;
+        }
+
+        #container {
+            display: grid;
+            width: calc(100dvw - 2em);
+            height: calc(100dvh - 2em);
+            margin: 0.5em;
+        }
+
+        .item {
+            position: relative;
+            margin: 2px;
+            border: 2px solid greenyellow;
+            color: white;
+            border-radius: 5px;
+            background-color: rgb(15, 15, 75);
+            padding: 0.4em;
+        }
+
+        #overlay {
+            position: fixed;
+            bottom: 1em;
+            right: 1em;
+            border-radius: 0.5em;
+            padding: 0.5em;
+            background: white;
+            box-shadow: 5px 5px 5px rgb(200, 200, 200, 0.9);
+        }
+
+        #indicator {
+            border: 3px dashed rgb(150, 150, 150, 0.6);
+            background-color: rgb(150, 150, 150, 0.8);
+            border-radius: 0.5em;
+            padding: 0.5em;
+        }
+
+        .corner-control {
+            border: 1px solid darkgray;
+            background-color: rgb(150, 150, 150, 0.6);
+            width: 1em;
+            height: 1em;
+            border-radius: 0.5em;
+            position: absolute;
+        }
+
+        .edge-control {
+            border: 1px solid darkgray;
+            background-color: rgb(150, 150, 150, 0.6);
+            border-radius: 0.5em;
+            position: absolute;
+        }
+
+        #top-left {
+            top: 0;
+            left: 0;
+            transform: translate(-50%, -50%);
+            cursor: nwse-resize
+        }
+
+        #top-right {
+            top: 0;
+            right: 0;
+            transform: translate(50%, -50%);
+            cursor: nesw-resize
+        }
+
+        #bottom-left {
+            bottom: 0;
+            left: 0;
+            transform: translate(-50%, 50%);
+            cursor: nesw-resize
+        }
+
+        #bottom-right {
+            bottom: 0;
+            right: 0;
+            transform: translate(50%, 50%);
+            cursor: nwse-resize
+        }
+
+
+        #left {
+            top: 50%;
+            left: 0;
+            transform: translate(-50%, -50%);
+            width: 1em;
+            height: 3em;
+            cursor: ew-resize
+        }
+
+        #right {
+            top: 50%;
+            right: 0;
+            transform: translate(50%, -50%);
+            width: 1em;
+            height: 3em;
+            cursor: ew-resize
+        }
+
+        #top {
+            top: 0%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 3em;
+            height: 1em;
+            cursor: ns-resize
+        }
+
+        #bottom {
+            bottom: 0;
+            left: 50%;
+            transform: translate(-50%, 50%);
+            width: 3em;
+            height: 1em;
+            cursor: ns-resize
+        }
+
+        .hide {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="container" tabindex="1">
+        <div id="indicator" class="hide"></div>
+    </div>
+
+    <div id="top-left" class="hide corner-control"></div>
+    <div id="top-right" class="hide corner-control"></div>
+    <div id="bottom-left" class="hide corner-control"></div>
+    <div id="bottom-right" class="hide corner-control"></div>
+
+    <div id="left" class="hide edge-control"></div>
+    <div id="right" class="hide edge-control"></div>
+    <div id="top" class="hide edge-control"></div>
+    <div id="bottom" class="hide edge-control"></div>
+
+    <script>
+        const app = {};
+        const log = [];
+        const layout = {};
+        const action = {};
+
+        /**
+         * Handle a mouse move event based on the current action.
+         */
+        function mouseMove(event) {
+            if (action.mouseMove) {
+                action.mouseMove(event);
+            }
+        }
+
+        /**
+         * Handle a mouse up event based on the current action.
+         */
+        function mouseUp(event) {
+            if (action.mouseUp) {
+                const next = action.mouseUp(event);
+                if (next) {
+                    action.mouseMove = next.mouseMove;
+                    action.mouseUp = next.mouseUp;
+                } else {
+                    action.mouseMove = null;
+                    action.mouseUp = null;
+                }
+                saveLayout();
+            } else {
+                action.mouseMove = null;
+                action.mouseUp = null;
+            }
+        }
+
+        /**
+         * Log info string, displaying to console if enabled.
+         */
+        function info(message) {
+            const time = new Date();
+            log.push({ time: time.getTime(), message });
+            if (app.logInfo) {
+                console.log(`${time.toLocaleString()}: ${message}`);
+            }
+        }
+
+        /**
+         * Set the layout state from the given state.
+         */
+        function setState(state) {
+            const container = document.getElementById('container');
+            layout.columns = state.columns;
+            container.style.gridTemplateColumns = state.columns.join(' ');
+
+            layout.rows = state.rows;
+            container.style.gridTemplateRows = state.rows.join(' ');
+
+            layout.positions = state.positions;
+
+            const makeNode = (name) => {
+                const node = document.createElement('div');
+                node.classList.add('item');
+                node.id = name;
+                node.innerHTML = `<h2>${name}</h2>`;
+                container.append(node);
+                addItemEvents(node);
+
+                return node;
+            }
+
+            Object.entries(state.positions).forEach(([item, position]) => {
+                const node = document.querySelector(item) || makeNode(item);
+
+                if (node) {
+                    node.style.gridColumn = position.column;
+                    node.style.gridRow = position.row;
+                } else {
+                    info(`${item} not found, ignoring.`);
+                }
+            })
+        }
+
+        /**
+         * Get grid geometry
+         */
+        function getGridGeometry() {
+            const grid = document.getElementById('container');
+            const computedStyle = window.getComputedStyle(grid);
+            const widths = computedStyle.gridTemplateColumns.split(' ').map((v) => parseFloat(v));
+            const heights = computedStyle.gridTemplateRows.split(' ').map((v) => parseFloat(v));
+
+            let sum = 0;
+            const columns = [0, ...widths.map((width) => sum += width)];
+            sum = 0;
+            const rows = [0, ...heights.map((height) => sum += height)];
+
+            return { columns, rows, widths, heights };
+        }
+
+
+        /**
+         * Save Layout
+         */
+        function saveLayout() {
+            const layout = {
+                positions: {},
+            };
+            const grid = getGridGeometry();
+            const widths = grid.widths.filter((width) => width > 0);
+            const heights = grid.heights.filter((heights) => heights > 0);
+            const minWidth = Math.min(...widths) || 1;
+            const minHeight = Math.min(...heights) || 1;
+            layout.columns = widths.map((width) => `${(width / minWidth).toFixed(2)}fr`);
+            layout.rows = heights.map((height) => `${(height / minHeight).toFixed(2)}fr`);
+
+            for (const item of document.getElementById('container').querySelectorAll('.item')) {
+                const column = item.style.gridColumn !== 'NaN' ? item.style.gridColumn : '1 / 2';
+                const row = item.style.gridRow !== 'NaN' ? item.style.gridRow : '1 / 2';
+                layout.positions[item.id] = { column, row, };
+            }
+
+            const layoutString = JSON.stringify(layout);
+            localStorage.setItem('layout-test', layoutString);
+        }
+
+        /**
+         * Add item events
+         */
+        function addItemEvents(item) {
+
+            const controlNames = [
+                "top-left", "top-right", "bottom-left", "bottom-right",
+                "left", "right", "top", "bottom",
+            ];
+            const addResizeControls = (item) => {
+                const controls = controlNames.map((name) => document.getElementById(name));
+                controls.forEach((control) => {
+                    item.append(control);
+                    control.classList.remove('hide');
+                });
+            };
+
+            const mouseDown = (event) => {
+                if (event.button === 2) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                }
+                addResizeControls(item);
+                action.item = item;
+                action.layout = getGridGeometry();
+                event.preventDefault();
+                event.stopPropagation();
+
+                const indicator = document.getElementById('indicator');
+                container.append(indicator);
+                container.append(item);
+                const columns = item.style.gridColumn.split('/').map((v) => parseInt(v));
+                const rows = item.style.gridRow.split('/').map((v) => parseInt(v));
+
+                const width = columns[1] - columns[0];
+                const height = rows[1] - rows[0];
+
+                const box = item.getBoundingClientRect();
+                action.xOffset = Math.floor(width * (event.clientX - box.x) / box.width);
+                action.yOffset = Math.floor(height * (event.clientY - box.y) / box.height);
+
+                action.start = {
+                    mouse: { x: event.clientX, y: event.clientY },
+                    item: { x: box.x, y: box.y },
+                }
+                item.style.position = 'absolute';
+                item.style.left = `${box.x}px`;
+                item.style.top = `${box.y}px`;
+                item.style.width = `${box.width}px`;
+                item.style.height = `${box.height}px`;
+
+                indicator.style.gridColumn = item.style.gridColumn;
+                indicator.style.gridRow = item.style.gridRow;
+
+                item.style.gridColumn = null;
+                item.style.gridRow = null;
+                indicator.classList.remove('hide');
+
+                action.mouseMove = (event) => {
+                    const x = action.start.item.x + event.clientX - action.start.mouse.x;
+                    const y = action.start.item.y + event.clientY - action.start.mouse.y;
+
+                    item.style.left = `${x}px`;
+                    item.style.top = `${y}px`;
+
+                    const col = action.layout.columns.findIndex((col) => col > event.clientX) - action.xOffset;
+                    const row = action.layout.rows.findIndex((row) => row > event.clientY) - action.yOffset;
+
+                    indicator.style.gridColumn = `${col} / ${col + columns[1] - columns[0]}`;
+                    indicator.style.gridRow = `${row} / ${row + rows[1] - rows[0]}`;
+                };
+
+                action.mouseUp = (event) => {
+                    const col = action.layout.columns.findIndex((col) => col > event.clientX) - action.xOffset;
+                    const row = action.layout.rows.findIndex((row) => row > event.clientY) - action.yOffset;
+
+                    item.style.position = 'relative';
+                    item.style.left = 0;
+                    item.style.top = 0;
+                    item.style.width = 'auto';
+                    item.style.height = 'auto';
+                    item.style.gridColumn = `${col} / ${col + columns[1] - columns[0]}`;
+                    item.style.gridRow = `${row} / ${row + rows[1] - rows[0]}`;
+
+                    indicator.classList.add('hide');
+                };
+            };
+
+            const mouseUp = (event) => {
+                if (event.button === 2) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    item.parentElement.insertBefore(item, item.parentElement.firstChild);
+                    return;
+                }
+            };
+
+            item.addEventListener('mousedown', mouseDown);
+            item.addEventListener('mouseup', mouseUp);
+            item.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+            });
+        }
+
+        /**
+         * Test function to generate random configuration
+         */
+        function test() {
+            const container = document.getElementById('container');
+            const state = { positions: {} };
+
+            // Generate random columns
+            const cols = Math.floor(1 + Math.random() * 5);
+            state.columns = Array(cols).fill('1fr');
+
+            const rows = Math.floor(1 + Math.random() * 5);
+            state.rows = Array(rows).fill('1fr');
+
+            for (let i = 0; i < 10; ++i) {
+                const node = document.createElement('div');
+                node.classList.add('item');
+                const id = `item-${i + 1}`;
+                node.id = id;
+
+                const startColumn = Math.floor(1 + Math.random() * cols);
+                const endColumn = startColumn + Math.ceil(Math.random() * (1 + cols - startColumn));
+
+                const startRow = Math.floor(1 + Math.random() * rows);
+                const endRow = startRow + Math.ceil(Math.random() * (1 + rows - startRow));
+
+                state.positions[`#${id}`] = {
+                    column: `${startColumn} / ${endColumn}`,
+                    row: `${startRow} / ${endRow}`,
+                }
+
+                node.innerHTML = `<h2>${id}</h2>Column: ${startColumn} / ${endColumn}<br>Row: ${startRow} / ${endRow}`;
+                addItemEvents(node);
+                container.append(node);
+            }
+
+            console.log(state);
+            setState(state);
+        }
+
+
+        /**
+         * Load state from local storage.
+         */
+        function loadState() {
+            const stateString = localStorage.getItem('layout-test');
+            if (stateString) {
+                const state = JSON.parse(stateString);
+                setState(state);
+            }
+        }
+
+        /**
+         * Add mouse events for anywhere in the window.
+         */
+        function addGlobalEvents() {
+            document.body.addEventListener('mousemove', mouseMove);
+            document.body.addEventListener('mouseup', mouseUp);
+
+            const itemInfo = {};
+
+            const initResize = (event) => {
+                const indicator = document.getElementById('indicator');
+                event.preventDefault();
+                event.stopPropagation();
+
+                itemInfo.columns = action.item.style.gridColumn.split('/').map((v) => parseInt(v));
+                itemInfo.rows = action.item.style.gridRow.split('/').map((v) => parseInt(v));
+
+                const box = action.item.getBoundingClientRect();
+
+                action.start = {
+                    mouse: { x: event.clientX, y: event.clientY },
+                    item: box,
+                }
+                action.item.style.position = 'absolute';
+                action.item.style.left = `${box.x}px`;
+                action.item.style.top = `${box.y}px`;
+                action.item.style.width = `${box.width}px`;
+                action.item.style.height = `${box.height}px`;
+
+                indicator.style.gridColumn = action.item.style.gridColumn;
+                indicator.style.gridRow = action.item.style.gridRow;
+
+                action.item.style.gridColumn = null;
+                action.item.style.gridRow = null;
+                indicator.classList.remove('hide');
+
+                action.layout = getGridGeometry();
+                action.mouseUp = endResize;
+            }
+
+            const endResize = () => {
+                action.item.style.position = 'relative';
+                action.item.style.left = 0;
+                action.item.style.top = 0;
+                action.item.style.width = 'auto';
+                action.item.style.height = 'auto';
+
+                action.item.style.gridColumn = indicator.style.gridColumn;
+                action.item.style.gridRow = indicator.style.gridRow;
+
+                indicator.classList.add('hide');
+            }
+
+            const resizeLeft = (event) => {
+                const deltaX = event.clientX - action.start.mouse.x;
+                const x = action.start.item.x + deltaX;
+                const width = action.start.item.width - deltaX;
+
+                action.item.style.left = `${x}px`;
+                action.item.style.width = `${width}px`;
+
+                const col = action.layout.columns.findIndex((col) => col > event.clientX);
+                if (col < itemInfo.columns[1]) {
+                    indicator.style.gridColumn = `${col} / ${itemInfo.columns[1]}`;
+                }
+            };
+
+            const resizeRight = (event) => {
+                const deltaX = event.clientX - action.start.mouse.x;
+                const width = action.start.item.width + deltaX;
+
+                action.item.style.width = `${width}px`;
+
+                const col = action.layout.columns.findIndex((col) => col > event.clientX) + 1;
+                if (col > itemInfo.columns[0]) {
+                    indicator.style.gridColumn = `${itemInfo.columns[0]} / ${col}`;
+                }
+            }
+
+            const resizeTop = (event) => {
+                const deltaY = event.clientY - action.start.mouse.y;
+                const y = action.start.item.y + deltaY;
+                const height = action.start.item.height - deltaY;
+
+                action.item.style.top = `${y}px`;
+                action.item.style.height = `${height}px`;
+
+                const row = action.layout.rows.findIndex((row) => row > event.clientY);
+                if (row < itemInfo.rows[1]) {
+                    indicator.style.gridRow = `${row} / ${itemInfo.rows[1]}`;
+                }
+            }
+
+            const resizeBottom = (event) => {
+                const deltaY = event.clientY - action.start.mouse.y;
+                const height = action.start.item.height + deltaY;
+
+                action.item.style.height = `${height}px`;
+
+                const row = action.layout.rows.findIndex((row) => row > event.clientY) + 1;
+                if (row > itemInfo.rows[0]) {
+                    indicator.style.gridRow = `${itemInfo.rows[0]} / ${row}`;
+                }
+            }
+
+            document.getElementById('left')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeLeft(event);
+                    };
+                });
+
+            document.getElementById('right')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeRight(event);
+                    };
+                });
+
+
+            document.getElementById('top')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeTop(event);
+                    };
+                });
+
+            document.getElementById('bottom')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeBottom(event);
+                    };
+                });
+
+            document.getElementById('top-left')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeTop(event);
+                        resizeLeft(event);
+                    };
+                });
+
+            document.getElementById('top-right')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeTop(event);
+                        resizeRight(event);
+                    };
+                });
+
+            document.getElementById('bottom-left')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeBottom(event);
+                        resizeLeft(event);
+                    };
+                });
+
+            document.getElementById('bottom-right')
+                .addEventListener('mousedown', (event) => {
+                    initResize(event);
+                    action.mouseMove = (event) => {
+                        resizeBottom(event);
+                        resizeRight(event);
+                    };
+                });
+
+
+            const resizeGrid = (event) => {
+                const layout = getGridGeometry();
+                const minWidth = Math.min(...layout.widths);
+                const cols = layout.widths.map((width) => width / minWidth);
+                const minHeight = Math.min(...layout.heights);
+                const rows = layout.heights.map((height) => height / minHeight);
+                if (event.shiftKey) {
+                    if (event.deltaY < 0) {
+                        cols.push('1');
+                        const columns = cols.map((col) => `${col}fr`).join(' ');
+                        container.style.gridTemplateColumns = columns;
+                    } else if (event.deltaY > 0) {
+                        cols.pop();
+                        const columns = cols.map((col) => `${col}fr`).join(' ');
+                        container.style.gridTemplateColumns = columns;
+                    }
+                } else if (event.altKey) {
+                    if (event.deltaY < 0) {
+                        rows.push('1');
+                        const rowString = rows.map((row) => `${row}fr`).join(' ');
+                        container.style.gridTemplateRows = rowString;
+                    } else if (event.deltaY > 0) {
+                        rows.pop();
+                        const rowString = rows.map((row) => `${row}fr`).join(' ');
+                        container.style.gridTemplateRows = rowString;
+                    }
+
+                }
+            };
+
+            const container = document.getElementById('container');
+
+            const keyDown = (event) => {
+                const layout = getGridGeometry();
+                if (event.key === '=') {
+                    const rows = Array(layout.heights.filter((height) => height > 0).length).fill('1fr');
+                    container.style.gridTemplateRows = rows.join(' ');
+                }
+                if (event.key === '+') {
+                    const columns = Array(layout.widths.filter((width) => width > 0).length).fill('1fr');
+                    container.style.gridTemplateColumns = columns.join(' ');
+                }
+                if (event.key === '-') {
+                    if (event.altKey) {
+                        const cols = { start: Infinity, end: -Infinity };
+                        const rows = { start: Infinity, end: -Infinity };
+                        for (const item of container.querySelectorAll('.item')) {
+                            const [startCol, endCol] = item.style.gridColumn.split('/').map((v) => parseInt(v));
+                            const [startRow, endRow] = item.style.gridRow.split('/').map((v) => parseInt(v));
+                            cols.start = Math.min(startCol, cols.start);
+                            cols.end = Math.max(endCol, cols.end);
+                            rows.start = Math.min(startRow, rows.start);
+                            rows.end = Math.max(endRow, rows.end);
+                        }
+                        for (const item of container.querySelectorAll('.item')) {
+                            const [startCol, endCol] = item.style.gridColumn.split('/').map((v) => parseInt(v));
+                            const [startRow, endRow] = item.style.gridRow.split('/').map((v) => parseInt(v));
+                            item.style.gridColumn = `${startCol - cols.start + 1} / ${endCol - cols.start + 1}`;
+                            item.style.gridRow = `${startRow - rows.start + 1} / ${endRow - rows.start + 1}`;
+                        }
+                        const columnTemplate = layout.widths.slice(cols.start - 1, cols.end - 1);
+                        const rowTemplate = layout.heights.slice(rows.start - 1, rows.end - 1);
+
+                        const maxWidth = Math.max(...columnTemplate);
+                        const maxHeight = Math.max(...rowTemplate);
+
+                        container.style.gridTemplateColumns = columnTemplate.map((width) => `${width / maxWidth}fr`).join(' ');
+                        container.style.gridTemplateRows = rowTemplate.map((height) => `${height / maxHeight}fr`).join(' ');
+                    }
+                }
+                console.log(event.key);
+            };
+
+            document.body.addEventListener('keydown', keyDown);
+            container.addEventListener('wheel', resizeGrid);
+        }
+
+        /**
+         * Called when page load complete to initialise controls.
+         */
+        function initialise() {
+            loadState();
+
+            addGlobalEvents();
+
+            //test();
+
+        }
+
+        window.addEventListener('load', initialise);
+    </script>
+</body>
+
+</html>
