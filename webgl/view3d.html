@@ -2001,7 +2001,7 @@
             app.camera.fieldOfView = app.initial.fov;
             app.camera.near = app.initial.near;
             app.camera.far = app.initial.far;
-            app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            //app.aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
 
             app.points = [];
         }
@@ -2342,6 +2342,8 @@
                         item = new BevelledBlock(node, parent);
                     } else if (getAttribute(node, 'walls') && size > 0) {
                         item = new WalledBox(node, parent);
+                    } else if (getAttribute(node, 'apex') && size > 0) {
+                        item = new Shed(node, parent);
                     } else if (getAttribute(node, 'size') && size > 0) {
                         item = new Block(node, parent);
                     } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
@@ -2471,7 +2473,7 @@
                     }
                 }
                 this.items.forEach((item) => item.update(time));
-                
+
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
 
@@ -2508,13 +2510,16 @@
                 if (app.vectors.length > 0) {
                     drawVectors();
                 }
+                if (app.labels.length > 0) {
+                    drawLabels();
+                }
                 if (grid) {
                     drawGrid(grid);
                 }
                 gl.uniform1i(app.pbrShader.pass, 1);
                 gl.depthMask(false);
                 this.renderQueue.forEach((item) => item.render(time));
-            
+
                 if (this.showPoints) {
                     this.items.forEach((item) => item.showPoints());
                 }
@@ -2539,6 +2544,39 @@
                     }
                 });
                 return app.view.shapes.get(node) || [app.view.addItem(node, parent)];
+            }
+        }
+
+
+        /**
+         * Generic details of a product.
+         */
+        class Product {
+            constructor(name, number) {
+                this.name = name;
+                this.number = number;
+                this.parts = [];
+                this.instances = [];
+            }
+        }
+
+        /**
+         * Usage of a product within a parent.
+         */
+        class Part {
+            constructor(context, name) {
+                this.context = context;
+                this.name = name;
+            }
+        }
+
+        /**
+         * Instance of a product.
+         */
+        class Asset {
+            constructor(product, identifier) {
+                this.product = product;
+                this.id = identifier;
             }
         }
 
@@ -2575,6 +2613,7 @@
             selected: new Set(),
             points: [],
             vectors: [],
+            labels: [],
             connections: [],
             text: [],
             roots: [],
@@ -2591,6 +2630,7 @@
             effects: 1,
             product: {
             },
+            get aspect() { return gl.canvas.clientWidth / gl.canvas.clientHeight; },
         };
         app.camera = app.cameras[0];
         app.view = app.views[0];
@@ -3241,7 +3281,7 @@
 
             // Create and bind the framebuffer for MSAA rendering
             app.renderBufferFBO = gl.createFramebuffer();
-            
+
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, app.targetTexture);
 
@@ -4134,6 +4174,26 @@
             ctx.fill();
         }
 
+        /**
+         * Display text on the overlay canvas.
+         */
+        function drawLabels() {
+            const width = ctx.canvas.width;
+            const height = ctx.canvas.height;
+            const transform = app.camera.viewProjection;
+            const screen = (point) => {
+                const projectedPoint = applyTransform4([...point, 1], transform);
+                return [
+                    0.5 * width * (projectedPoint[0] / projectedPoint[3] + 1),
+                    0.5 * height * (1 - projectedPoint[1] / projectedPoint[3])];
+            }
+
+            ctx.fillStyle = 'black';
+            app.labels.forEach((label) => {
+                const position = screen(label.position);
+                ctx.fillText(label.text, ...position);
+            });
+        }
 
         /**
          * Draw points used for debugging.
@@ -4667,7 +4727,7 @@
                 // To rotate about the item origin without impacting scale
                 // Translate to origin, rotate the return to position
                 const rotation = getRotation(angle, axis);
-                
+
                 const offset = this.matrix.slice(12, 15);
                 this.matrix[12] = this.matrix[13] = this.matrix[14] = 0;
                 this.matrix = multiply(this.matrix, rotation);
@@ -5130,7 +5190,8 @@
 
                     if (dist < app.show.distance) {
                         const point = applyTransform4([...origin, 1], app.show.transform);
-                        const size = this.transform.getScale();
+                        //const size = this.transform.getScale();
+                        const size = extractScale(this.world);
                         const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
                         const radius = Math.hypot(...size) / point[3];
 
@@ -5229,9 +5290,12 @@
                 if (!event.shiftKey && siblings.some((sibling) => interferes(this, sibling))) {
                     this.transform.matrix = current;
                 } else {
-                    this.instances.forEach((instance) => instance.updateInstanceData());
+                    this.applyTransform();
                 }
                 this.children.forEach((child) => child.instances.forEach((instance) => instance.updateInstanceData()));
+            }
+            applyTransform() {
+                this.instances.forEach((instance) => instance.updateInstanceData());
             }
             scale(size) {
                 this.transform.scale(size);
@@ -5241,7 +5305,7 @@
             rotate(angle, axis) {
                 this.transform.rotate(angle, axis);
                 this.setWorld(this.parent ? this.parent.world : identityMatrix());
-                this.instances.forEach((instance) => instance.updateInstanceData());
+                this.applyTransform();
             }
             offset(offset) {
                 return;
@@ -5479,7 +5543,7 @@
                     const p = sum(line.point, scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
-                    if (dist < radius) {
+                    if (dist < this.radius) {
                         const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
                         const corner2 = applyTransform([0.5, 0.5, 0.5], this.world);
                         const rotation = extractRotation(this.world);
@@ -5642,8 +5706,412 @@
             }
         }
 
+
         /**
-         * Manage blocks
+         * Create PBR buffers
+         */
+        function createPBRBuffers(material, texture, transform) {
+            transform = transform || identityMatrix();
+            const vertex = gl.createBuffer();
+            const vao = gl.createVertexArray();
+            gl.bindVertexArray(vao);
+
+            let stride = 48;
+            let offset = 0;
+            if (!material) {
+                stride += 36;
+            }
+            if (!texture) {
+                stride += 12;
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertex);
+
+            gl.vertexAttribPointer(app.pbrShader.position, 3, gl.FLOAT, false, stride, offset);
+            gl.enableVertexAttribArray(app.pbrShader.position);
+            offset += 12;
+
+            gl.vertexAttribPointer(app.pbrShader.normal, 3, gl.FLOAT, false, stride, offset);
+            gl.enableVertexAttribArray(app.pbrShader.normal);
+            offset += 12;
+
+            gl.vertexAttribPointer(app.pbrShader.coord, 2, gl.FLOAT, true, stride, offset);
+            gl.enableVertexAttribArray(app.pbrShader.coord);
+            offset += 8;
+
+            gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, stride, offset);
+            gl.enableVertexAttribArray(app.pbrShader.materialParameters);
+            offset += 16;
+
+            if (material) {
+                gl.disableVertexAttribArray(app.pbrShader.colour);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...material.colour);
+
+                gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...material.emissivityColour);
+
+                gl.disableVertexAttribArray(app.pbrShader.reflectivity);
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...material.reflectivity);
+            } else {
+                gl.vertexAttribPointer(app.pbrShader.colour, 4, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.colour);
+                offset += 12;
+
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 4, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+                offset += 12;
+
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 4, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+                offset += 12;
+            }
+
+            if (texture) {
+                gl.disableVertexAttribArray(app.pbrShader.textureParameters);
+                gl.vertexAttrib4f(app.pbrShader.textureParameters, texture.x, texture.y, texture.width, texture.height);
+            } else {
+                gl.vertexAttribPointer(app.pbrShader.textureParameters, 4, gl.FLOAT, false, stride, 32);
+                gl.enableVertexAttribArray(app.pbrShader.textureParameters);
+                offset += 16;
+            }
+
+            gl.disableVertexAttribArray(app.pbrShader.model);
+            gl.disableVertexAttribArray(app.pbrShader.model + 1);
+            gl.disableVertexAttribArray(app.pbrShader.model + 2);
+            gl.disableVertexAttribArray(app.pbrShader.model + 3);
+            gl.vertexAttrib4f(app.pbrShader.model + 0, ...transform.slice(0, 4));
+            gl.vertexAttrib4f(app.pbrShader.model + 1, ...transform.slice(4, 8));
+            gl.vertexAttrib4f(app.pbrShader.model + 2, ...transform.slice(8, 12));
+            gl.vertexAttrib4f(app.pbrShader.model + 3, ...transform.slice(12, 16));
+
+            gl.disableVertexAttribArray(app.pbrShader.normalMatrix);
+            gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 1);
+            gl.disableVertexAttribArray(app.pbrShader.normalMatrix + 2);
+            gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, 1, 0, 0);
+            gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, 0, 1, 0);
+            gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
+
+            gl.bindVertexArray(null);
+            return { vertex, vao };
+        }
+
+
+        /**
+         * Manage shed shapes.
+         * 
+         * To ensure the normals for the roof are correct, all each instance uses it's own
+         * vertex data rather than instancing of other objects.
+         */
+        class Shed extends Shape {
+            constructor(node, parent) {
+                super(node, parent, `block`);
+                // If the shed buffers don't exist create them
+                if (!Shed.buffers) {
+
+                    const material = {
+                        colour: getAttribute(node, 'colour', [0.5, 0.5, 0.5]),
+                        emissivityColour: getAttribute(node, 'emissivity', [0, 0, 0]),
+                        reflectivity: getAttribute(node, 'reflectivity', [0.2, 0.2, 0.2]),
+                        roughness: getAttribute(node, 'roughness', 0.1),
+                        opacity: getAttribute(node, 'opacity', 1),
+                        metallic: getAttribute(node, 'metallic', 0.1),
+                        mirror: getAttribute(node, 'mirror', 0.3),
+                    };
+
+                    const texture = addTexture(getAttribute(node, 'texture', 'white'));
+
+                    Shed.buffers = createPBRBuffers(material, texture);
+                    Shed.vertices = [];
+                    app.view.renderQueue.push(Shed);
+                }
+
+                // Add the vertices for this shed to to buffer.
+                const vertices = this.getVertices();
+                this.offset = Shed.vertices.length * 4;
+                Shed.vertices.push(...vertices);
+                Shed.pointCount = Shed.vertices.length / 12;
+                gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Shed.vertices), gl.DYNAMIC_DRAW);
+            }
+            getVertices() {
+                // Return the vertices for this shed in world space.
+                // The vertices are in groups of 3, representing the triangles that make the shape.
+                const size = getAttribute(this.node, 'size');
+                const apex = getAttribute(this.node, 'apex');
+                //const [w, h, d] = size.map((v) => v);
+                const w2 = 0;
+                const w = 0.5;
+                const d = 0.5;
+                const h = 1;
+
+                const points = [
+                    [
+                        [-w, 0, -d],
+                        [w, 0, d],
+                        [w, 0, -d]],
+                    [
+                        [-w, 0, d],
+                        [w, 0, d],
+                        [-w, 0, -d]],
+                    [
+                        [-w, h, -d],
+                        [-w, 0, -d],
+                        [w2, apex, -d]],
+                    [
+                        [w, 0, -d],
+                        [w2, apex, -d],
+                        [-w, 0, -d]],
+                    [
+                        [w, h, -d],
+                        [w2, apex, -d],
+                        [w, 0, -d]],
+                    [
+                        [-w, 0, d],
+                        [-w, h, d],
+                        [w2, apex, d]],
+                    [
+                        [-w, 0, d],
+                        [w2, apex, d],
+                        [w, 0, d]],
+                    [
+                        [w, 0, d],
+                        [w2, apex, d],
+                        [w, h, d]],
+                    [
+                        [-w, 0, -d],
+                        [-w, h, -d],
+                        [-w, 0, d]],
+                    [
+                        [-w, 0, d],
+                        [-w, h, -d],
+                        [-w, h, d]],
+                    [
+                        [w, 0, d],
+                        [w, h, -d],
+                        [w, 0, -d]],
+                    [
+                        [w, h, d],
+                        [w, h, -d],
+                        [w, 0, d]],
+                    [
+                        [-w, h, -d],
+                        [w2, apex, -d],
+                        [-w, h, d]],
+                    [
+                        [-w, h, d],
+                        [w2, apex, -d],
+                        [w2, apex, d]],
+
+                    [
+                        [w, h, d],
+                        [w2, apex, -d],
+                        [w, h, -d]],
+                    [
+                        [w, h, d],
+                        [w2, apex, d],
+                        [w2, apex, -d]],
+                ].flatMap((triangle) => {
+                    const points = triangle.map((point) => applyTransform(point, this.world));
+                    const normal = cross(subtract(points[1], points[0]), subtract(points[2], points[0]));
+                    return [
+                        ...points[0], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
+                        ...points[1], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
+                        ...points[2], ...normal, 0, 0, 0.1, 1, 0.1, 0.3];
+                });
+                return points;
+            }
+            applyTransform() {
+                const vertices = this.getVertices();
+                gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
+                gl.bufferSubData(gl.ARRAY_BUFFER, this.offset, new Float32Array(vertices));
+            }
+            intersects(line, all) {
+                const radius = Math.hypot(...this.transform.getScale());
+
+                const centre = applyTransform([0, 0, 0], this.world);
+
+                if (radius === 0) {
+                    return this.children.flatMap((child) => child.intersects(line));
+                } else {
+                    const l = dot(line.direction, subtract(centre, line.point));
+                    const n = l / line.direction.reduce((s, v) => s + v * v, 0);
+                    const p = sum(line.point, scale(line.direction, n));
+                    const v = subtract(p, centre);
+                    const dist = Math.hypot(...v);
+                    if (dist < radius) {
+                        const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
+                        const corner2 = applyTransform([0.5, 0.5, 0.5], this.world);
+                        const rotation = extractRotation(this.world);
+                        const planes = [
+                            { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                            { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                            { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                            { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                            { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
+                            { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
+                        ];
+                        const points = convexHullIntercept(line, planes);
+                        if (points && (all || points[0] > 0 || points[1] > 0)) {
+                            const p1 = sum(line.point, scale(line.direction, points[0]));
+                            const p2 = sum(line.point, scale(line.direction, points[1]));
+
+                            return [{ item: this, points: [p1, p2] }];
+                        }
+                    }
+                }
+                return this.children.flatMap((child) => child.intersects(line));
+                return [];
+            }
+            closestVertex(line) {
+                return { distance: Infinity, point: null };
+            }
+            corners() {
+                return [
+                    applyTransform([-0.5, -0.5, -0.5], this.world),
+                    applyTransform([0.5, -0.5, -0.5], this.world),
+                    applyTransform([0.5, 0.5, -0.5], this.world),
+                    applyTransform([-0.5, 0.5, -0.5], this.world),
+                    applyTransform([-0.5, -0.5, 0.5], this.world),
+                    applyTransform([0.5, -0.5, 0.5], this.world),
+                    applyTransform([-0.5, 0.5, 0.5], this.world),
+                    applyTransform([0.5, 0.5, 0.5], this.world),
+                ];
+            }
+            edges() {
+                const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
+                const corner2 = applyTransform([0.5, -0.5, -0.5], this.world);
+                const corner3 = applyTransform([0.5, 0.5, -0.5], this.world);
+                const corner4 = applyTransform([-0.5, 0.5, -0.5], this.world);
+
+                const corner5 = applyTransform([-0.5, -0.5, 0.5], this.world);
+                const corner6 = applyTransform([0.5, -0.5, 0.5], this.world);
+                const corner7 = applyTransform([0.5, 0.5, 0.5], this.world);
+                const corner8 = applyTransform([-0.5, 0.5, 0.5], this.world);
+
+                return [
+                    { point: corner1, direction: subtract(corner5, corner1) },
+                    { point: corner2, direction: subtract(corner6, corner2) },
+                    { point: corner3, direction: subtract(corner7, corner3) },
+                    { point: corner4, direction: subtract(corner8, corner4) },
+
+                    { point: corner1, direction: subtract(corner2, corner1) },
+                    { point: corner2, direction: subtract(corner3, corner2) },
+                    { point: corner3, direction: subtract(corner4, corner3) },
+                    { point: corner4, direction: subtract(corner1, corner4) },
+
+                    { point: corner5, direction: subtract(corner6, corner5) },
+                    { point: corner6, direction: subtract(corner7, corner6) },
+                    { point: corner7, direction: subtract(corner8, corner7) },
+                    { point: corner8, direction: subtract(corner5, corner8) },
+                ];
+            }
+            planes() {
+                const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
+                const corner2 = applyTransform([0.5, 0.5, 0.5], this.world);
+                const rotation = extractRotation(this.world);
+                const planes = [
+                    { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
+                    { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
+                    { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
+                    { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
+                    { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
+                    { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
+                ];
+            }
+            boxTest(other) {
+                const r1 = Math.hypot(...extractScale(this.world));
+                const r2 = Math.hypot(...extractScale(other.world));
+
+                const c1 = applyTransform(this.origin, this.world);
+                const c2 = applyTransform(other.origin, other.world);
+
+                const distance = Math.hypot(...subtract(c1, c2));
+                if (distance < (r1 + r2)) {
+                    const toThis = invert(this.world);
+                    const thisOrientation = [...toThis];
+                    thisOrientation[12] = 0;
+                    thisOrientation[13] = 0;
+                    thisOrientation[14] = 0;
+
+                    const toOther = invert(other.world);
+                    const otherOrientation = [...toOther];
+                    otherOrientation[12] = 0;
+                    otherOrientation[13] = 0;
+                    otherOrientation[14] = 0;
+
+                    const planes = [
+                        { point: [-0.5, -0.5, -0.5], normal: [-1, 0, 0] },
+                        { point: [-0.5, -0.5, -0.5], normal: [0, -1, 0] },
+                        { point: [-0.5, -0.5, -0.5], normal: [0, 0, -1] },
+                        { point: [0.5, 0.5, 0.5], normal: [1, 0, 0] },
+                        { point: [0.5, 0.5, 0.5], normal: [0, 1, 0] },
+                        { point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
+                    ];
+
+                    const first = this.edges().some((edge) => {
+                        const line = {
+                            point: applyTransform(edge.point, toOther),
+                            direction: applyTransform(edge.direction, otherOrientation),
+                        };
+                        return planes.some((plane) => {
+                            const point = planeSegmentIntercept(line, plane);
+                            return point && point[0] >= -0.5 && point[0] <= 0.5 &&
+                                point[1] >= -0.5 && point[1] <= 0.5 &&
+                                point[2] >= -0.5 && point[2] <= 0.5;
+                        });
+                    });
+                    if (first) {
+                        return true;
+                    }
+                    const second = other.edges().some((edge) => {
+                        const line = {
+                            point: applyTransform(edge.point, toThis),
+                            direction: applyTransform(edge.direction, thisOrientation),
+                        };
+                        return planes.some((plane) => {
+                            const point = planeSegmentIntercept(line, plane);
+                            return point && point[0] >= -0.5 && point[0] <= 0.5 &&
+                                point[1] >= -0.5 && point[1] <= 0.5 &&
+                                point[2] >= -0.5 && point[2] <= 0.5;
+                        });
+                    });
+                    return second;
+                }
+                return false;
+            }
+            sphereTest(sphere) {
+                const r1 = Math.hypot(...extractScale(this.world)) / 2;
+
+                const c1 = applyTransform(this.origin, this.world);
+                const c2 = applyTransform(sphere.origin, sphere.world);
+
+                const distance = Math.hypot(...subtract(c1, c2));
+
+                const test = (line, point) => {
+                    const v = subtract(c2, line.point);
+                    const t = dot(line.direction, v) / dot(line.direction, line.direction);
+                    const distance = Math.hypot(...subtract(sum(line.point, scale(line.direction, t)), c2));
+                    return distance <= sphere.radius && t >= 0 && t <= 1;
+                }
+
+                if (distance < (r1 + sphere.radius)) {
+                    return this.edges().some((edge) => test(edge));
+                }
+                return false;
+            }
+            static render(time) {
+                gl.uniform1i(app.pbrShader.effects, 0);
+                gl.bindVertexArray(Shed.buffers.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, Shed.pointCount);
+                gl.bindVertexArray(null);
+            }
+            static reset() {
+
+            }
+        }
+
+        /**
+         * Manage Walled Box
          */
         class WalledBox extends Shape {
             constructor(node, parent) {
@@ -7043,6 +7511,10 @@
                 }
             }
             initialiseBuffers() {
+                const buffers = createPBRBuffers(this.material);
+                this.vertex = buffers.vertex;
+                this.vao = buffers.vao;
+                /*
                 this.vertex = gl.createBuffer();
                 this.vao = gl.createVertexArray();
                 gl.bindVertexArray(this.vao);
@@ -7090,6 +7562,7 @@
                 //gl.vertexAttrib4f(app.pbrShader.textureParameters, ...this.textureParameters);
 
                 gl.bindVertexArray(null);
+                */
             }
             getPoints() {
                 const path = getAttribute(this.node, 'path');
@@ -7590,6 +8063,11 @@
                 }
             }
             initialiseBuffers() {
+                const buffers = createPBRBuffers(this.material, this.texture);
+                this.vertex = buffers.vertex;
+                this.vao = buffers.vao;
+
+                /*
                 this.vertex = gl.createBuffer();
                 this.vao = gl.createVertexArray();
                 gl.bindVertexArray(this.vao);
@@ -7637,6 +8115,7 @@
                 gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 gl.bindVertexArray(null);
+                */
             }
             getPoints() {
                 const path = getAttribute(this.node, 'path');
@@ -7851,7 +8330,16 @@
                 }
             }
             initialiseBuffers() {
+                const transfom = identityMatrix();
                 const position = getAttribute(this.node, 'position', [0, 0, 0]);
+                transform[12] = position[0];
+                transform[13] = position[1];
+                transform[14] = position[2];
+                const buffers = createPBRBuffers(this.material, this.texture, transform);
+                this.vertex = buffers.vertex;
+                this.vao = buffers.vao;
+
+                /*
                 this.vertex = gl.createBuffer();
                 this.indices = gl.createBuffer();
 
@@ -7902,6 +8390,7 @@
                 gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 gl.bindVertexArray(null);
+                */
             }
             getPoints() {
                 const path = getAttribute(this.node, 'path');
@@ -7924,7 +8413,6 @@
                 this.pointCount = indices.length;
             }
             render(time) {
-
                 const orientation = extractRotation(this.world);
                 gl.vertexAttrib4f(app.pbrShader.model + 0, this.world[0], this.world[1], this.world[2], this.world[3]);
                 gl.vertexAttrib4f(app.pbrShader.model + 1, this.world[4], this.world[5], this.world[6], this.world[7]);
@@ -8075,6 +8563,16 @@
                 this.remove();
             }
             initialiseBuffers() {
+                const transfom = identityMatrix();
+                const position = getAttribute(this.node, 'position', [0, 0, 0]);
+                transform[12] = position[0];
+                transform[13] = position[1];
+                transform[14] = position[2];
+                const buffers = createPBRBuffers(this.material, this.texture, transform);
+                this.vertex = buffers.vertex;
+                this.vao = buffers.vao;
+
+                /*
                 const position = getAttribute(this.node, 'position', [0, 0, 0]);
                 this.vertex = gl.createBuffer();
                 this.indices = gl.createBuffer();
@@ -8126,6 +8624,7 @@
                 gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
 
                 gl.bindVertexArray(null);
+                */
             }
             getPoints() {
                 const path = getAttribute(this.node, 'path');
@@ -9073,7 +9572,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     canvas.title = `${hits[0].item.node[meta].name[0]}`;
                 }
                 const line = hits[0].item.node[meta].source.text.replace(/\s*[;\|\t\u{1f}]\s*/ug, "; ")
-                report(`${hits[0].item.node[meta].name[0]} (${hits[0].item.node[meta].source.lineNumber}: ${line})`);
+                if (app.reportFullLine) {
+                    report(`${hits[0].item.node[meta].name[0]} (${hits[0].item.node[meta].source.lineNumber}: ${line})`);
+                } else {
+                    report(`${hits[0].item.node[meta].name[0]}`);
+                }
             } else {
                 app.showName = null;
                 if (!app.showPoints) {
@@ -9457,11 +9960,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function addPart(node) {
             if (app.product.context) {
                 const parent = app.view.shapes.get(app.product.context)[0];
-                const clone = {...node};
-                app.view.addItem({...node}, parent);
+                const clone = { ...node };
+                app.view.addItem({ ...node }, parent);
             }
         }
-        
+
         let partsList;
         /**
          * Show parts list
@@ -9475,7 +9978,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 },
             }];
             if (parts.length) {
-                partsList = new ListWindow(parts, properties, 'Products', {hideTitle: true});
+                partsList = new ListWindow(parts, properties, 'Products', { hideTitle: true });
                 partsList.main.style.top = '0';
                 partsList.main.style.right = '0';
                 partsList.main.style.position = 'fixed';
@@ -9600,7 +10103,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Simple window containing a list of attributes for nodes.
          */
         class ListWindow extends Window {
-            constructor(nodes, properties, title='List', options) {
+            constructor(nodes, properties, title = 'List', options) {
                 super(title);
                 this.content.classList.add('list');
                 if (properties[0] === '') {
@@ -9852,7 +10355,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             return matches;
         }
 
-
         /**
          * Convert lines to structured tokens using a state machine
          */
@@ -9940,7 +10442,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             };
 
             state = states.indent;
-            for(const char of text) {
+            for (const char of text) {
                 state = state.process(char) || state;
             }
 
@@ -11212,7 +11714,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
         }
 
-
         /**
          * Perform the action associated with a node
          */
@@ -11233,7 +11734,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     node.load = true;
                     if (shape[0].showInterior) {
                         shape[0].showInterior();
-                        setView([0, 1, 0], [0, 0, -1]);
+                        //setView([0, 1, 0], [0, 0, -1]);
+                        setView([-0.2, 0.2, 1], [0, 1, 0]);
                         app.view.items.forEach((item) => app.selected.delete(item.node));
                     }
                 }
@@ -11256,6 +11758,28 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                     }
                     app.views.forEach((view) => view.updateMaterials());
+                }
+            }
+        }
+
+        /**
+         * Add names of all the elements to the list of labels
+         */
+        function showAllNames() {
+            app.labels = [];
+            if (app.showNames) {
+                for (const node of app.nodes) {
+                    const items = app.view.shapes.get(node);
+                    if (items) {
+                        const item = items[0];
+                        if (item.origin && item.world) {
+                            const size = extractScale(item.world);
+                            const position = [...item.origin];
+                            position[1] = position[1] + 0.55;
+                            const point = applyTransform(position, item.world);
+                            app.labels.push({ text: item.name, position: point });
+                        }
+                    }
                 }
             }
         }
@@ -11322,7 +11846,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             Escape: (event) => document.getElementById('command-entry').focus(),
             ' ': (event) => stop(event),
             a: (event) => showAll(event),
-            A: (event) => { app.showNames = !app.showNames; updateTextBuffer() },
+            A: (event) => { app.showNames = !app.showNames; showAllNames(); updateTextBuffer(); },
             b: (event) => setView([0, -1, 0], [0, 0, -1]),
             c: (event) => { app.points = []; updatePoints(); },
             e: (event) => toggleEdit(event),
@@ -12527,7 +13051,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Hide items that obscure the given node.
+         * Show an item by hiding items that obscure the given node.
          */
         function showItem(item) {
             if (item) {
@@ -12541,6 +13065,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const size = extractScale(item.world);
                 const point = applyTransform(item.origin, item.world);
                 app.show = { item, point, size, toWorld: item.world };
+                app.labels = [{ text: item.name, position: point }];
             }
         }
 
