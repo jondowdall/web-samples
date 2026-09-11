@@ -521,7 +521,8 @@
     <canvas id="main-canvas" tabindex="1">HTML canvas not supported!</canvas>
     <canvas id="overlay-canvas" tabindex="1">HTML canvas not supported!</canvas>
 
-    <input id="command-entry" type="text" autocapitalize="none" autocorrect="off" />
+    <datalist id="commands"></datalist>
+    <input id="command-entry" type="text" autocapitalize="none" autocorrect="off" list="commands" />
 
     <div id="top-right">
         <input type="file" id="load-file" multiple />
@@ -1696,7 +1697,7 @@
          */
         function forward(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            add(app.force, scale(zAxis, amount * distance * 0.1));
+            add(app.force, Vector.scale(zAxis, amount * distance * 0.1));
             limit(app.force, distance);
             canvas.focus();
         }
@@ -1723,7 +1724,7 @@
          */
         function right(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const offset = scale(xAxis, amount * distance / 10);
+            const offset = Vector.scale(xAxis, amount * distance / 10);
             moveCamera(sum(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
             canvas.focus();
         }
@@ -1733,7 +1734,7 @@
          */
         function up(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const offset = scale(yAxis, amount * distance / 10);
+            const offset = Vector.scale(yAxis, amount * distance / 10);
             moveCamera(sum(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
             canvas.focus();
         }
@@ -1859,7 +1860,7 @@
                 const orientation = extractRotation(selected[0].world);
                 const transforms = selected.map((item) => item.world);
                 const centres = selected.map((item) => applyTransform(item.origin, item.world));
-                const lookAt = scale(sum(...centres), 1 / transforms.length);
+                const lookAt = Vector.scale(sum(...centres), 1 / transforms.length);
                 const radius = Math.max(...transforms.map((matrix) => Math.hypot(...extractScale(matrix))));
                 const delta = [
                     Math.max(...centres.map((point) => point[0])) - Math.min(...centres.map((point) => point[0])),
@@ -1869,13 +1870,13 @@
                 const size = 0.5 * Math.hypot(...delta) + radius;
                 const dist = Math.max(1.0 * size / Math.tan(180 * app.camera.fieldOfView / Math.PI), app.camera.near * 2);
                 const viewDirection = applyTransform(direction, orientation);
-                const position = sum(lookAt, scale(viewDirection, dist));
+                const position = sum(lookAt, Vector.scale(viewDirection, dist));
                 moveCamera(position, lookAt, up);
             } else {
                 const lookAt = app.initial.lookAt;
                 const viewVector = subtract(app.initial.lookAt, app.initial.position);
                 const dist = Math.hypot(...viewVector);
-                const offset = scale(direction, dist);
+                const offset = Vector.scale(direction, dist);
                 const position = sum(lookAt, offset);
                 moveCamera(position, lookAt, up);
             }
@@ -1936,7 +1937,7 @@
                     start: distance,
                     delta: endDistance - distance,
                 },
-                direction: scale(zAxis, -1),
+                direction: Vector.scale(zAxis, -1),
             };
 
             // Calculate the axis and angle from the cross product of the view directions
@@ -1948,7 +1949,7 @@
             if (Math.abs(angle) < 0.001 || Math.hypot(...axis) < 0.001) {
                 axis[1] = 1;
             }
-            app.movement.rotation = { angle, axis: normalised(scale(axis, opposite)), };
+            app.movement.rotation = { angle, axis: normalised(Vector.scale(axis, opposite)), };
             const rotation = getRotation(app.movement.rotation.angle, app.movement.rotation.axis);
             const endUp = applyTransform(yAxis, rotation);
             const x1 = normalised(cross(up, direction));
@@ -2324,49 +2325,55 @@
                 this.shapes = new Map();
                 this.drawGround = true;
             }
-            addItem(node, parent) {
-                if (this.shapes.has(node)) {
-                    return this.shapes.get(node)[0];
+            getShape(part, parent) {
+                // Determine the shape from it's attributes
+                const size = Math.hypot(...getAttribute(part, 'size', [0, 0, 0]));
+
+                if (getAttribute(part, 'obj')) {
+                    return new LightWaveObject(part, parent);
+                } else if (getAttribute(part, 'gltf')) {
+                    return loadGLTF(getAttribute(part, 'gltf'));
+                } else if (getAttribute(part, 'svg')) {
+                    return new SVGObject(part, parent);
+                } else if (getAttribute(part, 'bevel')) {
+                    return new BevelledBlock(part, parent);
+                } else if (getAttribute(part, 'walls') && size > 0) {
+                    return new WalledBox(part, parent);
+                } else if (getAttribute(part, 'apex') && size > 0) {
+                    return new Shed(part, parent);
+                } else if (getAttribute(part, 'size') && size > 0) {
+                    return new Block(part, parent);
+                } else if (getAttribute(part, 'radius') && getAttribute(part, 'height')) {
+                    return new Cylinder(part, parent);
+                } else if (getAttribute(part, 'radius1') && getAttribute(part, 'radius2')) {
+                    return new Frustum(part, parent);
+                } else if (getAttribute(part, 'radius')) {
+                    const subdivisions = getAttribute(part, 'subdivisions', 4);
+                    return new Icosphere(part, parent, subdivisions);
+                } else if (getAttribute(part, 'path') && getAttribute(part, 'height') && getAttribute(part, 'thickness')) {
+                    return new Wall(part, parent);
+                } else if (getAttribute(part, 'path') && getAttribute(part, 'height')) {
+                    return new Prism(part, parent);
+                } else if (getAttribute(part, 'path') && getAttribute(part, 'sweep')) {
+                    return new Lathed(part, parent);
+                } else if (getAttribute(part, 'path')) {
+                    return new Polygon(part, parent);
                 }
-                let item = parent;  // Use parent to allow container nodes with no representation
-                if (getAttribute(node, 'position')) {
+            }
+            addPart(part, parent) {
+                if (this.shapes.has(part)) {
+                    return this.shapes.get(part)[0];
+                }
+                let item = parent;  // Use parent to allow container parts with no representation
+                if (getAttribute(part, 'position')) {
                     let descend = false;
-                    const size = Math.hypot(...getAttribute(node, 'size', [0, 0, 0]));
-                    if (getAttribute(node, 'obj')) {
-                        item = new LightWaveObject(node, parent);
-                    } else if (getAttribute(node, 'gltf')) {
-                        item = loadGLTF(getAttribute(node, 'gltf'));
-                    } else if (getAttribute(node, 'svg')) {
-                        item = new SVGObject(node, parent);
-                    } else if (getAttribute(node, 'bevel')) {
-                        item = new BevelledBlock(node, parent);
-                    } else if (getAttribute(node, 'walls') && size > 0) {
-                        item = new WalledBox(node, parent);
-                    } else if (getAttribute(node, 'apex') && size > 0) {
-                        item = new Shed(node, parent);
-                    } else if (getAttribute(node, 'size') && size > 0) {
-                        item = new Block(node, parent);
-                    } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
-                        item = new Cylinder(node, parent);
-                    } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
-                        item = new Frustum(node, parent);
-                    } else if (getAttribute(node, 'radius')) {
-                        const subdivisions = getAttribute(node, 'subdivisions', 4);
-                        item = new Icosphere(node, parent, subdivisions);
-                    } else if (getAttribute(node, 'path') && getAttribute(node, 'height') && getAttribute(node, 'thickness')) {
-                        item = new Wall(node, parent);
-                    } else if (getAttribute(node, 'path') && getAttribute(node, 'height')) {
-                        item = new Prism(node, parent);
-                    } else if (getAttribute(node, 'path') && getAttribute(node, 'sweep')) {
-                        item = new Lathed(node, parent);
-                    } else if (getAttribute(node, 'path')) {
-                        item = new Ngon(node, parent);
-                    } else {
+                    item = this.getShape(part, parent);
+                    if (!item) {
                         descend = true;
-                        item = new Shape(node, parent);
+                        item = new Shape(part, parent);
                     }
-                    this.shapes.set(node, [item]);
-                    this.named[node.name] = item;
+                    this.shapes.set(part, [item]);
+                    this.named[part.name] = item;
 
                     this.items.push(item);
                     if (parent) {
@@ -2375,22 +2382,22 @@
                         this.roots.push(item);
                     }
                     if (descend) {
-                        node[children].forEach((node) => this.addItem(node, item));
+                        part[children].forEach((part) => this.addPart(part, item));
                     }
-                    //} else if (node[meta].source[meta].connection) {
-                } else if (node[meta].connection) {
-                    const start = this.named[node.start];
-                    const end = this.named[node.end];
+                    //} else if (part[meta].source[meta].connection) {
+                } else if (part[meta].connection) {
+                    const start = this.named[part.start];
+                    const end = this.named[part.end];
                     if (start && end) {
                         app.connections.push(new Connection(start, end));
                     }
                 } else if (parent) {
-                    node[children].forEach((node) => this.addItem(node, item));
+                    part[children].forEach((part) => this.addPart(part, item));
                 }
-                (node.connections || []).forEach((connection) => {
+                (part.connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
-                        const start = node[children].find((node) => node[meta].name.includes(connection.start));
-                        const end = node[children].find((node) => node[meta].name.includes(connection.end));
+                        const start = part[children].find((part) => part[meta].name.includes(connection.start));
+                        const end = part[children].find((part) => part[meta].name.includes(connection.end));
                         if (start && end) {
                             const startItem = this.shapes.get(start);
                             const endItem = this.shapes.get(end);
@@ -2400,12 +2407,12 @@
                 });
                 return item;
             }
-            removeItem(node) {
-                const shapes = this.shapes.get(node);
+            removeItem(part) {
+                const shapes = this.shapes.get(part);
                 if (shapes) {
                     shapes.forEach((shape) => shape.remove());
                 }
-                this.shapes.delete(node);
+                this.shapes.delete(part);
             }
             updateMaterials() {
             }
@@ -2415,7 +2422,7 @@
                     this.roots = [];
                     this.renderQueue.forEach((item) => item.reset());
                 }
-                graph.forEach((node) => this.addItem(node, parent));
+                graph.forEach((node) => this.addPart(node, parent));
             }
             render(time) {
                 const width = ctx.canvas.width;
@@ -2491,12 +2498,12 @@
                 gl.uniform3fv(app.pbrShader.cameraPosition, app.camera.position);
 
                 gl.uniform3fv(app.pbrShader.lightPosition1, app.lights[0].position);
-                gl.uniform3fv(app.pbrShader.lightColour1, scale(app.lights[0].colour, app.lights[0].intensity));
+                gl.uniform3fv(app.pbrShader.lightColour1, Vector.scale(app.lights[0].colour, app.lights[0].intensity));
 
                 gl.uniform3fv(app.pbrShader.lightPosition2, app.lights[1].position);
-                gl.uniform3fv(app.pbrShader.lightColour2, scale(app.lights[1].colour, app.lights[1].intensity));
+                gl.uniform3fv(app.pbrShader.lightColour2, Vector.scale(app.lights[1].colour, app.lights[1].intensity));
                 gl.uniform3fv(app.pbrShader.lightPosition3, app.lights[2].position);
-                gl.uniform3fv(app.pbrShader.lightColour3, scale(app.lights[2].colour, app.lights[2].intensity));
+                gl.uniform3fv(app.pbrShader.lightColour3, Vector.scale(app.lights[2].colour, app.lights[2].intensity));
 
                 gl.uniform1i(app.pbrShader.pass, 0);
                 gl.depthMask(true);
@@ -2536,14 +2543,14 @@
                 }
                 parent = null;
                 path.forEach((node) => {
-                    const item = app.view.shapes.get(node) || [app.view.addItem(node, parent)];
+                    const item = app.view.shapes.get(node) || [app.view.addPart(node, parent)];
                     if (item[0]) {
                         item[0].showInterior?.();
-                        node[children].forEach((child) => app.view.addItem(child, item[0]));
+                        node[children].forEach((child) => app.view.addPart(child, item[0]));
                         parent = item[0];
                     }
                 });
-                return app.view.shapes.get(node) || [app.view.addItem(node, parent)];
+                return app.view.shapes.get(node) || [app.view.addPart(node, parent)];
             }
         }
 
@@ -2552,21 +2559,69 @@
          * Generic details of a product.
          */
         class Product {
+            static byName = {};
+            static fromNode(node) {
+                const name = node[meta].type || getAttribute(node, 'name');
+                const number = getAttribute(node, 'number') || getAttribute(node, 'id');
+                const product = Product.byName[name] || new Product(name, number);
+                Product.byName[name] = product;
+                return product;
+            }
             constructor(name, number) {
                 this.name = name;
                 this.number = number;
-                this.parts = [];
+                this.components = [];
                 this.instances = [];
+                app.product.all.push(this);
+            }
+            getUniqueName() {
+                let index = this.instances.length() + 1;
+                while (this.instances.find((part) => part.name === `${this.name} (${index})`)) {
+                    index += 1;
+                }
+                return `${this.name} (${index})`;
             }
         }
 
         /**
-         * Usage of a product within a parent.
+         * Use of a product as a component within a parent product.
          */
-        class Part {
-            constructor(context, name) {
+        class Component {
+            static fromNode(product, node, context) {
+                const component = new Component(product, context);
+                return component;
+            }
+            constructor(product, context, name) {
+                this.product = product;
+                this.product.instances.push(this);
                 this.context = context;
                 this.name = name;
+                this.transform = new Transform();
+                this.context.parent.parts.push(this);
+            }
+            clone(context) {
+                // Create a new part from this component.
+                const name = this.product.getUniqueName();
+                return new Component(this.product, context, name);
+            }
+        }
+
+        /**
+         * Use of a product as a part within a parent part.
+         */
+        class Part extends Part {
+            static fromNode(product, node, context) {
+                const part = new Part(product, context);
+                return part;
+            }
+            constructor(product, context, name) {
+                super(product, context, name);
+                this.transform = new Transform(this.context.parent.transform.matrix);
+            }
+            clone(context) {
+                // Create a new part from this part.
+                const name = this.product.getUniqueName();
+                return new Part(this.product, context, name);
             }
         }
 
@@ -2577,6 +2632,8 @@
             constructor(product, identifier) {
                 this.product = product;
                 this.id = identifier;
+                this.usage = null;
+                this.history = [];
             }
         }
 
@@ -2629,7 +2686,9 @@
             nodeMap: new Map(),
             effects: 1,
             product: {
+                all: [],
             },
+            parts: [],
             get aspect() { return gl.canvas.clientWidth / gl.canvas.clientHeight; },
         };
         app.camera = app.cameras[0];
@@ -2993,7 +3052,7 @@
                 const g = [0, d1[0] * d2[1] - d2[0] * d1[1], 0];
                 const sgn = dot(g, winding);
 
-                if (sgn > 0 && empty(v, scale(d1, -1), d2)) {
+                if (sgn > 0 && empty(v, Vector.scale(d1, -1), d2)) {
                     indices.push([segments[i].start, segments[i].end, segments[n].end]);
                     segments[i].end = segments[n].end;
                     segments.splice(n, 1);
@@ -4181,6 +4240,7 @@
             const width = ctx.canvas.width;
             const height = ctx.canvas.height;
             const transform = app.camera.viewProjection;
+            ctx.textAlign = 'center';
             const screen = (point) => {
                 const projectedPoint = applyTransform4([...point, 1], transform);
                 return [
@@ -4332,10 +4392,10 @@
                     const linear = (time - app.movement.start) / app.movement.duration;
                     const progress = timing(linear);
 
-                    app.camera.lookAt = sum(app.movement.lookAt.start, scale(app.movement.lookAt.delta, progress));
+                    app.camera.lookAt = sum(app.movement.lookAt.start, Vector.scale(app.movement.lookAt.delta, progress));
                     const dist = app.movement.distance.start + progress * app.movement.distance.delta;
                     app.movement.distance.remaining = (1 - progress) * app.movement.distance.delta;
-                    const view = scale(app.movement.direction, dist);
+                    const view = Vector.scale(app.movement.direction, dist);
                     const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
                     const offset = applyTransform(view, rotation);
                     app.camera.position = sum(app.camera.lookAt, offset);
@@ -4350,15 +4410,15 @@
                 }
                 const delta = time - last;
 
-                app.camera.position = sum(app.camera.position, scale(app.velocity, delta));
-                app.camera.lookAt = sum(app.camera.lookAt, scale(app.velocity, delta));
+                app.camera.position = sum(app.camera.position, Vector.scale(app.velocity, delta));
+                app.camera.lookAt = sum(app.camera.lookAt, Vector.scale(app.velocity, delta));
                 const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
                 app.rotation = scaleMatrix(app.rotation, 0.1);
                 app.camera.lookAt = sum(app.camera.position, direction);
 
-                add(app.velocity, scale(app.force, 0.1 * delta / app.mass));
-                app.force = scale(app.velocity, -0.05 * delta * Math.hypot(...app.velocity));
-                app.velocity = scale(app.velocity, 0.9);
+                add(app.velocity, Vector.scale(app.force, 0.1 * delta / app.mass));
+                app.force = Vector.scale(app.velocity, -0.05 * delta * Math.hypot(...app.velocity));
+                app.velocity = Vector.scale(app.velocity, 0.9);
 
                 app.camera.updateViewControls();
 
@@ -4374,22 +4434,6 @@
                     drawGround();
                 }
 
-                if (app.textItemCount > 0) {
-                    gl.colorMask(true, true, true, false);
-                    gl.disable(gl.DEPTH_TEST);
-                    gl.activeTexture(gl.TEXTURE0);
-                    gl.bindTexture(gl.TEXTURE_2D, app.textTexture);
-
-                    gl.useProgram(app.textShader.program);
-                    gl.bindVertexArray(app.textVertexArray);
-
-                    gl.uniformMatrix4fv(app.textShader.projection, false, app.camera.projectionMatrix);
-                    gl.uniformMatrix4fv(app.textShader.view, false, app.camera.viewMatrix);
-                    gl.uniform1i(app.textShader.texture, gl.TEXTURE0);
-
-                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, app.textItemCount);
-                    gl.colorMask(true, true, true, true);
-                }
                 gl.enable(gl.DEPTH_TEST);
 
                 reportGLErrors('render end');
@@ -4966,6 +5010,7 @@
 
                 this.origin = [0, 0, 0];
                 this.transform = new Transform();
+                this.transform.scale(this.shape.size);
                 this.world = multiply(this.transform.matrix, this.shape.world);
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
@@ -5088,9 +5133,9 @@
          * Parent class for object visual representations
          */
         class Shape {
-            constructor(node, parent, name) {
+            constructor(part, parent, name) {
                 this.view = app.view;
-                this.node = node;
+                this.node = part;
                 this.parent = parent;
                 this.children = [];
                 this.instances = [];
@@ -5099,7 +5144,7 @@
                 this.transform = new Transform();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
-                const transform = getAttribute(node, 'transform');
+                const transform = getAttribute(part, 'transform');
                 if (transform) {
                     this.transform.multiply(transform);
                 }
@@ -5109,27 +5154,28 @@
                 this.node[meta].name[0] = name;
                 this.state = {};
 
-                const size = getAttribute(node, 'size', [1, 1, 1]);
-                const offset = product(getAttribute(node, 'offset', [0, 0, 0]), size);
-                const objScale = parent ? reciprical(extractScale(parent.world)) : [1, 1, 1];
-                if (Math.hypot(...size) > 0) {
-                    this.transform.scale(product(size, objScale)); // Why is objScale applied here?
-                }
+                // Size is used to set the representation size - should not be applied to child objects
+                // Scale used to scale the object and it's parts.
+
+                this.size = getAttribute(part, 'size', [1, 1, 1]);
+                const scale = getAttribute(part, 'scale', [1, 1, 1]);
+                const offset = product(getAttribute(part, 'offset', [0, 0, 0]), this.size);
+
                 if (parent) {
                     // Convert the position to local proportional coordinates based on the scale.
-                    const origin = scale(getAttribute(parent.node, 'offset', [0, 0, 0]), -1);
-                    const position = product(sum(getAttribute(node, 'position', [0, 0, 0]), offset), objScale);
+                    const origin = Vector.scale(getAttribute(parent.node, 'offset', [0, 0, 0]), -1);
+                    const position = sum(getAttribute(part, 'position', [0, 0, 0]), offset);
                     this.transform.move(sum(position, origin));
                 } else {
-                    this.transform.move(sum(getAttribute(node, 'position', [0, 0, 0]), offset));
+                    this.transform.move(sum(getAttribute(part, 'position', [0, 0, 0]), offset));
                 }
 
-                this.transform.rotate(getAttribute(node, 'angle', 0),
-                    getAttribute(node, 'axis', [0, 1, 0]));
+                this.transform.rotate(getAttribute(part, 'angle', 0),
+                    getAttribute(part, 'axis', [0, 1, 0]));
 
-                this.offset(getAttribute(node, 'offset', [0, 0, 0]));
+                this.offset(getAttribute(part, 'offset', [0, 0, 0]));
 
-                const texture = getAttribute(node, 'texture');
+                const texture = getAttribute(part, 'texture');
                 if (texture) {
                     this.texture = getTexture(texture);
                 }
@@ -5175,7 +5221,7 @@
                     this.transform.rotate(getAttribute(this.node, 'angle', 0),
                         getAttribute(this.node, 'axis', [0, 1, 0]));
 
-                    this.transform.scale(getAttribute(this.node, 'size', [1, 1, 1]));
+                    //this.transform.scale(getAttribute(this.node, 'size', [1, 1, 1]));
                     this.instances.forEach((instance) => instance.updateInstanceData());
                 }
                 if (app.selected.has(this.node)) {
@@ -5271,7 +5317,7 @@
                 if (!event.shiftKey) {
                     const position = applyTransform(this.origin, this.world);
                     // Snap to grid
-                    const snapOffset = scale(grid.spacing, 0.5);
+                    const snapOffset = Vector.scale(grid.spacing, 0.5);
                     const gridPosition = subtract(position, sum(grid.origin, snapOffset));
                     const gridIndex = gridPosition.map((v, i) => Math.round(v / grid.spacing[i]));
                     if (!grid.get(...gridIndex) && (!grid.size || (gridIndex[0] >= 0 && gridIndex[1] >= 0 && gridIndex[2] >= 0 &&
@@ -5402,7 +5448,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
+                    const p = sum(line.point, Vector.scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
@@ -5415,8 +5461,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
                             return [{ item: this, points: [p1, p2] }];
                         }
                     }
@@ -5540,7 +5586,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
+                    const p = sum(line.point, Vector.scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < this.radius) {
@@ -5557,8 +5603,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
                             return [{ item: this, points: [p1, p2] }];
                         }
@@ -5695,7 +5741,7 @@
                 const test = (line, point) => {
                     const v = subtract(c2, line.point);
                     const t = dot(line.direction, v) / dot(line.direction, line.direction);
-                    const distance = Math.hypot(...subtract(sum(line.point, scale(line.direction, t)), c2));
+                    const distance = Math.hypot(...subtract(sum(line.point, Vector.scale(line.direction, t)), c2));
                     return distance <= sphere.radius && t >= 0 && t <= 1;
                 }
 
@@ -5935,7 +5981,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
+                    const p = sum(line.point, Vector.scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
@@ -5952,8 +5998,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
                             return [{ item: this, points: [p1, p2] }];
                         }
@@ -6090,7 +6136,7 @@
                 const test = (line, point) => {
                     const v = subtract(c2, line.point);
                     const t = dot(line.direction, v) / dot(line.direction, line.direction);
-                    const distance = Math.hypot(...subtract(sum(line.point, scale(line.direction, t)), c2));
+                    const distance = Math.hypot(...subtract(sum(line.point, Vector.scale(line.direction, t)), c2));
                     return distance <= sphere.radius && t >= 0 && t <= 1;
                 }
 
@@ -6195,7 +6241,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
+                    const p = sum(line.point, Vector.scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < radius) {
@@ -6212,8 +6258,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
                             return [{ item: this, points: [p1, p2] }];
                         }
@@ -6510,7 +6556,7 @@
                 } else {
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, scale(line.direction, n));
+                    const p = sum(line.point, Vector.scale(line.direction, n));
                     const v = subtract(p, centre);
                     const dist = Math.hypot(...v);
                     if (dist < this.radius) {
@@ -6527,8 +6573,8 @@
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, scale(line.direction, points[0]));
-                            const p2 = sum(line.point, scale(line.direction, points[1]));
+                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
                             return [{ item: this, points: [p1, p2] }];
                         }
@@ -6599,7 +6645,7 @@
                 const [t, s] = shortestLine({ point, direction }, line);
 
                 const t1 = Math.max(0, Math.min(1, t)); // Constrain to the segment
-                const p1 = sum(point, scale(direction, t1)); // Determine point on the cylinder axis
+                const p1 = sum(point, Vector.scale(direction, t1)); // Determine point on the cylinder axis
 
                 // Find the point on the line that is level with the point on the cylinder axis
                 const p2 = planeIntercept(line, { point: p1, normal: direction });
@@ -6688,7 +6734,7 @@
                 const [t, s] = shortestLine({ point, direction }, line);
 
                 const t1 = Math.max(0, Math.min(1, t)); // Constrain to the segment
-                const p1 = sum(point, scale(direction, t1)); // Determine point on the cylinder axis
+                const p1 = sum(point, Vector.scale(direction, t1)); // Determine point on the cylinder axis
 
                 // Find the point on the line that is level with the point on the cylinder axis
                 const p2 = planeIntercept(line, { point: p1, normal: direction });
@@ -6827,11 +6873,11 @@
 
                 const l = dot(direction, subtract([0, 0, 0], point));
                 const n = l / direction.reduce((s, v) => s + v * v, 0);
-                const p = sum(point, scale(direction, n));
+                const p = sum(point, Vector.scale(direction, n));
                 const dist = Math.hypot(...p);
                 const radius = getAttribute(this.node, 'radius');
                 if (dist <= radius) {
-                    const offset = scale(direction, Math.sqrt(radius * radius - dist * dist));
+                    const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
                         item: this, points: [
                             applyTransform(subtract(p, offset), this.world),
@@ -6946,12 +6992,12 @@
                     const end = [last[0] + dx, last[1] + dy];
                     for (let i = 1; i <= curvePoints; ++i) {
                         const p = i / curvePoints;
-                        const p1 = sum(start, scale(subtract(c1, start), p));
-                        const p2 = sum(c1, scale(subtract(c2, c1), p));
-                        const p3 = sum(c2, scale(subtract(end, c2), p));
-                        const p21 = sum(p1, scale(subtract(p2, p1), p));
-                        const p22 = sum(p2, scale(subtract(p3, p2), p));
-                        const point = sum(p21, scale(subtract(p22, p21), p));
+                        const p1 = sum(start, Vector.scale(subtract(c1, start), p));
+                        const p2 = sum(c1, Vector.scale(subtract(c2, c1), p));
+                        const p3 = sum(c2, Vector.scale(subtract(end, c2), p));
+                        const p21 = sum(p1, Vector.scale(subtract(p2, p1), p));
+                        const p22 = sum(p2, Vector.scale(subtract(p3, p2), p));
+                        const point = sum(p21, Vector.scale(subtract(p22, p21), p));
                         points.push(point);
                     }
                 } else if (point.startsWith('C')) {
@@ -6963,12 +7009,12 @@
                     const end = [x, y];
                     for (let i = 1; i <= curvePoints; ++i) {
                         const p = i / curvePoints;
-                        const p1 = sum(start, scale(subtract(c1, start), p));
-                        const p2 = sum(c1, scale(subtract(c2, c1), p));
-                        const p3 = sum(c2, scale(subtract(end, c2), p));
-                        const p21 = sum(p1, scale(subtract(p2, p1), p));
-                        const p22 = sum(p2, scale(subtract(p3, p2), p));
-                        const point = sum(p21, scale(subtract(p22, p21), p));
+                        const p1 = sum(start, Vector.scale(subtract(c1, start), p));
+                        const p2 = sum(c1, Vector.scale(subtract(c2, c1), p));
+                        const p3 = sum(c2, Vector.scale(subtract(end, c2), p));
+                        const p21 = sum(p1, Vector.scale(subtract(p2, p1), p));
+                        const p22 = sum(p2, Vector.scale(subtract(p3, p2), p));
+                        const point = sum(p21, Vector.scale(subtract(p22, p21), p));
                         points.push(point);
                     }
                 } else if (point.startsWith('z')) {
@@ -7192,12 +7238,12 @@
                     vertices.push(end[0][0], height, end[0][1], ...segment.normal, u2, 0.5, ...parameters);
                     vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
 
-                    vertices.push(start[1][0], 0, start[1][1], ...scale(segment.normal, -1), u3, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], ...scale(segment.normal, -1), u4, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], ...Vector.scale(segment.normal, -1), u3, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], ...Vector.scale(segment.normal, -1), u4, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
 
                     if ((!closed && i === this.segments.length - 1)
                         || this.segments[i].visible && !this.segments[n].visible) {
@@ -7746,12 +7792,12 @@
                     vertices.push(end[0][0], height, end[0][1], ...segment.normal, u2, 0.5, ...parameters);
                     vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
 
-                    vertices.push(start[1][0], 0, start[1][1], ...scale(segment.normal, -1), u3, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], ...scale(segment.normal, -1), u4, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...scale(segment.normal, -1), u4, 0.5, ...parameters);
+                    vertices.push(start[1][0], 0, start[1][1], ...Vector.scale(segment.normal, -1), u3, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
+                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
+                    vertices.push(end[1][0], height, end[1][1], ...Vector.scale(segment.normal, -1), u4, 1, ...parameters);
+                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
 
                     if ((!closed && i === this.segments.length - 1)
                         || this.segments[i].visible && !this.segments[n].visible) {
@@ -8243,11 +8289,11 @@
 
                 const l = dot(direction, subtract([0, 0, 0], point));
                 const n = l / direction.reduce((s, v) => s + v * v, 0);
-                const p = sum(point, scale(direction, n));
+                const p = sum(point, Vector.scale(direction, n));
                 const dist = Math.hypot(...p);
                 const radius = getAttribute(this.node, 'radius');
                 if (dist <= radius) {
-                    const offset = scale(direction, Math.sqrt(radius * radius - dist * dist));
+                    const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
                         item: this, points: [
                             applyTransform(subtract(p, offset), world),
@@ -8306,7 +8352,7 @@
             }
         }
 
-        class Ngon extends Shape {
+        class Polygon extends Shape {
             constructor(node, parent) {
                 super(node, parent, 'n-gon');
                 this.children = [];
@@ -8443,7 +8489,7 @@
             get vertices() {
             }
             intersects(line, all) {
-                // Find intersection of line with plane of ngon
+                // Find intersection of line with plane of polygon
                 const plane = {
                     point: applyTransform([0, 0, 0], this.world),
                     normal: applyTransform([0, 1, 0], this.world),
@@ -8454,7 +8500,7 @@
                 const local = applyTransform(point, invert(this.world));
                 const local2d = [local[0], local[2]];
 
-                // count number of intersections of ray from point to infinity with edges of ngon
+                // count number of intersections of ray from point to infinity with edges of polygon
                 const count = this.points.reduce((count, point, i) => {
                     const next = (i + 1) % this.points.length;
                     const edge = subtract(this.points[next], point);
@@ -8482,7 +8528,7 @@
                     }
                     return [{ item: this, points: [point] }];
                 }
-                // If the number of intersections is odd, the point is inside the ngon
+                // If the number of intersections is odd, the point is inside the polygon
                 return [];
             }
             closestVertex(line) {
@@ -8501,7 +8547,7 @@
             update() {
                 this.show = true;
                 if (app.show && app.show.item !== this) {
-                    // Find intersection of line with plane of ngon
+                    // Find intersection of line with plane of polygon
                     const plane = {
                         point: applyTransform([0, 0, 0], this.world),
                         normal: applyTransform([0, 1, 0], this.world),
@@ -8764,7 +8810,7 @@
                 return this._vertices;
             }
             intersects(line, all) {
-                // Find intersection of line with plane of ngon
+                // Find intersection of line with plane of polygon
                 const plane = {
                     point: applyTransform([0, 0, 0], this.world),
                     normal: applyTransform([0, 1, 0], this.world),
@@ -8775,7 +8821,7 @@
                 const local = applyTransform(point, invert(this.world));
                 const local2d = [local[0], local[2]];
 
-                // count number of intersections of ray from point to infinity with edges of ngon
+                // count number of intersections of ray from point to infinity with edges of polygon
                 const count = this.points.reduce((count, point, i) => {
                     const next = (i + 1) % this.points.length;
                     const edge = subtract(this.points[next], point);
@@ -8803,7 +8849,7 @@
                     }
                     return [{ item: this, points: [point] }];
                 }
-                // If the number of intersections is odd, the point is inside the ngon
+                // If the number of intersections is odd, the point is inside the polygon
                 return [];
             }
             closestVertex(line) {
@@ -8822,7 +8868,7 @@
             update() {
                 this.show = true;
                 if (app.show && app.show.item !== this) {
-                    // Find intersection of line with plane of ngon
+                    // Find intersection of line with plane of polygon
                     const plane = {
                         point: applyTransform([0, 0, 0], this.world),
                         normal: applyTransform([0, 1, 0], this.world),
@@ -8865,7 +8911,7 @@
         icosphere
         walls
         prism
-        ngon
+        polygon
         */
 
 
@@ -8881,7 +8927,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Block: {
@@ -8894,7 +8940,7 @@
                 Icosphere: (s1, s2) => s1.sphereTest(s2),
                 Wall: (s1, s2) => s2.boxTest(s1),
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             BevelledBlock: {
@@ -8907,7 +8953,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             WalledBox: {
@@ -8920,7 +8966,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Cylinder: {
@@ -8933,7 +8979,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Frustum: {
@@ -8946,7 +8992,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Icosphere: {
@@ -8959,7 +9005,7 @@
                 Icosphere: (s1, s2) => s1.sphereTest(s2),
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Wall: {
@@ -8972,7 +9018,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => s1.wallTest(s2),
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             Prism: {
@@ -8985,10 +9031,10 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
-            Ngon: {
+            Polygon: {
                 Quad: (s1, s2) => false,
                 Block: (s1, s2) => false,
                 BevelledBlock: (s1, s2) => false,
@@ -8998,7 +9044,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             },
             LightWaveObject: {
@@ -9011,7 +9057,7 @@
                 Icosphere: (s1, s2) => false,
                 Wall: (s1, s2) => false,
                 Prism: (s1, s2) => false,
-                Ngon: (s1, s2) => false,
+                Polygon: (s1, s2) => false,
                 LightWaveObject: (s1, s2) => false,
             }
         };
@@ -9194,15 +9240,15 @@
                         const texture3 = isNaN(triangle[2].textureIndex) ? [0, 0] : texture[triangle[2].textureIndex]
                         vertexData.push(
                             ...positions[triangle[0].positionIndex],
-                            ...scale(normals[triangle[0].normalIndex], 1),
+                            ...normals[triangle[0].normalIndex],
                             ...texture1);
                         vertexData.push(
                             ...positions[triangle[1].positionIndex],
-                            ...scale(normals[triangle[1].normalIndex], 1),
+                            ...normals[triangle[1].normalIndex],
                             ...texture2);
                         vertexData.push(
                             ...positions[triangle[2].positionIndex],
-                            ...scale(normals[triangle[2].normalIndex], 1),
+                            ...normals[triangle[2].normalIndex],
                             ...texture3);
                     }
                     const buffer = gl.createBuffer();
@@ -9216,7 +9262,7 @@
                         obj.instances.push(instance);
                         instance.material = {
                             colour: materials[materialName].colour ?? materials[materialName].diffuseColour,
-                            emissivityColour: scale(materials[materialName].colour, materials[materialName].emissive ?? 0),
+                            emissivityColour: Vector.scale(materials[materialName].colour, materials[materialName].emissive ?? 0),
                             reflectivity: materials[materialName].specularColour ?? [0.98, 0.98, 0.98],
                             roughness: materials[materialName].roughness ?? 1 / materials[materialName].specularExponent ?? 0.5,
                             opacity: materials[materialName].opacity ?? 1,
@@ -9226,7 +9272,7 @@
                     })
                 });
                 LightWaveObject.pending[this.url].forEach((obj) =>
-                    obj.scale(scale(size, modelScale)));
+                    obj.scale(Vector.scale(size, modelScale)));
             }
             intersects(line, all) {
                 const transform = this.world;
@@ -9237,7 +9283,7 @@
 
                 const l = dot(line.direction, subtract(centre, line.point));
                 const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                const p = sum(line.point, scale(line.direction, n));
+                const p = sum(line.point, Vector.scale(line.direction, n));
                 const v = subtract(p, centre);
                 const dist = Math.hypot(...v);
                 if (dist < radius) {
@@ -9254,8 +9300,8 @@
                     ];
                     const points = convexHullIntercept(line, planes);
                     if (points && (all || points[0] > 0 || points[1] > 0)) {
-                        const p1 = sum(line.point, scale(line.direction, points[0]));
-                        const p2 = sum(line.point, scale(line.direction, points[1]));
+                        const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
+                        const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
                         return [{ item: this, points: [p1, p2] }];
                     }
                 }
@@ -9525,8 +9571,8 @@
                 const dists = this.segments.map((segment) => {
                     const [t, s] = shortestLine(segment, line);
                     const t1 = Math.max(0, Math.min(1, t));
-                    const p1 = sum(segment.point, scale(segment.direction, t1));
-                    const p2 = sum(line.point, scale(line.direction, s));
+                    const p1 = sum(segment.point, Vector.scale(segment.direction, t1));
+                    const p2 = sum(line.point, Vector.scale(line.direction, s));
                     if (app.drawPoints) {
                         app.points.push({ position: p1 }, { position: p2 });
                     }
@@ -9570,6 +9616,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 app.showName = hits[0].item;
                 if (!app.showPoints) {
                     canvas.title = `${hits[0].item.node[meta].name[0]}`;
+                    app.labels = [getLabel(hits[0].item)];
                 }
                 const line = hits[0].item.node[meta].source.text.replace(/\s*[;\|\t\u{1f}]\s*/ug, "; ")
                 if (app.reportFullLine) {
@@ -9955,13 +10002,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Add.a new part to the context product
+         * Add a new part to the context product
          */
-        function addPart(node) {
+        function addPart(part) {
             if (app.product.context) {
                 const parent = app.view.shapes.get(app.product.context)[0];
-                const clone = { ...node };
-                app.view.addItem({ ...node }, parent);
+                const newPart = Part.clone(part);
+                //app.product.context.parts.push(newPart);
+                app.view.addPart(newPart, parent);
             }
         }
 
@@ -10336,6 +10384,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         const children = Symbol('children');
+        const parts = Symbol('parts');
         const connections = Symbol('connections');
 
 
@@ -10367,10 +10416,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 '\t': 'indent',
                 '#': 'comment',
                 '>': 'command',
+                '|': 'parameters',
+                '?': 'test',
                 '-': 'object',
                 '+': 'object',
                 '*': 'object',
-                '[': 'loop',
+                '[': 'group',
             };
             let state;
 
@@ -10431,7 +10482,23 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         this.object.text += char;
                     }
                 },
-                loop: {
+                parameters: {
+                    process(char) {
+                        if (char === '\n') {
+                            return states.indent;
+                        }
+                        this.object.text += char;
+                    }
+                },
+                test: {
+                    process(char) {
+                        if (char === '\n') {
+                            return states.indent;
+                        }
+                        this.object.text += char;
+                    }
+                },
+                group: {
                     process(char) {
                         if (char === '\n') {
                             return states.indent;
@@ -10456,7 +10523,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Convert lines to objects
          */
         async function processText(text, parent) {
-            tokeniseText(text);
+            //tokeniseText(text);
             const lines = text.split(/\r?\n/g);
             const roots = [];
             const stack = [];
@@ -10997,6 +11064,28 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             // Generate the object graph
             app.graph = await processText(text);
+
+            // Create the product structure from the graph.
+            const addProduct = (node, context) => {
+                const product = Product.fromNode(node)
+                if (context) {
+                    if (context.parent instanceof Product) {
+                        const part = Part.fromNode(product, node, context);
+                        context = { parent: part };
+                        app.parts.push(part);
+                    } else {
+                        const subpart = Subpart.fromNode(product, node, context);
+                        context = { parent: subpart };
+                        app.parts.push(subpart);
+                    }
+                } else {
+                    context = {parent: product };
+                }
+                node[children].forEach((child) => addProduct(child, context));
+            }
+            app.graph.forEach((node) => addProduct(node));
+
+
             const nodes = [...app.graph];
             while (nodes.length) {
                 const node = nodes.shift();
@@ -11005,6 +11094,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 nodes.push(...node[children]);
             }
 
+            updateCommandList();
             app.view.update(app.graph, parent, replace);
             showTree();
             showModel(app.graph);
@@ -11098,12 +11188,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             vector.forEach((v, i) => vector[i] = v / l);
         }
 
-        /**
-         * Return vector A scaled by s
-         */
-        function scale(vector, scale) {
-            return vector.map((v) => v * scale);
-        }
+        const Vector = {
+            scale(vector, scale) {
+                return vector.map((v) => v * scale);
+            }
+        };
 
         /**
          * Return matrix scaled by s to the unity matrix
@@ -11140,7 +11229,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function limit(vector, maxLength) {
             const length = Math.hypot(...vector);
             if (length > maxLength) {
-                return scale(vector, maxLength / length);
+                return Vector.scale(vector, maxLength / length);
             }
             return vector;
         }
@@ -11482,7 +11571,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function distanceToPoint(line, point) {
             const v = subtract(point, line.point);
             const t = dot(line.direction, v) / dot(line.direction, line.direction);
-            return Math.hypot(...subtract(sum(line.point, scale(line.direction, t)), point));
+            return Math.hypot(...subtract(sum(line.point, Vector.scale(line.direction, t)), point));
         }
 
         /**
@@ -11498,7 +11587,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function planeIntercept(line, plane) {
             const t = distanceToPlane(line, plane);
-            return sum(line.point, scale(line.direction, t));
+            return sum(line.point, Vector.scale(line.direction, t));
         }
 
         /**
@@ -11507,7 +11596,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function planeSegmentIntercept(line, plane) {
             const t = distanceToPlane(line, plane);
             if (t >= 0 && t <= 1) {
-                return sum(line.point, scale(line.direction, t));
+                return sum(line.point, Vector.scale(line.direction, t));
             }
         }
 
@@ -11521,7 +11610,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             const t = distanceToPlane(edge, { point: face.point2, normal });
             if (t >= 0 && t <= 1) {
-                const point = sum(edge.point, scale(edge.direction, t));
+                const point = sum(edge.point, Vector.scale(edge.direction, t));
                 const vector = subtract(point, face.point2);
                 const u = dot(vector, side1) / dot(side1, side1);
                 const v = dot(vector, side2) / dot(side2, side2);
@@ -11747,11 +11836,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
                 node[meta].dynamic = true;
             } else {
+                setView([-0.2, 0.2, 1], [0, 1, 0]);
                 showItem(shape[0]);
                 if (node[children].length > 0) {
                     if (shape[0].showInterior) {
                         if (!shape[0].interiorView) {
-                            node[children].forEach((child) => app.view.addItem(child, shape[0]));
+                            node[children].forEach((part) => app.view.addPart(part, shape[0]));
                             shape[0].showInterior();
                         } else {
                             shape[0].hideInterior();
@@ -11763,21 +11853,31 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Get teh label for an part.
+         */
+        function getLabel(shape) {
+            if (shape.origin && shape.world) {
+                const size = extractScale(shape.world);
+                const position = [...shape.origin];
+                position[1] = position[1] + 0.55;
+                const point = applyTransform(position, shape.world);
+                return { text: shape.name, position: point };
+            }
+        }
+
+
+        /**
          * Add names of all the elements to the list of labels
          */
         function showAllNames() {
             app.labels = [];
             if (app.showNames) {
                 for (const node of app.nodes) {
-                    const items = app.view.shapes.get(node);
-                    if (items) {
-                        const item = items[0];
-                        if (item.origin && item.world) {
-                            const size = extractScale(item.world);
-                            const position = [...item.origin];
-                            position[1] = position[1] + 0.55;
-                            const point = applyTransform(position, item.world);
-                            app.labels.push({ text: item.name, position: point });
+                    const shapes = app.view.shapes.get(node);
+                    if (shapes) {
+                        label = getLabel(shapes[0]);
+                        if (label) {
+                            app.labels.push(label);
                         }
                     }
                 }
@@ -12012,8 +12112,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                                 if (event.shiftKey) {
                                     const dist = 1 * Math.tan(app.camera.fieldOfView * Math.PI / 180);
-                                    const movement = sum(scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
-                                        scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
+                                    const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
+                                        Vector.scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
                                     app.camera.position = sum(start.position, movement);
                                     app.camera.lookAt = sum(start.lookAt, movement);
                                 } else {
@@ -12046,7 +12146,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const yAxis = cross(sightLine, xAxis);
                         if (event.shiftKey) {
                             const dist = Math.hypot(...sightLine) / -1000;
-                            const movement = sum(scale(normalised(xAxis), deltaX * dist), scale(normalised(yAxis), deltaY * dist));
+                            const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist), Vector.scale(normalised(yAxis), deltaY * dist));
                             app.camera.position = sum(app.camera.position, movement);
                             app.camera.lookAt = sum(app.camera.lookAt, movement);
                         } else {
@@ -12105,7 +12205,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const sightLine = subtract(app.camera.position, app.camera.lookAt);
 
                 const current = (app.movement?.distance?.remaining ?? 0) / Math.hypot(...sightLine);
-                const offset = scale(sightLine, dist);
+                const offset = Vector.scale(sightLine, dist);
                 //const position = sum(app.camera.position, offset);
                 //const lookAt = sum(app.camera.lookAt, offset);
                 const position = sum(app.camera.lookAt, offset);
@@ -12703,35 +12803,35 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'add',
                 action(text) {
                     const parameters = text.replace(/^add\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
-                    const node = parameters.reduce((node, parameter) => {
+                    const part = parameters.reduce((part, parameter) => {
                         if (parameter.includes('=')) {
                             const [name, value] = parameter.trim().split(/\s*=\s*/);
-                            node[name] = interpret(value);
+                            part[name] = interpret(value);
                         } else {
-                            if (node.name) {
-                                node[parameter.trim()] = true;
+                            if (part.name) {
+                                part[parameter.trim()] = true;
                             } else {
-                                node.name = parameter.trim();
-                                node[meta].name = [parameter.trim()];
+                                part.name = parameter.trim();
+                                part[meta].name = [parameter.trim()];
                             }
                         }
-                        return node;
+                        return part;
                     }, { [meta]: { source: { text }, name: [], data: [], typeNames: [], parent: null, states: {}, currentState: new Set() }, [children]: [] });
                     if (app.selected.size > 0) {
                         const parents = Array.from(app.selected);
                         parents.forEach((parent) => {
-                            parent[children].push(node);
-                            node[meta].parent = parent;
+                            parent[children].push(part);
+                            part[meta].parent = parent;
                             app.views.forEach((view) => {
                                 const parentItem = view.shapes.get(parent)[0];
                                 if (parentItem) {
-                                    view.addItem(node, parentItem);
+                                    view.addPart(part, parentItem);
                                 }
                             });
                         });
                     } else {
-                        app.graph.push(node);
-                        app.views.forEach((view) => view.addItem(node));
+                        app.graph.push(part);
+                        app.views.forEach((view) => view.addPart(part));
                     }
                 }
             },
@@ -12871,10 +12971,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     } else {
                         const items = target.split(/\s*,\s*/).filter((i) => i);
                         if (items.length > 0) {
-                            const lookAt = scale(sum(...items.map((item) => extractTranslation(item.world))), 1 / items.length);
+                            const lookAt = Vector.scale(sum(...items.map((item) => extractTranslation(item.world))), 1 / items.length);
                             const size = Math.max(...items.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
                             const dist = size / Math.tan(180 * app.camera.fieldOfView / Math.PI);
-                            const position = sum(lookAt, scale(direction, dist));
+                            const position = sum(lookAt, Vector.scale(direction, dist));
                             moveCamera(position, lookAt, up);
                         } else {
                             setView();
@@ -13070,10 +13170,32 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Update the data list used to support command completions
+         */
+        function updateCommandList() {
+            const commandList = document.getElementById('commands');
+            commandList.innerHTML = '';
+
+            userCommands.forEach((command) => {
+                const option = document.createElement('option');
+                option.innerText = command.name;
+                commandList.append(option);
+            });
+
+            app.nodes.forEach((node) => {
+                const option = document.createElement('option');
+                option.innerText = node.name;
+                commandList.append(option);
+            });
+        }
+
+        /**
          * Add command entry capability.
          */
         function addCommandProcessing() {
             const commandEntry = document.getElementById('command-entry');
+
+            updateCommandList();
 
             const processCommand = (event) => {
                 const fullCommand = commandEntry.value;
@@ -13090,27 +13212,41 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 } else if (commands.length === 0) {
                     const names = fullCommand.split(/\s*,\s*/);
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
-                    const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
+
+                    if (event.shiftKey) {
+                        const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
+                        deselect.forEach((pattern) => {
+                            app.nodes.filter((part) => pattern.test(part.name))
+                                .forEach((part) => app.selected.delete(part));
+                        });
+                    } else {
+                        app.selected.clear();
+                    }
+
+                    select.forEach((pattern) => {
+                        app.nodes.filter((part) => pattern.test(part.name))
+                            .forEach((part) => app.selected.add(part));
+                    });
 
                     const selected = new Set(select.flatMap((pattern) =>
                         app.nodes.filter((node) => pattern.test(node.name))));
 
                     let first = true;
-                    for (const node of selected) {
-                        let parent = node[meta].parent;
+                    for (const part of selected) {
+                        let parent = part[meta].parent;
                         const path = [];
                         while (parent) {
                             path.unshift(parent);
                             parent = parent[meta].parent;
                         }
                         parent = null;
-                        path.forEach((node) => {
-                            const item = app.view.shapes.get(node) || [app.view.addItem(node, parent)];
+                        path.forEach((part) => {
+                            const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                             item[0].showInterior?.();
-                            node[children].forEach((child) => app.view.addItem(child, item[0]));
+                            part[children].forEach((part) => app.view.addPart(part, item[0]));
                             parent = item[0];
                         });
-                        const item = app.view.shapes.get(node) || [app.view.addItem(node, parent)];
+                        const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                         if (first) {
                             showItem(item[0]);
                             first = false;
@@ -13121,6 +13257,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     report(`Selected: ${selected.size}`);
                     if (selected.size === 0) {
                         app.show = null;
+                    } else {
+                        setView([-0.2, 0.2, 1], [0, 1, 0]);
                     }
                 }
             };
