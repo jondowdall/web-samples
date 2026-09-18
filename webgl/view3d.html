@@ -1854,12 +1854,12 @@
          */
         function setView(direction = [0, 0, 1], up = [0, 1, 0]) {
             // Use the initial position to determine the desired distance from viewpoint
-            const selected = app.view.items.filter((item) => app.selected.has(item.node));
 
-            if (selected.length) {
+            if (app.selected.size) {
+                const selected = [...app.selected].flatMap((part) => app.view.shapes.get(part));
                 const orientation = extractRotation(selected[0].world);
-                const transforms = selected.map((item) => item.world);
-                const centres = selected.map((item) => applyTransform(item.origin, item.world));
+                const transforms = selected.map((shape) => shape.world);
+                const centres = transforms.map((matrix) => applyTransform([0, 0, 0], matrix));
                 const lookAt = Vector.scale(sum(...centres), 1 / transforms.length);
                 const radius = Math.max(...transforms.map((matrix) => Math.hypot(...extractScale(matrix))));
                 const delta = [
@@ -2325,63 +2325,58 @@
                 this.shapes = new Map();
                 this.drawGround = true;
             }
-            getShape(part, parent) {
+            getShape(part) {
                 // Determine the shape from it's attributes
                 const size = Math.hypot(...getAttribute(part.node, 'size', [0, 0, 0]));
 
                 if (getAttribute(part.node, 'obj')) {
-                    return new LightWaveObject(part, parent);
+                    return new LightWaveObject(part);
                 } else if (getAttribute(part.node, 'gltf')) {
                     return loadGLTF(getAttribute(part.node, 'gltf'));
                 } else if (getAttribute(part.node, 'svg')) {
-                    return new SVGObject(part, parent);
+                    return new SVGObject(part);
                 } else if (getAttribute(part.node, 'bevel')) {
-                    return new BevelledBlock(part, parent);
+                    return new BevelledBlock(part);
                 } else if (getAttribute(part.node, 'walls') && size > 0) {
-                    return new Block(part, parent);
+                    return new WalledBox(part);
                 } else if (getAttribute(part.node, 'apex') && size > 0) {
-                    return new Shed(part, parent);
+                    return new Shed(part);
                 } else if (getAttribute(part.node, 'size') && size > 0) {
-                    return new Block(part, parent);
+                    return new Block(part);
                 } else if (getAttribute(part.node, 'radius') && getAttribute(part.node, 'height')) {
-                    return new Cylinder(part, parent);
+                    return new Cylinder(part);
                 } else if (getAttribute(part.node, 'radius1') && getAttribute(part.node, 'radius2')) {
-                    return new Frustum(part, parent);
+                    return new Frustum(part);
                 } else if (getAttribute(part.node, 'radius')) {
-                    return new Icosphere(part, parent);
+                    return new Icosphere(part);
                 } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'height') && getAttribute(part.node, 'thickness')) {
-                    return new Wall(part, parent);
+                    return new Wall(part);
                 } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'height')) {
-                    return new Prism(part, parent);
+                    return new Prism(part);
                 } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'sweep')) {
-                    return new Lathed(part, parent);
+                    return new Lathed(part);
                 } else if (getAttribute(part.node, 'path')) {
-                    return new Polygon(part, parent);
+                    return new Polygon(part);
                 }
             }
-            addPart(part, parent) {
+            addPart(part) {
                 if (this.shapes.has(part)) {
                     return this.shapes.get(part)[0];
                 }
-                let item = parent;  // Use parent to allow container parts with no representation
+                let shape;// = parent;  // Use parent to allow container parts with no representation
                 if (getAttribute(part.node, 'position')) {
                     let descend = false;
-                    item = this.getShape(part, parent);
-                    if (!item) {
+                    shape = this.getShape(part);
+                    if (!shape) {
                         descend = true;
-                        item = new Shape(part, parent);
+                        shape = new Shape(part);
                     }
-                    this.shapes.set(part, [item]);
-                    this.named[part.name] = item;
+                    this.shapes.set(part, [shape]);
+                    this.named[part.name] = shape;
 
-                    this.items.push(item);
-                    if (parent) {
-                        parent.children.push(item);
-                    } else if (item) {
-                        this.roots.push(item);
-                    }
+                    this.items.push(shape);
                     if (descend) {
-                        part.parts.forEach((part) => this.addPart(part, item));
+                        part.parts.forEach((part) => this.addPart(part));
                     }
                     //} else if (part[meta].source[meta].connection) {
                 } else if (part.node[meta].connection) {
@@ -2390,26 +2385,28 @@
                     if (start && end) {
                         app.connections.push(new Connection(start, end));
                     }
-                } else if (parent) {
-                    part.parts.forEach((part) => this.addPart(part, item));
+                } else {
+                    part.parts.forEach((part) => this.addPart(part));
                 }
                 (part.node[meta].connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
                         const start = part.parts.find((part) => part.node[meta].name.includes(connection.start));
                         const end = part.parts.find((part) => part.node[meta].name.includes(connection.end));
                         if (start && end) {
-                            const startItem = this.shapes.get(start);
-                            const endItem = this.shapes.get(end);
-                            app.connections.push(new Connection(startItem[0], endItem[0]));
+                            const starShape = this.shapes.get(start);
+                            const endShape = this.shapes.get(end);
+                            app.connections.push(new Connection(starShape[0], endShape[0]));
                         }
                     }
                 });
-                return item;
+                return shape;
             }
-            removeItem(part) {
+            removePart(part) {
                 const shapes = this.shapes.get(part);
                 if (shapes) {
                     shapes.forEach((shape) => shape.remove());
+                    this.items = this.items.filter((shape) => !shapes.includes(shape));
+                    part.parts.forEach((part) => this.removePart(part));
                 }
                 this.shapes.delete(part);
             }
@@ -2542,12 +2539,15 @@
                 }
                 parent = null;
                 path.forEach((part) => {
+                    part.showComponents();
+                    /*
                     const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                     if (item[0]) {
                         item[0].showInterior?.();
                         part.parts.forEach((part) => app.view.addPart(part, item[0]));
                         parent = item[0];
                     }
+                        */
                 });
                 return app.view.shapes.get(part) || [app.view.addPart(part, parent)];
             }
@@ -2635,6 +2635,109 @@
                 // Create a new part from this part.
                 const name = this.product.getUniqueName();
                 return new Part(this.product, context, name);
+            }
+            path() {
+                const path = [this];
+                while (path[0].parent) {
+                    path.unshift(path[0].parent);
+                }
+                return path;
+            }
+            getShape() {
+                // Determine the shape from it's attributes
+                const size = Math.hypot(...getAttribute(this.node, 'size', [0, 0, 0]));
+
+                if (getAttribute(this.node, 'obj')) {
+                    return LightWaveObject;
+                } else if (getAttribute(this.node, 'gltf')) {
+                    return loadGLTF(getAttribute(this.node, 'gltf'));
+                } else if (getAttribute(this.node, 'svg')) {
+                    return SVGObject;
+                } else if (getAttribute(this.node, 'bevel')) {
+                    return BevelledBlock;
+                } else if (getAttribute(this.node, 'walls') && size > 0) {
+                    return Block;
+                } else if (getAttribute(this.node, 'apex') && size > 0) {
+                    return Shed;
+                } else if (getAttribute(this.node, 'size') && size > 0) {
+                    return Block;
+                } else if (getAttribute(this.node, 'radius') && getAttribute(this.node, 'height')) {
+                    return Cylinder;
+                } else if (getAttribute(this.node, 'radius1') && getAttribute(this.node, 'radius2')) {
+                    return Frustum;
+                } else if (getAttribute(this.node, 'radius')) {
+                    return Icosphere;
+                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'height') && getAttribute(this.node, 'thickness')) {
+                    return Wall;
+                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'height')) {
+                    return Prism;
+                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'sweep')) {
+                    return Lathed;
+                } else if (getAttribute(this.node, 'path')) {
+                    return Polygon;
+                }
+            }
+            showComponents() {
+                // Check there are internal components to show
+                if (this.componentView || (this.parts.length === 0 && !this.node.url)) {
+                    return;
+                }
+                const size = getAttribute(this.node, 'size');
+                if (Math.hypot(...size) > 0) {
+                    const type = this.getShape();
+                    if (type === WalledBox || type === Block) {
+                        const oldShapes = app.view.shapes.get(this);
+                        app.view.removePart(this);
+
+                        const t = getAttribute(this.node, 'walls', 10);
+                        const walls = [
+                            {
+                                position: [(t - size[0]) / 2, 0, 0],
+                                size: [t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]],
+                            },
+                            {
+                                position: [0, (t - size[1]) / 2, 0],
+                                size: [1, t / size[1], 1],
+                            },
+                            {
+                                position: [0, 0, (t - size[2]) / 2],
+                                size: [1, 1 - 2 * t / size[1], t / size[2]],
+                            },
+                            {
+                                position: [(size[0] - t) / 2 - 5, 0, 0],
+                                size: [t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]],
+                            },
+                            {
+                                position: [0, (size[1] - t) / 2, 0],
+                                size: [1, t / size[1], 1],
+                            },
+                            {
+                                position: [0, 0, (size[2] - t) / 2],
+                                size: [1, 1 - 2 * t / size[1], t / size[2]],
+                            }];
+
+                        const shapes = walls.map((wall) => {
+                            const shape = new Block(this);
+                            app.view.items.push(shape);
+                            shape.move(wall.position);
+                            shape.scale(wall.size);
+                            shape.cull = normalised(wall.position);
+                            return shape;
+                        });
+
+                        app.view.shapes.set(this, shapes);
+
+                        app.views.forEach((view) =>
+                            this.parts.forEach((part) => view.addPart(part)));
+                    }
+                }
+                this.componentView = true;
+            }
+            hideComponents() {
+                app.views.forEach((view) =>
+                    this.parts.forEach((part) =>
+                        view.removePart(part)));
+                this.componentView = false;
             }
             scale(size) {
                 this.transform.scale(size);
@@ -4781,8 +4884,10 @@
                 return this;
             }
             scale(size) {
-                const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
-                this.multiply(scale);
+                if (Math.hypot(...size) > 0) {
+                    const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
+                    this.multiply(scale);
+                }
                 return this;
             }
             rotate(angle, axis) {
@@ -5143,11 +5248,10 @@
          * Parent class for object visual representations
          */
         class Shape {
-            constructor(part, parent, name) {
+            constructor(part, name) {
                 this.view = app.view;
                 this.part = part;
                 this.node = part.node;
-                this.parent = parent;
                 this.children = [];
                 this.instances = [];
 
@@ -5162,7 +5266,7 @@
 
                 const size = getAttribute(part.node, 'size', [1, 1, 1]);
                 const offset = product(getAttribute(part.node, 'offset', [0, 0, 0]), size);
-                  
+
                 this.transform.scale(size);
                 this.transform.move(offset);
                 this.offset(getAttribute(part.node, 'offset', [0, 0, 0]));
@@ -5216,7 +5320,7 @@
                     //this.transform.scale(getAttribute(this.node, 'size', [1, 1, 1]));
                     this.instances.forEach((instance) => instance.updateInstanceData());
                 }
-                if (app.selected.has(this.node)) {
+                if (app.selected.has(this.part)) {
                     this.instances.forEach((instance) => instance.highlight());
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
@@ -5271,10 +5375,11 @@
                 this.children.forEach((child) => child.setWorld(this.world));
             }
             get path() {
-                if (this.parent) {
-                    return [...this.parent.path, this];
+                const path = [this.part];
+                while (path[0].parent) {
+                    path.unshift(path[0].parent);
                 }
-                return [this];
+                return path.flatMap((part) => this.shapes.get(part));
             }
             apply(action) {
                 action(this);
@@ -5292,12 +5397,18 @@
             getEdges() {
 
             }
-            move(offset, event = {}) {
-                const siblings = this.view.items.filter((item) => item !== this && item.parent === this.parent);
+            move(offset) {
+                this.transform.move(offset);
+                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                this.applyTransform();
+            }
+            drag(offset, event = {}) {
+                const parts = this.part.parent.parts;
+                const siblings = parts.flatMap((part) => app.view.shapes.get(this.part));
                 this.requestedTransform = this.requestedTransform || this.transform.clone();
 
                 // Translate the movement from world to local coordinates.
-                const inverted = invert(this.parent ? this.parent.world : identityMatrix());
+                const inverted = invert(this.part.parent ? this.part.parent.transform.matrix : identityMatrix());
                 const delta = applyTransform(offset, inverted);
 
                 const current = [...this.transform.matrix];
@@ -5326,10 +5437,8 @@
 
                 if (!event.shiftKey && siblings.some((sibling) => interferes(this, sibling))) {
                     this.transform.matrix = current;
-                } else {
-                    this.applyTransform();
                 }
-                this.children.forEach((child) => child.instances.forEach((instance) => instance.updateInstanceData()));
+                this.applyTransform();
             }
             applyTransform() {
                 this.instances.forEach((instance) => instance.updateInstanceData());
@@ -5421,8 +5530,8 @@
                 Block.primative = primative;
                 return primative;
             }
-            constructor(node, parent) {
-                super(node, parent, `quad`);
+            constructor(node) {
+                super(node, `quad`);
 
                 this.primative = Quad.primative || Quad.make();
                 this.children = [];
@@ -5558,16 +5667,78 @@
                 new Primative(gl.LINES, 24, { buffer: Block.primative.buffers.vertices }, 36);
                 return Block.primative;
             }
-            constructor(node, parent) {
-                super(node, parent, `block`);
+            constructor(node) {
+                super(node, `block`);
 
                 this.primative = Block.primative || Block.make();
                 this.primative.effects = 1;
                 this.children = [];
                 this.instances = [this.primative.addInstance(node, this, `block`)];
                 this.radius = Math.hypot(...extractScale(this.world)) / 2;
+                this.show = true;
+            }
+            update() {
+                if (app.selected.has(this.part) && !this.part.componentView) {
+                    this.instances.forEach((instance) => instance.highlight());
+                } else {
+                    this.instances.forEach((instance) => instance.unhighlight());
+                }
+
+                this.show = true;
+                if (app.show && app.show.item !== this && app.show.item !== this.parent) {
+                    // Get the origin of this element
+                    const origin = applyTransform([0, 0, 0], this.world);
+                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+
+                    if (dist < app.show.distance) {
+                        const point = applyTransform4([...origin, 1], app.show.transform);
+                        const size = extractScale(this.world);
+                        const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
+                        const radius = Math.hypot(...size) / point[3];
+
+                        const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
+
+                        if (gap < (radius + app.show.radius)) {
+                            this.show = false;
+                        }
+
+                        if (app.showConstruction) {
+                            const width = ctx.canvas.width;
+                            const height = ctx.canvas.height;
+                            const x = 0.5 * width * (position[0] / app.aspect + 1);
+                            const y = 0.5 * height * (1 - position[1]);
+
+                            ctx.strokeStyle = 'grey';
+                            ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
+                            ctx.beginPath();
+                            ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                if (this.cull) {
+                    const orientation = extractRotation(this.world);
+                    // Transform the normal into world space
+                    const normal = normalised(applyTransform(this.cull, orientation));
+                    const centre = applyTransform([0.5, 0.5, 0.5], this.world);
+                    const eyeVector = subtract(centre, app.camera.position);
+                    const direction = dot(eyeVector, normal);
+                    if (direction < 0) {
+                        this.show = false;
+                    }
+                }
+
+                if (this.show) {
+                    this.instances.forEach((instance) => instance.show());
+                } else {
+                    this.instances.forEach((instance) => instance.hide());
+                }
             }
             intersects(line, all) {
+                if (!this.show) {
+                    return [];
+                }
                 const radius = Math.hypot(...this.transform.getScale());
 
                 const centre = applyTransform([0, 0, 0], this.world);
@@ -5897,22 +6068,22 @@
          * vertex data rather than instancing of other objects.
          */
         class Shed extends Shape {
-            constructor(node, parent) {
-                super(node, parent, `block`);
+            constructor(part) {
+                super(part, `block`);
                 // If the shed buffers don't exist create them
                 if (!Shed.buffers) {
 
                     const material = {
-                        colour: getAttribute(node, 'colour', [0.5, 0.5, 0.5]),
-                        emissivityColour: getAttribute(node, 'emissivity', [0, 0, 0]),
-                        reflectivity: getAttribute(node, 'reflectivity', [0.2, 0.2, 0.2]),
-                        roughness: getAttribute(node, 'roughness', 0.1),
-                        opacity: getAttribute(node, 'opacity', 1),
-                        metallic: getAttribute(node, 'metallic', 0.1),
-                        mirror: getAttribute(node, 'mirror', 0.3),
+                        colour: getAttribute(part.node, 'colour', [0.5, 0.5, 0.5]),
+                        emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
+                        reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
+                        roughness: getAttribute(part.node, 'roughness', 0.1),
+                        opacity: getAttribute(part.node, 'opacity', 1),
+                        metallic: getAttribute(part.node, 'metallic', 0.1),
+                        mirror: getAttribute(part.node, 'mirror', 0.3),
                     };
 
-                    const texture = addTexture(getAttribute(node, 'texture', 'white'));
+                    const texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
                     Shed.buffers = createPBRBuffers({ material, texture });
                     gl.bindVertexArray(null);
@@ -6209,8 +6380,8 @@
          * Manage Walled Box
          */
         class WalledBox extends Shape {
-            constructor(node, parent) {
-                super(node, parent, `WalledBox`);
+            constructor(node) {
+                super(node, `WalledBox`);
 
                 this.primative = Block.primative || Block.make();
                 this.primative.effects = 1;
@@ -6234,29 +6405,29 @@
                     this.primative.addInstance(this.part, this, 'WalledBox 4'),
                     this.primative.addInstance(this.part, this, 'WalledBox 5'));
 
-                this.instances[0].move([t / size[0] - 0.5, 0, 0]);
-                this.instances[0].scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
-                this.instances[0].material = material;
+                this.instances[0].shape.move([t / size[0] - 0.5, 0, 0]);
+                this.instances[0].shape.scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
+                this.instances[0].shape.material = material;
 
-                this.instances[1].move([0, t / size[1] - 0.5, 0]);
-                this.instances[1].scale([1, t / size[1], 1]);
-                this.instances[1].material = material;
+                this.instances[1].shape.move([0, t / size[1] - 0.5, 0]);
+                this.instances[1].shape.scale([1, t / size[1], 1]);
+                this.instances[1].shape.material = material;
 
-                this.instances[2].move([0, 0, t / size[2] - 0.5]);
-                this.instances[2].scale([1, 1 - 2 * t / size[1], t / size[2]]);
-                this.instances[2].material = material;
+                this.instances[2].shape.move([0, 0, t / size[2] - 0.5]);
+                this.instances[2].shape.scale([1, 1 - 2 * t / size[1], t / size[2]]);
+                this.instances[2].shape.material = material;
 
-                this.instances[3].move([0.5 - t / size[0], 0, 0]);
-                this.instances[3].scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
-                this.instances[3].material = material;
+                this.instances[3].shape.move([0.5 - t / size[0], 0, 0]);
+                this.instances[3].shape.scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
+                this.instances[3].shape.material = material;
 
-                this.instances[4].move([0, 0.5 - t / size[1], 0]);
-                this.instances[4].scale([1, t / size[1], 1]);
-                this.instances[4].material = material;
+                this.instances[4].shape.move([0, 0.5 - t / size[1], 0]);
+                this.instances[4].shape.scale([1, t / size[1], 1]);
+                this.instances[4].shape.material = material;
 
-                this.instances[5].move([0, 0, 0.5 - t / size[2]]);
-                this.instances[5].scale([1, 1 - 2 * t / size[1], t / size[2]]);
-                this.instances[5].material = material;
+                this.instances[5].shape.move([0, 0, 0.5 - t / size[2]]);
+                this.instances[5].shape.scale([1, 1 - 2 * t / size[1], t / size[2]]);
+                this.instances[5].shape.material = material;
             }
             hideInterior() {
                 if (!this.interiorView) {
@@ -6269,7 +6440,7 @@
                 this.instances.length = 1;
 
                 this.node[children].forEach((child) =>
-                    app.view.removeItem(child));
+                    app.view.removePart(child));
 
                 this.instances[0].transform.matrix = identityMatrix();
             }
@@ -6329,18 +6500,19 @@
                     [-1, 0, 0], [0, -1, 0], [0, 0, -1],
                     [1, 0, 0], [0, 1, 0], [0, 0, 1],
                 ];
-                this.instances.forEach((side, index) => {
+                this.instances.forEach((instance, index) => {
+                    const side = instance.shape;
                     let show = true;
                     if (app.show && app.show.item !== this && app.show.item !== this.parent) {
                         // Get the origin of this element
                         const origin = applyTransform([0, 0, 0], side.world);
                         const dist = Math.hypot(...subtract(origin, app.camera.position));
 
-                        if (dist < app.show.distance) {
+                        if (1 || dist < app.show.distance) {
                             const point = applyTransform4([...origin, 1], app.show.transform);
                             const size = extractScale(side.world);
                             const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
-                            const radius = Math.hypot(...size) / point[3];
+                            const radius = Math.abs(Math.hypot(...size) / point[3]);
 
                             const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
 
@@ -6373,9 +6545,9 @@
                         }
                     }
                     if (show) {
-                        side.show();
+                        instance.show();
                     } else {
-                        side.hide();
+                        instance.hide();
                     }
                 });
                 if (app.showConstruction) {
@@ -6567,8 +6739,8 @@
                 BevelledBlock.bevels.push(primative);
                 return primative;
             }
-            constructor(node, parent) {
-                super(node, parent, `BevelledBlock`);
+            constructor(node) {
+                super(node, `BevelledBlock`);
 
                 const bevel = [getAttribute(node, 'bevel', 0.05)].flatMap((item) => item);
                 if (bevel.length < 3) {
@@ -6673,8 +6845,8 @@
                 Cylinder.primatives[sides] = primative;
                 return primative;
             }
-            constructor(part, parent) {
-                super(part, parent, 'cylinder');
+            constructor(part) {
+                super(part, 'cylinder');
                 const sides = getAttribute(part.node, 'sides', 12);
                 this.radius = getAttribute(part.node, 'radius');
                 this.height = getAttribute(part.node, 'height');
@@ -6755,8 +6927,8 @@
                 Frustum.primatives[sides] = primative;
                 return primative;
             }
-            constructor(part, parent) {
-                super(part, parent);
+            constructor(part) {
+                super(part);
                 this.points = [this.origin];
                 const sides = getAttribute(part.node, 'sides', 12);
                 this.radius1 = getAttribute(part.node, 'radius1');
@@ -6897,8 +7069,8 @@
                 }
                 return Icosphere.level[subdivisions];
             }
-            constructor(part, parent) {
-                super(part, parent, 'icosphere');
+            constructor(part) {
+                super(part, 'icosphere');
                 const subdivisions = getAttribute(part.node, 'subdivisions', 4);
                 this.primative = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
                 this.instances = [this.primative.addInstance(part, this, 'icosphere')];
@@ -7573,8 +7745,8 @@
           * test is more complex than the other shapes.
           */
         class Wall extends Shape {
-            constructor(part, parent) {
-                super(part, parent, 'Wall');
+            constructor(part) {
+                super(part, 'Wall');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -8070,8 +8242,8 @@
           * Prisms are not managed as primatives as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
           */
         class Prism extends Shape {
-            constructor(node, parent) {
-                super(node, parent, 'prism');
+            constructor(node) {
+                super(node, 'prism');
                 this.children = [];
                 this.texture = addTexture(getAttribute(node, 'texture', 'white'));
 
@@ -8304,8 +8476,8 @@
         }
 
         class Polygon extends Shape {
-            constructor(part, parent) {
-                super(part, parent, 'n-gon');
+            constructor(part) {
+                super(part, 'n-gon');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -8472,8 +8644,8 @@
         }
 
         class Lathed extends Shape {
-            constructor(part, parent) {
-                super(part, parent, 'n-gon');
+            constructor(part) {
+                super(part, 'n-gon');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -8911,8 +9083,8 @@
         class LightWaveObject extends Shape {
             static loaded = {};
             static pending = {};
-            constructor(part, parent) {
-                super(part, parent, `block`);
+            constructor(part) {
+                super(part, `block`);
 
                 this.url = getAttribute(part.node, 'obj');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
@@ -9145,8 +9317,8 @@
         class SVGObject extends Shape {
             static loaded = {};
             static pending = {};
-            constructor(node, parent) {
-                super(node, parent, `block`);
+            constructor(node) {
+                super(node, `block`);
 
                 this.url = getAttribute(node, 'svg');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
@@ -10878,7 +11050,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
         async function loadStructure(text, parent, replace) {
             if (replace) {
-                app.view.items.forEach((item) => app.view.removeItem(item.node));
+                app.view.items.forEach((item) => app.view.removePart(item.part));
                 app.view.items = [];
                 app.view.roots = [];
                 app.stock = {};
@@ -10895,28 +11067,34 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const root = new Product('');
             const products = {};
             // Create the product structure from the graph.
-            const addPart = (node, context, componentIndex) => {
+            const addPart = (node, componentIndex, context) => {
                 const product = Product.fromNode(node);
+                let component;
                 if (context) {
+                    component = new Component(product, node, context.product);
+                    context.product.components[componentIndex] = component;
                     // Check if this is a redefinition of a product
-                    if (products[context.product.name]) {
+                    if (products[context.product.name] && products[context.product.name].components.length > 0) {
                         if (!products[context.product.name].components[componentIndex]?.check(node)) {
                             console.log(`Component mismatch for ${node.name} in ${context.product.name}. Creating new component.`);
                         }
-                    } else {
-                        context.product.components[componentIndex] = new Component(product, node, context.product);
                     }
                 } else if (getAttribute(node, 'position')) {
-                    context = { product: root };
-                    context.product.components[componentIndex] = new Component(product, node, context.product);
+                    component = new Component(product, node, root);
+                    context = { product: root, part: parent };
+                    root.components.push(component);
                 }
-                const part = new Part(node, context?.product.components[componentIndex], context?.part);
+                const part = new Part(node, component, context?.part);
                 product.instances.push(part);
-                part.parts = node[children].map((child, index) => addPart(child, { product, part }, index));
+                part.parts = node[children].map((child, index) => addPart(child, index, { product, part }));
                 products[product.name] = product;
                 return part;
             }
-            app.rootParts = app.graph.map((node) => addPart(node));
+            if (parent) {
+                parent.parts.push(...app.graph.map((node, index) => addPart(node, index)));
+            } else {
+                app.rootParts = app.graph.map((node, index) => addPart(node, index));
+            }
 
             const nodes = [...app.graph];
             while (nodes.length) {
@@ -10927,7 +11105,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             updateCommandList();
-            app.view.update(app.rootParts, parent, replace);
+            app.view.update(parent ? parent.parts : app.rootParts, parent, replace);
             showTree();
             showModel(app.graph);
             updateText();
@@ -11482,7 +11660,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          *
          */
         function getIntersection(line, all = false) {
-            return app.view.roots.flatMap((shape) => shape.intersects(line));
+            return app.view.items.flatMap((shape) => shape.intersects(line));
         }
 
         /**
@@ -11561,11 +11739,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Rotate the selected item
          */
         function rotateSelected(angle, axis, local) {
-            for(const part of app.selected) {
+            for (const part of app.selected) {
                 if (local) {
                     axis = applyTransform(axis, extractRotation(part.transform.matrix));
                 }
-                part.rotate(angle, axis);                
+                part.rotate(angle, axis);
             }
             /*
             app.view.items.filter((item) => app.selected.has(item.node))
@@ -11658,15 +11836,17 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     updateText();
                     showSceneData();
                     showStock();
+                } else if (part.componentView) {
+                        part.hideComponents();
                 } else if (event.crtlKey || part.node.load !== true) {
-                    load(part.node.url, shape[0], event.shiftKey);
+                    load(part.node.url, part, event.shiftKey);
                     part.node.load = true;
-                    if (shape[0].showInterior) {
-                        shape[0].showInterior();
-                        //setView([0, 1, 0], [0, 0, -1]);
-                        setView([-0.2, 0.2, 1], [0, 1, 0]);
-                        app.view.items.forEach((item) => app.selected.delete(item.part.node));
-                    }
+                    //if (shape[0].showInterior) {
+                    part.showComponents();
+                    //setView([0, 1, 0], [0, 0, -1]);
+                    setView([-0.2, 0.2, 1], [0, 1, 0]);
+                    //app.view.items.forEach((item) => app.selected.delete(item.part.node));
+                    //}
                 }
             } else if (part.node[meta].states.selected) {
                 if (part.node[meta].currentState.has(part.node[meta].states.selected)) {
@@ -11679,7 +11859,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 setView([-0.2, 0.2, 1], [0, 1, 0]);
                 showItem(shape[0]);
                 if (part.parts.length > 0) {
-                    if (shape[0].showInterior) {
+                    //if (shape[0].showInterior) {
+                    if (part.componentView) {
+                        part.hideComponents();
+                    } else {
+                        part.showComponents();
+                    }
+                    /*
                         if (!shape[0].interiorView) {
                             part.parts.forEach((part) => app.view.addPart(part, shape[0]));
                             shape[0].showInterior();
@@ -11688,6 +11874,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                     }
                     app.views.forEach((view) => view.updateMaterials());
+                    */
                 }
             }
         }
@@ -11887,7 +12074,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                 action(item);
                                 item.children.forEach((child) => apply(child, action));
                             }
-                            const selected = app.view.items.filter((item) => app.selected.has(item.node));
+                            const selected = app.view.items.filter((item) => app.selected.has(item.part));
                             selected.forEach((item) =>
                                 item.apply((item) => {
                                     item.start = [...item.transform.matrix];
@@ -11925,6 +12112,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                     selected.update();
                                 });
                                 const pt = applyTransform(selected[0].origin, selected[0].world);
+                                //const pt = applyTransform([0,0,0], selected[0].transform.matrix);
                                 app.show.point = pt;
                                 app.show.toWorld = selected[0].world;
                             };
@@ -12349,6 +12537,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         async function loadFile(url) {
             app.sourceFile = url;
+            app.labels = [];
             const result = await fetch(url);
             const content = await result.text();
             if (app.sourceFile.endsWith('.svg')) {
@@ -13075,18 +13264,17 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                     let first = true;
                     for (const part of selected) {
-                        let parent = part.parent;
-                        const path = [];
-                        while (parent) {
-                            path.unshift(parent);
-                            parent = parent.parent;
-                        }
-                        parent = null;
+                        const path = part.path;
+                        path.pop(); // Remove part from path
+                        let parent;
                         path.forEach((part) => {
+                            part.showComponents();
+                            /*
                             const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                             item[0].showInterior?.();
                             part.parts.forEach((part) => app.view.addPart(part, item[0]));
                             parent = item[0];
+                            */
                         });
                         const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                         if (first) {
