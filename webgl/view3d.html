@@ -7,7 +7,7 @@
     <style>
         html {
             box-sizing: border-box;
-            font-family: sans-serif;
+            font-family: arial, sans-serif;
             font-size: 10pt;
         }
 
@@ -191,10 +191,12 @@
         }
 
         .expanded::before {
+        /*
             content: "▼";
             text-align: center;
             width: 1.5rem;
             display: inline-block;
+            */
         }
 
         .collapsed::before {
@@ -1727,8 +1729,15 @@
          */
         function right(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
-            const offset = Vector.scale(xAxis, amount * distance / 10);
-            moveCamera(sum(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
+            if (app.walk) {
+                xAxis[1] = 0;
+                normalise(xAxis);
+                add(app.force, Vector.scale(xAxis, amount * distance * 0.1));
+                limit(app.force, distance);
+            } else {
+                const offset = Vector.scale(xAxis, amount * distance / 10);
+                moveCamera(sum(app.camera.position, offset), sum(app.camera.lookAt, offset), app.camera.up);
+            }
             canvas.focus();
         }
 
@@ -2366,7 +2375,7 @@
                 if (this.shapes.has(part)) {
                     return this.shapes.get(part)[0];
                 }
-                let shape;// = parent;  // Use parent to allow container parts with no representation
+                let shape;
                 if (getAttribute(part.node, 'position')) {
                     let descend = false;
                     shape = this.getShape(part);
@@ -2381,7 +2390,6 @@
                     if (descend) {
                         part.parts.forEach((part) => this.addPart(part));
                     }
-                    //} else if (part[meta].source[meta].connection) {
                 } else if (part.node[meta].connection) {
                     const start = this.named[part.start];
                     const end = this.named[part.end];
@@ -2412,6 +2420,10 @@
                     part.parts.forEach((part) => this.removePart(part));
                 }
                 this.shapes.delete(part);
+            }
+            within(point) {
+                // Return list of shapes that the given point is inside
+                return this.items.filter((shape) => shape.contains(point));
             }
             updateMaterials() {
             }
@@ -2522,6 +2534,7 @@
                 if (grid) {
                     drawGrid(grid);
                 }
+
                 gl.uniform1i(app.pbrShader.pass, 1);
                 gl.depthMask(false);
                 this.renderQueue.forEach((item) => item.render(time));
@@ -2543,14 +2556,6 @@
                 parent = null;
                 path.forEach((part) => {
                     part.showComponents();
-                    /*
-                    const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
-                    if (item[0]) {
-                        item[0].showInterior?.();
-                        part.parts.forEach((part) => app.view.addPart(part, item[0]));
-                        parent = item[0];
-                    }
-                        */
                 });
                 return app.view.shapes.get(part) || [app.view.addPart(part, parent)];
             }
@@ -2680,12 +2685,23 @@
                     return Polygon;
                 }
             }
+            async loadContent() {
+                if (!this.node.load) {
+                    this.node.load = 'in-progress';
+                    await load(this.node.url, this, false);
+                    this.node.load = true;
+                    //this.showComponents();
+                }
+            }
             showComponents() {
                 // Check there are internal components to show
+                if (this.node.url && !this.node.load) {
+                    this.loadContent();
+                }
                 if (this.componentView || (this.parts.length === 0 && !this.node.url)) {
                     return;
                 }
-                const size = getAttribute(this.node, 'size');
+                const size = getAttribute(this.node, 'size', [0, 0, 0]);
                 if (Math.hypot(...size) > 0) {
                     const type = this.getShape();
                     if (type === WalledBox || type === Block) {
@@ -2722,7 +2738,7 @@
                         const shapes = walls.map((wall) => {
                             const shape = new Block(this);
                             app.view.items.push(shape);
-                            shape.move(wall.position);
+                            shape.move(wall.position, true);
                             shape.scale(wall.size);
                             shape.cull = normalised(wall.position);
                             return shape;
@@ -2737,9 +2753,14 @@
                 this.componentView = true;
             }
             hideComponents() {
-                app.views.forEach((view) =>
+                app.views.forEach((view) => {
                     this.parts.forEach((part) =>
-                        view.removePart(part)));
+                        view.removePart(part));
+                    view.removePart(this);
+                });
+                const shape = new Block(this);
+                app.view.items.push(shape);
+                app.view.shapes.set(this, [shape]);
                 this.componentView = false;
             }
             scale(size) {
@@ -4132,55 +4153,11 @@
         /**
          * Update the gl buffers used to define each instance of an object.
          */
-        function updateBoxes(time) {
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.boxes);
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, app.modelMatrix);
-        }
-
-        /**
-         * Update the gl buffers used to define each instance of an object.
-         */
         function updateLines(time) {
             const vertices = [];
             app.connections.flatMap((connection) => connection.addVertices(vertices));
             gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.lines);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
-        }
-
-        /**
-         * Update the gl buffers used to define each instance of an object.
-         *
-        function updateQuads(time) {
-            const matrices = [];
-            const boxes = app.boxes.filter((box) => box.highlight)
-            boxes.forEach((box) => matrices.push(...box.transform));
-            app.faceCount = boxes.length;
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, app.buffers.quads);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(matrices), gl.DYNAMIC_DRAW);
-
-            //app.updateMaterials = true;
-            //app.quadsChanged = true;
-
-        }
-
-        /**
-         * Update the object definition and the instances if required.
-         */
-        function updateBuffers(time) {
-            if (app.updateMaterials) {
-                app.view.updateMaterials();
-                app.updateMaterials = false;
-            }
-            if (app.objectChanged) {
-                updateObject(time);
-            }
-            if (app.boxesChanged) {
-                updateBoxes(time);
-                app.boxesChanged = false;
-            }
-            //updateQuads(time);
-            updateLines(time);
         }
 
         /**
@@ -4316,16 +4293,6 @@
                 ctx.arc(...projected, 5, 0, 2 * Math.PI);
                 ctx.fill();
             });
-            /*
-                        gl.bindVertexArray(app.pointVertexArray);
-
-                        gl.disable(gl.DEPTH_TEST);
-                        gl.uniform1i(app.pbrShader.effects, 0);
-                        gl.uniform1i(app.pbrShader.pass, 0);
-
-                        gl.drawArrays(gl.POINTS, 0, app.points.length);
-                        gl.enable(gl.DEPTH_TEST);
-                        */
         }
 
 
@@ -4371,27 +4338,29 @@
                     0.5 * width * (projectedPoint[0] / projectedPoint[3] + 1),
                     0.5 * height * (1 - projectedPoint[1] / projectedPoint[3])];
             }
-            ctx.font = 'bold 20px sans-serif';
+            ctx.font = 'bold 16px sans-serif';
 
-            ctx.fillStyle = 'blue';
             app.labels.forEach((label) => {
                 const size = ctx.measureText(label.text);
                 const p = screen(label.position);
-                const height = size.fontBoundingBoxAscent + size.fontBoundingBoxDescent;
+                const textHeight = size.fontBoundingBoxAscent + size.fontBoundingBoxDescent;
                 const offset = (size.fontBoundingBoxDescent - size.fontBoundingBoxAscent) / 2;
+
+                p[0] = Math.max(Math.min(p[0], width - (size.width + textHeight) / 2), (size.width + textHeight) / 2);
+                p[1] = Math.max(Math.min(p[1], height - size.fontBoundingBoxDescent), size.fontBoundingBoxAscent);
+
+                ctx.fillStyle = 'blue';
                 ctx.beginPath();
                 ctx.moveTo(p[0] - (size.width + 4) / 2, p[1] - size.fontBoundingBoxAscent);
                 ctx.lineTo(p[0] + (size.width + 4) / 2, p[1] - size.fontBoundingBoxAscent);
-                ctx.arc(p[0] + (size.width + 4) / 2 , p[1] + offset, height / 2, -Math.PI / 2, Math.PI / 2);
+                ctx.arc(p[0] + (size.width + 4) / 2, p[1] + offset, textHeight / 2, -Math.PI / 2, Math.PI / 2);
                 ctx.lineTo(p[0] - (size.width + 4) / 2, p[1] + size.fontBoundingBoxDescent);
-                ctx.arc(p[0] - (size.width + 4) / 2 , p[1] + offset, height / 2, Math.PI/2, 3 * Math.PI / 2);
+                ctx.arc(p[0] - (size.width + 4) / 2, p[1] + offset, textHeight / 2, Math.PI / 2, 3 * Math.PI / 2);
                 ctx.closePath();
                 ctx.fill();
-            });
-            ctx.fillStyle = 'white';
-            app.labels.forEach((label) => {
-                const position = screen(label.position);
-                ctx.fillText(label.text, ...position);
+                ctx.fillStyle = 'white';
+
+                ctx.fillText(label.text, ...p);
             });
         }
 
@@ -4509,6 +4478,75 @@
         }
 
         /**
+         * Auto movement
+         */
+        function managedMovement(time) {
+            if (app.movement.state === 'start') {
+                app.movement.start = time;
+                app.movement.state = 'running';
+            }
+            if (app.movement.state === 'running') {
+                const timing = app.movement.timing ?? ((i) => i);
+                const linear = (time - app.movement.start) / app.movement.duration;
+                const progress = timing(linear);
+
+                app.camera.lookAt = sum(app.movement.lookAt.start, Vector.scale(app.movement.lookAt.delta, progress));
+                const dist = app.movement.distance.start + progress * app.movement.distance.delta;
+                app.movement.distance.remaining = (1 - progress) * app.movement.distance.delta;
+                const view = Vector.scale(app.movement.direction, dist);
+                const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
+                const offset = applyTransform(view, rotation);
+                app.camera.position = sum(app.camera.lookAt, offset);
+
+                const roll = getRotation(app.movement.roll * progress, offset);
+                app.camera.up = applyTransform(applyTransform(app.movement.up, rotation), roll);
+
+                if (linear >= 1.0) {
+                    app.movement.state = 'complete';
+                    app.movement.distance.remaining = 0;
+                }
+            }
+        }
+
+        /**
+         * 'user' movement
+         */
+        function userMovement(delta) {
+            const up = app.camera.up;
+
+            if (Math.hypot(...app.velocity) > 1) {
+                const line = { point: app.camera.position, direction: normalised(app.velocity)};
+                const intercepts = getIntersection(line);
+                const speed = Math.hypot(...app.velocity) * delta + app.camera.near * 2;
+                const hits = intercepts.filter((hit) => hit.t.some((t) => t >= 0 && t <= speed));
+                if (app.noCollision || hits.length === 0) {
+                    app.camera.position = sum(app.camera.position, Vector.scale(app.velocity, delta));
+                    app.camera.lookAt = sum(app.camera.lookAt, Vector.scale(app.velocity, delta));
+                }
+
+                // Show the contents of a part when the camera is within the part.
+                const within = app.view.within(app.camera.position);
+                within.forEach((shape) =>
+                    shape.part.showComponents());
+                if (within.length > 0) {
+                    report(within[0].part.name);
+                } else {
+                    report('Outside');
+                }
+            } else {
+                app.velocity = [0, 0, 0];
+            }
+            const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
+            app.rotation = scaleMatrix(app.rotation, 0.1);
+            app.camera.lookAt = sum(app.camera.position, direction);
+            app.camera.up = applyTransform(app.camera.up, app.rotation);
+            add(app.velocity, Vector.scale(app.force, 0.1 * delta / app.mass));
+            app.force = Vector.scale(app.velocity, -0.05 * delta * Math.hypot(...app.velocity));
+            app.velocity = Vector.scale(app.velocity, 0.9);
+            app.camera.updateViewControls();
+        }
+
+        /**
          * Render loop function to update the display
          */
         let start;
@@ -4523,48 +4561,11 @@
             reportGLErrors('render start');
 
             if (start) {
-                if (app.movement.state === 'start') {
-                    app.movement.start = time;
-                    app.movement.state = 'running';
-                }
-                if (app.movement.state === 'running') {
-                    const timing = app.movement.timing ?? ((i) => i);
-                    const linear = (time - app.movement.start) / app.movement.duration;
-                    const progress = timing(linear);
-
-                    app.camera.lookAt = sum(app.movement.lookAt.start, Vector.scale(app.movement.lookAt.delta, progress));
-                    const dist = app.movement.distance.start + progress * app.movement.distance.delta;
-                    app.movement.distance.remaining = (1 - progress) * app.movement.distance.delta;
-                    const view = Vector.scale(app.movement.direction, dist);
-                    const rotation = getRotation(app.movement.rotation.angle * progress, app.movement.rotation.axis);
-                    const offset = applyTransform(view, rotation);
-                    app.camera.position = sum(app.camera.lookAt, offset);
-
-                    const roll = getRotation(app.movement.roll * progress, offset);
-                    app.camera.up = applyTransform(applyTransform(app.movement.up, rotation), roll);
-
-                    if (linear >= 1.0) {
-                        app.movement.state = 'complete';
-                        app.movement.distance.remaining = 0;
-                    }
-                }
+                managedMovement(time);
                 const delta = time - last;
+                userMovement(delta);
 
-                const up = app.camera.up;
-                app.camera.position = sum(app.camera.position, Vector.scale(app.velocity, delta));
-                app.camera.lookAt = sum(app.camera.lookAt, Vector.scale(app.velocity, delta));
-                const direction = applyTransform(subtract(app.camera.lookAt, app.camera.position), app.rotation);
-                app.rotation = scaleMatrix(app.rotation, 0.1);
-                app.camera.lookAt = sum(app.camera.position, direction);
-                app.camera.up = applyTransform(app.camera.up, app.rotation);
-
-                add(app.velocity, Vector.scale(app.force, 0.1 * delta / app.mass));
-                app.force = Vector.scale(app.velocity, -0.05 * delta * Math.hypot(...app.velocity));
-                app.velocity = Vector.scale(app.velocity, 0.9);
-
-                app.camera.updateViewControls();
-
-                updateBuffers(time);
+                updateLines(time);
 
                 if (app.skybox) {
                     app.skybox();
@@ -4579,6 +4580,7 @@
                 gl.enable(gl.DEPTH_TEST);
 
                 reportGLErrors('render end');
+
             } else {
                 start = time;
             }
@@ -5082,7 +5084,7 @@
             addInstance(part, shape, label) {
                 const instance = new Instance(part, shape, this, label);
                 this.instances.push(instance);
-                this.initialise = true;
+                this.initialiseInstances();
                 return instance;
             }
             removeInstance(instance) {
@@ -5134,7 +5136,7 @@
          * Class to manage association of a particular instance of a primative and a 'shape'.
          */
         class Instance {
-            constructor(part, shape, primative, label, offset = [0, 0, 0]) {
+            constructor(part, shape, primative, label) {
                 const node = part.node;
                 this.shape = shape;
                 this.primative = primative;
@@ -5346,7 +5348,7 @@
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
                 }
-                if (app.show && app.show.item !== this) {
+                if (app.show && app.show.shape !== this) {
                     // Get the origin of this element
                     const origin = applyTransform([0, 0, 0], this.world);
                     const dist = Math.hypot(...subtract(origin, app.camera.position));
@@ -5380,6 +5382,17 @@
                     }
                 }
                 this.instances.forEach((instance) => instance.show());
+            }
+            contains(point) {
+                // Get the origin of this element
+                const origin = applyTransform([0, 0, 0], this.world);
+                const size = extractScale(this.world);
+                const radius = Math.hypot(...size);
+                const dist = Math.hypot(...subtract(origin, point));
+                if (dist < radius) {
+                    return true;
+                }
+                return false;
             }
             showPoints() {
             }
@@ -5592,7 +5605,7 @@
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: points, points: [p1, p2] }];
                         }
                     }
                 }
@@ -5714,12 +5727,16 @@
                 }
 
                 this.show = true;
-                if (app.show && app.show.item !== this && app.show.item !== this.parent) {
+                const path = this.part.path();
+                if (app.show && !path.includes(app.show.part)) {
                     // Get the origin of this element
                     const origin = applyTransform([0, 0, 0], this.world);
-                    const dist = Math.hypot(...subtract(origin, app.camera.position));
+                    const toOrigin = subtract(origin, app.camera.position);
+                    const viewVector = subtract(app.camera.lookAt, app.camera.position);
+                    const direction = dot(toOrigin, viewVector);
+                    const dist = Math.hypot(...toOrigin);
 
-                    if (dist < app.show.distance) {
+                    if (direction < 0 || dist < app.show.distance) {
                         const point = applyTransform4([...origin, 1], app.show.transform);
                         const size = extractScale(this.world);
                         const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
@@ -5764,6 +5781,19 @@
                     this.instances.forEach((instance) => instance.hide());
                 }
             }
+            contains(point) {
+                // Get the origin of this element
+                const origin = applyTransform([0, 0, 0], this.world);
+                const size = extractScale(this.world);
+                const radius = Math.hypot(...size);
+                const dist = Math.hypot(...subtract(origin, point));
+                if (dist < radius) {
+                    const toLocal = invert(this.world);
+                    const p = applyTransform(point, toLocal);
+                    return p[0] > -0.5 && p[0] < 0.5 && p[1] > -0.5 && p[1] < 0.5 && p[2] > -0.5 && p[2] < 0.5;
+                }
+                return false;
+            }
             intersects(line, all) {
                 if (!this.show) {
                     return [];
@@ -5797,7 +5827,7 @@
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: points, points: [p1, p2] }];
                         }
                     }
                 }
@@ -6250,7 +6280,7 @@
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: points, points: [p1, p2] }];
                         }
                     }
                 }
@@ -6564,7 +6594,7 @@
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: [2], points: [p1, p2] }];
                         }
                     }
                 }
@@ -6748,27 +6778,27 @@
                     this.primative.addInstance(this.part, this, 'WalledBox 4'),
                     this.primative.addInstance(this.part, this, 'WalledBox 5'));
 
-                this.instances[0].shape.move([t / size[0] - 0.5, 0, 0]);
+                this.instances[0].shape.move([t / size[0] - 0.5, 0, 0], true);
                 this.instances[0].shape.scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
                 this.instances[0].shape.material = material;
 
-                this.instances[1].shape.move([0, t / size[1] - 0.5, 0]);
+                this.instances[1].shape.move([0, t / size[1] - 0.5, 0], true);
                 this.instances[1].shape.scale([1, t / size[1], 1]);
                 this.instances[1].shape.material = material;
 
-                this.instances[2].shape.move([0, 0, t / size[2] - 0.5]);
+                this.instances[2].shape.move([0, 0, t / size[2] - 0.5], true);
                 this.instances[2].shape.scale([1, 1 - 2 * t / size[1], t / size[2]]);
                 this.instances[2].shape.material = material;
 
-                this.instances[3].shape.move([0.5 - t / size[0], 0, 0]);
+                this.instances[3].shape.move([0.5 - t / size[0], 0, 0], true);
                 this.instances[3].shape.scale([t / size[0], 1 - 2 * t / size[1], 1 - 2 * t / size[2]]);
                 this.instances[3].shape.material = material;
 
-                this.instances[4].shape.move([0, 0.5 - t / size[1], 0]);
+                this.instances[4].shape.move([0, 0.5 - t / size[1], 0], true);
                 this.instances[4].shape.scale([1, t / size[1], 1]);
                 this.instances[4].shape.material = material;
 
-                this.instances[5].shape.move([0, 0, 0.5 - t / size[2]]);
+                this.instances[5].shape.move([0, 0, 0.5 - t / size[2]], true);
                 this.instances[5].shape.scale([1, 1 - 2 * t / size[1], t / size[2]]);
                 this.instances[5].shape.material = material;
             }
@@ -6787,6 +6817,19 @@
 
                 this.instances[0].transform.matrix = identityMatrix();
             }
+            contains(point) {
+                // Get the origin of this element
+                const origin = applyTransform([0, 0, 0], this.world);
+                const size = extractScale(this.world);
+                const radius = Math.hypot(...size);
+                const dist = Math.hypot(...subtract(origin, point));
+                if (dist < radius) {
+                    const toLocal = invert(this.world);
+                    const p = applyTransform(point, toLocal);
+                    return p[0] > -0.5 && p[0] < 0.5 && p[1] > -0.5 && p[1] < 0.5 && p[2] > -0.5 && p[2] < 0.5;
+                }
+                return false;
+            }
             intersects(line, all) {
                 if (this.interiorView) {
                     const children = this.children.flatMap((child) => child.intersects(line));
@@ -6796,11 +6839,11 @@
                 }
 
                 const radius = Math.hypot(...extractScale(this.world));
-                const centre = applyTransform([0, 0, 0], this.world);
-
+                
                 if (radius === 0) {
                     return this.children.flatMap((child) => child.intersects(line));
                 } else {
+                    const centre = applyTransform([0, 0, 0], this.world);
                     const l = dot(line.direction, subtract(centre, line.point));
                     const n = l / line.direction.reduce((s, v) => s + v * v, 0);
                     const p = sum(line.point, Vector.scale(line.direction, n));
@@ -6823,7 +6866,7 @@
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: points, points: [p1, p2] }];
                         }
                     }
                 }
@@ -6833,7 +6876,7 @@
                 return { distance: Infinity, point: null };
             }
             update() {
-                if (app.selected.has(this.node) || (app.show && app.show.item === this)) {
+                if (app.selected.has(this.node) || (app.show && app.show.shape === this)) {
                     this.instances.forEach((instance) => instance.highlight());
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
@@ -6846,12 +6889,16 @@
                 this.instances.forEach((instance, index) => {
                     const side = instance.shape;
                     let show = true;
-                    if (app.show && app.show.item !== this && app.show.item !== this.parent) {
+                    const path = this.part.path();
+                    if (app.show && !path.includes(app.show.part)) {
                         // Get the origin of this element
                         const origin = applyTransform([0, 0, 0], side.world);
-                        const dist = Math.hypot(...subtract(origin, app.camera.position));
+                        const toOrigin = subtract(origin, app.camera.position);
+                        const viewVector = subtract(app.camera.lookAt, app.camera.position);
+                        const direction = dot(toOrigin, viewVector);
+                        const dist = Math.hypot(...toOrigin);
 
-                        if (1 || dist < app.show.distance) {
+                        if (direction < 0 || dist < app.show.distance) {
                             const point = applyTransform4([...origin, 1], app.show.transform);
                             const size = extractScale(side.world);
                             const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
@@ -7139,7 +7186,7 @@
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
 
-                            return [{ shape: this, points: [p1, p2] }];
+                            return [{ shape: this, t: points, points: [p1, p2] }];
                         }
                     }
                 }
@@ -7214,7 +7261,7 @@
                 const p2 = planeIntercept(line, { point: p1, normal: direction });
 
                 if (Math.hypot(...subtract(p1, p2)) <= this.radius / 2) {
-                    return [{ shape: this, points: [p1, p2] }];
+                    return [{ shape: this, t: [2], points: [p1, p2] }];
                 }
                 return [];
             }
@@ -7304,7 +7351,7 @@
 
                 const radius = this.radius1 + t1 * (this.radius2 - this.radius1);
                 if (Math.hypot(...subtract(p1, p2)) <= radius / 2) {
-                    return [{ shape: this, points: [p1, p2] }];
+                    return [{ shape: this, t: [2], points: [p1, p2] }];
                 }
                 return [];
             }
@@ -7443,7 +7490,7 @@
                 if (dist <= 0.5) {
                     const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
-                        shape: this, points: [
+                        shape: this, t: [2], points: [
                             applyTransform(subtract(p, offset), this.world),
                             applyTransform(sum(p, offset), this.world),
                         ]
@@ -7470,7 +7517,7 @@
                 } else {
                     this.instances.forEach((instance) => instance.unhighlight());
                 }
-                if (app.show && app.show.item !== this) {
+                if (app.show && app.show.shape !== this) {
                     // Get the position of this object in world space
                     const origin = applyTransform([0, 0, 0], this.world);
                     const dist = Math.hypot(...subtract(origin, app.camera.position));
@@ -7869,7 +7916,7 @@
                             }
                         }
                         if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
-                            return [{ shape: this, points: [point] }];
+                            return [{ shape: this, t: [2], points: [point] }];
                         }
                     }
                     return [];
@@ -7899,7 +7946,7 @@
             update() {
                 if (this.hidden) {
                     this.segments.forEach((segment) => segment.visible = false);
-                } else if (app.show && app.show.item !== this) {
+                } else if (app.show && app.show.shape !== this) {
                     this.segments.forEach((segment) => {
                         // Get the origin of this element
                         const origin = applyTransform(segment.centre, this.world);
@@ -8399,7 +8446,7 @@
             update() {
                 if (this.hidden) {
                     this.segments.forEach((segment) => segment.visible = false);
-                } else if (app.show && app.show.item !== this) {
+                } else if (app.show && app.show.shape !== this) {
                     this.segments.forEach((segment) => {
                         // Get the origin of this element
                         const origin = applyTransform(segment.centre, this.world);
@@ -8711,29 +8758,6 @@
                     texture: this.texture,
                 });
 
-                /*
-                                const orientation = extractRotation(this.world);
-                                gl.vertexAttrib4f(app.pbrShader.model + 0, this.world[0], this.world[1], this.world[2], this.world[3]);
-                                gl.vertexAttrib4f(app.pbrShader.model + 1, this.world[4], this.world[5], this.world[6], this.world[7]);
-                                gl.vertexAttrib4f(app.pbrShader.model + 2, this.world[8], this.world[9], this.world[10], this.world[11]);
-                                gl.vertexAttrib4f(app.pbrShader.model + 3, this.world[12], this.world[13], this.world[14], this.world[15]);
-                
-                                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 0, orientation[0], orientation[1], orientation[2]);
-                                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 1, orientation[4], orientation[5], orientation[6]);
-                                gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, orientation[8], orientation[9], orientation[10]);
-                
-                                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
-                
-                                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...this.material.emissivityColour);
-                
-                                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...this.material.reflectivity);
-                
-                                gl.vertexAttrib3f(app.pbrShader.colour, ...this.material.colour);
-                
-                                gl.vertexAttrib4f(app.pbrShader.materialParameters, ...this.material.materialParameters);
-                
-                                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
-                */
                 gl.uniform1i(app.pbrShader.effects, 0);
 
                 gl.bindVertexArray(this.vao);
@@ -8761,7 +8785,7 @@
                 if (dist <= radius) {
                     const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
-                        shape: this, points: [
+                        shape: this, t: [2], points: [
                             applyTransform(subtract(p, offset), world),
                             applyTransform(sum(p, offset), world),
                         ]
@@ -8773,7 +8797,7 @@
                 return { distance: Infinity, point: null };
             }
             update() {
-                if (app.show && app.show.item !== this) {
+                if (app.show && app.show.shape !== this) {
                     const transform = this.world;
 
                     this.segments.forEach((segment) => {
@@ -8932,7 +8956,7 @@
                     if (app.dots) {
                         app.points.push({ position: point, colour: [0, 0, 0.1] });
                     }
-                    return [{ shape: this, points: [point] }];
+                    return [{ shape: this, t: [2], points: [point] }];
                 }
                 // If the number of intersections is odd, the point is inside the polygon
                 return [];
@@ -8952,7 +8976,7 @@
             }
             update() {
                 this.show = true;
-                if (app.show && app.show.item !== this) {
+                if (app.show && app.show.shape !== this) {
                     // Find intersection of line with plane of polygon
                     const plane = {
                         point: applyTransform([0, 0, 0], this.world),
@@ -9189,7 +9213,7 @@
                     if (app.dots) {
                         app.points.push({ position: point, colour: [0, 0, 0.1] });
                     }
-                    return [{ shape: this, points: [point] }];
+                    return [{ shape: this, t: [2], points: [point] }];
                 }
                 // If the number of intersections is odd, the point is inside the polygon
                 return [];
@@ -9209,7 +9233,7 @@
             }
             update() {
                 this.show = true;
-                if (app.show && app.show.item !== this) {
+                if (app.show && app.show.shape !== this) {
                     // Find intersection of line with plane of polygon
                     const plane = {
                         point: applyTransform([0, 0, 0], this.world),
@@ -9644,7 +9668,7 @@
                     if (points && (all || points[0] > 0 || points[1] > 0)) {
                         const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                         const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
-                        return [{ shape: this, points: [p1, p2] }];
+                        return [{ shape: this, t: points, points: [p1, p2] }];
                     }
                 }
                 return [];
@@ -10044,14 +10068,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 actions: {
                     click(event, part) {
                         const item = app.view.addPart(part);
-                        showItem(item[0]);
+                        showShape(item[0]);
                         item[0].instances.forEach((instance) => instance.highlight());
                         select(part, event);
                     },
                     dblclick(event, part) {
                         const item = app.view.addPart(part);
                         if (item[0]) {
-                            showItem(item[0]);
+                            showShape(item[0]);
                             item[0].instances.forEach((instance) => instance.highlight());
                             select(part, event);
                             setView([0, 0, 1]);
@@ -10082,13 +10106,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 actions: {
                     click(event, part) {
                         const item = app.view.addPart(part);
-                        showItem(item[0]);
+                        showShape(item[0]);
                         item[0].instances.forEach((instance) => instance.highlight());
                         select(part, event);
                     },
                     dblclick(event, part) {
                         const item = app.view.addPart(part);
-                        showItem(item[0]);
+                        showShape(item[0]);
                         item[0].instances.forEach((instance) => instance.highlight());
                         select(part, event);
                         setView([0, 0, 1]);
@@ -10871,7 +10895,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Convert lines to objects
          */
-        async function processText(text, parent) {
+        async function processText(text, replace) {
             //tokeniseText(text);
             const lines = text.split(/\r?\n/g);
             const roots = [];
@@ -11198,7 +11222,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const trimmed = text.trim().replace(/\/\/.*/, '');
 
                     const settingsParser = (text) => {
-                        if (parent) {
+                        if (!replace) {
                             return;
                         }
                         const [command, value] = text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
@@ -11412,7 +11436,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             source.innerHTML = text;
 
             // Generate the object graph
-            app.graph = await processText(text);
+            app.graph = await processText(text, replace);
 
             const root = new Product('');
             const products = {};
@@ -11435,6 +11459,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     root.components.push(component);
                 }
                 const part = new Part(node, component, context?.part);
+                app.parts.push(part);
                 product.instances.push(part);
                 part.parts = node[children].map((child, index) => addPart(child, index, { product, part }));
                 products[product.name] = product;
@@ -11985,16 +12010,18 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Determine the intercept of a line and convex hull defined by a list of planes
          */
         function convexHullIntercept(line, planes) {
-            let start = -Infinity, end = Infinity;
+            //let start = -Infinity, end = Infinity;
+            let start, end;
             line.direction = normalised(line.direction);
             planes.forEach((plane) => {
                 const d = distanceToPlane(line, plane);
-                if (d !== undefined) {
+                //if (d !== undefined) {
+                if (isFinite(d)) {
                     const moveEnd = dot(line.direction, plane.normal) > 0;
                     if (moveEnd) {
-                        end = Math.min(end, d);
+                        end = Math.min(end ?? Infinity, d);
                     } else {
-                        start = Math.max(start, d);
+                        start = Math.max(start ?? -Infinity, d);
                     }
                 }
             });
@@ -12009,7 +12036,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * If 'all' is true include parents that are intersected, otherwise only the 'lowest' content that is intersected.
          *
          */
-        function getIntersection(line, all = false) {
+        function getIntersection(line) {
             return app.view.items.flatMap((shape) => shape.intersects(line));
         }
 
@@ -12187,16 +12214,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     showSceneData();
                     showStock();
                 } else if (part.componentView) {
-                        part.hideComponents();
+                    part.hideComponents();
                 } else if (event.crtlKey || part.node.load !== true) {
                     load(part.node.url, part, event.shiftKey);
                     part.node.load = true;
-                    //if (shape[0].showInterior) {
                     part.showComponents();
-                    //setView([0, 1, 0], [0, 0, -1]);
-                    setView([-0.2, 0.2, 1], [0, 1, 0]);
-                    //app.view.items.forEach((item) => app.selected.delete(item.part.node));
-                    //}
+                    if (!app.walk) {
+                        setView([-0.2, 0.2, 1], [0, 1, 0]);
+                    }
                 }
             } else if (part.node[meta].states.selected) {
                 if (part.node[meta].currentState.has(part.node[meta].states.selected)) {
@@ -12206,25 +12231,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
                 part.node[meta].dynamic = true;
             } else {
-                setView([-0.2, 0.2, 1], [0, 1, 0]);
-                showItem(shape[0]);
+                if (!app.walk) {
+                    setView([-0.2, 0.2, 1], [0, 1, 0]);
+                }
+                showShape(shape[0]);
                 if (part.parts.length > 0) {
-                    //if (shape[0].showInterior) {
                     if (part.componentView) {
                         part.hideComponents();
                     } else {
                         part.showComponents();
                     }
-                    /*
-                        if (!shape[0].interiorView) {
-                            part.parts.forEach((part) => app.view.addPart(part, shape[0]));
-                            shape[0].showInterior();
-                        } else {
-                            shape[0].hideInterior();
-                        }
-                    }
-                    app.views.forEach((view) => view.updateMaterials());
-                    */
                 }
             }
         }
@@ -12249,15 +12265,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function showAllNames() {
             app.labels = [];
             if (app.showNames) {
-                for (const node of app.nodes) {
-                    const shapes = app.view.shapes.get(node);
-                    if (shapes) {
-                        label = getLabel(shapes[0]);
-                        if (label) {
-                            app.labels.push(label);
-                        }
+                app.view.items.forEach((shape) => {
+                    const label = getLabel(shape);
+                    if (label) {
+                        app.labels.push(label);
                     }
-                }
+                });
             }
         }
 
@@ -12266,19 +12279,20 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function toggleWalk() {
             const scale = {
-                m: 1,
-                cm: 0.01,
-                mm: 0.001,
-                in: 0.0254,
-                ft: 0.3048,
+                m: 1000,
+                cm: 10,
+                mm: 1,
+                in: 25.4,
+                ft: 304.8,
             }[app.units] || 1;
             app.walk = !app.walk;
             if (app.walk) {
                 const position = [...app.camera.position];
-                position[1] = 1.6 * scale;
+                position[1] = 1600 * scale;
                 const lookAt = [...app.camera.lookAt];
-                lookAt[1] = 1.6 * scale;
+                lookAt[1] = 1600 * scale;
                 moveCamera(position, lookAt, [0, 1, 0]);
+                app.camera.near = 10;
             } else {
                 //app.camera.position[1] = 0;
             }
@@ -12331,6 +12345,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             ArrowDown: (event) => addBlocks([0, 0, 1]),
             ArrowLeft: (event) => addBlocks([-1, 0, 0]),
             ArrowRight: (event) => addBlocks([1, 0, 0]),
+            d: (event) => { app.showPoints = !app.showPoints; },
+            D: (event) => { app.drawPoints = !app.drawPoints; },
+            s: (event) => save(),
+            w: (event) => toggleWalk(),
             x: (event) => rotateSelected(45, [1, 0, 0], true),
             y: (event) => rotateSelected(45, [0, 1, 0], true),
             z: (event) => rotateSelected(45, [0, 0, 1], true),
@@ -12345,13 +12363,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             Tab: (event) => focus(event),
             Escape: (event) => document.getElementById('command-entry').focus(),
             ' ': (event) => stop(event),
-            a: (event) => showAll(event),
+            a: (event) => right(-1), //showAll(event),
             A: (event) => { app.showNames = !app.showNames; showAllNames(); updateTextBuffer(); },
             b: (event) => setView([0, -1, 0], [0, 0, -1]),
             c: (event) => { app.points = []; updatePoints(); },
             e: (event) => toggleEdit(event),
             E: (event) => editLine(event),
-            d: (event) => { app.showPoints = !app.showPoints; },
+            d: (event) => right(1),
             D: (event) => { app.drawPoints = !app.drawPoints; },
             f: (event) => setView([0, 0, 1]),
             g: (event) => app.view.drawGround = !app.view.drawGround,
@@ -12365,10 +12383,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             P: (event) => app.view.showPoints = !app.view.showPoints,
             q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
             r: (event) => setView([1, 0, 0]),
-            s: (event) => save(),
+            s: (event) => forward(-2),
             t: (event) => setView([0, 1, 0], [0, 0, -1]),
             u: (event) => upright(),
-            w: (event) => toggleWalk(),
+            w: (event) => forward(2),
             W: (event) => app.wireframe = !app.wireframe,
             x: (event) => rotateSelected(45, [1, 0, 0]),
             y: (event) => rotateSelected(45, [0, 1, 0]),
@@ -12381,7 +12399,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         function addCanvasEvents(canvas) {
             canvas.tabIndex = 0;
             canvas.addEventListener('keydown', (event) => {
-                report(event.key);
+                if (app.showKeys) {
+                    report(event.key);
+                }
 
                 if (event.ctrlKey && ctrlMapping[event.key]) {
                     event.preventDefault();
@@ -12457,7 +12477,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             //app.view.referencePlane.origin = action.plane.point;
                             app.view.referencePlane.normal = action.plane.normal;
 
-                            showItem(selected[0]);
+                            showShape(selected[0]);
                             grid.show = true;
                             let screenspace = false;
                             action.move = (event) => {
@@ -13354,6 +13374,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     reset();
                 }
             },
+            // View commands
+            {
+                name: 'walk',
+                action(text) {
+                    toggleWalk();
+                    canvas.focus();
+                }
+            },
             {
                 name: 'list',
                 action(text) {
@@ -13559,19 +13587,19 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Show an item by hiding items that obscure the given node.
          */
-        function showItem(item) {
-            if (item) {
-                let parent = item.parent;
-                while (parent) {
-                    if (parent.showInterior) {
-                        parent.showInterior();
+        function showShape(shape) {
+            if (shape) {
+                const part = shape.part;
+                for (const parentPart of part.path()) {
+                    const shapes = app.view.shapes.get(parentPart);
+                    if (shapes) {
+                        shapes.forEach((shape) => shape.showInterior?.());
                     }
-                    parent = parent.parent;
                 }
-                const size = extractScale(item.world);
-                const point = applyTransform(item.origin, item.world);
-                app.show = { item, point, size, toWorld: item.world };
-                app.labels = [{ text: item.name, position: point }];
+                const size = extractScale(shape.world);
+                const point = applyTransform(shape.origin, shape.world);
+                app.show = { shape, point, size, toWorld: shape.world, part };
+                app.labels = [{ text: shape.name, position: point }];
             }
         }
 
@@ -13611,7 +13639,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                 userCommands.sort((a, b) => b.name.length - a.name.length);
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
-                console.log(commands);
 
                 if (commands.length === 1) {
                     commands[0].action(fullCommand);
@@ -13622,7 +13649,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     if (event.shiftKey) {
                         const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
                         deselect.forEach((pattern) => {
-                            app.nodes.filter((part) => pattern.test(part.name))
+                            app.parts.filter((part) => pattern.test(part.name))
                                 .forEach((part) => app.selected.delete(part));
                         });
                     } else {
@@ -13630,30 +13657,24 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
 
                     select.forEach((pattern) => {
-                        app.nodes.filter((part) => pattern.test(part.name))
+                        app.parts.filter((part) => pattern.test(part.name))
                             .forEach((part) => app.selected.add(part));
                     });
 
                     const selected = new Set(select.flatMap((pattern) =>
-                        app.nodes.filter((node) => pattern.test(node.name))));
+                        app.parts.filter((part) => pattern.test(part.name))));
 
                     let first = true;
                     for (const part of selected) {
-                        const path = part.path;
+                        const path = part.path();
                         path.pop(); // Remove part from path
                         let parent;
                         path.forEach((part) => {
                             part.showComponents();
-                            /*
-                            const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
-                            item[0].showInterior?.();
-                            part.parts.forEach((part) => app.view.addPart(part, item[0]));
-                            parent = item[0];
-                            */
                         });
                         const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
                         if (first) {
-                            showItem(item[0]);
+                            showShape(item[0]);
                             first = false;
                         }
                         item[0].instances.forEach((instance) => instance.highlight())
