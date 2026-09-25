@@ -516,6 +516,18 @@
             top: 1em;
             right: 1em;
         }
+
+        #colour-picker-box {
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            padding: 1em;
+            border: 1px solid gray;
+            border-radius: 0.5em;
+            background-color: white;
+            box-shadow: 5px 5px 8px rgba(100, 100, 100, 0.8);
+        }
     </style>
 </head>
 
@@ -605,6 +617,9 @@
     <div id="state"></div>
     <div id="info" class="hide"></div>
     <div id="status"></div>
+    <div id="colour-picker-box" class="hide">
+        <span id="colour-picker-label"></span><input id="colour-picker" type="color" />
+    </div>
 
     <script type="x-shader/x-vertex" id="reference-plane-vertex-shader">
     #version 300 es
@@ -2337,40 +2352,6 @@
                 this.shapes = new Map();
                 this.drawGround = true;
             }
-            getShape(part) {
-                // Determine the shape from it's attributes
-                const size = Math.hypot(...getAttribute(part.node, 'size', [0, 0, 0]));
-
-                if (getAttribute(part.node, 'obj')) {
-                    return new LightWaveObject(part);
-                } else if (getAttribute(part.node, 'gltf')) {
-                    return loadGLTF(getAttribute(part.node, 'gltf'));
-                } else if (getAttribute(part.node, 'svg')) {
-                    return new SVGObject(part);
-                } else if (getAttribute(part.node, 'bevel')) {
-                    return new BevelledBlock(part);
-                } else if (getAttribute(part.node, 'walls') && size > 0) {
-                    return new WalledBox(part);
-                } else if (getAttribute(part.node, 'apex') && size > 0) {
-                    return new Shed(part);
-                } else if (getAttribute(part.node, 'size') && size > 0) {
-                    return new Block(part);
-                } else if (getAttribute(part.node, 'radius') && getAttribute(part.node, 'height')) {
-                    return new Cylinder(part);
-                } else if (getAttribute(part.node, 'radius1') && getAttribute(part.node, 'radius2')) {
-                    return new Frustum(part);
-                } else if (getAttribute(part.node, 'radius')) {
-                    return new Icosphere(part);
-                } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'height') && getAttribute(part.node, 'thickness')) {
-                    return new Wall(part);
-                } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'height')) {
-                    return new Prism(part);
-                } else if (getAttribute(part.node, 'path') && getAttribute(part.node, 'sweep')) {
-                    return new Lathed(part);
-                } else if (getAttribute(part.node, 'path')) {
-                    return new Polygon(part);
-                }
-            }
             addPart(part) {
                 if (this.shapes.has(part)) {
                     return this.shapes.get(part)[0];
@@ -2378,11 +2359,11 @@
                 let shape;
                 if (getAttribute(part.node, 'position')) {
                     let descend = false;
-                    shape = this.getShape(part);
-                    if (!shape) {
+                    const shapeType = part.getShape() || Shape;
+                    if (shapeType === Shape) {
                         descend = true;
-                        shape = new Shape(part);
                     }
+                    shape = new shapeType(part);
                     this.shapes.set(part, [shape]);
                     this.named[part.name] = shape;
 
@@ -2644,6 +2625,50 @@
                 const name = this.product.getUniqueName();
                 return new Part(this.product, context, name);
             }
+            getDefinition(indent = 0) {
+                const fieldNames = [
+                    'size',
+                    'gltf',
+                    'svg',
+                    'ceiling',
+                    'height',
+                    'bevel',
+                    'walls',
+                    'apex',
+                    'obj',
+                    'path',
+                    'radius',
+                    'radius1',
+                    'radius2',
+                    'thickness',
+                    'sweep',
+                    'width',
+                    'length',
+                    'colour',
+                ];
+                const fields = [this.name];
+                const shapes = app.view.shapes.get(this);
+                if (shapes) {
+                    const position = extractTranslation(shapes[0].world);
+                    const rotation = extractQuaternion(shapes[0].world);
+                    fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
+                } else if (getAttribute(this.node, 'position')) {
+                    const position = extractTranslation(this.transform.matrix);
+                    const rotation = extractQuaternion(this.transform.matrix);
+                    fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
+                }
+
+                fields.push(...fieldNames.flatMap((field) => {
+                    const value = getAttribute(this.node, field);
+                    if (value !== undefined) {
+                        return `${field} = ${value}`;
+                    } else {
+                        return [];
+                    }
+                }));
+
+                return [''.padStart(indent, ' ') + fields.join('; ')];
+            }
             path() {
                 const path = [this];
                 while (path[0].parent) {
@@ -2661,6 +2686,8 @@
                     return loadGLTF(getAttribute(this.node, 'gltf'));
                 } else if (getAttribute(this.node, 'svg')) {
                     return SVGObject;
+                } else if (getAttribute(this.node, 'ceiling')) {
+                    return Room;
                 } else if (getAttribute(this.node, 'bevel')) {
                     return BevelledBlock;
                 } else if (getAttribute(this.node, 'walls') && size > 0) {
@@ -2691,6 +2718,13 @@
                     await load(this.node.url, this, false);
                     this.node.load = true;
                     //this.showComponents();
+                }
+            }
+            setColour(colour) {
+                this.colour = colour;
+                const shapes = app.view.shapes.get(this);
+                if (shapes) {
+                    shapes.forEach((shape) => shape.colour = colour);
                 }
             }
             showComponents() {
@@ -2902,6 +2936,11 @@
             }
             if (event.ctrlKey) {
                 part.parts.forEach((child) => select(child, event));
+            }
+            if (event.altKey) {
+                const types = new Set(part.node[meta].types);
+                const all = app.parts.filter((part) => new Set(part.node[meta].types).intersection(types).size);
+                all.forEach((part) => app.selected.add(part));
             }
             app.selected.add(part);
             updatePartsList(part);
@@ -4100,7 +4139,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = Array.from(app.selected).flatMap((node) => app.view.shapes.get(node) || []);
+            const selected = [...app.selected].flatMap((node) => app.view.shapes.get(node) || []);
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
@@ -5394,6 +5433,9 @@
                 }
                 return false;
             }
+            getSnapPoints() {
+                return [];
+            }
             showPoints() {
             }
             remove() {
@@ -5986,17 +6028,22 @@
             const index = indexed ? gl.createBuffer() : null;
             if (indexed) {
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index);
-                //gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indexed), gl.STATIC_DRAW);
             }
 
             let stride = 32;
             let offset = 0;
 
-            if (!(fixed.material && fixed.material.parameters)) {
-                stride += 16;
+            if (!fixed.colour) {
+                stride += 12;
             }
-            if (!fixed.material) {
-                stride += 36;
+            if (!fixed.emissivityColour) {
+                stride += 12;
+            }
+            if (!fixed.reflectivity) {
+                stride += 12;
+            }
+            if (!fixed.materialParameters) {
+                stride += 16;
             }
             if (!fixed.texture) {
                 stride += 12;
@@ -6016,36 +6063,40 @@
             gl.enableVertexAttribArray(app.pbrShader.coord);
             offset += 8;
 
-            if (fixed.material?.parameters) {
+            if (fixed.colour) {
+                gl.disableVertexAttribArray(app.pbrShader.colour);
+                gl.vertexAttrib3f(app.pbrShader.colour, ...fixed.colour);
+            } else {
+                gl.vertexAttribPointer(app.pbrShader.colour, 3, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.colour);
+                offset += 12;
+            }
+
+            if (fixed.emissivityColour) {
+                gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
+                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...fixed.emissivityColour);
+            } else {
+                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 3, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
+                offset += 12;
+            }
+
+            if (fixed.reflectivity) {
+                gl.disableVertexAttribArray(app.pbrShader.reflectivity);
+                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...fixed.reflectivity);
+            } else {
+                gl.vertexAttribPointer(app.pbrShader.reflectivity, 3, gl.FLOAT, false, stride, offset);
+                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
+                offset += 12;
+            }
+
+            if (fixed.materialParameters) {
                 gl.disableVertexAttribArray(app.pbrShader.materialParameters);
-                gl.vertexAttrib4f(app.pbrShader.materialParameters, ...fixed.material.parameters);
+                gl.vertexAttrib4f(app.pbrShader.materialParameters, ...fixed.materialParameters);
             } else {
                 gl.vertexAttribPointer(app.pbrShader.materialParameters, 4, gl.FLOAT, false, stride, offset);
                 gl.enableVertexAttribArray(app.pbrShader.materialParameters);
                 offset += 16;
-            }
-
-            if (fixed.material) {
-                gl.disableVertexAttribArray(app.pbrShader.colour);
-                gl.vertexAttrib3f(app.pbrShader.colour, ...fixed.material.colour);
-
-                gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
-                gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...fixed.material.emissivityColour);
-
-                gl.disableVertexAttribArray(app.pbrShader.reflectivity);
-                gl.vertexAttrib3f(app.pbrShader.reflectivity, ...fixed.material.reflectivity);
-            } else {
-                gl.vertexAttribPointer(app.pbrShader.colour, 4, gl.FLOAT, false, stride, offset);
-                gl.enableVertexAttribArray(app.pbrShader.colour);
-                offset += 12;
-
-                gl.vertexAttribPointer(app.pbrShader.emissivityColour, 4, gl.FLOAT, false, stride, offset);
-                gl.enableVertexAttribArray(app.pbrShader.emissivityColour);
-                offset += 12;
-
-                gl.vertexAttribPointer(app.pbrShader.reflectivity, 4, gl.FLOAT, false, stride, offset);
-                gl.enableVertexAttribArray(app.pbrShader.reflectivity);
-                offset += 12;
             }
 
             if (fixed.texture) {
@@ -6132,19 +6183,14 @@
                 // If the shed buffers don't exist create them
                 if (!Shed.buffers) {
 
-                    const material = {
+                    const fixed = {
                         colour: getAttribute(part.node, 'colour', [0.5, 0.5, 0.5]),
                         emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
                         reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
-                        roughness: getAttribute(part.node, 'roughness', 0.1),
-                        opacity: getAttribute(part.node, 'opacity', 1),
-                        metallic: getAttribute(part.node, 'metallic', 0.1),
-                        mirror: getAttribute(part.node, 'mirror', 0.3),
+                        texture: addTexture(getAttribute(part.node, 'texture', 'white')),
                     };
 
-                    const texture = addTexture(getAttribute(part.node, 'texture', 'white'));
-
-                    Shed.buffers = createPBRBuffers({ material, texture });
+                    Shed.buffers = createPBRBuffers(fixed);
                     gl.bindVertexArray(null);
                     Shed.vertices = [];
                     app.view.renderQueue.push(Shed);
@@ -6438,168 +6484,179 @@
         /**
          * Manage rooms.
          * 
-         * only the floor is rendered but the whoe volume is considered when testing intersections.
+         * only the floor is rendered but the whole volume is considered when testing intersections.
          */
         class Room extends Shape {
+            static all = new Set();
+            static pointCount = 0;
             constructor(part) {
                 super(part, `block`);
-                // If the shed buffers don't exist create them
+                // If the room buffers don't exist create them
                 if (!Room.buffers) {
-
-                    const material = {
-                        colour: getAttribute(part.node, 'colour', [0.5, 0.5, 0.5]),
-                        emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
-                        reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
-                        roughness: getAttribute(part.node, 'roughness', 0.1),
-                        opacity: getAttribute(part.node, 'opacity', 1),
-                        metallic: getAttribute(part.node, 'metallic', 0.1),
-                        mirror: getAttribute(part.node, 'mirror', 0.3),
+                    const fixed = {
+                        //colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
+                        emissivityColour: [0, 0, 0],
+                        reflectivity: [0.04, 0.04, 0.04],
+                        materialParameters: [0.1, 1, 0.1, 0.3],
+                        texture: addTexture(getAttribute(part.node, 'texture', 'white')),
                     };
 
-                    const texture = addTexture(getAttribute(part.node, 'texture', 'white'));
-
-                    Room.buffers = createPBRBuffers({ material, texture });
-                    gl.bindVertexArray(null);
+                    Room.buffers = createPBRBuffers(fixed, null, true);
                     Room.vertices = [];
+                    Room.indices = [];
                     app.view.renderQueue.push(Room);
                 }
+                this.partColour = getAttribute(part.node, 'colour', [0.6, 0.3, 0.8]);
 
-                // Add the vertices for this room to to buffer.
-                const vertices = this.getVertices();
-                this.offset = Room.vertices.length * 4;
+                // A room can be defined using a path or as a length and width,
+                // convert length and width to a path for common processing.
+                this.definition = getAttribute(this.part.node, 'path');
+                if (!this.definition) {
+                    const size = getAttribute(this.part.node, 'size', [0, 0, 0]);
+                    const length = getAttribute(this.part.node, 'length', 1);
+                    const width = getAttribute(this.part.node, 'width', 1);
+
+                    this.definition = [`0 0`, `${width} 0`, `${width} ${length}`, `0 ${length}`];
+                }
+                this.getPoints();
+                this.makeSurface();
+
+                Room.all.add(this);
+            }
+            getPoints() {
+                this.points = pathToPoints(this.definition);
+                this.minx = Math.min(...this.points.map((point) => point[0]));
+                this.miny = Math.min(...this.points.map((point) => point[1]));
+                this.maxx = Math.max(...this.points.map((point) => point[0]));
+                this.maxy = Math.max(...this.points.map((point) => point[1]));
+                this.width = 0.5 * (this.maxx - this.minx);
+                this.depth = 0.5 * (this.maxy - this.miny);
+            }
+            makeSurface() {
+                const tessellation = tessellate(this.points);
+                const indices = tessellation.indices.flatMap((triangle) => triangle);
+
+                const positions = this.points.map((point) => applyTransform([point[0], 0, point[1]], this.world));
+                const vertices = positions.flatMap((point) => [...point, 0, 1, 0, (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.depth, ...this.partColour]);
+                this.vertexData = {
+                    start: Room.vertices.length,
+                    vertices,
+                    length: vertices.length,
+                };
+                this.indexData = {
+                    start: Room.indices.length,
+                    indices,
+                    length: indices.length,
+                };
+
+                Room.indices.push(...indices.map((i) => i += this.vertexData.start / 11));
                 Room.vertices.push(...vertices);
-                Room.pointCount = Room.vertices.length / 12;
+
                 gl.bindBuffer(gl.ARRAY_BUFFER, Room.buffers.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Room.vertices), gl.DYNAMIC_DRAW);
-            }
-            getVertices() {
-                // Return the vertices for this shed in world space.
-                // The vertices are in groups of 3, representing the triangles that make the shape.
-                const size = getAttribute(this.node, 'size');
-                const apex = getAttribute(this.node, 'apex');
-                //const [w, h, d] = size.map((v) => v);
-                const w2 = 0;
-                const w = 0.5;
-                const d = 0.5;
-                const h = 1;
 
-                const points = [
-                    [
-                        [-w, 0, -d],
-                        [w, 0, d],
-                        [w, 0, -d]],
-                    [
-                        [-w, 0, d],
-                        [w, 0, d],
-                        [-w, 0, -d]],
-                    [
-                        [-w, h, -d],
-                        [-w, 0, -d],
-                        [w2, apex, -d]],
-                    [
-                        [w, 0, -d],
-                        [w2, apex, -d],
-                        [-w, 0, -d]],
-                    [
-                        [w, h, -d],
-                        [w2, apex, -d],
-                        [w, 0, -d]],
-                    [
-                        [-w, 0, d],
-                        [-w, h, d],
-                        [w2, apex, d]],
-                    [
-                        [-w, 0, d],
-                        [w2, apex, d],
-                        [w, 0, d]],
-                    [
-                        [w, 0, d],
-                        [w2, apex, d],
-                        [w, h, d]],
-                    [
-                        [-w, 0, -d],
-                        [-w, h, -d],
-                        [-w, 0, d]],
-                    [
-                        [-w, 0, d],
-                        [-w, h, -d],
-                        [-w, h, d]],
-                    [
-                        [w, 0, d],
-                        [w, h, -d],
-                        [w, 0, -d]],
-                    [
-                        [w, h, d],
-                        [w, h, -d],
-                        [w, 0, d]],
-                    [
-                        [-w, h, -d],
-                        [w2, apex, -d],
-                        [-w, h, d]],
-                    [
-                        [-w, h, d],
-                        [w2, apex, -d],
-                        [w2, apex, d]],
-
-                    [
-                        [w, h, d],
-                        [w2, apex, -d],
-                        [w, h, -d]],
-                    [
-                        [w, h, d],
-                        [w2, apex, d],
-                        [w2, apex, -d]],
-                ].flatMap((triangle) => {
-                    const points = triangle.map((point) => applyTransform(point, this.world));
-                    const normal = cross(subtract(points[1], points[0]), subtract(points[2], points[0]));
-                    return [
-                        ...points[0], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
-                        ...points[1], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
-                        ...points[2], ...normal, 0, 0, 0.1, 1, 0.1, 0.3];
-                });
-                return points;
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Room.buffers.index);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(Room.indices), gl.STATIC_DRAW);
             }
             applyTransform() {
-                const vertices = this.getVertices();
-                gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
-                gl.bufferSubData(gl.ARRAY_BUFFER, this.offset, new Float32Array(vertices));
+                const position = extractTranslation(this.world);
+                const snapPoints = this.getSnapPoints();
+                if (app.snapPoints) {
+                    const snap = {};
+                    snapPoints.forEach((point) => {
+                        if (!snap.x) {
+                            for (const x of app.snapPoints.x) {
+                                if (Math.abs(x - point[0]) < 500) {
+                                    position[0] += x - point[0];
+                                    snap.x = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!snap.y) {
+                            for (const y of app.snapPoints.y) {
+                                if (!snap.x && Math.abs(y - point[1]) < 500) {
+                                    position[1] += y - point[1];
+                                    snap.y = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!snap.z) {
+                            for (const z of app.snapPoints.z) {
+                                if (Math.abs(z - point[2]) < 500) {
+                                    position[2] += z - point[2];
+                                    snap.z = true;
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    this.world[12] = position[0];
+                    this.world[13] = position[1];
+                    this.world[14] = position[2];
+                }
+                report(`${position.map((v) => v.toFixed(2)).join(', ')}`);
+                const positions = this.points.map((point) => applyTransform([point[0], 0, point[1]], this.world));
+                this.vertexData.vertices = positions.flatMap((point) => [...point, 0, 1, 0, (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.depth, ...this.partColour]);
+
+                Room.vertices.splice(this.vertexData.start, this.vertexData.length, ...this.vertexData.vertices);
+                this.vertexData.length = this.vertexData.vertices.length;
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, Room.buffers.vertex);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Room.vertices), gl.DYNAMIC_DRAW);
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, Room.buffers.index);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(Room.indices), gl.STATIC_DRAW);
+            }
+            getSnapPoints() {
+                return this.points.map((point) => applyTransform([point[0], 0, point[1]], this.world));
             }
             intersects(line, all) {
-                const radius = Math.hypot(...this.transform.getScale());
-
-                const centre = applyTransform([0, 0, 0], this.world);
-
-                if (radius === 0) {
-                    return this.children.flatMap((child) => child.intersects(line));
-                } else {
-                    const l = dot(line.direction, subtract(centre, line.point));
-                    const n = l / line.direction.reduce((s, v) => s + v * v, 0);
-                    const p = sum(line.point, Vector.scale(line.direction, n));
-                    const v = subtract(p, centre);
-                    const dist = Math.hypot(...v);
-                    if (dist < radius) {
-                        const corner1 = applyTransform([-0.5, -0.5, -0.5], this.world);
-                        const corner2 = applyTransform([0.5, 0.5, 0.5], this.world);
-                        const rotation = extractRotation(this.world);
-                        const planes = [
-                            { point: corner1, normal: applyTransform([-1, 0, 0], rotation) },
-                            { point: corner1, normal: applyTransform([0, -1, 0], rotation) },
-                            { point: corner1, normal: applyTransform([0, 0, -1], rotation) },
-                            { point: corner2, normal: applyTransform([1, 0, 0], rotation) },
-                            { point: corner2, normal: applyTransform([0, 1, 0], rotation) },
-                            { point: corner2, normal: applyTransform([0, 0, 1], rotation) },
-                        ];
-                        const points = convexHullIntercept(line, planes);
-                        if (points && (all || points[0] > 0 || points[1] > 0)) {
-                            const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
-                            const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
-
-                            return [{ shape: this, t: [2], points: [p1, p2] }];
-                        }
-                    }
+                // Find intersection of line with plane of polygon
+                const t = [];
+                const plane = {
+                    point: applyTransform([0, 0, 0], this.world),
+                    normal: applyTransform([0, 1, 0], extractRotation(this.world)),
                 }
-                return this.children.flatMap((child) => child.intersects(line));
+                t.push(distanceToPlane(line, plane));
+                const point = sum(line.point, Vector.scale(line.direction, t.at(-1)));
+
+                // Convert to local space
+                const local = applyTransform(point, invert(this.world));
+                const local2d = [local[0], local[2]];
+
+                // count number of intersections of ray from point to infinity with edges of polygon
+                const count = this.points.reduce((count, point, i) => {
+                    const next = (i + 1) % this.points.length;
+                    const edge = subtract(this.points[next], point);
+
+                    if (edge[1] === 0) {
+                        return count;
+                    }
+
+                    const t = (local2d[1] - point[1]) / edge[1];
+                    if (t < 0 || t > 1) {
+                        return count;
+                    }
+
+                    const x = point[0] + t * edge[0];
+                    if (x < local2d[0]) {
+                        return count;
+                    }
+
+                    return count + 1;
+                }, 0);
+
+                // If the number of intersections is odd, the point is inside the polygon
+                if (count % 2) {
+                    if (app.dots) {
+                        app.points.push({ position: point, colour: [0, 0, 0.1] });
+                    }
+                    return [{ shape: this, t, points: [point] }];
+                }
                 return [];
+
             }
             closestVertex(line) {
                 return { distance: Infinity, point: null };
@@ -6740,8 +6797,8 @@
             }
             static render(time) {
                 gl.uniform1i(app.pbrShader.effects, 0);
-                gl.bindVertexArray(Shed.buffers.vao);
-                gl.drawArrays(gl.TRIANGLES, 0, Shed.pointCount);
+                gl.bindVertexArray(Room.buffers.vao);
+                gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
             }
             static reset() {
@@ -8164,7 +8221,14 @@
                 }
             }
             initialiseBuffers() {
-                const buffers = createPBRBuffers({ material: this.material, texture: this.textureParameters });
+                const fixed = {
+                    colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [0.1, 1, 0.1, 0.3],
+                    texture: this.textureParameters,
+                };
+                const buffers = createPBRBuffers(fixed);
                 this.vertex = buffers.vertex;
                 this.vao = buffers.vao;
             }
@@ -8707,7 +8771,19 @@
                 }
             }
             initialiseBuffers() {
-                const buffers = createPBRBuffers({ material: this.material, texture: this.texture });
+                const fixed = {
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [
+                        getAttribute(this.node, 'roughness', 0.1),
+                        getAttribute(this.node, 'opacity', 1),
+                        getAttribute(this.node, 'metalic', 0.1),
+                        getAttribute(this.node, 'mirror', 0.3),
+                    ],
+                    texture: this.texture,
+                }
+                const buffers = createPBRBuffers(fixed);
                 this.vertex = buffers.vertex;
                 this.vao = buffers.vao;
             }
@@ -8894,12 +8970,6 @@
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
-                this.material = {
-                    colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
-                    emissivityColour: [0, 0, 0],
-                    reflectivity: [0.04, 0.04, 0.04],
-                    parameters: [0.1, 1, 0.1, 0.3],
-                }
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeSurface();
@@ -8917,7 +8987,19 @@
                 transform[12] = position[0];
                 transform[13] = position[1];
                 transform[14] = position[2];
-                const buffers = createPBRBuffers({ material: this.material, texture: this.texture }, transform, true);
+                const fixed = {
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [
+                        getAttribute(this.node, 'roughness', 0.1),
+                        getAttribute(this.node, 'opacity', 1),
+                        getAttribute(this.node, 'metalic', 0.1),
+                        getAttribute(this.node, 'mirror', 0.3),
+                    ],
+                    texture: this.texture,
+                };
+                const buffers = createPBRBuffers(fixed, transform, true);
                 this.vertex = buffers.vertex;
                 this.vao = buffers.vao;
                 this.indices = buffers.index;
@@ -9090,7 +9172,19 @@
                 transform[12] = position[0];
                 transform[13] = position[1];
                 transform[14] = position[2];
-                const buffers = createPBRBuffers({ material: this.material, texture: this.texture }, transform, true);
+                const fixed = {
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    emissivityColour: [0, 0, 0],
+                    reflectivity: [0.04, 0.04, 0.04],
+                    materialParameters: [
+                        getAttribute(this.node, 'roughness', 0.1),
+                        getAttribute(this.node, 'opacity', 1),
+                        getAttribute(this.node, 'metalic', 0.1),
+                        getAttribute(this.node, 'mirror', 0.3),
+                    ],
+                    texture: this.texture,
+                };
+                const buffers = createPBRBuffers(fixed, transform, true);
                 this.vertex = buffers.vertex;
                 this.vao = buffers.vao;
                 this.indices = buffers.index;
@@ -10026,7 +10120,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const hits = sortSelection(getIntersection(line));
             if (hits.length > 0) {
                 app.showName = hits[0].shape;
-                if (!app.showPoints) {
+                if (!(app.showPoints || app.showNames)) {
                     //canvas.title = `${hits[0].shape.node[meta].name[0]}`;
                     app.labels = [getLabel(hits[0].shape)];
                 }
@@ -10434,7 +10528,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Show parts list
          */
         function showPartsList(part) {
-            const parts = filterParts(part.node[meta].parts);
+            const parts = filterParts(part.node?.[meta].parts);
             const properties = [{
                 attribute: 'name',
                 action(event, part, item) {
@@ -12121,13 +12215,42 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Export the selected part
+         */
+        function exportPart() {
+            const lines = [];
+            lines.push(`> eye position = ${app.camera.position.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`> look at = ${app.camera.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`> up = ${app.camera.up.map((v) => v.toFixed(2)).join(', ')}`);
+            if (app.unit) {
+                lines.push(`> units = ${app.units}`);
+            }
+            lines.push('');
+
+            if (app.selected.size) {
+                for (const part of app.selected) {
+                    lines.push(...part.getDefinition());
+                    lines.push(...part.parts.map((part) => part.getDefinition(4)));
+
+                }
+            } else {
+                for (const part of app.rootParts) {
+                    lines.push(...part.getDefinition());
+                    lines.push(...part.parts.map((part) => part.getDefinition(4)));
+                }
+            }
+
+            downloadText(lines.join('\n'));
+        }
+
+        /**
          * Save the current state
          */
         function save() {
             const lines = [];
-            lines.push(`>eye position = ${app.camera.position.map((v) => v.toFixed(2)).join(', ')}`);
-            lines.push(`>look at = ${app.camera.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
-            lines.push(`>up = ${app.camera.up.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`> eye position = ${app.camera.position.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`> look at = ${app.camera.lookAt.map((v) => v.toFixed(2)).join(', ')}`);
+            lines.push(`> up = ${app.camera.up.map((v) => v.toFixed(2)).join(', ')}`);
             lines.push('');
 
             const addInstance = (instance, level = 0) => {
@@ -12310,13 +12433,68 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function showAllNames() {
             app.labels = [];
-            if (app.showNames) {
-                app.view.items.forEach((shape) => {
-                    const label = getLabel(shape);
+
+            const showPartNames = (part) => {
+                const shapes = app.view.shapes.get(part);
+                if (shapes && shapes.length) {
+                    const label = getLabel(shapes[0]);
                     if (label) {
                         app.labels.push(label);
                     }
-                });
+                }
+                part.parts.forEach(showPartNames);
+            }
+
+            if (app.showNames) {
+                if (app.selected) {
+                    for (const part of app.selected) {
+                        showPartNames(part);
+                    }
+                } else {
+                    app.rootParts.forEach((part) => {
+                        const shapes = app.view.shapes.get(part);
+                        if (shapes && shapes.length) {
+                            const label = getLabel(shapes[0]);
+                            if (label) {
+                                app.labels.push(label);
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        /**
+         * Handle colour picker change.
+         */
+        function colourPickerListener(event) {
+            const picker = document.getElementById('colour-picker');
+            const redHex = picker.value.slice(1, 3);
+            const greenHex = picker.value.slice(3, 5);
+            const blueHex = picker.value.slice(5, 7);
+
+            const red = parseInt(redHex, 16) / 255;
+            const green = parseInt(greenHex, 16) / 255;
+            const blue = parseInt(blueHex, 16) / 255;
+
+            for(const part of app.selected) {
+                part.setColour([red, green, blue]);
+            }
+        };
+
+        /**
+         * Toggle display of the colour picker.
+         */
+        function toggleColourPicker() {
+            const colourPicker = document.getElementById('colour-picker-box');
+            const picker = document.getElementById('colour-picker');
+
+            colourPicker.classList.toggle('hide');
+
+            if (colourPicker.classList.contains('hide')) {
+                picker.removeEventListener('change', colourPickerListener);
+            } else {
+                picker.addEventListener('change', colourPickerListener);
             }
         }
 
@@ -12391,8 +12569,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             ArrowDown: (event) => addBlocks([0, 0, 1]),
             ArrowLeft: (event) => addBlocks([-1, 0, 0]),
             ArrowRight: (event) => addBlocks([1, 0, 0]),
+            c: (event) => { app.points = []; updatePoints(); },
             d: (event) => { app.showPoints = !app.showPoints; },
             D: (event) => { app.drawPoints = !app.drawPoints; },
+            e: (event) => exportPart(),
             s: (event) => save(),
             w: (event) => toggleWalk(),
             x: (event) => rotateSelected(45, [1, 0, 0], true),
@@ -12412,7 +12592,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             a: (event) => right(-1), //showAll(event),
             A: (event) => { app.showNames = !app.showNames; showAllNames(); updateTextBuffer(); },
             b: (event) => setView([0, -1, 0], [0, 0, -1]),
-            c: (event) => { app.points = []; updatePoints(); },
+            c: (event) => toggleColourPicker(),
             e: (event) => toggleEdit(event),
             E: (event) => editLine(event),
             d: (event) => right(1),
@@ -12505,6 +12685,21 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                         if (app.mode === 'edit') {
                             action.plane = { point: hits[0].points[0] };
+                            const siblings = action.item.part.parent.parts;
+                            app.snapPoints = {
+                                x: new Set(),
+                                y: new Set(),
+                                z: new Set(),
+                            };
+                            siblings.forEach((part) => {
+                                const shapes = app.view.shapes.get(part);
+                                shapes.forEach((shape) =>
+                                    shape.getSnapPoints().forEach((point) => {
+                                        app.snapPoints.x.add(point[0]);
+                                        app.snapPoints.y.add(point[1]);
+                                        app.snapPoints.z.add(point[2]);
+                                    }));
+                            });
                             if (Math.abs(dot(app.camera.up, [0, 1, 0])) < 0.3) {
                                 action.plane.normal = zAxis;
                             } else {
@@ -13242,12 +13437,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 hidePartsList();
             } else {
                 app.mode = 'edit';
-                const selection = Array.from(app.selected);
+                const selection = [...app.selected];
                 if (selection.length === 1) {
                     app.product.context = selection[0];
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
                 }
-                showPartsList(Array.from(app.selected)[0] || app.graph[0]);
+                showPartsList([...app.selected][0] || app.graph[0]);
             }
         }
 
@@ -13318,7 +13513,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         offset.length = 3;
                         offset.fill(0, start, 3);
                     }
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.move(offset));
@@ -13336,7 +13531,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         axis.fill(0, start, 3);
                     }
                     normalise(axis);
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.rotate(angle, axis));
@@ -13353,7 +13548,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         colour.length = 3;
                         colour.fill(0, start, 3);
                     }
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.colour = colour);
@@ -13370,7 +13565,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         reflectivity.length = 3;
                         reflectivity.fill(0, start, 3);
                     }
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.reflectivity = reflectivity);
@@ -13382,7 +13577,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 action(text) {
                     const parameters = text.replace(/^roughness\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
                     const roughness = Number(parameters[0]);
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.roughness = roughness);
@@ -13394,7 +13589,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 action(text) {
                     const parameters = text.replace(/^metallic\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
                     const metallic = Number(parameters[0]);
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.metallic = metallic);
@@ -13406,7 +13601,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 action(text) {
                     const parameters = text.replace(/^mirror\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
                     const mirror = Number(parameters[0]);
-                    const selected = Array.from(app.selected);
+                    const selected = [...app.selected];
                     app.views.forEach((view) => {
                         const items = selected.flatMap((node) => view.shapes.get(node) || []);
                         items.forEach((item) => item.mirror = mirror);
