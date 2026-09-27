@@ -1714,11 +1714,13 @@
          */
         function forward(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            let rate = distance;
             if (app.walk) {
                 zAxis[1] = 0;
+                rate = 8000 * app.scale;
             }
-            add(app.force, Vector.scale(zAxis, amount * distance * 0.1));
-            limit(app.force, distance);
+            add(app.force, Vector.scale(zAxis, amount * rate * 0.1));
+            limit(app.force, rate);
             canvas.focus();
         }
 
@@ -1745,6 +1747,7 @@
         function right(amount = 1) {
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             if (app.walk) {
+                const distance = 8000 * app.scale;
                 xAxis[1] = 0;
                 normalise(xAxis);
                 add(app.force, Vector.scale(xAxis, amount * distance * 0.1));
@@ -2823,6 +2826,7 @@
         const app = {
             tabSize: 4,
             mode: 'view',
+            scale: 1,
             windows: [],
             views: [new View()],
             cameras: [new Camera([0, 0, 15], [0, 0, 0], [0, 1, 0], 30, 1, 10000),],
@@ -4478,9 +4482,9 @@
         }
 
         /**
-         * Draw the ground plane
+         * Render an arbitrary plane as a checkerboard.
          */
-        function drawGround() {
+        function drawPlane(plane, size) {
             // Get the view projection matrix
             const viewProjection = app.camera.viewProjection;
             const inverseViewProjection = app.camera.inverseViewProjection;
@@ -4489,10 +4493,10 @@
             gl.uniformMatrix4fv(app.referencePlaneShader.viewProjection, false, viewProjection);
             gl.uniformMatrix4fv(app.referencePlaneShader.inverseViewProjection, false, inverseViewProjection);
             gl.uniform3fv(app.referencePlaneShader.cameraPosition, app.camera.position);
-            gl.uniform2fv(app.referencePlaneShader.gridSize, app.gridSize);
+            gl.uniform2fv(app.referencePlaneShader.gridSize, size || app.gridSize);
 
-            gl.uniform3fv(app.referencePlaneShader.origin, app.view.referencePlane.origin);
-            gl.uniform3fv(app.referencePlaneShader.normal, app.view.referencePlane.normal);
+            gl.uniform3fv(app.referencePlaneShader.origin, plane.point ?? app.view.referencePlane.origin);
+            gl.uniform3fv(app.referencePlaneShader.normal, plane.normal ?? app.view.referencePlane.normal);
 
             // 1. Define the 4 vertices of the quad
             const vertices = new Float32Array([
@@ -4513,7 +4517,7 @@
 
             // 4. Draw the quad
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            reportGLErrors(drawGround);
+            reportGLErrors(drawPlane);
         }
 
         /**
@@ -4613,7 +4617,12 @@
                 app.view.render(time);
 
                 if (app.gridSize && app.view.drawGround) {
-                    drawGround();
+                    drawPlane(app.view.referencePlane, app.gridSize);
+                }
+
+                if (app.planes) {
+                    app.planes.forEach((plane) => drawPlane(plane, app.gridSize));
+                    app.planes = [];
                 }
 
                 gl.enable(gl.DEPTH_TEST);
@@ -6656,7 +6665,6 @@
                     return [{ shape: this, t, points: [point] }];
                 }
                 return [];
-
             }
             closestVertex(line) {
                 return { distance: Infinity, point: null };
@@ -8225,7 +8233,7 @@
                     colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
-                    materialParameters: [0.1, 1, 0.1, 0.3],
+                    //materialParameters: [0.1, 1, 0.1, 0.3],
                     texture: this.textureParameters,
                 };
                 const buffers = createPBRBuffers(fixed);
@@ -8345,15 +8353,6 @@
                             get3d(this.corners[next][1], this.height),
                             get3d(this.corners[next][0], this.height),
                         ],
-                        corner1: get3d(this.corners[i][0], 0),
-                        corner2: get3d(this.corners[i][1], 0),
-                        corner3: get3d(this.corners[i][1], this.height),
-                        corner4: get3d(this.corners[i][0], this.height),
-
-                        corner5: get3d(this.corners[next][0], 0),
-                        corner6: get3d(this.corners[next][1], 0),
-                        corner7: get3d(this.corners[next][1], this.height),
-                        corner8: get3d(this.corners[next][0], this.height),
                     };
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
@@ -8474,23 +8473,25 @@
                 const getNormal = (p1, p2, p3) => {
                     const v1 = subtract(p2, p1);
                     const v2 = subtract(p3, p1);
-                    return normalised(cross(v1, v2));
+                    return applyTransform(normalised(cross(v1, v2)), orientation);
                 }
+
                 return this.segments.flatMap((segment, index) => {
                     if (segment.visible) {
                         const corner1 = applyTransform(segment.corners[0], this.world);
                         const corner2 = applyTransform(segment.corners[6], this.world);
 
                         const planes = [
-                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[1], segment.corners[2]) },
-                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[1], segment.corners[2]) },
-                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[1], segment.corners[2]) },
+                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[3], segment.corners[1]) },
+                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[1], segment.corners[4]) },
+                            { point: corner1, normal: getNormal(segment.corners[0], segment.corners[4], segment.corners[3]) },
+                            { point: corner2, normal: getNormal(segment.corners[6], segment.corners[2], segment.corners[7]) },
                             { point: corner2, normal: getNormal(segment.corners[6], segment.corners[7], segment.corners[5]) },
-                            { point: corner2, normal: getNormal(segment.corners[6], segment.corners[7], segment.corners[5]) },
-                            { point: corner2, normal: getNormal(segment.corners[6], segment.corners[7], segment.corners[5]) },
+                            { point: corner2, normal: getNormal(segment.corners[6], segment.corners[5], segment.corners[2]) },
                         ];
                         const points = convexHullIntercept(line, planes);
                         if (points && (all || points[0] > 0 || points[1] > 0)) {
+                            //app.planes = planes;
                             const p1 = sum(line.point, Vector.scale(line.direction, points[0]));
                             const p2 = sum(line.point, Vector.scale(line.direction, points[1]));
                             return [{ shape: this, t: points, points: [p1, p2] }];
@@ -8498,8 +8499,6 @@
                     }
                     return [];
                 });
-
-
 
                 return this.segments.flatMap((segment, index) => {
                     if (segment.visible) {
@@ -8615,17 +8614,7 @@
             }
             edges(segment) {
                 const corners = segment.corners.map((corner) => applyTransform(corner, this.world));
-                /*
-                const corner1 = applyTransform(segment.corner1, this.world);
-                const corner2 = applyTransform(segment.corner2, this.world);
-                const corner3 = applyTransform(segment.corner3, this.world);
-                const corner4 = applyTransform(segment.corner4, this.world);
 
-                const corner5 = applyTransform(segment.corner5, this.world);
-                const corner6 = applyTransform(segment.corner6, this.world);
-                const corner7 = applyTransform(segment.corner7, this.world);
-                const corner8 = applyTransform(segment.corner8, this.world);
-                */
                 return [
                     { point: corners[0], direction: subtract(corners[4], corners[0]) },
                     { point: corners[1], direction: subtract(corners[5], corners[1]) },
@@ -8645,17 +8634,7 @@
             }
             faces(segment) {
                 const corners = segment.corners.map((corner) => applyTransform(corner, this.world));
-                /*
-                                const corner1 = applyTransform(segment.corner1, this.world);
-                                const corner2 = applyTransform(segment.corner2, this.world);
-                                const corner3 = applyTransform(segment.corner3, this.world);
-                                const corner4 = applyTransform(segment.corner4, this.world);
-                
-                                const corner5 = applyTransform(segment.corner5, this.world);
-                                const corner6 = applyTransform(segment.corner6, this.world);
-                                const corner7 = applyTransform(segment.corner7, this.world);
-                                const corner8 = applyTransform(segment.corner8, this.world);
-                */
+
                 return [
                     { point1: corners[0], point2: corners[1], point3: corners[2] },
                     { point1: corners[4], point2: corners[5], point3: corners[6] },
@@ -9032,10 +9011,15 @@
                 setFixedPBRAttributes({
                     world: this.world,
                     orientation,
-                    colour: this.material.colour,
-                    emissivityColour: this.material.emissivityColour,
-                    reflectivity: this.material.reflectivity,
-                    materialParameters: [0, this.show ? 1 : 0.5, 0, 0],
+                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    emissivityColour: getAttribute(this.node, 'colour', [0, 0, 0]),
+                    reflectivity: getAttribute(this.node, 'reflectivity', [0.04, 0.04, 0.04]),
+                    materialParameters: [
+                        getAttribute(this.node, 'roughness', 0.1),
+                        this.show ? getAttribute(this.node, 'opacity', 1) : 0.5,
+                        getAttribute(this.node, 'metalic', 0.1),
+                        getAttribute(this.node, 'mirror', 0.3),
+                    ],
                     texture: this.texture,
                 });
                 gl.uniform1i(app.pbrShader.effects, 0);
@@ -9047,12 +9031,14 @@
                 return this.points;
             }
             intersects(line, all) {
-                // Find intersection of line with plane of polygon
+// Find intersection of line with plane of polygon
+                const t = [];
                 const plane = {
                     point: applyTransform([0, 0, 0], this.world),
-                    normal: applyTransform([0, 1, 0], this.world),
+                    normal: applyTransform([0, 1, 0], extractRotation(this.world)),
                 }
-                const point = planeIntercept(line, plane);
+                t.push(distanceToPlane(line, plane));
+                const point = sum(line.point, Vector.scale(line.direction, t.at(-1)));
 
                 // Convert to local space
                 const local = applyTransform(point, invert(this.world));
@@ -9080,13 +9066,13 @@
                     return count + 1;
                 }, 0);
 
+                // If the number of intersections is odd, the point is inside the polygon
                 if (count % 2) {
                     if (app.dots) {
                         app.points.push({ position: point, colour: [0, 0, 0.1] });
                     }
-                    return [{ shape: this, t: [2], points: [point] }];
+                    return [{ shape: this, t, points: [point] }];
                 }
-                // If the number of intersections is odd, the point is inside the polygon
                 return [];
             }
             closestVertex(line) {
@@ -10835,6 +10821,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             },
             units(value) {
                 app.units = value.trim();
+                app.scale = {
+                    m: 1 / 1000,
+                    cm: 1 / 10,
+                    mm: 1,
+                    in: 1 / 25.4,
+                    ft: 1 / 304.8,
+                }[app.units] ?? 1;
             },
         }
 
@@ -12477,7 +12470,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const green = parseInt(greenHex, 16) / 255;
             const blue = parseInt(blueHex, 16) / 255;
 
-            for(const part of app.selected) {
+            for (const part of app.selected) {
                 part.setColour([red, green, blue]);
             }
         };
@@ -12502,21 +12495,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Toggle walking mode placing the camera at ~head height and allowing the user to walk around the scene.
          */
         function toggleWalk() {
-            const scale = {
-                m: 1000,
-                cm: 10,
-                mm: 1,
-                in: 25.4,
-                ft: 304.8,
-            }[app.units] || 1;
             app.walk = !app.walk;
             if (app.walk) {
                 const position = [...app.camera.position];
-                position[1] = 1600 / scale;
+                position[1] = 1600 * app.scale;
                 const lookAt = [...app.camera.lookAt];
-                lookAt[1] = 1600 / scale;
+                lookAt[1] = 1600 * app.scale;
                 moveCamera(position, lookAt, [0, 1, 0]);
-                app.camera.near = 10;
+                app.camera.near = 10 * app.scale;
             } else {
                 //app.camera.position[1] = 0;
             }
