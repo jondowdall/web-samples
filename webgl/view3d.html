@@ -2681,7 +2681,17 @@
             }
             getShape() {
                 // Determine the shape from it's attributes
-                const size = Math.hypot(...getAttribute(this.node, 'size', [0, 0, 0]));
+                const size = getAttribute(this.node, 'size', [0, 0, 0]);
+                const radius = Math.hypot(...size);
+
+                if (size.length === 2) {
+                    this.node.ceiling = 1;
+                    this.node.size = [size[0], 1, size[1]];
+                }
+                if (size[1] === 0) {
+                    this.node.ceiling = 1;
+                    this.node.size = [size[0], 1, size[2]];
+                }
 
                 if (getAttribute(this.node, 'obj')) {
                     return LightWaveObject;
@@ -2689,15 +2699,15 @@
                     return loadGLTF(getAttribute(this.node, 'gltf'));
                 } else if (getAttribute(this.node, 'svg')) {
                     return SVGObject;
-                } else if (getAttribute(this.node, 'ceiling')) {
+                } else if ((size[1] === 0 || size.length === 2 || getAttribute(this.node, 'ceiling')) && radius > 0) {
                     return Room;
                 } else if (getAttribute(this.node, 'bevel')) {
                     return BevelledBlock;
-                } else if (getAttribute(this.node, 'walls') && size > 0) {
+                } else if (getAttribute(this.node, 'walls') && radius > 0) {
                     return Block;
-                } else if (getAttribute(this.node, 'apex') && size > 0) {
+                } else if (getAttribute(this.node, 'apex') && radius > 0) {
                     return Shed;
-                } else if (getAttribute(this.node, 'size') && size > 0) {
+                } else if (radius > 0) {
                     return Block;
                 } else if (getAttribute(this.node, 'radius') && getAttribute(this.node, 'height')) {
                     return Cylinder;
@@ -6503,7 +6513,6 @@
                 // If the room buffers don't exist create them
                 if (!Room.buffers) {
                     const fixed = {
-                        //colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
                         emissivityColour: [0, 0, 0],
                         reflectivity: [0.04, 0.04, 0.04],
                         materialParameters: [0.1, 1, 0.1, 0.3],
@@ -6522,6 +6531,10 @@
                 this.definition = getAttribute(this.part.node, 'path');
                 if (!this.definition) {
                     const size = getAttribute(this.part.node, 'size', [0, 0, 0]);
+                    if (size.length === 2) {
+                        size[2] = size[1];
+                        size[1] = 0;
+                    }
                     const length = getAttribute(this.part.node, 'length', 1);
                     const width = getAttribute(this.part.node, 'width', 1);
 
@@ -9031,7 +9044,7 @@
                 return this.points;
             }
             intersects(line, all) {
-// Find intersection of line with plane of polygon
+                // Find intersection of line with plane of polygon
                 const t = [];
                 const plane = {
                     point: applyTransform([0, 0, 0], this.world),
@@ -11090,7 +11103,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 start() {
                     const defaultParameters = this.stack.findLast((local) => local.defaultParameters)?.defaultParameters ?? [];
                     // Create context from stack
-                    this.stack.at(-1).index += 1;
                     const context = {
                         values: Object.assign({}, ...this.stack.map((local) => local.values)),
                         path: this.stack.map((local) => local.object),
@@ -11099,6 +11111,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         names: scope.stack.flatMap((local) => local.name ?? []).reverse(),
                         index: scope.stack.flatMap((local) => local.index ?? []).reverse(),
                     };
+                    this.stack.at(-1).index += 1;
 
                     // Create empty local scope
                     const local = {
@@ -11163,8 +11176,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                     field = field.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
                         .replace(/<n([0-9]*)>/g, (match, num) => context.index[parseInt(num) || 0] ?? match)
-                        .replace(/<i([0-9]*)>/g, (match, num) =>
-                            scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
+                        .replace(/<i([0-9]*)>/g, (match, num) => scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
                         .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match);
 
                     if (field.includes('=>')) {
@@ -11184,6 +11196,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const value = values.join('=');
                         const [obj, arg] = getTarget(name);
                         obj[arg] = value;
+                    } else if (field.startsWith('(') && field.startsWith(')')) {
+                        const altName = field.slice(1, -1);
+                        local.object[meta].name.push(field);
                     } else {
                         const name = context.defaultParameters.shift()?.name;
                         if (name) {
@@ -11277,10 +11292,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     while (string.replace) {
                         const result = string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
                             .replace(/<n([0-9]*)>/g, (match, num) => context.index[parseInt(num) || 0] ?? match)
-                            .replace(/<i([0-9]*)>/g, (match, num) =>
-                                scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
-                            .replace(/<([^>]+)>/g, (match, name) =>
-                                context.values[name] ?? match)
+                            .replace(/<i([0-9]*)>/g, (match, num) => scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
+                            .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match)
                             .replace(/\{([^\}]+)\}/g, (match, expr) => {
                                 try {
                                     const func = makeFunction(Object.keys(context.values), expr);
@@ -11630,7 +11643,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const count = Number(definition);
             const list = [];
             if (isNaN(count)) {
-                list.push(...definition.split(',').filter((item) => item).flatMap((item) => {
+                list.push(...definition.split(/\s*,\s*/).filter((item) => item).flatMap((item) => {
                     const range = item.match(rangePattern);
                     if (range) {
                         const start = Number(range.groups.start);
@@ -12084,42 +12097,42 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
- * Convert a 2D point to barycentric coordinates of a triangle.
- * @param {[number, number]} p   - the point [x, y]
- * @param {[number, number]} a   - triangle vertex A [x, y]
- * @param {[number, number]} b   - triangle vertex B [x, y]
- * @param {[number, number]} c   - triangle vertex C [x, y]
- * @returns {[number, number, number]} [λa, λb, λc], sums to 1 (degenerate: [NaN, NaN, NaN])
- */
-function toBarycentric(p, a, b, c) {
-  const [px, py] = p;
-  const [ax, ay] = a, [bx, by] = b, [cx, cy] = c;
+         * Convert a 2D point to barycentric coordinates of a triangle.
+         * @param {[number, number]} p   - the point [x, y]
+         * @param {[number, number]} a   - triangle vertex A [x, y]
+         * @param {[number, number]} b   - triangle vertex B [x, y]
+         * @param {[number, number]} c   - triangle vertex C [x, y]
+         * @returns {[number, number, number]} [λa, λb, λc], sums to 1 (degenerate: [NaN, NaN, NaN])
+         */
+        function toBarycentric(p, a, b, c) {
+            const [px, py] = p;
+            const [ax, ay] = a, [bx, by] = b, [cx, cy] = c;
 
-  const v0x = cx - ax, v0y = cy - ay;   // C - A
-  const v1x = bx - ax, v1y = by - ay;   // B - A
-  const v2x = px - ax, v2y = py - ay;   // P - A
+            const v0x = cx - ax, v0y = cy - ay;   // C - A
+            const v1x = bx - ax, v1y = by - ay;   // B - A
+            const v2x = px - ax, v2y = py - ay;   // P - A
 
-  const d00 = v0x * v0x + v0y * v0y;
-  const d01 = v0x * v1x + v0y * v1y;
-  const d11 = v1x * v1x + v1y * v1y;
-  const d20 = v2x * v0x + v2y * v0y;
-  const d21 = v2x * v1x + v2y * v1y;
+            const d00 = v0x * v0x + v0y * v0y;
+            const d01 = v0x * v1x + v0y * v1y;
+            const d11 = v1x * v1x + v1y * v1y;
+            const d20 = v2x * v0x + v2y * v0y;
+            const d21 = v2x * v1x + v2y * v1y;
 
-  const denom = d00 * d11 - d01 * d01;
-  if (denom === 0) {
-      return [NaN, NaN, NaN]; // degenerate triangle
-  }
+            const denom = d00 * d11 - d01 * d01;
+            if (denom === 0) {
+                return [NaN, NaN, NaN]; // degenerate triangle
+            }
 
-  const v = (d11 * d20 - d01 * d21) / denom;
-  const w = (d00 * d21 - d01 * d20) / denom;
-  return [1 - v - w, w, v]; // λa, λb, λc
-}
-
-function insideTriangle(p, a, b, c) {
-    const [u,v,w] = toBarycentric(p, a, b, c);
-    return u >= 0 && v >= 0 && w >= 0;
+            const v = (d11 * d20 - d01 * d21) / denom;
+            const w = (d00 * d21 - d01 * d20) / denom;
+            return [1 - v - w, w, v]; // λa, λb, λc
         }
-        
+
+        function insideTriangle(p, a, b, c) {
+            const [u, v, w] = toBarycentric(p, a, b, c);
+            return u >= 0 && v >= 0 && w >= 0;
+        }
+
         /**
          * Get the distance along a line to a point.
          */
@@ -13894,6 +13907,18 @@ function insideTriangle(p, a, b, c) {
             const commandEntry = document.getElementById('command-entry');
 
             updateCommandList();
+
+
+            /*
+            # Reference Designator Structure
+            #
+            # Site - Building   - Room        - Cabinet/ - Detailed Position Identified      Connector
+            #        Functional   Identifier/   Assembly   Height or  Mounting  Item  Sub-   
+            #        Area         Facility      location   Layer at   Position  ID    Module
+            #                                   Reference  location   or View
+            
+            */
+
 
             const processCommand = (event) => {
                 const fullCommand = commandEntry.value;
