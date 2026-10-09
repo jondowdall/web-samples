@@ -528,6 +528,26 @@
             background-color: white;
             box-shadow: 5px 5px 8px rgba(100, 100, 100, 0.8);
         }
+        
+        #data-status {
+            position: fixed;
+            top: 1em;
+            right: 0;
+            transform: translateX(80%);
+        }
+        
+        .data-status-control {
+            padding: 0.2em 0.5em 0.2em 0.2em;
+            height: 2em;
+            background: gray;
+            border: 2px outset gray;
+            border-radius: 0.5em;
+            transition: transform 0.1s ease-in-out;
+        }
+        
+        .data-status-control:hover {
+            transform: translateX(-70%);
+        }
     </style>
 </head>
 
@@ -621,17 +641,41 @@
         <span id="colour-picker-label"></span><input id="colour-picker" type="color" />
     </div>
 
+    <div id="data-status">
+        <div id="data-status-structure" class="data-status-control"></div>
+        <div id="data-status-products" class="data-status-control"></div>
+        <div id="data-status-assets" class="data-status-control"></div>
+    <div>
+
     <script type="x-shader/x-vertex" id="reference-plane-vertex-shader">
     #version 300 es
     precision highp float;
 
     uniform mat4 view;
 
+    uniform vec3 normal;
+
     in vec2 position;
     out vec4 v_position;
-
+    
+    out mat4 rotation;
+    out vec3 n;
     // Pass through position
     void main() {
+        n = normalize(normal);
+        
+        vec3 axis = cross(n, vec3(0.0, 1.0, 0.0));
+        float s = length(axis);
+        float c = cos(asin(s));
+        float oc = 1.0 - c;
+        
+        rotation = mat4(
+            oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+            oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+            oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+            0.0,                                0.0,                                0.0,                                1.0
+        );
+
         v_position = vec4(position, 0.0, 1.0);
         gl_Position = vec4(position, 0.0, 1.0);
     }
@@ -647,10 +691,15 @@
     uniform vec3 cameraPosition;
     uniform vec2 gridSize;
 
+
     uniform vec3 origin;
     uniform vec3 normal;
 
     in vec4 v_position;
+
+    in mat4 rotation;
+    in vec3 n;
+    
     out vec4 fragmentColour;
 
     void main() {
@@ -661,23 +710,16 @@
 
         if (t > 0.0) {
             vec3 world = cameraPosition + t * direction;
-            vec3 axis = cross(n, vec3(0.0, 1.0, 0.0));
-            float s = length(axis);
-            float c = cos(asin(s));
-            float oc = 1.0 - c;
-            mat4 rotation = mat4(
-                oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
-                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
-                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
-                0.0,                                0.0,                                0.0,                                1.0
-            );
+
             float x = dot(world - origin, (rotation * vec4(1.0, 0.0, 0.0, 0.0)).xyz) / gridSize.x;
             float y = dot(world - origin, (rotation * vec4(0.0, 0.0, 1.0, 0.0)).xyz) / gridSize.y;
-            float col = mod(floor(x) + floor(y), 2.0);
+            float col = smoothstep(0.98, 1.0, abs((2.0 * (x - floor(x))) - 1.0)) + smoothstep(0.98, 1.0, abs((2.0 * (y - floor(y))) - 1.0));
+            //float col = mod(floor(x) + floor(y), 2.0);
             vec4 view = viewProjection * vec4(world, 1.0);
 
             gl_FragDepth = 0.5 + 0.5 * view.z / view.w;
-            fragmentColour = vec4(vec3(0.4 + col * 0.1), 0.5);
+            //fragmentColour = vec4(vec3(0.4 + col * 0.1), 0.5);
+            fragmentColour = vec4(vec3(0.4 + col * 0.6), col);
         } else {
             discard;
             return;
@@ -2014,7 +2056,6 @@
             app.vectors = [];
             app.connections = [];
             app.text = [];
-            app.roots = [];
             app.view.update(app.graph, null, true)
             app.updateMaterials = true;
             updateText();
@@ -2688,7 +2729,7 @@
                     this.node.ceiling = 1;
                     this.node.size = [size[0], 1, size[1]];
                 }
-                if (size[1] === 0) {
+                if (radius > 0 && size[1] === 0) {
                     this.node.ceiling = 1;
                     this.node.size = [size[0], 1, size[2]];
                 }
@@ -2739,6 +2780,15 @@
                 if (shapes) {
                     shapes.forEach((shape) => shape.colour = colour);
                 }
+            }
+            getColour() {
+                if (app.colourFunc) {
+                    const colour = app.colourFunc(this);
+                    if (colour) {
+                        return colour;
+                    }
+                }
+                return this.colour || getAttribute(this.node, 'colour', [0.5, 0.5, 0.5]);
             }
             showComponents() {
                 // Check there are internal components to show
@@ -2822,10 +2872,10 @@
          * Instance of a product.
          */
         class Asset {
-            constructor(product, identifier) {
+            constructor(product, identifier, location=null) {
                 this.product = product;
                 this.id = identifier;
-                this.usage = null;
+                this.location = location;
                 this.history = [];
             }
         }
@@ -2867,7 +2917,6 @@
             labels: [],
             connections: [],
             text: [],
-            roots: [],
             solid: true,
             wireframe: false,
             cullFaces: true,
@@ -2883,12 +2932,25 @@
                 all: [],
             },
             parts: [],
+            allParts: [],
             get aspect() { return gl.canvas.clientWidth / gl.canvas.clientHeight; },
         };
         app.camera = app.cameras[0];
         app.view = app.views[0];
 
-
+        /**
+         * colour selection functions.
+         */
+         const colourFunctions = {
+             enumerated(key, attribute) {
+                 return (part) =>
+                     key[part[attribute] || getAttribute(part.node, attribute)] || key['*'];
+             }
+         }
+        
+            
+        
+        
         /**
          * Filter nodes return only those that match the filter.
          */
@@ -2953,7 +3015,7 @@
             }
             if (event.altKey) {
                 const types = new Set(part.node[meta].types);
-                const all = app.parts.filter((part) => new Set(part.node[meta].types).intersection(types).size);
+                const all = app.allParts.filter((part) => new Set(part.node[meta].types).intersection(types).size);
                 all.forEach((part) => app.selected.add(part));
             }
             app.selected.add(part);
@@ -5203,7 +5265,7 @@
 
                 this.material = {
                     roughness: getAttribute(node, 'roughness', 0.1),
-                    colour: getAttribute(node, 'colour', [0.5, 0.5, 0.5]),
+                    colour: part.getColour(),
                     emissivityColour: getAttribute(node, 'emissivity', [0, 0, 0]),
                     reflectivity: getAttribute(node, 'reflectivity', [0.2, 0.2, 0.2]),
                     opacity: getAttribute(node, 'opacity', 1),
@@ -7488,7 +7550,7 @@
                     faces.push([edges[n + 2], edges[n + 3], edges[n + 4]]);
                     faces.push([edges[n + 3], edges[n + 5], edges[(n + 8) % 30]]);
                 }
-
+                
                 function divideFace(face) {
                     const faces = [];
                     const newFace = [
@@ -7546,7 +7608,7 @@
                 const diameter = this.radius * 2;
                 this.points = [this.origin];
                 this.scale([diameter, diameter, diameter]);
-
+                
                 this.children = [];
                 this.name = part.name || `icosphere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
             }
@@ -9144,7 +9206,7 @@
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
                 this.material = {
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: part.getColour(),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     parameters: [0.1, 1, 0.1, 0.3],
@@ -10761,44 +10823,45 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
         const commands = {
             'camera position'(value) {
-                app.initial.position = value.split(/,/g).map((v) => parseFloat(v));
+                app.initial.position = value;//.split(/,/g).map((v) => parseFloat(v));
                 app.camera.position = [...app.initial.position];
             },
             'look at'(value) {
-                app.initial.lookAt = value.split(/,/g).map((v) => parseFloat(v));
+                app.initial.lookAt = value;//value.split(/,/g).map((v) => parseFloat(v));
                 app.camera.lookAt = [...app.initial.lookAt];
             },
             up(value) {
-                app.initial.up = value.split(/,/g).map((v) => parseFloat(v));
+                app.initial.up = value;//value.split(/,/g).map((v) => parseFloat(v));
                 app.camera.up = [...app.initial.up];
             },
             fov(value) {
-                app.initial.fov = parseFloat(value);
+                app.initial.fov = value;//parseFloat(value);
                 app.camera.fieldOfView = app.initial.fov;
                 document.getElementById('field-of-view').valueAsNumber = app.camera.fieldOfView;
             },
             near(value) {
-                app.initial.near = parseFloat(value);
+                app.initial.near = value;//parseFloat(value);
                 app.camera.near = app.initial.near;
                 document.getElementById('near').valueAsNumber = app.camera.near;
             },
             far(value) {
-                app.initial.far = parseFloat(value);
+                app.initial.far = value;//parseFloat(value);
                 app.camera.far = app.initial.far;
                 document.getElementById('far').valueAsNumber = app.camera.far;
             },
             left(value) {
-                app.initial.left = parseFloat(value);
+                app.initial.left = value;//parseFloat(value);
                 app.camera.left = app.initial.left;
                 //document.getElementById('left').valueAsNumber = app.camera.left;
             },
             right(value) {
-                app.initial.right = parseFloat(value);
+                app.initial.right = value;//parseFloat(value);
                 app.camera.right = app.initial.right;
                 //document.getElementById('right').valueAsNumber = app.camera.right;
             },
             'grid size'(value) {
-                const gridSize = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                value = [...value].flatMap((v) => v);
+                const gridSize = value;//value.split(/\s*,\s*/g).map((v) => parseFloat(v));
                 if (gridSize.length === 1) {
                     app.initial.gridSize = [gridSize[0], gridSize[0]];
                 } else {
@@ -10812,20 +10875,20 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 document.getElementById('grid-size').valueAsNumber = app.gridSize[0];
             },
             'grid origin'(value) {
-                app.initial.gridOrigin = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                app.initial.gridOrigin = value;//value.split(/\s*,\s*/g).map((v) => parseFloat(v));
                 app.gridOrigin = [...app.initial.gridOrigin];
                 app.view.referencePlane.origin = [...app.gridOrigin];
             },
             'grid normal'(value) {
-                app.initial.gridNormal = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                app.initial.gridNormal = value;//value.split(/\s*,\s*/g).map((v) => parseFloat(v));
                 app.gridNormal = [...app.initial.gridNormal];
                 app.view.referencePlane.normal = normalise(app.gridNormal);
             },
             transform(value) {
-                app.transform = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                app.transform = value;//value.split(/\s*,\s*/g).map((v) => parseFloat(v));
             },
             background(value) {
-                const colour = value.split(/\s*,\s*/g).map((v) => parseFloat(v));
+                const colour = value;//value.split(/\s*,\s*/g).map((v) => parseFloat(v));
                 app.background = colour;
                 gl.clearColor(...colour, 1.0);
             },
@@ -10853,8 +10916,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             } else if (typeof string !== 'string') {
                 return string;
             }
-            const trimmed = string.trim();
-            if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+            string = string.trim();
+            if (string.startsWith('"') && string.endsWith('"')) {
                 return string.replace(/^\s*"/, '').replace(/"\s*$/, '');
             }
             const datePattern = /(?<day>[0-9]{1,4})[-\._\/](?<month>[0-9]{1,2})[-\._\/](?<year>[0-9]{2,4})/;
@@ -11035,8 +11098,166 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             console.log(roots);
             return roots;
         }
+        
+        
+        /**
+         * Management of general tabular data.
+         */
+        class TableData {
+            constructor(source) {
+                this.source = source;
+                this.data = [[]];
+            }
+            clear() {
+                this.data = [[]];
+            }
+            loadCSV(text, fieldMarker=',', recordMarker='\n') {
 
+                const item = {};
+                text = text.trim() + '\n';
+    
+                let state;
+                
+                const endField = () => {
+                    this.data.at(-1).push(item.value);
+                    item.value = '';
+                    state = states.nextItem;
+                }
+                
+                const endRecord = () => {
+                    endField();
+                    this.data.push([]);
+                }
+                const states = {
+                    nextItem(char) {
+                        if (char === '"') {
+                            item.value = '';
+                            state = states.readQuotedValue;
+                        } else if (char === fieldMarker) {
+                            endField();
+                        } else if (char === recordMarker) {
+                            endRecord();
+                        } else {
+                            item.value = char;
+                            state = states.readValue;
+                        }
+                    },
+                    readValue(char) {
+                        if (char === fieldMarker) {
+                            endField();
+                        } else if (char === recordMarker) {
+                            endRecord();
+                        } else {
+                            item.value += char;
+                        }
+                    },
+                    readQuotedValue(char) {
+                        if (char === '"') {
+                            state = states.endQuotedValue;
+                        } else {
+                            item.value += char;
+                        }
+                    },
+                    endQuotedValue(char) {
+                        if (char === '"') {
+                            item.value += '"';
+                            state = states.readQuotedValue;
+                        } else if (char === fieldMarker || char === recordMarker) {
+                            records.at(-1).push(item.value);
+                            state = states.nextItem;
+                        }
+                        // Ignore any other values
+                    },
+                }
+                state = states.nextItem;
+                for(const char of text) {
+                    state(char);
+                }
+                this.data.pop(); // Remove final empty record
+                return this;
+            }
+            transpose() {
+                const count = Math.max(...this.data.map((record) => record.length));
 
+                const results = [];
+                for (let i = 0; i < count; ++i) {
+                    const transposed = [];
+                    results.push(transposed);
+                    this.data.forEach((record) =>
+                        transposed.push(record[i]));
+                }
+                this.data = results;
+                return this;
+            }
+            interpret() {
+                this.data = this.data.map((record) =>
+                    record.map((field) => interpret(field)));
+                return this;
+            }
+        }        
+        
+        /**
+         * Return the indentation level, allowing for tabs and spaces
+         */
+        function getLevel(line) {
+            let level = 0;
+            for (let i = 0; i < line.length; ++i) {
+                if (line[i] === ' ') {
+                    level++;
+                } else if (line[i] === '\t') {
+                    level += app.tabSize - (level % app.tabSize);
+                } else {
+                    break;
+                }
+            }
+            return level;
+        }
+        
+        /**
+         * Convert text to a tree of objects
+         */
+        function getTree(text) {
+            const lines = text.split(/\r?\n/g);
+            const roots = [];
+            const stack = [];
+            let skip = false;
+            
+            lines.forEach((text, lineNumber) => {
+                if (skip) {
+                    if (/\*\//.test(text)) {
+                        text = text.replace(/.*\*\//, '');
+                        skip = false;
+                    } else {
+                        return;
+                    }
+                }
+                if (/\/\*/.test(text)) {
+                    text = text.replace(/\/\*.*/, '');
+                    skip = true;
+                }
+                if (text.trim() === '' || text.trim().startsWith('#')) {
+                    return;
+                }
+                const line = {
+                    text, lineNumber,
+                    fields: text.split(/\s*[;\|\t\u{1f}]\s*/ug),
+                    children: [],
+                    level: getLevel(text),
+                };
+                
+                while (stack.length && line.level <= stack[0].level) {
+                    stack.shift();
+                }
+                if (stack.length > 0) {
+                    stack[0].childre.push(line);
+                    line.parent = stark[0];
+                } else {
+                    roots.push(line);
+                }
+                stack.unshift(line);
+            });
+            return roots;
+        }
 
         /**
          * Convert lines to objects
@@ -11046,20 +11267,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const lines = text.split(/\r?\n/g);
             const roots = [];
             const stack = [];
-
-            const getLevel = (line) => {
-                let level = 0;
-                for (let i = 0; i < line.length; ++i) {
-                    if (line[i] === ' ') {
-                        level++;
-                    } else if (line[i] === '\t') {
-                        level += app.tabSize - (level % app.tabSize);
-                    } else {
-                        break;
-                    }
-                }
-                return level;
-            }
 
             let process = true;
             const customFunctions = {
@@ -11127,27 +11334,46 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     this.stack.pop();
                 }
             }
+            
+            const rootNodes = new Set();
 
             /**
              * Parse a line, returning an object or updating the current object and returning an empty array.
              */
             const processLine = (line) => {
                 const { local, context } = scope.start();
+                
+                const getNode = () => {
+                    if (line.fields[0].startsWith('/')) {
+                        // The name starts with a slash, find existing object that matches this path if possible
+                        const siblings = context.object ? context.object[children] : [...rootNodes];
+                        const name = line.fields[0].slice(1);
+                        const node = siblings.find((child) => child.name === name);
+                        if (node) {
+                            return node;
+                        }
+                    }
+    
+                    // Create the potential object
+                    return {
+                        [meta]: {
+                            source: line,
+                            context,
+                            name: [],
+                            data: [],
+                            typeNames: [],
+                            parent: context.object,
+                            states: {},
+                            currentState: new Set(),
+                        },
+                        [children]: [],
+                    };
+                }
+                const node = getNode();
 
-                // Create the potential object
-                const node = {
-                    [meta]: {
-                        source: line,
-                        context,
-                        name: [],
-                        data: [],
-                        typeNames: [],
-                        parent: context.object,
-                        states: {},
-                        currentState: new Set(),
-                    },
-                    [children]: [],
-                };
+                if (!context.object) {
+                    rootNodes.add(node);
+                }
 
                 // Options
                 // 1 field
@@ -11196,9 +11422,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const value = values.join('=');
                         const [obj, arg] = getTarget(name);
                         obj[arg] = value;
-                    } else if (field.startsWith('(') && field.startsWith(')')) {
-                        const altName = field.slice(1, -1);
-                        local.object[meta].name.push(field);
+                    } else if (field.startsWith('(') && field.endsWith(')')) {
+                        local.object[meta].name.push(field.slice(1, -1));
                     } else {
                         const name = context.defaultParameters.shift()?.name;
                         if (name) {
@@ -11233,6 +11458,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     } else if (line.text.includes(':') && !line.text.includes('=')) {
                         local.object = node;
                     } else if (!line.fields[0].includes('--')) {  // If not a link definition
+                        if (line.text.includes('=')) {
+                            const [key, value] = line.text.split(/\s*=\s*/);
+                            node.name = key.trim();
+                            node.value = value;
+                        }
                         context.object = context.object ?? node;
                         local.object = local.object ?? node;
                         processField(context.object, line.fields[0], false, true); // Single element not a link or type
@@ -11371,7 +11601,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         if (!replace) {
                             return;
                         }
-                        const [command, value] = text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                        const [command, valueStr] = text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                        const value = interpret(valueStr);
                         if (commands[command]) {
                             commands[command](value);
                         }
@@ -11567,6 +11798,35 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             return roots.flatMap((line) => line.action(line));
         }
 
+        
+        /**
+         * process the objects that control the app.
+         */
+        function processControlObjects(rootObjects) {
+            const controlObjects = {
+                '<colour key>'(definition) {
+                    const key = definition[children].reduce((key, pair) => {
+                        key[pair.name] = pair.value;
+                        return key;
+                    }, {});
+                    app.colourFunc = colourFunctions.enumerated(key, definition.attribute);
+                },
+                '<settings>'(definition) {
+                    definition[children].forEach((command) => {
+                        if (commands[command.name]) {
+                            commands[command.name](command.value);
+                        }
+                    });
+                },
+            };
+            
+            for (const obj of rootObjects) {
+                const action = controlObjects[obj.name];
+                if (action) {
+                    action(obj);
+                }
+            }
+        }
 
         async function loadStructure(text, parent, replace) {
             if (replace) {
@@ -11583,6 +11843,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             // Generate the object graph
             app.graph = await processText(text, replace);
+            
+            processControlObjects(app.graph);
+            
 
             const root = new Product('');
             const products = {};
@@ -11605,7 +11868,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     root.components.push(component);
                 }
                 const part = new Part(node, component, context?.part);
-                app.parts.push(part);
+                app.allParts.push(part);
                 product.instances.push(part);
                 part.parts = node[children].map((child, index) => addPart(child, index, { product, part }));
                 products[product.name] = product;
@@ -11614,7 +11877,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (parent) {
                 parent.parts.push(...app.graph.map((node, index) => addPart(node, index)));
             } else {
-                app.rootParts = app.graph.map((node, index) => addPart(node, index));
+                app.parts = app.graph.map((node, index) => addPart(node, index));
             }
 
             const nodes = [...app.graph];
@@ -11626,7 +11889,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             updateCommandList();
-            app.view.update(parent ? parent.parts : app.rootParts, parent, replace);
+            app.view.update(parent ? parent.parts : app.parts, parent, replace);
             showTree();
             showModel(app.graph);
             updateText();
@@ -12277,7 +12540,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                 }
             } else {
-                for (const part of app.rootParts) {
+                for (const part of app.parts) {
                     lines.push(...part.getDefinition());
                     lines.push(...part.parts.map((part) => part.getDefinition(4)));
                 }
@@ -12494,7 +12757,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         showPartNames(part);
                     }
                 } else {
-                    app.rootParts.forEach((part) => {
+                    app.parts.forEach((part) => {
                         const shapes = app.view.shapes.get(part);
                         if (shapes && shapes.length) {
                             const label = getLabel(shapes[0]);
@@ -12721,7 +12984,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                         if (app.mode === 'edit') {
                             action.plane = { point: hits[0].points[0] };
-                            const siblings = action.item.part.parent.parts;
+                            const parent = action.item.part.parent || app;
+                            const siblings = parent.parts;
                             app.snapPoints = {
                                 x: new Set(),
                                 y: new Set(),
@@ -13205,17 +13469,44 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Add an indication of data source.
+         */
+         function addDataSource(label) {
+             const container = document.getElementById('data-status');
+             const node = document.createElement('div');
+             node.innerText = label;
+             node.classList.add('data-status-control');
+             container.append(node);
+             return node;
+         }
+
+        /**
          * Load file
          */
         async function loadFile(url) {
+            const indicator = addDataSource(url);
             app.sourceFile = url;
             app.labels = [];
             const result = await fetch(url);
-            const content = await result.text();
-            if (app.sourceFile.endsWith('.svg')) {
-                processSVG(content, true);
+            if (result.ok) {
+                indicator.style.backgroundColor = 'lightgreen';
+                const content = await result.text();
+                if (app.sourceFile.endsWith('.svg')) {
+                    processSVG(content, true);
+                } else if (url.endsWith('.csv')) {
+                    const reords = new TableData();
+                    records.loadCSV(content).transpose().interpret();
+                    console.log(records.data);
+                } else if (url.endsWith('.tsv')) {
+                    const reords = new TableData();
+                    records.loadCSV(content, '\t').transpose().interpret();
+                    console.log(records.data);
+                } else {
+                    processDefinition(content, true);
+                }
             } else {
-                processDefinition(content, true);
+                indicator.style.backgroundColor = 'pink';
+                indicator.title = result.statusText;
             }
         }
 
@@ -13482,7 +13773,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
         }
 
-
         /**
          * List of commands
          */
@@ -13498,6 +13788,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'clear',
                 action(text) {
                     clearScene();
+                }
+            },
+            {
+                name: 'load',
+                action(text) {
+                    const parameters = text.replace(/^load\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                    parameters.forEach((name) => loadFile(name));
                 }
             },
             {
@@ -13901,6 +14198,40 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Look up designator.
+         */
+        const designatorRoot = {
+            components: {
+                r1: {
+                    partNumber: 'JDG000001',
+                    components: {
+                        tx: {
+                            partNumber: 'JDG000002',
+                            components: {
+                               ad: {
+                                   
+                               } 
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        
+        function resolvePath(pathStr, pattern=/-/g) {
+            const path = pathStr.split(pattern);
+            let parts = app.parts;
+            let part;
+            while (parts && path.length > 0) {
+                const name = path.shift();
+                part = parts.find((part) => part.node[meta].name.includes(name));
+                parts = part?.parts;
+            }
+            return part;
+        }
+        
+        
+        /**
          * Add command entry capability.
          */
         function addCommandProcessing() {
@@ -13925,6 +14256,19 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 commandHistory.push(fullCommand);
 
                 commandEntry.value = '';
+                
+                const part = resolvePath(fullCommand);
+
+                if (part) {
+                    app.selected.clear();
+                    app.selected.add(part);
+                    
+                    const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
+                    showShape(item[0]);
+
+                    setView([-0.2, 0.2, 1], [0, 1, 0]);
+                    part.showCompnents();
+                }
 
                 userCommands.sort((a, b) => b.name.length - a.name.length);
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
@@ -13938,7 +14282,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     if (event.shiftKey) {
                         const deselect = names.filter((name) => name.startsWith('-')).map((item) => item.slice(1)).map((name) => new RegExp(name, 'i'));
                         deselect.forEach((pattern) => {
-                            app.parts.filter((part) => pattern.test(part.name))
+                            app.allParts.filter((part) => pattern.test(part.name))
                                 .forEach((part) => app.selected.delete(part));
                         });
                     } else {
@@ -13946,12 +14290,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
 
                     select.forEach((pattern) => {
-                        app.parts.filter((part) => pattern.test(part.name))
+                        app.allParts.filter((part) => pattern.test(part.name))
                             .forEach((part) => app.selected.add(part));
                     });
 
                     const selected = new Set(select.flatMap((pattern) =>
-                        app.parts.filter((part) => pattern.test(part.name))));
+                        app.allParts.filter((part) => pattern.test(part.name))));
 
                     let first = true;
                     for (const part of selected) {
