@@ -460,19 +460,6 @@
             font-style: italic;
         }
 
-        .hide {
-            display: none !important;
-        }
-
-        .unselectable {
-            -webkit-user-select: none;
-            /* Safari */
-            -ms-user-select: none;
-            /* Internet Explorer/Edge */
-            user-select: none;
-            /* Standard syntax */
-        }
-
         .undefined {
             background-color: rgba(156, 156, 88, 0.8);
         }
@@ -548,6 +535,58 @@
         .data-status-control:hover {
             transform: translateX(-70%);
         }
+
+        #detail-view {
+            position: fixed;
+            bottom: 1em;
+            right: 1em;
+            width: 25%;
+            height: 50%;
+            color: yellow;
+            border: 1px solid yellow;
+            background-color: rgb(50, 50, 30, 0.9);
+            border-radius: 1em;
+            padding: 0.6em;
+            box-shadow: 5px 5px 8px rgb(50, 50, 30, 0.5);
+            display: flex;
+            flex-direction: column;
+        }
+
+        #detail-view h3 {
+            font-weight: normal;
+            margin-block-end: 0.5em;
+        }
+
+        #detail-view-parts {
+            margin-left: 0.5em;
+        }
+
+        #detail-view-parts div {
+            line-height: 1.5;
+        }
+
+        .scrollable {
+            overflow: auto;
+        }
+
+        .clickable:hover {
+            text-decoration: underline;
+        }
+
+        .hide {
+            display: none !important;
+        }
+
+        .unselectable {
+            -webkit-user-select: none;
+            /* Safari */
+            -ms-user-select: none;
+            /* Internet Explorer/Edge */
+            user-select: none;
+            /* Standard syntax */
+        }
+
+
     </style>
 </head>
 
@@ -641,13 +680,27 @@
         <span id="colour-picker-label"></span><input id="colour-picker" type="color" />
     </div>
 
+    <div id="detail-view" class="hide">
+        <h2 id="detail-view-title"></h2>
+        <div id="detail-view-path"></div>
+        <div class="scrollable">
+            <h3>Description</h3>
+            <p id="detail-view-description"></p>
+            <h3>Links</h3>
+            <div id="detail-view-links"></div>
+            <h3>Parts</h3>
+            <div id="detail-view-parts"></div>
+        </div>
+    </div>
+
+
     <div id="data-status">
         <div id="data-status-structure" class="data-status-control"></div>
         <div id="data-status-products" class="data-status-control"></div>
         <div id="data-status-assets" class="data-status-control"></div>
-        <div>
+    <div>
 
-            <script type="x-shader/x-vertex" id="reference-plane-vertex-shader">
+    <script type="x-shader/x-vertex" id="reference-plane-vertex-shader">
     #version 300 es
     precision highp float;
 
@@ -2566,6 +2619,12 @@
                             this.shapes.set(part, [shape]);
                             this.named[part.name] = shape;
 
+                            if (getAttribute(part.node, 'show label')) {
+                                const label = getLabel(shape);
+                                app.labels.push(label);
+                                app.showNames = true;
+                            }
+
                             this.items.push(shape);
                             if (descend) {
                                 part.parts.forEach((part) => this.addPart(part));
@@ -3158,10 +3217,51 @@
                     return name.replace(/[\s:\/\(\)]+/g, '-');
                 }
 
+
+                /**
+                 * Display details of the given part.
+                 */
+                function showDetails(part) {
+                    const container = document.getElementById('detail-view');
+                    container.classList.remove('hide');
+                    const title = document.getElementById('detail-view-title');
+                    title.innerText = part.name;
+
+                    const pathView = document.getElementById('detail-view-path');
+                    pathView.innerHTML = '/';
+                    const path = part.path();
+                    path.pop();
+                    path.forEach((part) => {
+                        const node = document.createElement('span');
+                        node.innerText = part.name;
+                        node.classList.add('clickable');
+                        node.addEventListener('click', (event) => select(part, event));
+                        pathView.append(node, '/');
+                    });
+
+                    if (part.description) {
+                        const description = document.getElementById('detail-view-description');
+                        title.innerText = part.description;
+                    }
+                    const links = document.getElementById('detail-view-links');
+                    links.innerHTML = (part.links || []).map((link) => 
+                        `<a href=${link.url}>${link.text}</a>`).join('<br>');
+                    const parts = document.getElementById('detail-view-parts');
+                    parts.innerHTML = '';
+                    parts.append(...part.parts.map((part) => {
+                        const node = document.createElement('div');
+                        node.innerText = part.name;
+                        node.classList.add('clickable');
+                        node.addEventListener('click', (event) => select(part, event));
+                        return node;
+                    }));
+                }
+
                 /**
                  * Select the part, adding to the list of selected parts.
                  */
                 function select(part, event) {
+                    showDetails(part);
                     if (!event.shiftKey) {
                         app.selected.clear()
                     }
@@ -6206,7 +6306,6 @@
                     showInfo() {
                     }
                     reset() {
-
                     }
                     constraint() {
                         if (!this._constraint) {
@@ -6844,7 +6943,6 @@
                             };
 
                             Shed.buffers = createPBRBuffers(fixed);
-                            gl.bindVertexArray(null);
                             Shed.vertices = [];
                             app.view.renderQueue.push(Shed);
                         }
@@ -7142,7 +7240,9 @@
                         gl.bindVertexArray(null);
                     }
                     static reset() {
-
+                        Shed.buffers = null;
+                        Shed.vertices = [];
+                        app.view.renderQueue = app.view.renderQueue.filter((item) => item !== Shed);
                     }
                 }
 
@@ -9701,6 +9801,12 @@
                         gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                         gl.bindVertexArray(null);
                     }
+                    reset() {
+                        this.vertex = null;
+                        this.vao = null;
+                        this.indices = null;
+                        app.view.renderQueue = app.view.renderQueue.filter((item) => item !== this);
+                    }
                     get vertices() {
                         return this.points;
                     }
@@ -10503,10 +10609,10 @@
                 class SVGObject extends Shape {
                     static loaded = {};
                     static pending = {};
-                    constructor(node) {
-                        super(node, `svg`);
+                    constructor(part) {
+                        super(part, `svg`);
 
-                        this.url = getAttribute(node, 'svg');
+                        this.url = getAttribute(part.node, 'svg');
                         this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
 
                         const nodes = SVGObject.loaded[this.url];
@@ -10615,8 +10721,51 @@
                         SVGObject.pending[this.url].forEach((pending) =>
                             pending.node[children].push(...nodes.map((node) => Object.assign({}, node))));
 
+
+
+
+
+
+
+                        const root = new Product('');
+                        const products = {};
+                        let parent;
+                        // Create the product structure from the graph.
+                        const addPart = (node, componentIndex, context) => {
+                            const product = Product.fromNode(node);
+                            let component;
+                            if (context) {
+                                component = new Component(product, node, context.product);
+                                context.product.components[componentIndex] = component;
+                                // Check if this is a redefinition of a product
+                                if (products[context.product.name] && products[context.product.name].components.length > 0) {
+                                    if (!products[context.product.name].components[componentIndex]?.check(node)) {
+                                        console.log(`Component mismatch for ${node.name} in ${context.product.name}. Creating new component.`);
+                                    }
+                                }
+                            } else if (getAttribute(node, 'position')) {
+                                component = new Component(product, node, root);
+                                context = { product: root, part: parent };
+                                root.components.push(component);
+                            }
+                            const part = new Part(node, component, context?.part);
+                            app.allParts.push(part);
+                            product.instances.push(part);
+                            part.parts = node[children].map((child, index) => addPart(child, index, { product, part }));
+                            products[product.name] = product;
+                            return part;
+                        }
+                        app.parts = app.graph.map((node, index) => addPart(node, index));
+
+
+
+
+
+
+
+
                         // Reprocess the graph
-                        app.view.update(this.node, this.node.parent, false);
+                        app.view.update(app.parts, this.node.parent, false);
                         showTree();
                         showModel(app.graph);
                         updateText();
@@ -10804,9 +10953,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             app.labels = [getLabel(hits[0].shape)];
                         }
                         let source = hits[0].shape.node[meta].source;
+                        /*
                         while (!source.text && !source[meta]?.source) {
                             source = source[meta].source;
                         }
+                            */
                         if (source.text && app.reportFullLine) {
                             const line = source.text.replace(/\s*[;\|\t\u{1f}]\s*/ug, "; ")
                             report(`${hits[0].shape.node[meta].name[0]} (${hits[0].shape.node[meta].source.lineNumber}: ${line})`);
@@ -11888,7 +12039,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                  * Convert lines to objects
                  */
                 async function processText(text, replace) {
-                    //tokeniseText(text);
                     const lines = text.split(/\r?\n/g);
                     const roots = [];
                     const stack = [];
@@ -11971,9 +12121,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const getNode = () => {
                             if (line.fields[0].startsWith('/')) {
                                 // The name starts with a slash, find existing object that matches this path if possible
-                                const siblings = context.object ? context.object[children] : [...rootNodes];
-                                const name = line.fields[0].slice(1);
-                                const node = siblings.find((child) => child.name === name);
+                                const path = line.fields[0].split(/\s*\/\s*/g);
+                                path.shift();
+                                let node = context.object || {[children] : [...rootNodes]};
+                                while (node && path.length) {
+                                    const siblings = node[children];
+                                    const name = path.shift();
+                                    node = siblings.find((child) => child[meta].name.includes(name));
+                                }
                                 if (node) {
                                     return node;
                                 }
@@ -12166,7 +12321,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             return string;
                         }
 
-                        const components = line.children.flatMap((line) => line.action(line));
+                        const components = line.children.flatMap((line) => line.action(line)).filter((child) => !node[children].includes(child));
                         node[children].push(...components.filter((component) => component.name[0] !== '$'));
 
                         node[meta].types = node[meta].typeNames.map((name) => app.named[name]).filter((i) => i);
@@ -12470,7 +12625,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     app.graph = await processText(text, replace);
 
                     processControlObjects(app.graph);
-
 
                     const root = new Product('');
                     const products = {};
@@ -13303,20 +13457,25 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                  */
                 function nodeAction(part) {
                     const shape = app.view.shapes.get(part);
-                    if (part.node.url) {
+                    const url = part.node.url || `views/${part.name.toLowerCase().replace(/\s+/, '-')}.txt`;
+                    if (url) {
                         if (part.node.click === 'load page') {
-                            location = part.node.url;
+                            location = url;
+                        } else if (part.node.click === 'import') {
+                            location.hash = url;
                         } else if (part.node.click === 'visit') {
-                            location.hash = part.node.url;
-                        } else if (part.node.click === 'reset') {
-                            load(part.node.url, undefined, true);
+                            clearScene();
+                            location.hash = url;
+                            /*
+                            load(url, undefined, true);
                             updateText();
                             showSceneData();
                             showStock();
+                            */
                         } else if (part.componentView) {
                             part.hideComponents();
                         } else if (event.crtlKey || part.node.load !== true) {
-                            load(part.node.url, part, event.shiftKey);
+                            load(url, part, event.shiftKey);
                             part.node.load = true;
                             part.showComponents();
                             if (!app.walk) {
@@ -13572,20 +13731,26 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const box = canvas.getBoundingClientRect();
                         action.lastX = event.clientX - box.left;
                         action.lastY = event.clientY - box.top;
+                        action.startTime = event.timeStamp;
+                        action.moved = false;
+
                         const mouseLine = getRay(action.lastX, action.lastY);
                         const hits = setSelected(getIntersection(mouseLine));
-                        if (app.connections) {
-                            app.connections.forEach((connection) => connection.selected = (connection.getDist(mouseLine) < 5));
-                        }
+
+                        app.connections.forEach((connection) => connection.selected = (connection.getDist(mouseLine) < 5));
+
                         for (const node of document.body.querySelectorAll('.selected')) {
                             node.classList.remove('selected');
                         }
+
+                        /** ToDo: fix creating connection between parts.
                         if (hits && action.item && event.ctrlKey) {
                             hits.forEach((hit) =>
                                 app.connections.push(new Connection(action.item, hit.shape)));
                         }
+                        */
+
                         action.item = null;
-                        action.moved = false;
                         if (event.button === 0 && hits) {
                             // Move the clicked object
                             const { xAxis, yAxis, zAxis, distance } = viewVectors();
