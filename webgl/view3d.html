@@ -550,9 +550,20 @@
             flex-direction: column;
         }
 
+        #detail-view h2 {
+            margin-block-end: 0.2em;
+        }
+
         #detail-view h3 {
             font-weight: normal;
             margin-block-end: 0.5em;
+        }
+
+        #detail-view h4 {
+            font-weight: normal;
+            font-size: 90%;
+            margin-block-start: 0.1em;
+            margin-block-end: 1.5em;
         }
 
         #detail-view-parts {
@@ -678,15 +689,17 @@
 
     <div id="detail-view" class="hide">
         <h2 id="detail-view-title"></h2>
-        <div id="detail-view-path"></div>
-        <div class="scrollable">
-            <h3>Description</h3>
-            <p id="detail-view-description"></p>
-            <h3>Links</h3>
-            <div id="detail-view-links"></div>
-            <h3>Components</h3>
-            <div id="detail-view-parts"></div>
-        </div>
+        <h4 id="detail-view-subtitle">
+            </h3>
+            <div id="detail-view-path"></div>
+            <div class="scrollable">
+                <h3>Description</h3>
+                <p id="detail-view-description"></p>
+                <h3>Links</h3>
+                <div id="detail-view-links"></div>
+                <h3>Components</h3>
+                <div id="detail-view-parts"></div>
+            </div>
     </div>
 
 
@@ -2616,9 +2629,11 @@
                     this.named[part.name] = shape;
 
                     if (getAttribute(part.node, 'show label')) {
-                        const label = getLabel(shape);
-                        app.labels.push(label);
-                        app.showNames = true;
+                        const label = getLabel(part);
+                        if (label) {
+                            app.labels.push(label);
+                            app.showNames = true;
+                        }
                     }
 
                     this.items.push(shape);
@@ -3218,7 +3233,12 @@
          * Display details of the given part.
          */
         async function showDetails(part) {
+            if (part.node.detailLoading) {
+                return;
+            }
+            app.detail = part;
             if (part.node.detail && !part.node.detailLoaded) {
+                part.node.detailLoading = true;
                 const response = await fetch(part.node.detail);
                 if (response.ok) {
                     const text = await response.text();
@@ -3226,6 +3246,7 @@
                     part.node.detailLoaded = true;
                 }
             }
+            console.log(part);
             const container = document.getElementById('detail-view');
             container.classList.remove('hide');
             const title = document.getElementById('detail-view-title');
@@ -3234,6 +3255,11 @@
             const pathView = document.getElementById('detail-view-path');
             pathView.innerHTML = '/';
             const path = part.path();
+
+            const location = path.flatMap((part) => part.node[meta].name[0] || []).join('-');
+            const subtitle = document.getElementById('detail-view-subtitle');
+            subtitle.innerText = location;
+
             path.pop();
             path.forEach((part) => {
                 const node = document.createElement('span');
@@ -5426,11 +5452,13 @@
          * Return an attribute value, doing a breadth first search of the types.
          */
         function getAttribute(item, attribute, defaultValue) {
+            /*
             for (const state of item[meta].currentState) {
                 if (state[attribute] !== undefined) {
                     return state[attribute];
                 }
             }
+                */
             if (item[attribute] !== undefined) {
                 return item[attribute];
             }
@@ -6091,9 +6119,9 @@
                 this.transform = new Transform();
                 this.orientation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
-                name = this.node[meta].name[0] || name;
+                name = this.node.name || this.node[meta].name[0] || name;
                 this.name = name;
-                this.node[meta].name[0] = name;
+                //this.node[meta].name[0] = name;
                 this.state = {};
 
                 const size = getAttribute(part.node, 'size', [1, 1, 1]);
@@ -10983,20 +11011,20 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 app.showName = hits[0].shape;
                 if (!(app.showPoints || app.showNames)) {
                     //canvas.title = `${hits[0].shape.node[meta].name[0]}`;
-                    app.labels = [getLabel(hits[0].shape)];
+                    app.labels = [getLabel(hits[0].shape.part)];
                 }
-                let source = hits[0].shape.node[meta].source;
                 /*
+                let source = hits[0].shape.node[meta].source;
                 while (!source.text && !source[meta]?.source) {
                     source = source[meta].source;
                 }
-                    */
                 if (source.text && app.reportFullLine) {
-                    const line = source.text.replace(/\s*[;\|\t\u{1f}]\s*/ug, "; ")
+                    const line = source.text.replace(/\s*[;\|\t\u{1f}]\s* /ug, "; ")
                     report(`${hits[0].shape.node[meta].name[0]} (${hits[0].shape.node[meta].source.lineNumber}: ${line})`);
                 } else {
-                    report(`${hits[0].shape.node[meta].name[0]}`);
                 }
+                */
+                report(`${hits[0].shape.node[meta].name[0]}`);
             } else {
                 app.showName = null;
                 if (!app.showPoints) {
@@ -11768,10 +11796,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         async function load(url, parent, replace) {
             document.body.style.cursor = 'progress';
             const response = await fetch(url);
-            const content = await response.text();
-            loadStructure(content, parent, replace);
-            document.body.style.cursor = 'auto';
-            app.views.forEach((view) => view.updateMaterials());
+            if (response.ok) {
+                const content = await response.text();
+                loadStructure(content, parent, replace);
+                document.body.style.cursor = 'auto';
+                app.views.forEach((view) => view.updateMaterials());
+            } else {
+                console.log(`${response.status}, ${response.statusText}`);
+            }
         }
 
         const children = Symbol('children');
@@ -11797,7 +11829,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
         /**
          * Convert lines to structured tokens using a state machine
-         */
+         *
         function tokeniseText(text) {
             const roots = [];
             const contextStack = [];
@@ -11907,7 +11939,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             console.log(roots);
             return roots;
         }
-
+*/
 
         /**
          * Management of general tabular data.
@@ -12008,43 +12040,48 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Return the indentation level, allowing for tabs and spaces
          */
-        function getLevel(line) {
-            let level = 0;
+        function getIndentation(line) {
+            let indent = 0;
             for (let i = 0; i < line.length; ++i) {
                 if (line[i] === ' ') {
-                    level++;
+                    indent++;
                 } else if (line[i] === '\t') {
-                    level += app.tabSize - (level % app.tabSize);
+                    indent += app.tabSize - (indent % app.tabSize);
                 } else {
                     break;
                 }
             }
-            return level;
+            return indent;
         }
 
 
         /**
          * Convert lines to objects
          */
-        async function processTextNew(text) {
+        async function processTextNew(text, parent) {
 
             const symbols = {
                 value: Symbol('value'),
                 index: Symbol('index'),
             };
 
-            const lines = text.split(/\r?\n/g).map((text, index) => ({ text, index, level: getLevel(text) }));
+            const lines = text.split(/\r?\n/g).map((text, index) => ({ text, index, indent: getIndentation(text) }));
 
             //const debug = (text) => console.log(text);
             const debug = (text) => { };
 
-            const roots = [];
+            //const roots = [];
             const rootContext = {
                 values: {},
                 defaultParameters: [],
-                object: { [children]: [] },
-                addNode: (node) => roots.push(node),
             };
+            if (parent) {
+                rootContext.object = { parent };
+                rootContext.addNode = (node) => parent[children].push(node);
+            } else {
+                rootContext.object = { [children]: app.graph };
+                rootContext.addNode = (node) => app.graph.push(node);
+            }
             const stack = [];
             const named = {};
             let skip = false;
@@ -12099,65 +12136,78 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             /**
              * Process a setting line, which defines a global setting for the structure.
              */
-            async function processSetting(text, lineNumber) {
-                debug(`processSetting: ${text} at line ${lineNumber}`);
+            async function processSetting(line, lineNumber) {
+                debug(`processSetting: ${line.text} at line ${lineNumber}`);
+                const [command, valueStr] = line.text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                const value = interpret(valueStr);
+                if (commands[command]) {
+                    commands[command](value);
+                }
                 return lineNumber + 1;
             };
 
             /**
              * Process a context line, which defines a change to the context for subsequent lines.
              */
-            async function processContext(text, lineNumber) {
-                debug(`processContext: ${text} at line ${lineNumber}`);
+            async function processContext(line, lineNumber) {
+                debug(`processContext: ${line.text} at line ${lineNumber}`);
                 return lineNumber + 1;
             };
 
             /**
              * Process a repeat line, which defines a repetition for the current line and its children.
              */
-            async function processRepeat(text, lineNumber) {
-                debug(`processRepeat: ${text} at line ${lineNumber}`);
+            async function processRepeat(line, lineNumber) {
+                debug(`processRepeat: ${line.text} at line ${lineNumber}`);
 
-                const match = text.match(this.pattern);
+                const match = line.text.match(this.pattern);
                 const sequence = getList(match.groups.sequence);
-                const unlooped = text.replace(/\s+\[[^\]]+\]$/, '');
-                const action = actions.find((action) => action.pattern.test(unlooped));
+                line.text = line.text.replace(/\s+\[[^\]]+\]$/, '');
+                const label = getFields(line.text.trim())[0];
+                const action = actions.find((action) => action.pattern.test(line.text));
                 if (!action) {
-                    debug(`No action found for line: ${text} at line ${lineNumber}`);
+                    debug(`No action found for line: ${line.text} at line ${lineNumber}`);
                 }
                 const start = lineNumber;
+                const context = { values: {} };
                 stack[0].values = stack[0].values || {};
+                stack.unshift(context);
                 await Promise.all(sequence.map(async (value, index) => {
-                    stack[0].values[symbols.index] = index;
-                    stack[0].values[symbols.value] = value;
+                    if (label) {
+                        context.values[label] = value;
+                        context.values[`${label}_n`] = index;
+                    }
+                    context.values[symbols.index] = index;
+                    context.values[symbols.value] = value;
                     if (action) {
-                        lineNumber = await action.handler(unlooped, start);
+                        lineNumber = await action.handler(line, start);
                     }
                 }));
+                stack.shift();
                 return lineNumber;
             };
 
             /**
              * Process an option line, which defines a conditional branch in the structure.
              */
-            async function processOption(text, lineNumber) {
-                debug(`processOption: ${text} at line ${lineNumber}`);
+            async function processOption(line, lineNumber) {
+                debug(`processOption: ${line.text} at line ${lineNumber}`);
                 return lineNumber + 1;
             };
 
             /**
              * Process an import line, which loads additional lines from a specified URL.
              */
-            async function processImport(text, lineNumber) {
-                debug(`processImport: ${text} at line ${lineNumber}`);
+            async function processImport(line, lineNumber) {
+                debug(`processImport: ${line.text} at line ${lineNumber}`);
 
-                const url = text.trim().replace(/\+\s*/, '');
+                const url = line.text.trim().replace(/\+\s*/, '');
                 const response = await fetch(url);
                 if (response.ok) {
-                    const indent = text.replace(/\+.*/, '');
+                    const indent = line.text.replace(/\+.*/, '');
                     const content = await response.text();
                     const newLines = content.split(/\r?\n/).map((text) => `${indent}${text}`)
-                        .map((text, index) => ({ text, index, url, level: getLevel(text) }));
+                        .map((text, index) => ({ text, index, url, indent: getIndentation(text) }));
                     lines.splice(lineNumber + 1, 0, ...newLines);
                 } else {
                     debug(`Failed to load ${url}: ${response.status} ${response.statusText}`);
@@ -12168,15 +12218,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             /**
              * Process a loop line, which defines a sequence of lines to be repeated for each item in a specified list.
              */
-            async function processLoop(text, lineNumber) {
-                debug(`processLoop: ${text} at line ${lineNumber}`);
+            async function processLoop(line, lineNumber) {
+                debug(`processLoop: ${line.text} at line ${lineNumber}`);
 
-                const match = text.match(this.pattern);
+                const match = line.text.match(this.pattern);
                 const sequence = getList(match.groups.sequence);
                 const label = match.groups.label.trim();
-                const start = lineNumber;
+                const start = lineNumber + 1;
                 const context = { values: {} };
-                stack.unshift(context);
                 await Promise.all(sequence.map(async (value, index) => {
                     if (label) {
                         context.values[label] = value;
@@ -12184,36 +12233,58 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                     context.values[symbols.index] = index;
                     context.values[symbols.value] = value;
-                    lineNumber = await processScope(start);
+                    lineNumber = await processScope(start, line.indent, context);
                 }));
-                stack.shift();
                 return lineNumber;
             };
 
             /**
              * Set default parameters for subsequent nodes.
              */
-            async function processDefaults(text, lineNumber) {
-                debug(`processDefaults: ${text} at line ${lineNumber}`);
-                const defaultParameters = getFields(text.trim().replace(/^[;\|\t\u{1f}]/u, ''))
+            async function processDefaults(line, lineNumber) {
+                debug(`processDefaults: ${line.text} at line ${lineNumber}`);
+                const defaultParameters = getFields(line.text.trim().replace(/^[;\|\t\u{1f}]/u, ''))
                     .map((field) => {
-                        const [name, value] = field.split(/\s*=\s*/);
+                        const [name, value] = field.trim().split(/\s*=\s*/);
                         return { name, value };
                     });
-                defaultParameters.shift();
-                return await processScope(lineNumber, { defaultParameters }, true);
+                //defaultParameters.shift();
+                return await processScope(lineNumber + 1, line.indent, { defaultParameters }, true);
             };
 
-
-
-
-
-
+            /**
+             * Process an individual field of an object
+             */
             const processField = (node, field, context, defaultParameters) => {
-                const getTarget = (name) =>
-                    name.toString().startsWith('&') ?
-                        [node[meta], name.replace(/^&\s*/, '')] :
-                        [node, name];
+                const getTarget = (name, value) => {
+                    if (name.toString().startsWith('&')) {
+                        if (name === '&type') {
+                            if (value) {
+                                Object.defineProperty(node[meta], 'type', {
+                                    enumerable: true,
+                                    set(type) {
+                                        const proto = Object.values(named).find((obj) => obj[value] === type) ?? named[type];
+                                        if (proto) {
+                                            Object.setPrototypeOf(node, proto);
+                                        }
+                                    }
+                                });
+                            } else {
+                                Object.defineProperty(node[meta], 'type', {
+                                    enumerable: true,
+                                    set(type) {
+                                        const proto = named[type];
+                                        if (proto) {
+                                            Object.setPrototypeOf(node, proto);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        return [node[meta], name.replace(/^&\s*/, '')];
+                    }
+                    return [node, name];
+                };
 
                 field = resolve(field, context);
 
@@ -12234,24 +12305,26 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const [name, ...values] = field.split(/\s*=\s*/);
                     const value = values.join('=');
                     const [obj, arg] = getTarget(name);
-                    obj[arg] = value;
+                    obj[arg] = interpret(value);
                 } else if (field.startsWith('(') && field.endsWith(')')) {
                     node[meta].name.push(field.slice(1, -1));
                 } else {
-                    const name = defaultParameters.shift()?.name;
+                    const parameter = defaultParameters.shift();
+                    const name = parameter?.name;
+                    const value = interpret(field);
                     if (name) {
-                        const [obj, arg] = getTarget(name);
+                        const [obj, arg] = getTarget(name, parameter.value);
                         if (Array.isArray(obj[arg])) {
-                            obj[arg].push(field);
-                        } else if (obj[arg] === undefined) {
-                            obj[arg] = field;
+                            obj[arg].push(value);
+                        } else if (obj[arg] === undefined || arg === 'name') {
+                            obj[arg] = value;
                         } else {
-                            obj[arg] = [obj[arg], field];
+                            obj[arg] = [obj[arg], value];
                         }
                     } else {
                         const [obj, arg] = getTarget(field);
                         obj[arg] = obj[arg] ?? true;
-                        node[meta].data.push(field);
+                        node[meta].data.push(value);
                     }
                 }
             }
@@ -12277,7 +12350,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                 }
                 const proto = named[type] || {};
-                const node = Object.assign(Object.create(proto), { [meta]: { name: [], data: [], context }, [children]: [] });
+                const node = Object.assign(Object.create(proto), {
+                    [meta]: {
+                        name: [],
+                        data: [],
+                        source:
+                            context,
+                    },
+                    [children]: []
+                });
                 if (name !== '*') {
                     node.name = name;
                 }
@@ -12305,11 +12386,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             /**
              * Process a single field line
              */
-            async function processSingleField(text, lineNumber) {
-                debug(`processSingleField: ${text} at line ${lineNumber}`);
+            async function processSingleField(line, lineNumber) {
+                debug(`processSingleField: ${line.text} at line ${lineNumber}`);
 
                 const { data, defaultParameters, object, addNode } = getScope(stack);
-                text = text.trim();
+                const text = line.text.trim();
 
                 if (text.endsWith('={}')) { // line ends in ':' add children as attributes for last parameter
                     const parameter = text.replace(/\s*=\{\}$/, '');
@@ -12319,14 +12400,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             object[parameter][newNode.name] = newNode;
                         },
                     };
-                    return await processScope(lineNumber, context);
+                    return await processScope(lineNumber + 1, line.indent, context);
                 } else if (text.endsWith('=[]')) { // line ends in '=[]' add children array of parameter
                     const parameter = text.replace(/\s*=\[\]$/, '');
                     object[parameter] = object[parameter] ?? [];
                     const context = {
                         addNode(newNode) { object[parameter].push(newNode); },
                     };
-                    return await processScope(lineNumber, context);
+                    return await processScope(lineNumber + 1, line.indent, context);
                 } else if (text.endsWith('=')) { // line ends in '=' add children as attributes for last parameter
                     const parameter = text.replace(/\s*=$/, '');
                     const context = {
@@ -12340,7 +12421,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             }
                         }
                     };
-                    return await processScope(lineNumber, context);
+                    return await processScope(lineNumber + 1, line.indent, context);
                 } else if (text.includes('=')) {
                     processField(object, text, data, defaultParameters); // Single element not a link or type
                 } else {
@@ -12352,29 +12433,22 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             node[children].push(newNode);
                         }
                     };
-                    return processScope(lineNumber, context);
+                    return processScope(lineNumber + 1, line.indent, context);
                 }
-                if (!text.includes('--')) {  // If not a link definition
-                    if (text.includes('=')) {
-                        const [key, value] = text.split(/\s*=\s*/);
-                        object.name = key.trim();
-                        object.value = value;
-                    }
-                }
+
                 return lineNumber + 1;
             }
 
             /**
              * Process an object line, defining a new object in the structure.
              */
-            async function processObject(text, lineNumber) {
-                debug(`processObject: ${text} at line ${lineNumber}`);
+            async function processObject(line, lineNumber) {
+                debug(`processObject: ${line.text} at line ${lineNumber}`);
 
                 const { data, defaultParameters, object, addNode } = getScope(stack);
-                const fields = getFields(text.trim());
+                const fields = getFields(line.text.trim());
 
-                const node = getNode(fields.shift(), object, data, addNode);
-                named[node.name] = node;
+                const node = getNode(fields[0], object, data, addNode);
                 const scope = {
                     object: node,
                     addNode(newNode) {
@@ -12382,7 +12456,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                 };
                 fields.forEach((field) => processField(node, field, data, defaultParameters));
-                return processScope(lineNumber, scope);
+                named[node.name] = node;
+                return processScope(lineNumber + 1, line.indent, scope);
             };
 
             const actions = [
@@ -12411,7 +12486,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     handler: processLoop,
                 },
                 {
-                    pattern: /^\s*[;\|\t\u{1f}]/u,
+                    pattern: /^\s*[;\|\u{1f}]/u,
                     handler: processDefaults,
                 },
                 {
@@ -12424,42 +12499,48 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
             ];
 
-            async function processScope(lineNumber, context = {}, allowUnindented = false) {
+
+            async function processScope(lineNumber, level, context = {}, allowUnindented = false) {
                 stack.unshift(context);
-                let minLevel = lines[lineNumber].level;
-                lineNumber += 1;
+
                 let first = true;
                 while (lineNumber < lines.length) {
-                    const { text, index } = lines[lineNumber];
+                    const text = lines[lineNumber].text;
+                    let indent = lines[lineNumber].indent;
                     if (skip) {
-                        if (/\*\//.test(text)) {
-                            text = text.replace(/.*\*\//, '');
+                        if (/\*\//.test(text)) {                // Test for end of block comment
+                            text = text.replace(/.*\*\//, '');  // Remove text in comment, process this and subsequent lines
                             skip = false;
+                            indent = getIndentation(text);
                         } else {
-                            lineNumber += 1;
+                            lineNumber += 1;                // Ignore this line
                             continue;
                         }
                     }
-                    if (/\/\*/.test(text)) {
-                        text = text.replace(/\/\*.*/, '');
-                        skip = true;
+                    if (/\/\*/.test(text)) {                // Text for block comment
+                        if (/\*\//.test(text)) {                // Test for end of block comment in remaining text
+                            text = text.replace(/.*\*\//, '');  // Remove text in comment, process this and subsequent lines
+                        } else {
+                            text = text.replace(/\/\*.*/, '');  // Remove text after comment marker
+                            skip = true;                        // Ignore subsequent lines but Continue processing this line
+                        }
+                        indent = getIndentation(text);
                     }
                     if (text.trim() === '' || text.trim().startsWith('#')) {
                         lineNumber += 1;
                         continue;
                     }
-                    const level = getLevel(text);
-                    if (first && allowUnindented && level === minLevel) {
-                        minLevel -= 1;
+                    if (first && allowUnindented && indent === level) {
+                        level -= 1;
                     }
                     first = false;
-                    if (level <= minLevel) {
+                    if (indent <= level) {
                         break;
                     }
 
                     const action = actions.find((action) => action.pattern.test(text));
                     if (action) {
-                        lineNumber = await action.handler(text, lineNumber);
+                        lineNumber = await action.handler(lines[lineNumber], lineNumber);
                     } else {
                         lineNumber += 1;
                         console.log('No action found for line', text, lineNumber, lines.length);
@@ -12469,602 +12550,612 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 return lineNumber;
             }
 
-            let lineNumber = 0;
-            while (lineNumber < lines.length) {
-                lineNumber = await processScope(lineNumber, rootContext, true);
-            }
-            return roots;
+            await processScope(0, -1, rootContext, true);
         }
 
 
         /**
-         * Convert lines to objects
-         */
-        async function processText(text, replace) {
+                 * Convert lines to objects
+                 */
+        async function processText2(text, parent) {
+            let lineNumber = 0;
+            let blockComment = false;
 
-            const loopPattern = /^\[([^\]]+)\]\s*(.*)/;
-            const repeatPattern = /\s*\[([^\]]+)\]$/;
-
-            const lines = text.split(/\r?\n/g);
-            const roots = [];
-            const stack = [];
-
-            let process = true;
-            const customFunctions = {
-                zeroPad: (string, chars) => (string + '').padStart(chars, '0'),
-            }
-
-            const find = (string) => {
-                if (!string.split) return;
-                const path = string.split(/\/\./g);
-                let target;
-                while (path.length) {
-                    if (target) {
-                        const name = path.shift();
-                        target = target.children.find((child) => child[meta].name.includes(name)) ?? target.attrs[name];
-                    } else {
-                        target = app.named[path.shift()];
-                    }
-                }
-            }
-
-            const findType = (name) => {
-                return app.named[name];
-            }
-
-            const getInheritedAttribute = (node, attribute) => {
-                const stack = [...node[meta].type];
-                while (stack) {
-                    const type = stack.shift();
-                    if (type[attribute] !== undefined) {
-                        return type[attribute];
-                    }
-                    stack.push(...type[meta].type);
-                }
+            const symbols = {
+                value: Symbol('value'),
+                index: Symbol('index'),
+                object: Symbol('object'),
+                addNode: Symbol('add node'),
             };
 
-            const scope = {
-                stack: [{ index: 0 }],
-                start() {
-                    const defaultParameters = this.stack.findLast((local) => local.defaultParameters)?.defaultParameters ?? [];
-                    // Create context from stack
-                    const context = {
-                        values: Object.assign({}, ...this.stack.map((local) => local.values)),
-                        path: this.stack.map((local) => local.object),
-                        defaultParameters: [...defaultParameters],
-                        object: this.stack.findLast((local) => local.object)?.object,
-                        names: scope.stack.flatMap((local) => local.name ?? []).reverse(),
-                        index: scope.stack.flatMap((local) => local.index ?? []).reverse(),
-                    };
-                    this.stack.at(-1).index += 1;
+            const lines = text.split(/\r?\n/g).map((text, index) =>
+                ({ text, indent: getIndentation(text), source: { lineNumber: index + 1 } }));
 
-                    // Create empty local scope
-                    const local = {
-                        values: {},
-                        index: 0,
-                    };
+            const debug = (text) => console.log(text);
+            //const debug = (text) => { };
 
-                    this.stack.push(local);
-                    return { local, context };
-                },
+            if (parent) {
+                context = {
+                    [symbols.object]: { parent },
+                    [symbols.addNode]: (node) => parent[children].push(node),
+                };
 
-                end() {
-                    this.stack.pop();
-                }
+            } else {
+                context = {
+                    [symbols.object]: { [children]: app.graph },
+                    [symbols.addNode]: (node) => app.graph.push(node),
+                };
             }
-
-            const rootNodes = new Set(app.graph);
+            const roots = [];
+            const stack = [{
+                indent: -1,
+                defaultParameters: [],
+                instances: [context]
+            }];
+            const named = {};
+            const all = [];
 
             /**
-             * Parse a line, returning an object or updating the current object and returning an empty array.
+             * Get the current scope from the stack, including context and default parameters.
              */
-            const processLine = (line) => {
-                const { local, context } = scope.start();
-                let reusedNode = false;
+            function getContext(stack) {
+                const defaultParameters = stack.find((local) => local.defaultParameters).defaultParameters;
+                const instances = stack.find((local) => local.instances).instances;
+                return { defaultParameters, instances };
+            }
 
-                const getNode = () => {
-                    if (line.fields[0].startsWith('/')) {
-                        // The name starts with a slash, find existing object that matches this path if possible
-                        const path = line.fields[0].split(/\s*\/\s*/g);
-                        path.shift();
-                        let node = context.object || { [children]: [...rootNodes] };
-                        while (node && path.length) {
-                            const siblings = node[children];
-                            const name = path.shift();
-                            node = siblings.find((child) => child[meta].name.includes(name));
-                        }
-                        if (node) {
-                            reusedNode = true;
-                            return node;
-                        }
-                    }
-
-                    // Create the potential object
-                    return {
-                        [meta]: {
-                            source: line,
-                            context,
-                            name: [],
-                            data: [],
-                            typeNames: [],
-                            parent: context.object,
-                            states: {},
-                            currentState: new Set(),
-                        },
-                        [children]: [],
-                    };
-                }
-                const node = getNode();
-
-                if (!context.object) {
-                    rootNodes.add(node);
-                }
-
-                // Options
-                // 1 field
-                //   assignment
-                //     has content
-                //       - assign value as first element of array
-                //     no content
-                //       - assign value to parameter
-                //   value
-                //     has content
-                //       - assign content as elements
-                //     no content
-                //       unused context parameters
-                //         - assign to next content parameter
-                //       no unused parameters
-                //         - assign as specified by context
-                // multiple fields
-                //  - create object and update context
-
-                let fieldIndex = 0;
-                const processField = (node, field, first, last) => {
-                    const getTarget = (name) =>
-                        name.toString().startsWith('&') ?
-                            [node[meta], name.replace(/^&\s*/, '')] :
-                            [node, name];
-
-                    field = field.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
-                        .replace(/<n([0-9]*)>/g, (match, num) => context.index[parseInt(num) || 0] ?? match)
-                        .replace(/<i([0-9]*)>/g, (match, num) => scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
-                        .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match);
-
-                    if (field.includes('=>')) {
-                        const [name, expr] = field.split(/\s*=>\s*/);
-                        const func = makeFunction(['time'], expr);
-                        const [obj, arg] = getTarget(name || context.defaultParameters.shift()?.name);
-
-                        Object.defineProperty(obj, arg, {
-                            enumerable: true,
-                            get() {
-                                return func(app.time, this);
+            /**
+             * Resolve a string by replacing placeholders with values from the context.
+             */
+            function resolve(string, context) {
+                while (string.replace) {
+                    const result = string.replace(/<>/g, (match) => context[symbols.value] ?? match)
+                        .replace(/<n>/g, (match) => context[symbols.index] ?? match)
+                        .replace(/<([0-9]*)>/g, (match, num) => {
+                            let scope = context;
+                            let level = parseInt(num);
+                            while (scope && level > 0) {
+                                scope = Object.getPrototypeOf(scope);
+                                level--;
+                            }
+                            return scope?.[symbols.value] ?? match;
+                        })
+                        .replace(/<n([0-9]*)>/g, (match, num) => {
+                            let scope = context;
+                            let level = parseInt(num);
+                            while (scope && level > 0) {
+                                scope = Object.getPrototypeOf(scope);
+                                level--;
+                            }
+                            return scope?.[symbols.index] ?? match;
+                        })
+                        .replace(/<([^>]+)>/g, (match, name) => context[name] ?? match)
+                        .replace(/\{([^\}]+)\}(:([0-9]+),(.+))?/g, (match, expr, format) => {
+                            try {
+                                const keys = [];
+                                const values = [];
+                                for (const key in context) {
+                                    keys.push(key);
+                                    values.push(context[key]);
+                                }
+                                const func = makeFunction(keys, expr);
+                                const result = func(...values);
+                                if (format) {
+                                    const [length, char] = format.slice(1).split(/,/);
+                                    return result.toString().padStart(parseInt(length), char);
+                                } else {
+                                    return result;
+                                }
+                            } catch (err) {
+                                report(err.message);
+                                return `${err.message}: ${match}`;
                             }
                         });
-                        node[meta].dynamic = true;
-                    } else if (field.includes('=')) {
-                        const [name, ...values] = field.split(/\s*=\s*/);
-                        const value = values.join('=');
-                        const [obj, arg] = getTarget(name);
-                        obj[arg] = value;
-                    } else if (field.startsWith('(') && field.endsWith(')')) {
-                        local.object[meta].name.push(field.slice(1, -1));
-                    } else {
-                        const name = context.defaultParameters.shift()?.name;
-                        if (name) {
-                            const [obj, arg] = getTarget(name);
-                            if (Array.isArray(obj[arg])) {
-                                obj[arg].push(field);
-                            } else if (obj[arg] === undefined) {
-                                obj[arg] = field;
-                            } else {
-                                obj[arg] = [obj[arg], field];
-                            }
-                        } else if (first) {
-                            local.object[meta].name.push(field);
-                        } else {
-                            const [obj, arg] = getTarget(field);
-                            obj[arg] = obj[arg] ?? true;
-                            local.object[meta].data[fieldIndex++] = field;
-                        }
+                    if (string === result) {
+                        return string;
                     }
+                    string = result;
                 }
+                return string;
+            }
 
-                if (line.fields.length === 1) {
-                    if (line.fields[0].endsWith('=')) { // line ends in '=' add children as attributes for last parameter
-                        const parameter = line.fields[0].replace(/\s*=$/, '');
-                        const parent = node[meta].parent;
-                        const { context, local } = scope.start();
-                        local.object = {};
-                        parent[parameter] = line.children.flatMap((line) => line.action(line));
-                        scope.end();
-                        return [];
-                    } else if (line.text.includes(':') && !line.text.includes('=')) {
-                        local.object = node;
-                    } else if (!line.fields[0].includes('--')) {  // If not a link definition
-                        if (line.text.includes('=')) {
-                            const [key, value] = line.text.split(/\s*=\s*/);
-                            node.name = key.trim();
-                            node.value = value;
-                        }
-                        context.object = context.object ?? node;
-                        local.object = local.object ?? node;
-                        processField(context.object, line.fields[0], false, true); // Single element not a link or type
+            /**
+             * Process a setting line, which defines a global setting for the structure.
+             */
+            const settingsProcessor = {
+                pattern: /^\s*>/,
+                async preprocessor(line, context) {
+                    debug(`processSetting: ${line.text} at line ${line.source.lineNumber}`);
+                    const [command, valueStr] = line.text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
+                    const value = interpret(valueStr);
+                    if (commands[command]) {
+                        commands[command](value);
                     }
-                } else if (line.fields.length > 1) {
-                    local.object = node;
-                    if (line.fields.at(-1).endsWith('=')) {
-                        line.fields.pop();
-                    }
-                    line.fields.forEach((field, index) => processField(node, field, index === 0, index === line.fields.length - 1));
-                }
-
-                // Add remaining default values
-                while (context.defaultParameters.length) {
-                    const parameter = context.defaultParameters.shift();
-                    if (parameter.value !== undefined && local.object[parameter.name] === undefined) {
-                        local.object[parameter.name] = parameter.value;
-                    }
-                }
-
-                // Find the name and types
-                const qualifiedName = node.name || line.fields[0];
-                const [name, ...typeNames] = (qualifiedName + '').split(/\s*::\s*/g);
-                node[meta].typeNames.push(...typeNames);
-                node.name = name;//node.name || name;
-
-                node[meta].name.push(name);
-                app.named[name] = node;
-
-                if (name.includes('--')) {
-                    local.object.connections = local.object.connections || [];
-                    const [start, type, end] = line.fields[0].split(/\s*([<]?--[>]?)\s*/);
-                    node.start = start;
-                    node.end = end;
-                    node.connectionType = type;
-                    node[meta].connection = true;
-                }
-
-                // Add types identified as parameters
-                if (node.type && node.type !== node.name) {
-                    if (Array.isArray(node.type)) {
-                        node[meta].typeNames.push(...node.type);
-                    } else {
-                        node[meta].typeNames.push(node.type);
-                    }
-                }
-
-                if (node[meta].type && node[meta].type !== node.name) {
-                    if (Array.isArray(node[meta].type)) {
-                        node[meta].typeNames.push(...node[meta].type);
-                    } else {
-                        node[meta].typeNames.push(node[meta].type);
-                    }
-                }
-
-                const resolve = (string) => {
-                    while (string.replace) {
-                        const result = string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => context.index[parseInt(num) || 0] ?? match)
-                            .replace(/<i([0-9]*)>/g, (match, num) => scope.stack.at((-parseInt(num) || 0) - 2).index ?? match)
-                            .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match)
-                            .replace(/\{([^\}]+)\}(:([0-9]+),(.+))?/g, (match, expr, format) => {
-                                try {
-                                    const func = makeFunction(Object.keys(context.values), expr);
-                                    if (format) {
-                                        const result = func(...Object.values(context.values));
-                                        const [length, char] = format.slice(1).split(/,/);
-                                        return result.toString().padStart(parseInt(length), char);
-                                    } else {
-                                        return func(...Object.values(context.values));
-                                    }
-                                } catch (err) {
-                                    report(err.message);
-                                    return `${err.message}: ${match}`;
-                                }
-                            });
-                        if (string === result) {
-                            return string;
-                        }
-                        string = result;
-                    }
-                    return string;
-                }
-
-                const components = line.children.flatMap((line) => line.action(line)).filter((child) => !node[children].includes(child));
-                node[children].push(...components.filter((component) => component.name[0] !== '$'));
-
-                node[meta].types = node[meta].typeNames.map((name) => app.named[name]).filter((i) => i);
-                node[meta].types.forEach((type) =>
-                    Object.keys(type).filter((property) => node[property] === undefined)
-                        .forEach((property) =>
-                            node[property] = type[property]));
-
-                Object.keys(node).forEach((property) => {
-                    const descriptor = Object.getOwnPropertyDescriptor(node, property);
-                    if (descriptor.configurable) {
-                        if (property === 'name') {
-                            Object.defineProperty(node, property, {
-                                enumerable: true,
-                                value: resolve(node[property]),
-                            });
-                        } else {
-                            Object.defineProperty(node, property, {
-                                enumerable: true,
-                                value: interpret(resolve(node[property])),
-                            });
-                        }
-                    }
-                });
-
-                // Add children from types
-                node[children].push(...node[meta].types.flatMap((type) =>
-                    type[children].map((child) => expandTypes(child, context))));
-
-                if (node.name === undefined) {
-                    node.name = interpret(resolve(line.fields[0]));
-                }
-                node[meta].name[0] = node.name || interpret(resolve(node[meta].name[0]));
-
-                Object.assign(node[meta].states,
-                    ...node[meta].types.map((type) => type[meta].states),
-                    ...components.filter((component) => component.name[0] === '$').map((state) => ({ [state.name.slice(1)]: state }))
-                );
-
-                scope.end();
-                if (reusedNode) {
-                    return [];
-                }
-                return node;
+                },
             };
 
-            // Create a tree structure based on indentation
-            let lineNumber = 0;
-            while (lines.length) {
-                lineNumber += 1;
-                text = lines.shift();
-                //lines.forEach((text, lineNumber) => {
-                if (text.trim() === '!stop') {
-                    process = false;
-                } else if (text.trim() === '!start') {
-                    process = true;
-                }
+            /**
+             * Process a context line, which defines a change to the context for subsequent lines.
+             */
+            const contextProcessor = {
+                pattern: /^\s*>/,
+                async processInstance(line, context) {
+                    debug(`processContext: ${line.text} at line ${line.source.lineNumber}`);
+                },
+            };
 
-                if (process && text.trim() !== '' && !/^\s*#/.test(text)) {
-                    const level = getLevel(text);
-                    while (stack.length && level <= stack[0].level) {
-                        stack.shift();
+            /**
+             * Process a repeating line.
+             */
+            const repeatProcessor = {
+                pattern: /^\s*(?<label>[^;\|\t\u{1f}]+)?.*\s+\[(?<sequence>[^\]]+)\]\s*$/u,
+                async preprocessor(line) {
+                    const plainLine = {
+                        text: line.text.replace(/\s+\[[^\]]+\]\s*$/, ''),
+                        indent: line.indent,
+                        source: line.source,
+                    };
+                    const action = actions.find((action) => action.pattern.test(plainLine.text));
+                    if (action) {
+                        const prepared = (await action.preprocessor?.(plainLine, stack)) ?? plainLine;
+
+                        return (instance, defaultParameters) => {
+                            action.processInstance(prepared, instance, defaultParameters);
+                        }
+                    } else {
+                        debug(`No action found for line: ${line.text} at line ${line.source.lineNumber}`);
+                        return (instance) => { };
                     }
-                    const trimmed = text.trim().replace(/\/\/.*/, '');
+                },
+                updateInstances(line, context) {
+                    const match = line.text.match(this.pattern);
+                    const sequence = getList(match.groups.sequence);
+                    const label = match.groups.label?.trim();
 
-                    const settingsParser = (text) => {
-                        if (!replace) {
-                            return;
+                    return sequence.map((value, index) => {
+                        const instance = {
+                            [symbols.index]: index,
+                            [symbols.value]: value,
+                            __proto__: context,
                         }
-                        const [command, valueStr] = text.replace(/^>\s*/, '').split('=').map((v) => v.trim());
-                        const value = interpret(valueStr);
-                        if (commands[command]) {
-                            commands[command](value);
+                        if (label && !/:|(<.*>)|(\{.*\})/.test(label)) {
+                            instance[label] = value;
+                            instance[`${label}_n`] = index;
                         }
-                    };
-                    const contextParser = (item) => { return []; };
-                    const optionParser = (item) => {
-                        const { local, context } = scope.start();
-                        const testStr = item.text.replace(/^\s*\?\s*/, '');
-                        try {
-                            const attrs = Object.assign({}, context.values);
-                            const test = makeFunction(Object.keys(attrs), testStr);
+                        return instance;
+                    });
+                },
+                async processInstance(action, context, defaultParameters) {
+                    debug(`processRepeat`);
+                    await action(context, defaultParameters);
+                },
+            };
 
-                            if (test(...Object.values(attrs))) {
-                                scope.end();
-                                return item.children.flatMap((child) => child.action(child));
-                            }
-                            scope.end();
-                            return [];
-                        } catch (error) {
-                            report(`${line.lineNumber + 1}: ${error.message}`);
-                        }
-                        scope.end();
-                        return [];
-                    };
-                    const defaultParser = (line) => {
-                        line.fields.shift();
-                        if (line.children.length > 0) {
-                            const { local, context } = scope.start();
-                            local.defaultParameters = line.fields.map((field) => {
-                                const [name, value] = field.split(/\s*=\s*/);
-                                return { name, value };
-                            });
-                            const children = line.children.flatMap((child) => child.action(child));
-                            scope.end();
-                            return children;
-                        }
+            /**
+             * Process an option line, which defines a conditional branch in the structure.
+             */
+            const optionsProcessor = {
+                pattern: /^\s*\?/,
+                async prepare(line) { return line; },
+                async processInstance(line, context) {
+                    debug(`processOption: ${line.text} at line ${line.source.lineNumber}`);
+                },
+            };
 
-                        scope.stack.at(-1).defaultParameters = line.fields.map((field) => {
+            /**
+             * Process an import line, which loads additional lines from a specified URL.
+             */
+            const importProcessor = {
+                pattern: /^\s*\+/,
+                async preprocessor(line, context) {
+                    debug(`processImport: ${line.text} at line ${line.source.lineNumber}`);
+
+                    const url = line.text.trim().replace(/\+\s*/, '');
+                    const response = await fetch(url);
+                    if (response.ok) {
+                        const indent = line.text.replace(/\+.*/, '');
+                        const content = await response.text();
+                        const newLines = content.split(/\r?\n/).map((text) => `${indent}${text}`)
+                            .map((text, index) => ({ text, indent: getIndentation(text), source: { url, lineNumber: index + 1 } }));
+                        lines.splice(lineNumber, 0, ...newLines);
+                    } else {
+                        debug(`Failed to load ${url}: ${response.status} ${response.statusText}`);
+                    }
+                },
+            };
+
+            /**
+             * Process a loop line, which defines a sequence of lines to be repeated for each item in a specified list.
+             */
+            const loopProcessor = {
+                pattern: /^\s*\[(?<sequence>[^\]]+)\](?<label>.*)?/,
+                async preprocessor(line) {
+                    return line;
+                },
+                updateInstances(line, context) {
+                    const match = line.text.match(this.pattern);
+                    const sequence = getList(match.groups.sequence);
+                    const label = match.groups.label.trim();
+
+                    return sequence.map((value, index) => {
+                        const instance = {
+                            [symbols.index]: index,
+                            [symbols.value]: value,
+                            __proto__: context,
+                        }
+                        if (label) {
+                            instance[label] = value;
+                            instance[`${label}_n`] = index;
+                        }
+                        return instance;
+                    });
+                },
+            };
+
+            /**
+             * Set default parameters for subsequent nodes.
+             */
+            const defaultsProcessor = {
+                pattern: /^\s*[;\|\u{1f}]/u,
+                async preprocessor(line, stack) {
+                    stack[0].defaultParameters = getFields(line.text.replace(/^\s*[;\|\t\u{1f}]/u, '').trim())
+                        .map((field) => {
                             const [name, value] = field.split(/\s*=\s*/);
                             return { name, value };
                         });
-                        return [];
-                    };
-                    const passParser = (line) => { return []; };
-                    const commentParser = (line) => { return []; };
-
-                    // Import the file and add to parse tree
-                    const importParser = async (line) => {
-                        const url = line.trim().replace(/\+\s*/, '');
-                        const response = await fetch(url);
-                        if (response.ok) {
-                            const indent = line.replace(/\+.*/, '');
-                            const text = await response.text();
-                            const newLines = text.split(/\r?\n/).map((line) => `${indent}${line}`);
-                            lines.unshift(...newLines);
-                        }
-                        return [];
+                    if (stack[1]) {
+                        stack[1].defaultParameters = getFields(line.text.replace(/^\s*[;\|\t\u{1f}]/u, '').trim())
+                            .map((field) => {
+                                const [name, value] = field.split(/\s*=\s*/);
+                                return { name, value };
+                            });
                     }
+                    return line;
+                },
+            };
 
-                    const immediate = [
-                        settingsParser, commentParser, importParser,
-                    ];
+            const getFields = (text) => text.split(/\s*[;\|\t\u{1f}]\s*/ug);
 
-                    const action = {
-                        '>': settingsParser,
-                        '!': contextParser,
-                        '?': optionParser,
-                        '`': passParser,
-                        "'": passParser,
-                        '#': commentParser,
-                        '+': importParser,
-                    }[trimmed[0]] ?? processLine;
+            const processField = (field, context, defaultParameters) => {
+                const node = context[symbols.object];
+                const getTarget = (name, value) => {
+                    if (name.toString().startsWith('&')) {
+                        if (name === '&type') {
+                            if (value) {
+                                Object.defineProperty(node[meta], 'type', {
+                                    enumerable: true,
+                                    set(type) {
+                                        const proto = all.find((obj) => obj[value] === type) ?? named[type];
+                                        if (proto) {
+                                            addType(node, proto, context);
+                                        }
+                                    }
+                                });
+                            } else {
+                                Object.defineProperty(node[meta], 'type', {
+                                    enumerable: true,
+                                    set(type) {
+                                        const proto = named[type];
+                                        if (proto) {
+                                            addType(node, proto, context);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        return [node[meta], name.replace(/^&\s*/, '')];
+                    }
+                    return [node, name];
+                };
 
-                    if (immediate.includes(action)) {
-                        await action(text);
+
+                field = resolve(field, context);
+
+                if (field.includes('=>')) {
+                    const [name, expr] = field.split(/\s*=>\s*/);
+                    const [obj, arg] = getTarget(name || defaultParameters.shift()?.name);
+
+                    const func = makeFunction(['time'], expr);
+
+                    Object.defineProperty(obj, arg, {
+                        enumerable: true,
+                        get() {
+                            return func(app.time, this);
+                        }
+                    });
+                    node[meta].dynamic = true;
+                } else if (field.includes('=')) {
+                    const [name, ...values] = field.split(/\s*=\s*/);
+                    const value = values.join('=');
+                    if (name === 'name') {
+                        addName(node, value, context);
                     } else {
-                        const loop = trimmed.match(loopPattern);
-                        const repeat = trimmed.match(repeatPattern);
-                        const value = trimmed.replace(loopPattern, '').replace(repeatPattern, '').replace(/\s*[;\|\t\u{1f}]\s*$/u, '');
-
-                        const line = {
-                            text,
-                            lineNumber,
-                            level,
-                            fields: value.split(/\s*[;\|\t\u{1f}]\s*/ug),
-                            parent: stack[0],
-                            children: [],
-                            action,
-                        };
-
-                        if (loop) {
-                            const instances = getList(loop[1]);
-                            const label = loop[2];
-                            line.action = (line) =>
-                                instances.flatMap((name, index) => {
-                                    const { local, context } = scope.start();
-                                    local.name = name;
-                                    local.index = index;
-                                    if (label) {
-                                        local.values[label] = name;
-                                        local.values[`${label}_n`] = index;
-                                    }
-                                    const result = line.children.flatMap((child) => child.action(child));
-                                    scope.end();
-                                    return result;
-                                });
-                        } else if (repeat) {
-                            const instances = getList(repeat[1]);
-                            const label = trimmed.replace(/\s*[<\{:;\|\t\u{1f}].*/u, '').replace(/\s+/g, '_').replace(/([0-9])+/, '_$1');
-                            line.action = (line) =>
-                                instances.flatMap((name, index) => {
-                                    const { local, context } = scope.start();
-                                    local.name = name;
-                                    local.index = index;
-                                    if (label) {
-                                        local.values[label] = name;
-                                        local.values[`${label}_n`] = index;
-                                    }
-                                    const result = processLine(line);
-                                    scope.end();
-                                    return result;
-                                });
-                        } else if (line.fields[0] === '') { // If line starts with a seperator, use it as a default specifier
-                            line.action = defaultParser;
-                        }
-
-                        if (stack.length) {
-                            stack[0].children.push(line);
+                        const [obj, arg] = getTarget(name);
+                        obj[arg] = interpret(value);
+                    }
+                } else if (field.startsWith('(') && field.endsWith(')')) {
+                    addName(node, field.slice(1, -1), context);
+                } else {
+                    const parameter = defaultParameters.shift();
+                    const name = parameter?.name;
+                    if (name) {
+                        if (name === 'name') {
+                            addName(node, field, context);
                         } else {
-                            roots.push(line);
+                            const [obj, arg] = getTarget(name, parameter.value);
+                            const value = interpret(field);
+                            if (Array.isArray(obj[arg])) {
+                                obj[arg].push(value);
+                            } else if (obj[arg] === undefined) {
+                                obj[arg] = value;
+                            } else {
+                                obj[arg] = [obj[arg], value];
+                            }
                         }
-                        stack.unshift(line);
+                    } else {
+                        if (!node.name) {
+                            addName(node, field.trim());
+                        } else {
+                            const [obj, arg] = getTarget(field);
+                            obj[arg] = obj[arg] ?? true;
+                        }
                     }
                 }
             }
 
-            const expandTypes = (source, context) => {
+            /**
+             * Get or create a node based on a qualified name, which may include a path and type.
+             */
+            function getNode(name, context) {
+                const path = name.split(/\s*\/\s*/g);
+                path.shift();
+                let node = context[symbols.object];
+                while (node && path.length) {
+                    const siblings = node[children];
+                    const name = path.shift();
+                    node = siblings.find((child) => child.name === name || child[meta].name.includes(name));
+                }
+                if (node) {
+                    return node;
+                }
+            }
 
-                // Create the potential object
+            /**
+             * Add type properties and parts
+             */
+            function addType(node, type, context) {
+                Object.keys(type).filter((property) => property !== 'name')
+                    .forEach((property) =>
+                        node[property] = interpret(resolve(type[property], context)));
+
+                type[children].forEach((child) => {
+                    const part = Object.create(child);
+                    Object.keys(child).forEach((property) => {
+                        const resolved = resolve(child[property], context);
+                        if (resolved !== child[property]) {
+                            part[property] = interpret(resolved);
+                        }
+                    });
+                    node[children].push(part);
+                });
+            }
+
+
+            /**
+             * set the name of the node, adding types as required.
+             */
+            function addName(node, qualifiedName, context) {
+                qualifiedName = resolve(qualifiedName, context);
+                const [name, type] = qualifiedName.split('::');
+
+                if (node.name) {
+                    node[meta].name.push(name);
+                } else {
+                    node.name = name;
+                }
+                named[name] = node;
+                if (named[type]) {
+                    addType(node, named[type], context);
+                }
+            }
+
+            /**
+             * Get or create a node based on a qualified name, which may include a path and type.
+             */
+            function newNode(context) {
                 const node = {
                     [meta]: {
-                        source,
                         name: [],
                         data: [],
-                        types: [...source[meta].types],
-                        parent: context.object,
-                        states: {},
-                        currentState: new Set(),
+                        context
                     },
                     [children]: [],
                 };
 
-                const resolve = (string) =>
-                    string.replace ?
-                        string.replace(/<([0-9]*)>/g, (match, num) => context.names[parseInt(num) || 0] ?? match)
-                            .replace(/<n([0-9]*)>/g, (match, num) => context.index[parseInt(num) || 0] ?? match)
-                            .replace(/<([^>]+)>/g, (match, name) => context.values[name] ?? match)
-                            .replace(/\{([^\}]+)\}(:([0-9]+),(.+))?/g, (match, expr, format) => {
-                                try {
-                                    const func = makeFunction(Object.keys(context.values), expr);
-                                    if (format) {
-                                        const result = func(...Object.values(context.values));
-                                        const [length, char] = format.slice(1).split(/,/);
-                                        return result.toString().padStart(parseInt(length), char);
-                                    } else {
-                                        return func(...Object.values(context.values));
-                                    }
-                                } catch (err) {
-                                    report(err.message);
-                                    return `${err.message}: ${match}`;
-                                }
-                            }) : string;
+                all.push(node);
 
-                node[meta].types.forEach((type) =>
-                    Object.keys(type).filter((property) => node[property] === undefined)
-                        .forEach((property) =>
-                            node[property] = interpret(resolve(type[property]))));
+                // New node so add it to the context
+                context[symbols.addNode](node);
 
-                Object.keys(source).forEach((property) =>
-                    node[property] = interpret(resolve(source[property])));
-
-                const components = source[children].map((child) => expandTypes(child, context));
-                node[children] = components.filter((component) => component.name[0] !== '$');
-                // Add all the children from this nodes types
-                node[children].push(...node[meta].types.flatMap((type) =>
-                    type[children].map((child) => expandTypes(child, context))));
-
-                Object.assign(node[meta].states, ...node[meta].types.map((type) => type[meta].states),
-                    ...components.filter((component) => component.name[0] === '$').map((state) => ({ [state.name.slice(1)]: state })));
-
-                if (node.name === undefined) {
-                    node.name = interpret(resolve(source[meta].source.fields[0]));
-                }
-                node[meta].name[0] = node.name || interpret(resolve(node[meta].name[0]));
+                // Update the context so that children are added to this node
+                context[symbols.object] = node;
+                context[symbols.addNode] = (newNode) => node[children].push(newNode);
                 return node;
             }
 
-            return roots.flatMap((line) => line.action(line));
+            /**
+             * Process a single field line
+             */
+            const singleFieldLineProcessor = {
+                pattern: /^\s*.+/,
+                async preprocessor(line) {
+                    return line;
+                },
+                async processInstance(line, context) {
+                    debug(`processSingleField: ${line.text} at line ${line.source.lineNumber}`);
+
+                    const text = line.text.trim();
+
+                    if (text.endsWith('={}')) { // line ends in ':' add children as attributes for last parameter
+                        const parameter = text.replace(/\s*=\{\}$/, '');
+                        object[parameter] = object[parameter] ?? {};
+                        context[symbols.addNode] = (newNode) => object[parameter][newNode.name] = newNode;
+                        return await processScope(lineNumber, context);
+                    } else if (text.endsWith('=[]')) { // line ends in '=[]' add children array of parameter
+                        const parameter = text.replace(/\s*=\[\]$/, '');
+                        object[parameter] = object[parameter] ?? [];
+                        context[symbols.addNode] = (newNode) => object[parameter].push(newNode);
+                    } else if (text.endsWith('=')) { // line ends in '=' add children as attributes for last parameter
+                        const parameter = text.replace(/\s*=$/, '');
+                        context[symbols.addNode] = (newNode) => {
+                            if (object[parameter] === undefined) {
+                                object[parameter] = newNode;
+                            } else if (Array.isArray(object[parameter])) {
+                                object[parameter].push(newNode);
+                            } else {
+                                object[parameter] = [object[parameter], newNode];
+                            }
+                        };
+                    } else if (text.includes('=')) {
+                        processField(text, context); // Single element not a link or type
+                    } else {
+                        const node = newNode(context);
+                        addName(node, text.trim(), context);
+                        context[symbols.object] = node;
+                        context[symbols.addNode] = (newNode) => node[children].push(newNode);
+                    }
+                },
+            }
+
+            /**
+             * Process an object line, defining a new object in the structure.
+             */
+            const objectProcessor = {
+                pattern: /[;\|\t\u{1f}]\s*/u,
+                async preprocessor(line, stack) {
+                    return getFields(line.text.trim());
+                },
+                async processInstance(fields, context, defaultParameters) {
+                    debug(`processObject: ${fields}`);
+
+                    const node = newNode(context);
+                    fields.forEach((field) => processField(field, context, defaultParameters));
+                },
+            };
+
+            /**
+             * Process an object line, defining a new object in the structure.
+             */
+            const objectUpdateProcessor = {
+                pattern: /^\s*\//,
+                async preprocessor(line, stack) {
+                    return getFields(line.text.trim());
+                },
+                async processInstance(fields, context, defaultParameters) {
+                    debug(`processObject: ${fields}`);
+                    const path = fields.shift();
+                    const node = getNode(path, context);
+                    if (node) {
+                        context[symbols.object] = node;
+                        context[symbols.addNode] = (newNode) => node[children].push(newNode);
+                        fields.forEach((field) => processField(field, context, defaultParameters));
+                    } else {
+                        console.log(`Warning: attempt to update non-existant object ${path}`);
+                        console.log(lines[lineNumber].source);
+                    }
+                },
+            };
+
+            const actions = [
+                settingsProcessor,
+                contextProcessor,
+                repeatProcessor,
+                optionsProcessor,
+                importProcessor,
+                loopProcessor,
+                defaultsProcessor,
+                objectUpdateProcessor,
+                objectProcessor,
+                singleFieldLineProcessor,
+            ];
+
+            while (lineNumber < lines.length) {
+                const line = lines[lineNumber++];
+                const { text, indent } = line;
+
+                // Remove comments before checking scope
+                let trimmed = text.trim().replace(/\/\*.*\*\//, '');
+                if (blockComment) {
+                    if (/.*\*\//.test(trimmed)) {
+                        blockComment = false;
+                        trimmed = trimmed.replace(/.*\*\//, '');
+                    } else {
+                        continue;
+                    }
+                }
+                if (/\/\*/.test(trimmed)) {
+                    blockComment = true;
+                    trimmed = trimmed.replace(/\/\*.*/, '');
+                }
+                if (text.trim() === '' || text.trim().startsWith('#')) {
+                    continue;
+                }
+
+                // Update stack to get scope for this line
+                while (indent <= stack[0].indent) {
+                    stack.shift();
+                }
+
+                const context = getContext(stack);
+                // Create scope for this line
+                const scope = { indent, };
+                stack.unshift(scope);
+
+                const action = actions.find((action) => action.pattern.test(text));
+                if (action) {
+                    const prepared = (await action.preprocessor?.(line, stack)) ?? line;
+                    if (action.updateInstances) {
+                        scope.instances = context.instances.flatMap((instance) =>
+                            action.updateInstances(line, instance));
+                    } else {
+                        scope.instances = context.instances.map((instance) => ({ __proto__: instance }));
+                    }
+                    context.instances = scope.instances;
+                    if (action.processInstance) {
+                        await Promise.all(
+                            context.instances.map(async (instance) =>
+                                await action.processInstance(prepared, instance, [...context.defaultParameters])));
+                    }
+                }
+            }
         }
 
+
+
+        /**
+         * Special objects used to control the application
+         */
+        const controlObjects = {
+            '<colour key>'(definition) {
+                const key = definition[children].reduce((key, pair) => {
+                    key[pair.name] = pair.value;
+                    return key;
+                }, {});
+                app.colourFunc = colourFunctions.enumerated(key, definition.attribute);
+            },
+            '<settings>'(definition) {
+                definition[children].forEach((command) => {
+                    if (commands[command.name]) {
+                        commands[command.name](command.value);
+                    }
+                });
+            },
+        };
 
         /**
          * process the objects that control the app.
          */
         function processControlObjects(rootObjects) {
-            const controlObjects = {
-                '<colour key>'(definition) {
-                    const key = definition[children].reduce((key, pair) => {
-                        key[pair.name] = pair.value;
-                        return key;
-                    }, {});
-                    app.colourFunc = colourFunctions.enumerated(key, definition.attribute);
-                },
-                '<settings>'(definition) {
-                    definition[children].forEach((command) => {
-                        if (commands[command.name]) {
-                            commands[command.name](command.value);
-                        }
-                    });
-                },
-            };
-
             for (const obj of rootObjects) {
                 const action = controlObjects[obj.name];
                 if (action) {
@@ -13084,17 +13175,17 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             source = document.getElementById('source');
             source.innerHTML = text;
 
-            // Generate the object graph
-            app.graph = await processTextNew(text);
-            const graph = await processText(text, replace);
-            if (graph.length > 0) {
-                app.graph = graph;
-            }
+            // Update the object graph
+            await processText2(text, parent?.node);
+
+            //app.graph = [];
+            //await processTextNew(text, parent?.node);
 
             processControlObjects(app.graph);
 
             const root = new Product('');
             const products = {};
+
             // Create the product structure from the graph.
             const addPart = (node, componentIndex, context) => {
                 const product = Product.fromNode(node);
@@ -13125,11 +13216,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 products[product.name] = product;
                 return part;
             }
-            if (parent) {
-                parent.parts.push(...app.graph.map((node, index) => addPart(node, index)));
-            } else {
-                app.parts = app.graph.map((node, index) => addPart(node, index));
-            }
+            const structure = app.graph.filter((object) => !controlObjects[object.name]);
+            app.allParts = [];
+            app.parts = structure.map((node, index) => addPart(node, index));
 
             const nodes = [...app.graph];
             while (nodes.length) {
@@ -13146,6 +13235,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             updateText();
             showSceneData();
             showStock();
+            if (app.detail) {
+                showDetails(app.detail);
+            }
             app.views.forEach((view) => view.updateMaterials());
         }
 
@@ -13965,15 +14057,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Get teh label for an part.
+         * Get teh label for a part.
          */
-        function getLabel(shape) {
-            if (shape.origin && shape.world) {
-                const size = extractScale(shape.world);
-                const position = [...shape.origin];
-                position[1] = position[1] + 0.55;
-                const point = applyTransform(position, shape.world);
-                return { text: shape.name, position: point };
+        function getLabel(part) {
+            if (app.view.shapes.get(part)) {
+                const position = part.labelOffset || [0, 0, 0];
+                const point = part.transform.apply(position);
+                return { text: part.name, position: point };
             }
         }
 
@@ -13985,12 +14075,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             app.labels = [];
 
             const showPartNames = (part) => {
-                const shapes = app.view.shapes.get(part);
-                if (shapes && shapes.length) {
-                    const label = getLabel(shapes[0]);
-                    if (label) {
-                        app.labels.push(label);
-                    }
+                const label = getLabel(part);
+                if (label) {
+                    app.labels.push(label);
                 }
                 part.parts.forEach(showPartNames);
             }
@@ -14002,12 +14089,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                 } else {
                     app.parts.forEach((part) => {
-                        const shapes = app.view.shapes.get(part);
-                        if (shapes && shapes.length) {
-                            const label = getLabel(shapes[0]);
-                            if (label) {
-                                app.labels.push(label);
-                            }
+                        const label = getLabel(part);
+                        if (label) {
+                            app.labels.push(label);
                         }
                     });
                 }
