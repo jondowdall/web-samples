@@ -3426,6 +3426,25 @@
          * Display details of the given part.
          */
         async function showDetails(part) {
+            if (part.node[meta].sources) {
+                if (part.node[meta].sources.some((source) => source.state === 'loading')) {
+                    return;
+                }
+                await Promise.all(part.node[meta].sources.map(async (source) => {
+                    if (source.state === 'loading' || source.state === 'loaded') {
+                        return;
+                    }
+                    source.state = 'loading';
+                    const response = await fetch(source.url);
+                    if (response.ok) {
+                        const text = await response.text();
+                        await updateGraph(text, part, false);
+                        source.state = 'loaded';
+                    } else {
+                        source.state = 'failed';
+                    }
+                }));
+            }
             if (part.node.detailLoading) {
                 return;
             }
@@ -3435,7 +3454,7 @@
                 const response = await fetch(part.node.detail);
                 if (response.ok) {
                     const text = await response.text();
-                    await loadStructure(text, part, false);
+                    await updateGraph(text, part, false);
                     part.node.detailLoaded = true;
                     part.node.detailLoading = false;
                 }
@@ -3472,13 +3491,25 @@
                 `<a href=${link.url}>${link.label}</a>`).join('<br>');
             const parts = document.getElementById('detail-view-parts');
             parts.innerHTML = '';
-            parts.append(...part.parts.map((part) => {
-                const node = document.createElement('div');
-                node.innerText = part.name;
-                node.classList.add('clickable');
-                node.addEventListener('click', (event) => select(part, event));
-                return node;
-            }));
+            if (app.sort) {
+                const sorted = [...part.parts];
+                sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]) );
+                parts.append(...sorted.map((part) => {
+                    const node = document.createElement('div');
+                    node.innerText = part.name;
+                    node.classList.add('clickable');
+                    node.addEventListener('click', (event) => select(part, event));
+                    return node;
+                }));
+            } else {
+                parts.append(...part.parts.map((part) => {
+                    const node = document.createElement('div');
+                    node.innerText = part.name;
+                    node.classList.add('clickable');
+                    node.addEventListener('click', (event) => select(part, event));
+                    return node;
+                }));
+            }
         }
 
         /**
@@ -4358,13 +4389,6 @@
                 },
             };
         }
-
-
-
-
-
-
-
 
         /**
          * Minimal GLTF loader + renderer resource builder.
@@ -9725,7 +9749,7 @@
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
-                this.getPoints();
+                this.getPoints(node);
                 this.initialiseBuffers();
                 this.makeSurface();
                 app.view.renderQueue.push(this);
@@ -9759,8 +9783,8 @@
                 this.vao = buffers.vao;
                 this.indices = buffers.index;
             }
-            getPoints() {
-                const path = getAttribute(this.part.node, 'path');
+            getPoints(node) {
+                const path = getAttribute(node, 'path');
                 this.points = pathToPoints(path);
                 this.minx = Math.min(...this.points.map((point) => point[0]));
                 this.miny = Math.min(...this.points.map((point) => point[1]));
@@ -10702,11 +10726,6 @@
                     pending.node[parts].push(...nodes.map((node) => Object.assign({}, node))));
 
 
-
-
-
-
-
                 const root = new Product('');
                 const products = {};
                 let parent;
@@ -10737,19 +10756,10 @@
                 }
                 app.parts = app.graph.map((node, index) => addPart(node, index));
 
-
-
-
-
-
-
-
-                // Reprocess the graph
                 app.view.update(app.parts, this.node.parent, false);
-                showTree();
-                showModel(app.graph);
-                //updateText();
-                showSceneData();
+                //showTree();
+                //showModel(app.graph);
+                //showSceneData();
                 showStock();
             }
         }
@@ -11740,7 +11750,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (response.ok) {
                 const content = await response.text();
                 if (content) {
-                    loadStructure(content, parent, replace);
+                    updateGraph(content, parent, replace);
                 }
                 document.body.style.cursor = 'auto';
             } else {
@@ -12174,6 +12184,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 pattern: /^\s*~/,
                 async processInstance(line, instance) {
                     debug(`processDeferred: ${line.text} at line ${line.source.lineNumber}`);
+                    instance[symbols.object][meta].sources = instance[symbols.object][meta].sources || [];
+                    instance[symbols.object][meta].sources.push({ url: line.text.trim().replace(/^\s*~\s*/, '') });
                 },
                 __proto__: lineProcessor,
             };
@@ -12649,7 +12661,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const actions = [
                 settingsProcessor,
                 customVariableProcessor,
-                //deferredProcessor,
+                deferredProcessor,
                 repeatProcessor,
                 conditionalProcessor,
                 importProcessor,
@@ -12775,7 +12787,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * load teh objects defined in the text into the app.graph.
          */
-        async function loadStructure(text, parent, replace) {
+        async function updateGraph(text, parent, replace) {
             if (replace) {
                 app.view.items.forEach((item) => app.view.removePart(item.part));
                 app.view.items = [];
@@ -12817,7 +12829,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     root.components.push(component);
                 }
 
-                const part = new Part(node, component, context?.part);
+                // If the part has already been created for this node, then reuse it.
+                const part = node[meta].part || new Part(node, component, context?.part);
+                node[meta].part = part;
 
                 app.allParts.push(part);
                 product.instances.push(part);
@@ -14203,7 +14217,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Process definition
          */
         function processDefinition(definition, replace) {
-            loadStructure(definition, undefined, replace);
+            updateGraph(definition, undefined, replace);
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             app.camera.up = yAxis;
         }
@@ -14529,7 +14543,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
-                        loadStructure(reader.result);
+                        updateGraph(reader.result);
                     });
                     reader.readAsText(file);
                 }
@@ -14550,10 +14564,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             const source = document.getElementById('source');
             source.addEventListener('blur', (event) =>
-                loadStructure(source.innerText, null, true));
+                updateGraph(source.innerText, null, true));
             source.addEventListener('keydown', (event) => {
                 if (event.key === 'Escape') {
-                    loadStructure(source.innerText, null, true);
+                    updateGraph(source.innerText, null, true);
                     sourceView.querySelector('h2').classList.remove('expanded');
                     for (const node of sourceView.querySelectorAll('.expandable')) {
                         node.classList.add('hide');
