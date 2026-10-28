@@ -758,7 +758,7 @@
                 <p id="detail-view-description"></p>
                 <h3>Links</h3>
                 <div id="detail-view-links"></div>
-                <h3>Components</h3>
+                <h3 id="detail-view-components">Components</h3>
                 <div id="detail-view-parts"></div>
             </div>
     </div>
@@ -2731,7 +2731,7 @@
                         this.items.push(shape);
                     }
 
-                    if (getAttribute(part.node, 'show label')) {
+                    if (getAttribute(part.node, 'show label') || getAttribute(part.node, 'label')) {
                         const label = getLabel(part);
                         if (label) {
                             app.labels.push(label);
@@ -3340,7 +3340,7 @@
         /**
          * Initialise variable dialog controls
          */
-        function initialiseVariableDialog() {
+        function initialiseDialogs() {
             const ok = document.getElementById('user-variables-dialog-ok');
             ok.addEventListener('click', (event) => {
                 document.getElementById('user-variables-dialog').close();
@@ -3349,6 +3349,28 @@
             const cancel = document.getElementById('user-variables-dialog-cancel');
             cancel.addEventListener('click', (event) =>
                 document.getElementById('user-variables-dialog').close());
+
+            const components = document.getElementById('detail-view-components');
+            components.addEventListener('click', (event) => {
+                if (app.sort === 'name') {
+                    app.sort = null;
+                } else {
+                    app.sort = 'name';
+                }
+                const parts = document.getElementById('detail-view-parts');
+                parts.innerHTML = '';
+                const sorted = [...app.detail.parts];
+                if (app.sort) {
+                    sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
+                }
+                parts.append(...sorted.map((part) => {
+                    const node = document.createElement('div');
+                    node.innerText = part.name;
+                    node.classList.add('clickable');
+                    node.addEventListener('click', (event) => select(part, event));
+                    return node;
+                }));
+            });
         }
 
         /**
@@ -3426,6 +3448,7 @@
          * Display details of the given part.
          */
         async function showDetails(part) {
+            app.detail = part;
             if (part.node[meta].sources) {
                 if (part.node[meta].sources.some((source) => source.state === 'loading')) {
                     return;
@@ -3445,10 +3468,10 @@
                     }
                 }));
             }
+            /*
             if (part.node.detailLoading) {
                 return;
             }
-            app.detail = part;
             if (part.node.detail && !part.node.detailLoaded) {
                 part.node.detailLoading = true;
                 const response = await fetch(part.node.detail);
@@ -3459,6 +3482,7 @@
                     part.node.detailLoading = false;
                 }
             }
+            */
             console.log(part);
             const container = document.getElementById('detail-view');
             container.classList.remove('hide');
@@ -3493,7 +3517,7 @@
             parts.innerHTML = '';
             if (app.sort) {
                 const sorted = [...part.parts];
-                sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]) );
+                sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
                 parts.append(...sorted.map((part) => {
                     const node = document.createElement('div');
                     node.innerText = part.name;
@@ -9749,7 +9773,7 @@
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
-                this.getPoints(node);
+                this.getPoints(node ?? part.node);
                 this.initialiseBuffers();
                 this.makeSurface();
                 app.view.renderQueue.push(this);
@@ -12350,6 +12374,22 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             };
 
             /**
+             *
+             */
+            function lookup(object, path) {
+                path = path.split(/\./g);
+                while (object && path.length > 0) {
+                    const name = path.shift();
+                    if (name === '^') {
+                        object = object[meta].parent;
+                    } else {
+                        object = object[name];
+                    }
+                }
+                return object;
+            }
+
+            /**
              * Set default parameters for subsequent nodes.
              */
             const defaultsProcessor = {
@@ -12409,7 +12449,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     return [node, name];
                 };
 
-
                 field = resolve(field, context);
 
                 if (field.includes('=>')) {
@@ -12429,7 +12468,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     node[meta].dynamic = true;
                 } else if (field.includes('=')) {
                     const [name, ...values] = field.split(/\s*=\s*/);
-                    const value = values.join('=');
+                    let value = values.join('=');
+                    // Check for assignment from reference
+                    if (value.startsWith('&')) {
+                        const path = value.slice(1).replace(/<([^>]+)>/, (match, label) =>
+                            context[symbols.object][label]);
+                        value = lookup(context[symbols.object], path);
+                    }
                     if (name === 'name') {
                         addName(node, value, context);
                     } else {
@@ -12538,9 +12583,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                 all.push(node);
 
-                // New node so add it to the context
-                context[symbols.addNode](node);
-
                 // Update the context so that children are added to this node
                 context[symbols.object] = node;
                 context[symbols.addNode] = (newNode) => node[parts].push(newNode);
@@ -12562,8 +12604,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const parameter = text.replace(/\s*=\{\}$/, '');
                         const object = instance[symbols.object];
                         object[parameter] = object[parameter] ?? {};
-                        instance[symbols.addNode] = (newNode) => object[parameter][newNode.name] = newNode;
-                        return await processScope(lineNumber, instance);
+                        instance[symbols.addNode] = (newNode) =>
+                            object[parameter][newNode.name] = newNode;
                     } else if (text.endsWith('=[]')) { // line ends in '=[]' add children array of parameter
                         const parameter = text.replace(/\s*=\[\]$/, '');
                         const object = instance[symbols.object];
@@ -12591,10 +12633,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     } else if (text.includes('=')) {
                         processField(text, instance, defaultParameters); // Single element not a link or type
                     } else {
+                        const addNode = instance[symbols.addNode];
                         const node = makeNode(instance);
                         addName(node, text.trim(), instance);
                         instance[symbols.object] = node;
                         instance[symbols.addNode] = (newNode) => node[parts].push(newNode);
+                        // New node so add it to the context
+                        addNode(node);
                     }
                 },
                 __proto__: lineProcessor,
@@ -12612,6 +12657,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     debug(`processObject: ${line.text} from ${line.source.url} line ${line.source.lineNumber}`);
 
                     const defaultParameters = [...instance[symbols.defaults]];
+                    const addNode = instance[symbols.addNode];
                     const node = makeNode(instance);
                     line.fields.forEach((field) => processField(field, instance, defaultParameters));
 
@@ -12621,6 +12667,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             node[parameter.name] = interpret(resolve(parameter.value, instance));
                         }
                     });
+                    addNode(node);
                 },
                 __proto__: lineProcessor,
             };
@@ -12674,7 +12721,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             if (parent) {
                 context = {
-                    [symbols.object]: { parent },
+                    [symbols.object]: parent,
                     [symbols.addNode]: (node) => parent[parts].push(node),
                     [symbols.defaults]: [],
                     values: {},
@@ -13684,9 +13731,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function getLabel(part) {
             if (app.view.shapes.get(part)) {
-                const position = part.labelOffset || [0, 0, 0];
+                const position = getAttribute(part.node, 'label offset', [0, 0, 0]);
                 const point = part.transform.apply(position);
-                return { text: part.name, position: point };
+                const text = part.node.label || part.name;
+                return { text, position: point };
             }
         }
 
@@ -14475,7 +14523,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             addLightControls();
             viewControl(document.getElementById('camera-control'));
             addCanvasEvents(canvas);
-            initialiseVariableDialog();
+            initialiseDialogs();
 
             // Set clear color to black, fully opaque
             gl.clearColor(0.0, 0.0, 0.0, 1.0);
@@ -14715,6 +14763,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             app.views.forEach((view) => view.refresh());
         }
 
+        /**
+         * Toggle edit mode to allow moving shapes.
+         */
         function toggleEdit() {
             if (app.mode === 'edit') {
                 app.mode = 'view';
@@ -15173,32 +15224,46 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Look up designator.
          */
-        const designatorRoot = {
-            components: {
-                r1: {
-                    partNumber: 'JDG000001',
-                    components: {
-                        tx: {
-                            partNumber: 'JDG000002',
-                            components: {
-                                ad: {
-
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        function resolvePath(pathStr, pattern = /-/g) {
+        async function resolvePath(pathStr, pattern = /-/g) {
             const path = pathStr.split(pattern);
-            let parts = app.parts;
+
+            const getLocations = (parts) => {
+                const locations = parts.filter((part) => part.node[meta].name[0]);
+                const unnamed = parts.filter((part) => !part.node[meta].name[0]);
+                while (unnamed.length) {
+                    const next = unnamed.shift();
+                    locations.push(...next.parts.filter((part) => part.node[meta].name[0]));
+                    unnamed.push(...next.parts.filter((part) => !part.node[meta].name[0]));
+                }
+                return locations;
+            }
+
+
+            let parts = getLocations(app.parts);
             let part;
             while (parts && path.length > 0) {
                 const name = path.shift();
                 part = parts.find((part) => part.node[meta].name.includes(name));
-                parts = part?.parts;
+                if (part.parts.length === 0 && part.node[meta].sources) {
+                    if (part.node[meta].sources.some((source) => source.state === 'loading')) {
+                        return;
+                    }
+                    await Promise.all(part.node[meta].sources.map(async (source) => {
+                        if (source.state === 'loading' || source.state === 'loaded') {
+                            return;
+                        }
+                        source.state = 'loading';
+                        const response = await fetch(source.url);
+                        if (response.ok) {
+                            const text = await response.text();
+                            await updateGraph(text, part, false);
+                            source.state = 'loaded';
+                        } else {
+                            source.state = 'failed';
+                        }
+                    }));
+                }
+                parts = getLocations(part?.parts);
             }
             return part;
         }
@@ -15224,13 +15289,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             */
 
 
-            const processCommand = (event) => {
+            const processCommand = async (event) => {
                 const fullCommand = commandEntry.value;
                 commandHistory.push(fullCommand);
 
                 commandEntry.value = '';
 
-                const part = resolvePath(fullCommand);
+                const part = await resolvePath(fullCommand);
 
                 if (part) {
                     app.selected.clear();
@@ -15240,7 +15305,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     showShape(item[0]);
 
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
-                    part.showCompnents();
+                    part.showComponents();
+                    showDetails(part);
                 }
 
                 userCommands.sort((a, b) => b.name.length - a.name.length);
