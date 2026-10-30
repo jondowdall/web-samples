@@ -1071,6 +1071,34 @@
     }
     </script>
 
+    <script type="x-shader/x-vertex" id="picker-vertex-shader">
+        #version 300 es
+        precision highp float;
+
+        uniform mat4 viewProjection;
+        uniform mat4 model;
+
+        layout (location = 0) in vec3 position;
+
+        void main() {
+            gl_Position = viewProjection * model * vec4(position, 1.0);
+        }
+    </script>
+    <script type="x-shader/x-fragment" id="picker-fragment-shader">
+        #version 300 es
+        precision highp float;
+
+        uniform vec4 id;
+
+        layout(location = 0) out vec4 outColor;
+        layout(location = 1) out float outDepth;
+
+        void main() {
+            outColor = id;
+            outDepth = gl_FragCoord.z;
+        }
+    </script>
+
     <script type="x-shader/x-vertex" id="pbr-vertex-shader">
         #version 300 es
         precision highp float;
@@ -1081,7 +1109,7 @@
         in mat4 model;
         in mat3 normalMatrix;
 
-        in vec3 position;
+        layout (location = 0) in vec3 position;
         in vec3 normal;
         in vec2 coord;
         in vec3 colour;
@@ -2442,6 +2470,13 @@
         //const gl = canvas.getContext('webgl2', { antialias: false });
         const gl = canvas.getContext('webgl2', { antialias: true });
 
+        const floatExt = gl.getExtension('EXT_color_buffer_float');
+
+        if (!floatExt) {
+            console.error('FLOAT color buffers not supported on this device!');
+        }
+
+
         const overlay = document.getElementById('overlay-canvas');
         const ctx = overlay.getContext('2d');
         overlay.width = overlay.clientWidth;
@@ -2528,19 +2563,17 @@
                 this.updateMatrices();
             }
             updateViewMatrix() {
-                const negate = (v) => { v[0] *= -1; v[1] *= -1; v[2] *= -1; };
-                const zAxis = normalised(subtract(this._lookAt, this._position));
-                const xAxis = normalised(cross(zAxis, this._up));
-                const yAxis = cross(xAxis, zAxis);
+                const zAxis = normalised(subtract(this._position, this._lookAt));
+                const xAxis = normalised(cross(this._up, zAxis));
+                const yAxis = cross(zAxis, xAxis);
 
-                negate(zAxis);
-
-                this.viewMatrix = [
-                    xAxis[0], yAxis[0], zAxis[0], 0,
-                    xAxis[1], yAxis[1], zAxis[1], 0,
-                    xAxis[2], yAxis[2], zAxis[2], 0,
-                    -dot(xAxis, this._position), -dot(yAxis, this._position), -dot(zAxis, this._position), 1,
+                const cameraMatrix = [
+                    ...xAxis, 0,
+                    ...yAxis, 0,
+                    ...zAxis, 0,
+                    ...this._position, 1,
                 ];
+                this.viewMatrix = invert(cameraMatrix);
             }
             updateViewControls() {
             }
@@ -2562,7 +2595,7 @@
                         (left + right) / (left - right), (bottom + top) / (bottom - top), (this._near + this._far) / (this._near - this._far), 1,
                     ];
                 } else {
-                    const f = 1 / Math.tan(this._fieldOfView * Math.PI / 360);
+                    const f = Math.tan(Math.PI * 0.5 - this._fieldOfView * Math.PI / 360);
 
                     this.projectionMatrix = [
                         f / aspect, 0, 0, 0,
@@ -2658,6 +2691,12 @@
                     gl.uniform1i(app.pbrShader.effects, app.effects);
                     reportGLErrors('rendering edges');
                 }
+            },
+            pickerRender() {
+                gl.bindVertexArray(app.lineVertexArray);
+                app.connections.forEach((connection) =>
+                    gl.drawArrays(gl.LINE_STRIP, connection.first, connection.length));
+
             },
             reset() { },
         }
@@ -2870,7 +2909,7 @@
                 gl.depthMask(true);
 
                 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                this.renderQueue.forEach((item) => item.render(time));
+                this.renderQueue.forEach((item) => item.render());
 
                 if (app.points.length > 0) {
                     drawPoints();
@@ -2887,7 +2926,7 @@
 
                 gl.uniform1i(app.pbrShader.pass, 1);
                 gl.depthMask(false);
-                this.renderQueue.forEach((item) => item.render(time));
+                this.renderQueue.forEach((item) => item.render());
 
                 if (this.showPoints) {
                     this.items.forEach((item) => item.showPoints());
@@ -2909,6 +2948,21 @@
                 });
                 return app.view.shapes.get(part) || [app.view.addPart(part, parent)];
             }
+        }
+
+        /**
+         * Get the projection matrix from frustum.
+         */
+        function getFrustum(left, right, bottom, top, near, far) {
+            const dx = right - left;
+            const dy = top - bottom;
+            const dz = far - near;
+
+            return [
+                2 * near / dx, 0, 0, 0,
+                0, 2 * near / dy, 0, 0,
+                (left + right) / dx, (top + bottom) / dy, -(far + near) / dz, -1,
+                0, 0, -2 * near * far / dz, 0];
         }
 
         /**
@@ -2972,7 +3026,17 @@
          * Use of a instance of a component within a system.
          */
         class Part {
+            static all = [];
+            static id = 0;
             constructor(node, component, parent) {
+                Part.all.push(this);
+                this._id = ++Part.id;
+                this._idBytes = [
+                    ((this._id >> 0) & 0xFF) / 0xFF,
+                    ((this._id >> 8) & 0xFF) / 0xFF,
+                    ((this._id >> 16) & 0xFF) / 0xFF,
+                    ((this._id >> 24) & 0xFF) / 0xFF,];
+                //this._idBytes = [Math.random(), Math.random(), Math.random(), 1];
                 this.component = component;
                 this.parent = parent;
                 this.name = getAttribute(node, 'name') || component.product.getUniqueName();
@@ -2987,6 +3051,12 @@
                 } else {
                     this.transform = new Transform();
                 }
+            }
+            getId() {
+                return this._id;
+            }
+            getIdBytes() {
+                return this._idBytes;
             }
             clone(context) {
                 // Create a new part from this part.
@@ -3617,6 +3687,10 @@
             vertex: document.querySelector("#pbr-vertex-shader").innerHTML,
             fragment: document.querySelector("#pbr-clear-fragment-shader").innerHTML,
         }
+        const pickerShaderSource = {
+            vertex: document.querySelector("#picker-vertex-shader").innerHTML,
+            fragment: document.querySelector("#picker-fragment-shader").innerHTML,
+        }
         const overlayShaderSource = {
             vertex: document.querySelector("#overlay-vertex-shader").innerHTML,
             fragment: document.querySelector("#overlay-fragment-shader").innerHTML,
@@ -4242,7 +4316,7 @@
                 }
                 if (command === 'newmtl') {
                     material = {};
-                    materials[symbols.value] = material;
+                    materials.value = material;
                 } else if (command === 'Ka') {
                     material.ambientColour = value.map((value) => parseFloat(value));
                     material.colour = value.map((value) => parseFloat(value));
@@ -4305,120 +4379,6 @@
                 const content = await response.text();
                 return processMtl(content, url);
             }
-        }
-
-        /**
-         * Process data from a gltf
-         * Loading any additional resources
-         */
-        async function processGLTF(gltf, url, obj) {
-            const path = url.split('/').slice(0, -1).join('/');
-
-            const loadBuffer = async (buffer) => {
-                const response = await fetch(path + '/' + buffer.uri);
-                buffer.content = await response.arrayBuffer();
-            }
-
-            const bufferPromises = gltf.buffers.filter((buffer) => buffer.uri).map((buffer) => loadBuffer(buffer.uri));
-            gltf.textures.forEach((texture) => texture.texture = loadTexture(gltf.images[texture.source].uri, gltf.samplers[texture.sampler]));
-
-            const viewIndex = gltf.view || 0;
-
-            const roots = gltf.views[viewIndex].nodes.map((index) => gltf.nodes[index]);
-
-            gltf.nodes.forEach((node) => {
-                if (node.children) {
-                    node.children = node.children.map((index) => gltf.nodes[index]);
-                }
-                if (node.mesh !== undefined) {
-                    node.mesh = gltf.meshes[node.mesh];
-                }
-                if (node.camera !== undefined) {
-                    node.camera = gltf.cameras[node.camera];
-                }
-            });
-
-            const map = {
-                [gl.BYTE]: Int8Array,             // 5120
-                [gl.UNSIGNED_BYTE]: Uint8Array,   // 5121
-                [gl.SHORT]: Int16Array,           // 5122
-                [gl.UNSIGNED_SHORT]: Uint16Array, // 5123
-                [gl.UNSIGNED_INT]: Uint32Array,   // 5125
-                [gl.FLOAT]: Float32Array,         // 5126
-            };
-
-            await Promise.all(bufferPromises);
-
-            gltf.accessors.forEach((accessor) => {
-                const view = gltf.bufferViews[accessor.bufferView];
-                const buffer = gltf.buffers[view.buffer];
-                const bufferType = map[accessor.componentType];
-
-                view.typedView = new bufferType(buffer.content, view.byteOffset, view.byteLength);
-            });
-
-            const primitives = [];
-            gltf.meshes.forEach((mesh) => {
-                mesh.primitives.forEach((primitive) => {
-                    primitive.vao = gl.createVertexArray();
-                    gl.bindVertexArray(primitive.vao);
-                    const accessor = gltf.accessors[primitive.indices];
-                    const view = gltf.bufferViews[accessor.bufferView];
-                    view.buffer = view.buffer || gl.createBuffer()
-                    gl.bindBuffer(view.target, view.buffer);
-                    gl.bufferData(view.target, view.typedView, gl.STATIC_DRAW);
-
-                    Object.entries(primitive.attributes).forEach(([name, value]) => {
-                        //primitive.attributes[name] = gltf.accessors[symbols.value]);
-                        const accessor = gltf.accessors[primitive.indices];
-                        const view = gltf.bufferViews[accessor.bufferView];
-                        view.buffer = view.buffer || gl.createBuffer()
-                        gl.bindBuffer(view.target, view.buffer);
-                        gl.bufferData(view.target, view.typedView, gl.STATIC_DRAW);
-                    });
-                });
-            });
-
-            return {
-                render() {
-                    return segments.forEach((patch) => {
-                        gl.bindVertexArray(patch.objBuffer);
-
-                        gl.disableVertexAttribArray(app.pbrShader.colour);
-                        gl.vertexAttrib3f(app.pbrShader.colour, ...patch.material.colour ?? [0.8, 0.1, 0.7]);
-
-                        gl.disableVertexAttribArray(app.pbrShader.emissivityColour);
-                        gl.vertexAttrib3f(app.pbrShader.emissivityColour, ...patch.material.emissivityColour ?? [0, 0, 0]);
-
-                        gl.disableVertexAttribArray(app.pbrShader.roughness);
-                        gl.vertexAttrib1f(app.pbrShader.roughness, patch.material.roughness ?? 0.5);
-
-                        gl.disableVertexAttribArray(app.pbrShader.reflectivity);
-                        gl.vertexAttrib3f(app.pbrShader.reflectivity, ...patch.material.reflectivity ?? [0.04, 0.04, 0.04]);
-
-                        gl.disableVertexAttribArray(app.pbrShader.opacity);
-                        gl.vertexAttrib1f(app.pbrShader.opacity, patch.material.opacity ?? 1);
-
-                        gl.disableVertexAttribArray(app.pbrShader.metallic);
-                        gl.vertexAttrib1f(app.pbrShader.metallic, patch.material.metallic ?? 0);
-
-                        gl.disableVertexAttribArray(app.pbrShader.mirror);
-                        gl.vertexAttrib1f(app.pbrShader.mirror, patch.material.mirror ?? 0);
-
-                        gl.drawArraysInstanced(gl.TRIANGLES, patch.offset, patch.points, this.instances);
-                    })
-                },
-                scale(scale) {
-                    const transform = [
-                        scale[0], 0, 0, 0,
-                        0, scale[1], 0, 0,
-                        0, 0, scale[2], 0,
-                        0, 0, 0, 1
-                    ];
-                    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.instances);
-                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(transform), gl.DYNAMIC_DRAW);
-                },
-            };
         }
 
         /**
@@ -4649,7 +4609,6 @@
 
             /** Draw every primitive of every mesh. */
             drawAll() {
-                this.setStaticAttributes();
                 for (const mesh of this.gltf.meshes ?? []) {
                     for (const prim of mesh.primitives) {
                         this.drawPrimitive(prim);
@@ -4831,21 +4790,6 @@
             baseColorTexture: 4,    // base color (MetallicRoughness)
             metallicRoughnessTexture: 5,
         };
-
-        /**
-         * Load data from a gltf
-         */
-        async function loadGLTF_delete_me(url) {
-            const size = [1, 1, 1];
-            const obj = { scale(...scale) { size.push(...scale) }, render() { }, };
-            const response = await fetch(url);
-            if (response.ok) {
-                const content = await response.json();
-                Object.assign(obj, processGLTF(content, url, obj));
-                obj.scale(size);
-            }
-            app.objs.push(obj);
-        }
 
         /**
          * Load a cube map as a texture
@@ -5647,7 +5591,6 @@
                 gl.enable(gl.DEPTH_TEST);
 
                 reportGLErrors('render end');
-
             } else {
                 start = time;
             }
@@ -5655,9 +5598,117 @@
                 savePNG(canvas);
                 app.savePNG = false;
             }
+            if (app.mouse) {
+                app.picked = pickPart(app.mouse.x, app.mouse.y);
+                if (app.picked && !(app.showPoints || app.showNames)) {
+                    app.labels = [getLabel(app.picked.part, app.picked.position)];
+                } else {
+                    app.labels = [];
+                }
+            }
+
             last = time;
             requestAnimationFrame(render);
         }
+
+        /**
+         * Pick part at pixel
+         */
+        function pickPart(x, y) {
+            if (!app.pickerShader?.program) {
+                return;
+            }
+            // compute the rectangle the near plane of our frustum covers
+            const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            const fieldOfViewRadians = app.camera.fieldOfView * Math.PI / 360;
+            const top = Math.tan(fieldOfViewRadians) * app.camera.near;
+            const bottom = -top;
+            const left = aspect * bottom;
+            const right = aspect * top;
+            const nearWidth = Math.abs(right - left);
+            const nearHeight = Math.abs(top - bottom);
+
+            // compute the portion of the near plane covers the 1 pixel
+            // under the mouse.
+            const pixelX = x * gl.canvas.width / gl.canvas.clientWidth;
+            const pixelY = gl.canvas.height - y * gl.canvas.height / gl.canvas.clientHeight - 1;
+
+            const subLeft = left + pixelX * nearWidth / gl.canvas.width;
+            const subBottom = bottom + pixelY * nearHeight / gl.canvas.height;
+            const subWidth = nearWidth / gl.canvas.width;
+            const subHeight = nearHeight / gl.canvas.height;
+
+            // make a frustum for that 1 pixel
+            const projectionMatrix = getFrustum(
+                subLeft,
+                subLeft + subWidth,
+                subBottom,
+                subBottom + subHeight,
+                app.camera.near,
+                app.camera.far);
+
+            const viewProjectionMatrix = multiply(app.camera.viewMatrix, projectionMatrix);
+
+            gl.depthMask(true);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, app.pickerBuffer);
+            gl.viewport(0, 0, 1, 1);
+
+            gl.enable(gl.DEPTH_TEST);
+
+            // Clear the canvas AND the depth buffer.
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.useProgram(app.pickerShader.program);
+            gl.uniformMatrix4fv(app.pickerShader.viewProjection, false, viewProjectionMatrix);
+            gl.disable(gl.BLEND);
+
+            app.view.renderQueue.forEach((item) => item.pickerRender());
+
+            const data = new Uint8Array(4);
+            gl.readBuffer(gl.COLOR_ATTACHMENT0);
+            gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, data);
+            const id = data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
+
+            const floatData = new Float32Array(1);
+            gl.readBuffer(gl.COLOR_ATTACHMENT1);
+            gl.readPixels(0, 0, 1, 1, gl.RED, gl.FLOAT, floatData);
+            if (id) {
+                return {
+                    part: Part.all[id - 1],
+                    position: reconstructWorldPos(x, y, floatData[0]),
+                }
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.enable(gl.BLEND);
+        }
+
+        /**
+         * Convert a pixel position and depth data to world co-ordinates.
+         */
+        function reconstructWorldPos(x, y, depth) {
+            // 1. Calculate Normalized Device Coordinates (NDC)
+            // gl_FragCoord.xy goes from 0 to resolution. Scale to 0.0 -> 1.0, then shift to -1.0 -> 1.0
+            const ndcX = (2 * x / gl.canvas.clientWidth) - 1;
+            const ndcY = 1 - (2 * y / gl.canvas.clientHeight);
+
+            // gl_FragCoord.z goes from 0.0 to 1.0. Shift to -1.0 -> 1.0
+            const ndcZ = depth * 2 - 1;
+
+            const ndcPos = [ndcX, ndcY, ndcZ, 1.0];
+
+            // 2. Transform from NDC back to World Space
+            const worldPosWithW = applyTransform4(ndcPos, invert(app.camera.projectionMatrix));
+
+            // 3. Undo the perspective divide
+            worldPosWithW[0] /= worldPosWithW[3];
+            worldPosWithW[1] /= worldPosWithW[3];
+            worldPosWithW[2] /= worldPosWithW[3];
+
+            const world = applyTransform4(worldPosWithW, invert(app.camera.viewMatrix));
+
+            return world;
+        }
+
 
         /**
          * translate a touch event into a simplified mouse event.
@@ -6093,9 +6144,9 @@
             }
             initialiseBuffers(data) {
                 this.buffers = {
+                    vao: gl.createVertexArray(),
                     vertices: data.buffer || gl.createBuffer(),
                     instances: gl.createBuffer(),
-                    vao: gl.createVertexArray(),
                 };
 
                 gl.bindVertexArray(this.buffers.vao);
@@ -6175,7 +6226,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.instances);
                 gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.data);
             }
-            render(time) {
+            render() {
                 if (this.instances.length > 0) {
                     gl.bindVertexArray(this.buffers.vao);
                     if (this.initialise) {
@@ -6192,6 +6243,27 @@
                     if (this.buffers.indices && this.points > 0) {
                         gl.drawElementsInstanced(this.mode, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
                     }
+                    gl.bindVertexArray(null);
+                }
+            }
+            pickerRender() {
+                if (this.instances.length > 0) {
+                    gl.bindVertexArray(this.buffers.vao);
+
+                    this.instances.forEach((instance, index) => {
+                        const id = instance.shape.part.getIdBytes();
+
+                        gl.uniformMatrix4fv(app.pickerShader.model, false, instance.shape.world);
+                        gl.uniform4fv(app.pickerShader.id, id);
+
+
+                        if (this.count > 0) {
+                            gl.drawArrays(this.mode, 0, this.count);
+                        }
+                        if (this.buffers.indices && this.points > 0) {
+                            gl.drawElements(this.mode, this.points, gl.UNSIGNED_SHORT, 0);
+                        }
+                    });
                     gl.bindVertexArray(null);
                 }
             }
@@ -7168,7 +7240,7 @@
             gl.vertexAttrib3f(app.pbrShader.normalMatrix + 2, 0, 0, 1);
 
             gl.bindVertexArray(null);
-            return { vertex, index, vao };
+            return { vertex, index, vao, stride };
         }
 
         /**
@@ -7220,13 +7292,13 @@
          * vertex data rather than instancing of other objects.
          */
         class Shed extends Shape {
+            static instances = []
             constructor(part, node) {
                 super(part, node, `shed`);
                 // If the shed buffers don't exist create them
                 if (!Shed.buffers) {
 
                     const fixed = {
-                        colour: getAttribute(part.node, 'colour', [0.5, 0.5, 0.5]),
                         emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
                         reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
                         texture: addTexture(getAttribute(part.node, 'texture', 'white')),
@@ -7237,15 +7309,17 @@
                     app.view.renderQueue.push(Shed);
                 }
 
-                // Add the vertices for this shed to to buffer.
+                // Add the vertices for this shed to the buffer.
                 const vertices = this.getVertices();
                 this.offset = Shed.vertices.length * 4;
                 Shed.vertices.push(...vertices);
-                Shed.pointCount = Shed.vertices.length / 12;
+                Shed.pointCount = 4 * Shed.vertices.length / Shed.buffers.stride;
                 gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Shed.vertices), gl.DYNAMIC_DRAW);
+                Shed.instances.push(this);
             }
             getVertices() {
+                const colour = this.node.colour ?? [0.7, 0.2, 0.3];
                 // Return the vertices for this shed in world space.
                 // The vertices are in groups of 3, representing the triangles that make the shape.
                 const size = getAttribute(this.node, 'size');
@@ -7327,9 +7401,9 @@
                     const points = triangle.map((point) => applyTransform(point, this.world));
                     const normal = cross(subtract(points[1], points[0]), subtract(points[2], points[0]));
                     return [
-                        ...points[0], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
-                        ...points[1], ...normal, 0, 0, 0.1, 1, 0.1, 0.3,
-                        ...points[2], ...normal, 0, 0, 0.1, 1, 0.1, 0.3];
+                        ...points[0], ...normal, 0, 0, ...colour, 0.1, 1, 0.1, 0.3,
+                        ...points[1], ...normal, 0, 0, ...colour, 0.1, 1, 0.1, 0.3,
+                        ...points[2], ...normal, 0, 0, ...colour, 0.1, 1, 0.1, 0.3,];
                 });
                 return points;
             }
@@ -7512,7 +7586,7 @@
                 }
                 return false;
             }
-            static render(time) {
+            static render() {
                 const world = identityMatrix();
                 const orientation = identityMatrix();
 
@@ -7522,12 +7596,25 @@
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
-                    colour: namedColours['lightgrey'].gl,
                 });
 
                 gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(Shed.buffers.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, Shed.pointCount);
+                gl.bindVertexArray(null);
+            }
+            static pickerRender() {
+                const world = identityMatrix();
+
+                gl.uniformMatrix4fv(app.pickerShader.model, false, world);
+                gl.bindVertexArray(Shed.buffers.vao);
+
+                Shed.instances.forEach((instance, index) => {
+                    const id = instance.part.getIdBytes();
+
+                    gl.uniform4fv(app.pickerShader.id, id);
+                    gl.drawArrays(gl.TRIANGLES, 48 * index, 48);
+                });
                 gl.bindVertexArray(null);
             }
             static reset() {
@@ -7853,7 +7940,7 @@
                 }
                 return false;
             }
-            static render(time) {
+            static render() {
                 const world = identityMatrix();
                 const orientation = identityMatrix();
 
@@ -7869,6 +7956,22 @@
                 gl.uniform1i(app.pbrShader.effects, 0);
                 gl.bindVertexArray(Room.buffers.vao);
                 gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
+                gl.bindVertexArray(null);
+            }
+            static pickerRender() {
+                const world = identityMatrix();
+
+                gl.uniformMatrix4fv(app.pickerShader.model, false, world);
+                gl.bindVertexArray(Room.buffers.vao);
+
+                let offset = 0;
+                for (const room of Room.all) {
+                    const id = room.part.getIdBytes();
+
+                    gl.uniform4fv(app.pickerShader.id, id);
+                    gl.drawElements(gl.TRIANGLES, room.indexData.length, gl.UNSIGNED_SHORT, offset);
+                    offset += room.indexData.length;
+                }
                 gl.bindVertexArray(null);
             }
             static reset() {
@@ -8032,7 +8135,7 @@
                     this.instanceGroup = BevelledBlock.make(scaledBevel);
                 }
                 this.children = [];
-                this.instances = [this.instanceGroup.addInstance(node, this, 'BavelledBlock')];
+                this.instances = [this.instanceGroup.addInstance(part, this, 'BavelledBlock')];
             }
             intersects(line, all) {
                 const transform = multiply(this.transform, this.world);
@@ -8528,15 +8631,6 @@
         }
 
         /**
-         * A segment represents a single straight section of wall.
-         */
-        class WallSegment {
-            constructor() {
-
-            }
-        }
-
-        /**
           * A wall section consists of a number of segments that are of the same height and offset from the base plane
           */
         class WallSection {
@@ -8749,7 +8843,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
-            render(time) {
+            render() {
                 const orientation = extractRotation(this.world);
                 setFixedPBRAttributes({
                     world: this.world,
@@ -8765,6 +8859,20 @@
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.count);
                 gl.bindVertexArray(null);
+            }
+            pickerRender() {
+                const world = identityMatrix();
+
+                gl.uniformMatrix4fv(app.pickerShader.model, false, world);
+                gl.bindVertexArray(this.vao);
+
+                const id = this.part.getIdBytes();
+
+                gl.uniform4fv(app.pickerShader.id, id);
+                gl.drawArrays(gl.TRIANGLES, 0, this.count);
+                gl.bindVertexArray(null);
+
+
             }
             get vertices() {
             }
@@ -9256,7 +9364,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
-            render(time) {
+            render() {
                 const orientation = extractRotation(this.world);
                 setFixedPBRAttributes({
                     world: this.world,
@@ -9268,6 +9376,16 @@
                 });
 
                 gl.uniform1i(app.pbrShader.effects, 0);
+                gl.bindVertexArray(this.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, this.count);
+                gl.bindVertexArray(null);
+            }
+            pickerRender() {
+                gl.uniformMatrix4fv(app.pickerShader.model, false, this.world);
+                const id = this.part.getIdBytes();
+
+                gl.uniform4fv(app.pickerShader.id, id);
+
                 gl.bindVertexArray(this.vao);
                 gl.drawArrays(gl.TRIANGLES, 0, this.count);
                 gl.bindVertexArray(null);
@@ -9656,7 +9774,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
             }
-            render(time) {
+            render() {
                 gl.bindVertexArray(this.vao);
                 const orientation = extractRotation(this.world);
 
@@ -9674,6 +9792,16 @@
 
                 gl.drawArrays(gl.TRIANGLES, 0, this.segments.length * 6);
 
+                gl.bindVertexArray(null);
+            }
+            pickerRender() {
+                gl.uniformMatrix4fv(app.pickerShader.model, false, this.world);
+                const id = this.part.getIdBytes();
+
+                gl.uniform4fv(app.pickerShader.id, id);
+
+                gl.bindVertexArray(this.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, this.segments.length * 6);
                 gl.bindVertexArray(null);
             }
             get vertices() {
@@ -9817,7 +9945,7 @@
 
                 this.pointCount = indices.length;
             }
-            render(time) {
+            render() {
                 const orientation = extractRotation(this.world);
                 setFixedPBRAttributes({
                     world: this.world,
@@ -9834,6 +9962,16 @@
                     texture: this.texture,
                 });
                 gl.uniform1i(app.pbrShader.effects, 0);
+                gl.bindVertexArray(this.vao);
+                gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
+                gl.bindVertexArray(null);
+            }
+            pickerRender() {
+                gl.uniformMatrix4fv(app.pickerShader.model, false, this.world);
+                const id = this.part.getIdBytes();
+
+                gl.uniform4fv(app.pickerShader.id, id);
+
                 gl.bindVertexArray(this.vao);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -10098,7 +10236,7 @@
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
                 this.pointCount = indices.length;
             }
-            render(time) {
+            render() {
                 const orientation = extractRotation(this.world);
                 setFixedPBRAttributes({
                     world: this.world,
@@ -10111,6 +10249,15 @@
                 });
 
                 gl.uniform1i(app.pbrShader.effects, 0);
+                gl.bindVertexArray(this.vao);
+                gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
+                gl.bindVertexArray(null);
+            }
+            pickerRender() {
+                const id = this.part.getIdBytes();
+
+                gl.uniformMatrix4fv(app.pickerShader.model, false, this.world);
+                gl.uniform4fv(app.pickerShader.id, id);
                 gl.bindVertexArray(this.vao);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -10542,7 +10689,7 @@
                     patch.instanceGroup = new InstanceGroup(gl.TRIANGLES, patch.points, { buffer }, patch.offset);
                     patch.effects = 0;
                     LightWaveObject.pending[this.url].forEach((obj) => {
-                        const instance = patch.instanceGroup.addInstance(obj.node, obj, materialName);
+                        const instance = patch.instanceGroup.addInstance(obj.node[meta].part, obj, materialName);
                         obj.instances.push(instance);
                         instance.material = {
                             colour: materials[materialName].colour ?? materials[materialName].diffuseColour,
@@ -10613,6 +10760,14 @@
                 app.view.renderQueue.push(this);
             }
             render() {
+                this.gltf.setStaticAttributes();
+                this.gltf.drawAll();
+            }
+            pickerRender() {
+                const id = this.part.getIdBytes();
+
+                gl.uniformMatrix4fv(app.pickerShader.model, false, this.gltf.transform.matrix);
+                gl.uniform4fv(app.pickerShader.id, id);
                 this.gltf.drawAll();
             }
         }
@@ -10964,7 +11119,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 app.showName = hits[0].shape;
                 if (!(app.showPoints || app.showNames)) {
                     //canvas.title = `${hits[0].shape.node[meta].name[0]}`;
-                    app.labels = [getLabel(hits[0].shape.part)];
+                    //app.labels = [getLabel(hits[0].shape.part)];
                 }
                 /*
                 let source = hits[0].shape.node[meta].source;
@@ -10984,7 +11139,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     canvas.title = '';
                 }
             }
-            //updateTextBuffer();
         }
 
         /**
@@ -11030,7 +11184,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 action.end = null;
             }
         }
-        document.body.addEventListener('mousemove', (event) => action.move?.(event));
+        document.body.addEventListener('mousemove', (event) => {
+            const box = canvas.getBoundingClientRect();
+            app.mouse = {
+                x: event.clientX - box.left,
+                y: event.clientY - box.top,
+            }
+            action.move?.(event);
+        });
         document.body.addEventListener('mouseup', completeAction);
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
@@ -13741,11 +13902,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Get teh label for a part.
          */
-        function getLabel(part) {
+        function getLabel(part, labelPosition) {
             if (app.view.shapes.get(part)) {
-                const position = getAttribute(part.node, 'label offset', [0, 0, 0]);
-                const point = part.transform.apply(position);
                 const text = part.node.label || part.name;
+                if (labelPosition) {
+                    return { text, position: labelPosition };
+                }
+                const position = getAttribute(part.node, 'label offset', position);
+                const point = part.transform.apply(position);
                 return { text, position: point };
             }
         }
@@ -14527,6 +14691,55 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Add FBO to handle object picker.
+         */
+        function addPickerBuffer() {
+            // Create a texture to render to
+            const targetTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+            // create a depth renderbuffer
+            const depthBuffer = gl.createRenderbuffer();
+            gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, 1, 1);
+
+            const depthTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, depthTexture);
+            //gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 1, 1, 0, gl.RED, gl.FLOAT, null);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 1, 1, 0, gl.RED, gl.FLOAT, null);
+            // Optional: set texture parameters for sampling
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+            // define size and format of level 0
+            const level = 0;
+            const internalFormat = gl.RGBA;
+            const border = 0;
+            const format = gl.RGBA;
+            const type = gl.UNSIGNED_BYTE;
+
+            gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, 1, 1, border, format, type, null);
+
+            // Create and bind the framebuffer
+            const fb = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+
+            // attach the texture as the first color attachment
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, level);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, depthTexture, 0);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            return fb;
+        }
+
+
+        /**
          * Perform all once off set-up (e.g. creating buffer etc.)
          */
         async function initialise() {
@@ -14536,13 +14749,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             viewControl(document.getElementById('camera-control'));
             addCanvasEvents(canvas);
             initialiseDialogs();
+            app.pickerBuffer = addPickerBuffer();
 
             // Set clear color to black, fully opaque
             gl.clearColor(0.0, 0.0, 0.0, 1.0);
             gl.enable(gl.DEPTH_TEST);
             gl.depthFunc(gl.LEQUAL);
 
-            // Should be update to track canvas size changes
+            // Should be updated to track canvas size changes
             gl.canvas.width = gl.canvas.clientWidth;
             gl.canvas.height = gl.canvas.clientHeight;
             gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -14564,6 +14778,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             app.pbrClearShader = makeProgram(pbrClearShaderSource,
                 ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'envTexture', 'pass', 'effects',]
+            );
+
+            app.pickerShader = makeProgram(pickerShaderSource,
+                ['position',],
+                ['id', 'model', 'viewProjection',],
             );
 
             app.mirrorShader = makeProgram(mirrorShaderSource,
