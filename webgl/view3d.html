@@ -1833,6 +1833,50 @@
         }
 
         /**
+         * Class to manage 'history', providing generic back and forward (undo, redo) function.
+         */
+        class History {
+            constructor(content = [], position = 0, wrap = false) {
+                this.content = [];
+                this.position = position;
+                this.wrap = wrap;
+            }
+            add(item) {
+                // remove old sequence beyond current position
+                this.content.length = this.position;
+                this.content.push(item);
+                this.position += 1;
+            }
+            get current() {
+                return this.content[this.position - 1];
+            }
+            next() {
+                // Return the next item or none if at end of queue
+                if (this.position === this.content.length) {
+                    if (this.wrap) {
+                        this.position = 0;
+                    } else {
+                        return;
+                    }
+                }
+                this.position += 1;
+                return this.current;
+            }
+            previous() {
+                if (this.position === 0) {
+                    if (this.wrap) {
+                        this.position = this.content.length;
+                    } else {
+                        return;
+                    }
+                }
+                const item = this.current;
+                this.position -= 1;
+                return item;
+            }
+        }
+
+        /**
          * Save a canvas as png
          */
         function savePNG(canvas, name) {
@@ -1869,6 +1913,12 @@
             link.click();
             link.remove();
         }
+
+
+        const children = Symbol('children');
+        const parts = Symbol('parts');
+        const connections = Symbol('connections');
+
 
         /**
          * Create matrix control.
@@ -2703,10 +2753,62 @@
         }
 
         /**
+         * Return a shape class based on the node attributes.
+         */
+        function getShape(node) {
+            // Determine the shape from it's attributes
+            const size = getAttribute(node, 'size', [0, 0, 0]);
+            const radius = Math.hypot(...size);
+
+            if (size.length === 2) {
+                node.ceiling = 1;
+                node.size = [size[0], 1, size[1]];
+            }
+            if (radius > 0 && size[1] === 0) {
+                node.ceiling = 1;
+                node.size = [size[0], 1, size[2]];
+            }
+
+            if (getAttribute(node, 'obj')) {
+                return LightWaveObject;
+            } else if (getAttribute(node, 'gltf')) {
+                return GLTFObject;
+            } else if (getAttribute(node, 'svg')) {
+                return SVGObject;
+            } else if ((size[1] === 0 || size.length === 2 || getAttribute(node, 'ceiling')) && radius > 0) {
+                return Room;
+            } else if (getAttribute(node, 'bevel')) {
+                return BevelledBlock;
+            } else if (getAttribute(node, 'walls') && radius > 0) {
+                return Block;
+            } else if (getAttribute(node, 'apex') && radius > 0) {
+                return Shed;
+            } else if (radius > 0) {
+                return Block;
+            } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
+                return Cylinder;
+            } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
+                return Frustum;
+            } else if (getAttribute(node, 'radius')) {
+                return Icosphere;
+            } else if (getAttribute(node, 'path') && getAttribute(node, 'height') && getAttribute(node, 'thickness')) {
+                return Wall;
+            } else if (getAttribute(node, 'path') && getAttribute(node, 'height')) {
+                return Prism;
+            } else if (getAttribute(node, 'path') && getAttribute(node, 'sweep')) {
+                return Lathed;
+            } else if (getAttribute(node, 'path')) {
+                return Polygon;
+            }
+        }
+
+
+        /**
          * Manage a view
          */
         class View {
-            constructor(camera, referencePlane = null) {
+            constructor(subject, configuration = {}, camera, referencePlane = null) {
+                this.subject = subject;
                 this.cameras = [new Camera([0, 0, 15], [0, 0, 0], [0, 1, 0], 30, 1, 10000)];
                 this.camera = this.cameras[0];
                 this.referencePlane = referencePlane || {
@@ -2716,9 +2818,24 @@
                 this.renderQueue = [edges];
                 this.items = [];
                 this.roots = [];
-                this.named = {};
                 this.shapes = new Map();
                 this.drawGround = true;
+                this.customisation = new Map();
+            }
+            async loadConfiguration(configuration) {
+                this.name = configuration.name;
+                if (configuration[parts]) {
+                    await Promise.all(
+                        configuration[parts].map(async (node) => {
+                            const part = await this.subject.find(node.name.split(/\s*\/\s*/g));
+                            this.customisation.set(part, node);//Object.assign(Object.create(part.node), node));
+                        }));
+                }
+                for (const name in configuration) {
+                    if (commands[name]) {
+                        commands[name](configuration[name]);
+                    }
+                }
             }
             addShape(shape, part) {
                 const shapeType = {
@@ -2738,7 +2855,7 @@
                     polygon: Polygon,
                 }[shape.name.toLowerCase()];
                 if (shapeType) {
-                    return new shapeType(part, shape);
+                    return new shapeType(this, part, shape);
                 }
                 return [];
             }
@@ -2746,23 +2863,23 @@
                 if (this.shapes.has(part)) {
                     return this.shapes.get(part)[0];
                 }
-                let shape;
-                if (getAttribute(part.node, 'position')) {
-                    let descend = !getAttribute(part.node, 'on selection');
-                    if (part.node.shape && part.node.shape.length > 0) {
-                        const shapes = part.node.shape.flatMap((shape) => this.addShape(shape, part));
+                const node = this.customisation.get(part) || part.node;
+
+                //if (this.customisation.get(part)) {
+                let descend = !getAttribute(node, 'on selection');
+
+                if (getAttribute(node, 'position')) {
+                    if (node.shape && node.shape.length > 0) {
+                        const shapes = node.shape.flatMap((shape) => this.addShape(shape, part));
                         this.shapes.set(part, shapes);
                         this.items.push(...shapes);
-                        this.named[part.name] = shapes[0];
-
                     } else {
-                        const shapeType = part.getShape() || Shape;
+                        const shapeType = getShape(node) || Shape;
                         if (shapeType === Shape) {
                             descend = true;
                         }
-                        shape = new shapeType(part);
+                        const shape = new shapeType(this, part, this.customisation.get(part));
                         this.shapes.set(part, [shape]);
-                        this.named[part.name] = shape;
                         this.items.push(shape);
                     }
 
@@ -2774,12 +2891,9 @@
                         }
                     }
 
-                    if (descend) {
-                        part.parts.forEach((part) => this.addPart(part));
-                    }
                 } else if (part.node[meta].connection) {
-                    const start = this.named[part.start];
-                    const end = this.named[part.end];
+                    const start = part.start;
+                    const end = part.end;
                     if (start && end) {
                         app.connections.push(new Connection(start, end));
                     }
@@ -2797,7 +2911,9 @@
                         }
                     }
                 });
-                return shape;
+                if (descend) {
+                    part.parts.forEach((part) => this.addPart(part));
+                }
             }
             removePart(part) {
                 const shapes = this.shapes.get(part);
@@ -2824,6 +2940,18 @@
             }
             update(parts) {
                 parts.forEach((part) => this.addPart(part));
+            }
+            findByName(name, caseSensitive=false) {
+                // get the list of parts in this view
+                const parts = [...this.shapes.keys()];
+                // Try exact match
+                const matches = parts.filter((part) => part.name === name || part.node[meta].name.includes(name));
+                if (matches.length > 0) {
+                    return matches;
+                }
+                // No exact match, try regular expression
+                const re = new RegExp(name, caseSensitive ? '' : 'i');
+                return parts.filter((part) => re.test(name) || part.node[meta].name.some((name) => re.test(name)));
             }
             render(time) {
                 const width = ctx.canvas.width;
@@ -2947,7 +3075,8 @@
                 path.forEach((part) => {
                     part.showComponents();
                 });
-                return app.view.shapes.get(part) || [app.view.addPart(part, parent)];
+                                        app.view.addPart(part);
+                        return shapes = app.view.shapes.get(part);
             }
         }
 
@@ -3115,52 +3244,6 @@
                 }
                 return path;
             }
-            getShape() {
-                // Determine the shape from it's attributes
-                const size = getAttribute(this.node, 'size', [0, 0, 0]);
-                const radius = Math.hypot(...size);
-
-                if (size.length === 2) {
-                    this.node.ceiling = 1;
-                    this.node.size = [size[0], 1, size[1]];
-                }
-                if (radius > 0 && size[1] === 0) {
-                    this.node.ceiling = 1;
-                    this.node.size = [size[0], 1, size[2]];
-                }
-
-                if (getAttribute(this.node, 'obj')) {
-                    return LightWaveObject;
-                } else if (getAttribute(this.node, 'gltf')) {
-                    return GLTFObject;
-                } else if (getAttribute(this.node, 'svg')) {
-                    return SVGObject;
-                } else if ((size[1] === 0 || size.length === 2 || getAttribute(this.node, 'ceiling')) && radius > 0) {
-                    return Room;
-                } else if (getAttribute(this.node, 'bevel')) {
-                    return BevelledBlock;
-                } else if (getAttribute(this.node, 'walls') && radius > 0) {
-                    return Block;
-                } else if (getAttribute(this.node, 'apex') && radius > 0) {
-                    return Shed;
-                } else if (radius > 0) {
-                    return Block;
-                } else if (getAttribute(this.node, 'radius') && getAttribute(this.node, 'height')) {
-                    return Cylinder;
-                } else if (getAttribute(this.node, 'radius1') && getAttribute(this.node, 'radius2')) {
-                    return Frustum;
-                } else if (getAttribute(this.node, 'radius')) {
-                    return Icosphere;
-                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'height') && getAttribute(this.node, 'thickness')) {
-                    return Wall;
-                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'height')) {
-                    return Prism;
-                } else if (getAttribute(this.node, 'path') && getAttribute(this.node, 'sweep')) {
-                    return Lathed;
-                } else if (getAttribute(this.node, 'path')) {
-                    return Polygon;
-                }
-            }
             async loadContent() {
                 if (!this.node.load) {
                     this.node.load = 'in-progress';
@@ -3168,6 +3251,21 @@
                     this.node.load = true;
                     //this.showComponents();
                 }
+            }
+            async find(path) {
+                if (this.parts.length === 0 && this.node.url) {
+                    await this.loadContent();
+                }
+                let part = this;
+                while (part && path.length > 0) {
+                    const name = path.shift();
+                    if (name === '.' || name === '') {
+                        continue;
+                    } else {
+                        part = part.find((part) => part.name === name || part.node[meta].name.includes(name));
+                    }
+                }
+                return part;
             }
             setColour(colour) {
                 this.colour = colour;
@@ -3195,7 +3293,7 @@
                 }
                 const size = getAttribute(this.node, 'size', [0, 0, 0]);
                 if (Math.hypot(...size) > 0) {
-                    const type = this.getShape();
+                    const type = getShape(this.node);
                     if (type === Block) {
                         const oldShapes = app.view.shapes.get(this);
                         app.view.removePart(this);
@@ -3290,6 +3388,7 @@
             scale: 1,
             windows: [],
             views: [new View()],
+            viewHistory: new History(),
             cameras: [new Camera([0, 0, 15], [0, 0, 0], [0, 1, 0], 30, 1, 10000),],
             initial: {
                 position: [0, 0, 15],
@@ -3339,6 +3438,7 @@
         };
         app.camera = app.cameras[0];
         app.view = app.views[0];
+        app.viewHistory.add(app.view);
 
         /**
          * colour selection functions.
@@ -3512,18 +3612,22 @@
         /**
          * Display the view.
          */
-        function showView(view) {
-            for (const name in view) {
-                if (commands[name]) {
-                    commands[name](view[name]);
-                }
+        async function showView(configuration) {
+            const subject = configuration[meta].parent[meta].part;
+            const view = app.views.find((view) =>
+                view.subject === subject && view.name === configuration.name);
+            if (view) {
+                app.view = view;
+                app.viewHistory.add(view);
+            } else {
+                const view = new View(subject);
+                await view.loadConfiguration(configuration);
+                app.views.push(view);
+                app.view = view;
+                view.update([subject]);
+                app.viewHistory.add(view);
             }
-            app.currentView = {
-                name: view.name,
-                subject: view[meta].parent[meta].part,
-            };
-            app.view.clear();
-            app.view.update([view[meta].parent[meta].part]);
+            history.pushState({}, '');
             app.labels = [];
             saveState();
         }
@@ -5746,6 +5850,7 @@
                 return item[attribute];
             }
             if (item[meta].type) {
+                console.log('***********');
                 const stack = [...item[meta].types];
                 while (stack.length > 0) {
                     const prototype = stack.shift();
@@ -6411,8 +6516,8 @@
          * Parent class for object visual representations
          */
         class Shape {
-            constructor(part, node, name) {
-                this.view = app.view;
+            constructor(view, part, node, name) {
+                this.view = view;
                 this.part = part;
                 this.node = node || part.node;
                 this.children = [];
@@ -6857,8 +6962,8 @@
                 new InstanceGroup(gl.LINES, 24, { buffer: Block.instanceGroup.buffers.vertices }, 36);
                 return Block.instanceGroup;
             }
-            constructor(part, node) {
-                super(part, node, `block`);
+            constructor(view, part, node) {
+                super(view, part, node, `block`);
 
                 this.instanceGroup = Block.instanceGroup || Block.make();
                 this.instanceGroup.effects = 1;
@@ -7283,30 +7388,37 @@
          */
         class Shed extends Shape {
             static instances = []
-            constructor(part, node) {
-                super(part, node, `shed`);
+            static viewData = new Map();
+            constructor(view, part, node) {
+                super(view, part, node, `shed`);
                 // If the shed buffers don't exist create them
-                if (!Shed.buffers) {
+                if (!Shed.viewData.get(view)) {
 
                     const fixed = {
                         emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
                         reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
                         texture: addTexture(getAttribute(part.node, 'texture', 'white')),
                     };
+                    const viewData = {
+                        buffers: createPBRBuffers(fixed),
+                        vertices: [],
+                        instances: [],
+                        pointCount: 0,
+                    };
 
-                    Shed.buffers = createPBRBuffers(fixed);
-                    Shed.vertices = [];
-                    app.view.renderQueue.push(Shed);
+                    Shed.viewData.set(view, viewData);
+                    view.renderQueue.push(this);
                 }
+                const viewData = Shed.viewData.get(view);
 
                 // Add the vertices for this shed to the buffer.
                 const vertices = this.getVertices();
-                this.offset = Shed.vertices.length * 4;
-                Shed.vertices.push(...vertices);
-                Shed.pointCount = 4 * Shed.vertices.length / Shed.buffers.stride;
-                gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Shed.vertices), gl.DYNAMIC_DRAW);
-                Shed.instances.push(this);
+                this.offset = viewData.vertices.length * 4;
+                viewData.vertices.push(...vertices);
+                viewData.pointCount = 4 * viewData.vertices.length / viewData.buffers.stride;
+                gl.bindBuffer(gl.ARRAY_BUFFER, viewData.buffers.vertex);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(viewData.vertices), gl.DYNAMIC_DRAW);
+                viewData.instances.push(this);
             }
             getVertices() {
                 const colour = this.node.colour ?? [0.7, 0.2, 0.3];
@@ -7398,8 +7510,9 @@
                 return points;
             }
             applyTransform() {
+                const viewData = Shed.viewData.get(this.view);
                 const vertices = this.getVertices();
-                gl.bindBuffer(gl.ARRAY_BUFFER, Shed.buffers.vertex);
+                gl.bindBuffer(gl.ARRAY_BUFFER, viewData.buffers.vertex);
                 gl.bufferSubData(gl.ARRAY_BUFFER, this.offset, new Float32Array(vertices));
             }
             intersects(line, all) {
@@ -7576,7 +7689,7 @@
                 }
                 return false;
             }
-            static render() {
+            static render(viewData) {
                 const world = identityMatrix();
                 const orientation = identityMatrix();
 
@@ -7589,17 +7702,21 @@
                 });
 
                 gl.uniform1i(app.pbrShader.effects, 0);
-                gl.bindVertexArray(Shed.buffers.vao);
-                gl.drawArrays(gl.TRIANGLES, 0, Shed.pointCount);
+                gl.bindVertexArray(viewData.buffers.vao);
+                gl.drawArrays(gl.TRIANGLES, 0, viewData.pointCount);
                 gl.bindVertexArray(null);
             }
-            static pickerRender() {
+            render() {
+                const viewData = Shed.viewData.get(this.view);
+                Shed.render(viewData);
+            }
+            static pickerRender(viewData) {
                 const world = identityMatrix();
 
                 gl.uniformMatrix4fv(app.pickerShader.model, false, world);
-                gl.bindVertexArray(Shed.buffers.vao);
+                gl.bindVertexArray(viewData.buffers.vao);
 
-                Shed.instances.forEach((instance, index) => {
+                viewData.instances.forEach((instance, index) => {
                     const id = instance.part.getIdBytes();
 
                     gl.uniform4fv(app.pickerShader.id, id);
@@ -7607,10 +7724,15 @@
                 });
                 gl.bindVertexArray(null);
             }
-            static reset() {
-                Shed.buffers = null;
-                Shed.vertices = [];
-                app.view.renderQueue = app.view.renderQueue.filter((item) => item !== Shed);
+            pickerRender() {
+                const viewData = Shed.viewData.get(this.view);
+                Shed.pickerRender(viewData);
+            }
+            reset() {
+                const viewData = Shed.viewData.get(this.view);
+                viewData.buffers = this.view;
+                viewData.vertices = [];
+                this.view.renderQueue = app.view.renderQueue.filter((item) => item !== Shed);
             }
         }
 
@@ -7622,8 +7744,8 @@
         class Room extends Shape {
             static all = new Set();
             static pointCount = 0;
-            constructor(part, node) {
-                super(part, node, `room`);
+            constructor(view, part, node) {
+                super(view, part, node, `room`);
                 // If the room buffers don't exist create them
                 if (!Room.buffers) {
                     const fixed = {
@@ -8102,8 +8224,8 @@
                 BevelledBlock.bevels.push(instanceGroup);
                 return instanceGroup;
             }
-            constructor(part, node) {
-                super(part, node, `BevelledBlock`);
+            constructor(view, part, node) {
+                super(view, part, node, `BevelledBlock`);
 
                 const bevel = [getAttribute(node, 'bevel', 0.05)].flatMap((item) => item);
                 if (bevel.length < 3) {
@@ -8208,8 +8330,8 @@
                 Cylinder.instanceGroups[sides] = instanceGroup;
                 return instanceGroup;
             }
-            constructor(part, node) {
-                super(part, node, 'cylinder');
+            constructor(view, part, node) {
+                super(view, part, node, 'cylinder');
                 const sides = getAttribute(part.node, 'sides', 12);
                 this.radius = getAttribute(part.node, 'radius');
                 this.height = getAttribute(part.node, 'height');
@@ -8290,8 +8412,8 @@
                 Frustum.instanceGroups[sides] = instanceGroup;
                 return instanceGroup;
             }
-            constructor(part, node) {
-                super(part, node);
+            constructor(view, part, node) {
+                super(view, part, node);
                 this.points = [this.origin];
                 const sides = getAttribute(part.node, 'sides', 12);
                 this.radius1 = getAttribute(part.node, 'radius1');
@@ -8432,8 +8554,8 @@
                 }
                 return Icosphere.level[subdivisions];
             }
-            constructor(part, node) {
-                super(part, node, 'icosphere');
+            constructor(view, part, node) {
+                super(view, part, node, 'icosphere');
                 const subdivisions = getAttribute(part.node, 'subdivisions', 4);
                 this.instanceGroup = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
                 this.instances = [this.instanceGroup.addInstance(part, this, 'icosphere')];
@@ -9107,8 +9229,8 @@
           * test is more complex than the other shapes.
           */
         class Wall extends Shape {
-            constructor(part, node) {
-                super(part, node, 'Wall');
+            constructor(view, part, node) {
+                super(view, part, node, 'Wall');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -9637,8 +9759,8 @@
           * Prisms are not managed as instanceGroups as they can be non-uniformly scaled and the intersection test is more complex than the other shapes.
           */
         class Prism extends Shape {
-            constructor(part, node) {
-                super(part, node, 'prism');
+            constructor(view, part, node) {
+                super(view, part, node, 'prism');
                 this.children = [];
 
                 this.material = {
@@ -9873,8 +9995,8 @@
         }
 
         class Polygon extends Shape {
-            constructor(part, node) {
-                super(part, node, 'n-gon');
+            constructor(view, part, node) {
+                super(view, part, node, 'polygon');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -10070,8 +10192,8 @@
         }
 
         class Lathed extends Shape {
-            constructor(part, node) {
-                super(part, node, 'n-gon');
+            constructor(view, part, node) {
+                super(view, part, node, 'lathed');
                 this.children = [];
                 this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
 
@@ -10505,8 +10627,8 @@
         class LightWaveObject extends Shape {
             static loaded = {};
             static pending = {};
-            constructor(part, node) {
-                super(part, node, `lightwave object`);
+            constructor(view, part, node) {
+                super(view, part, node, `lightwave object`);
 
                 this.url = getAttribute(part.node, 'obj');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
@@ -10737,8 +10859,8 @@
          * Class for gltf objects
          */
         class GLTFObject extends Shape {
-            constructor(part, node) {
-                super(part, node, `gltf`);
+            constructor(view, part, node) {
+                super(view, part, node, `gltf`);
                 this.load();
                 const position = getAttribute(part.node, 'position', [0, 0, 0]);
                 this.transform.move(position);
@@ -10768,8 +10890,8 @@
         class SVGObject extends Shape {
             static loaded = {};
             static pending = {};
-            constructor(part, node) {
-                super(part, node, `svg`);
+            constructor(view, part, node) {
+                super(view, part, node, `svg`);
 
                 this.url = getAttribute(part.node, 'svg');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
@@ -11063,8 +11185,7 @@
         }
 
         const action = {};
-        const history = [];
-        let historyPosition;
+        const actionHistory = new History();
 
         /**
          * Highlight the face under the mouse pointer
@@ -11132,7 +11253,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * End a mouse movement and store change in history.
+         * End a mouse movement and store change in action history.
          */
         function endMove(event) {
             grid.show = false;
@@ -11146,7 +11267,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const redo = Array.from(items).map((item) => ({
                     item, end: extractTranslation(action.item.origin),
                 }));
-                history.push({
+                actionHistory.add({
                     undo: () =>
                         undo.forEach((action) => {
                             action.item.transform.matrix = action.start;
@@ -11164,7 +11285,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             //app.view.referencePlane.origin = app.referencePlane.origin;
             //app.view.referencePlane.normal = app.referencePlane.normal;
             action.move = closestVertex;
-            historyPosition = null;
             app.view.items.forEach((item) => item.state = {});
         }
 
@@ -11212,16 +11332,21 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }],
                 actions: {
                     click(event, part) {
-                        const item = app.view.addPart(part);
-                        showShape(item[0]);
-                        item[0].instances.forEach((instance) => instance.highlight());
+                        app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        showShape(shapes[0]);
+                        shapes.forEach((shape) =>
+                            shapes.instances.forEach((instance) => instance.highlight()));
                         select(part, event);
                     },
                     dblclick(event, part) {
-                        const item = app.view.addPart(part);
-                        if (item[0]) {
-                            showShape(item[0]);
-                            item[0].instances.forEach((instance) => instance.highlight());
+                        app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        showShape(shapes[0]);
+                        if (shapes.length > 0) {
+                            showShape(shapes[0]);
+                            shapes.forEach((shape) =>
+                                shapes.instances.forEach((instance) => instance.highlight()));
                             select(part, event);
                             setView([0, 0, 1]);
                         }
@@ -11250,15 +11375,19 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 headings,
                 actions: {
                     click(event, part) {
-                        const item = app.view.addPart(part);
-                        showShape(item[0]);
-                        item[0].instances.forEach((instance) => instance.highlight());
+                        app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        showShape(shapes[0]);
+                        shapes.forEach((shape) =>
+                            shape.instances.forEach((instance) => instance.highlight()));
                         select(part, event);
                     },
                     dblclick(event, part) {
-                        const item = app.view.addPart(part);
-                        showShape(item[0]);
-                        item[0].instances.forEach((instance) => instance.highlight());
+                        app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        showShape(shapes[0]);
+                        shape.forEach((shape) =>
+                            shape.instances.forEach((instance) => instance.highlight()));
                         select(part, event);
                         setView([0, 0, 1]);
                     },
@@ -11523,7 +11652,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const parent = app.view.shapes.get(app.product.context)[0];
                 const newPart = Part.clone(part);
                 //app.product.context.parts.push(newPart);
-                app.view.addPart(newPart, parent);
+                app.view.addPart(newPart);
             }
         }
 
@@ -11925,10 +12054,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 console.log(`${response.status}, ${response.statusText}`);
             }
         }
-
-        const children = Symbol('children');
-        const parts = Symbol('parts');
-        const connections = Symbol('connections');
 
         /**
          * Utilitiy function to find elements in a tree
@@ -13760,10 +13885,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     up: app.camera.up,
                 },
             };
-            if (app.currentView) {
+            if (app.view.name) {
                 state.view = {
-                    name: app.currentView.name,
-                    subject: app.currentView.subject.path().map((part) => part.name).join('\t'),
+                    name: app.view.name,
+                    subject: app.view.subject.path().map((part) => part.name).join('\t'),
                 };
             }
             localStorage.setItem('view3d-state', JSON.stringify(state));
@@ -13841,12 +13966,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Undo the last action
          */
         function undo() {
-            historyPosition = historyPosition ?? history.length;
-            if (historyPosition) {
-                historyPosition -= 1;
-            }
-            if (history[historyPosition]) {
-                history[historyPosition].undo();
+            const action = actionHistory.previous();
+            if (action) {
+                action.undo();
             }
         }
 
@@ -13854,9 +13976,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Re do an action
          */
         function redo() {
-            if (history[historyPosition]) {
-                history[historyPosition].redo();
-                historyPosition += 1;
+            const action = actionHistory.next();
+            if (action) {
+                action.redo();
             }
         }
 
@@ -14330,7 +14452,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             up: [...app.camera.up],
                         };
                         if (action.moved) {
-                            history.push({
+                            actionHistory.add({
                                 undo: () => moveCamera(start.position, start.lookAt, start.up),
                                 redo: () => moveCamera(end.position, end.lookAt, end.up),
                             });
@@ -14820,12 +14942,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             initialiseText();
             setPointAttributes();
             setLineAttributes();
-            if (location.protocol === 'http:') {
-                const source = location?.hash.replace(/^#/, '') || 'start.txt';
-                await loadFile(source);
-            } else {
-                makeGraph();
-            }
 
             const fileSelection = document.getElementById('load-file');
             fileSelection.addEventListener('change', (event) => {
@@ -14876,6 +14992,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             addMoveControl(modelView, modelView.querySelector('h2'));
             const sceneDataView = document.getElementById('scene-data-view');
             addMoveControl(sceneDataView, sceneDataView.querySelector('h2'));
+
+            addCommandProcessing();
 
             gl.canvas.focus();
         }
@@ -15075,7 +15193,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             app.views.forEach((view) => {
                                 const parentItem = view.shapes.get(parent)[0];
                                 if (parentItem) {
-                                    view.addPart(part, parentItem);
+                                    view.addPart(part);
                                 }
                             });
                         }
@@ -15234,21 +15352,22 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'look at',
                 action(text) {
                     const target = text.replace(/^look at\s*/, '');
-                    if (app.view.named[target.trim()]) {
-                        const item = app.view.named[target.trim()];
-                        const lookAt = applyTransform(item.origin, item.world);
+                    const parts = app.view.findByName(target);
+
+                    // If the target is the name of a part in the view - look at that from the current location
+                    if (parts.length > 0) {
+                        const part = parts[0];
+                        const node = app.view.customisation.get(part) || part.node;
+                        const lookAt = part.transform.apply(node.position);
                         moveCamera(app.camera.position, lookAt, app.camera.up);
                     } else {
-                        const items = target.split(/\s*,\s*/).filter((i) => i);
-                        if (items.length > 0) {
-                            const lookAt = Vector.scale(sum(...items.map((item) => extractTranslation(item.world))), 1 / items.length);
-                            const size = Math.max(...items.map((item) => Math.hypot(...subtract(sum(extractTranslation(item.world), extractScale(item.transform)), lookAt))));
-                            const dist = size / Math.tan(180 * app.camera.fieldOfView / Math.PI);
-                            const position = sum(lookAt, Vector.scale(direction, dist));
-                            moveCamera(position, lookAt, up);
-                        } else {
-                            setView();
-                        }
+                        // Assume the target is a position
+                        const position = target.split(/\s*,\s*/).filter((i) => parseFloat(i));
+                        const lookAt = [...app.camera.lookAt];
+                        lookAt[0] = position[0] ?? lookAt[0];
+                        lookAt[1] = position[1] ?? lookAt[1];
+                        lookAt[2] = position[2] ?? lookAt[2];
+                        moveCamera(app.camera.position, lookAt, app.camera.up);
                     }
                 }
             },
@@ -15384,7 +15503,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         const commandHistory = {
             commands: [],
             position: 0,
-            push(command) {
+            add(command) {
                 if (this.position < this.commands.length) {
                     this.commands.length = this.position;
                 }
@@ -15523,6 +15642,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             while (parts.length > 0 && path.length > 0) {
                 const name = path.shift();
                 part = parts.find((part) => part.node[meta].name.includes(name));
+                if (!part) {
+                    break;
+                }
                 if (part.parts.length === 0 && part.node[meta].sources) {
                     if (part.node[meta].sources.some((source) => source.state === 'loading')) {
                         return;
@@ -15567,7 +15689,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             const processCommand = async (event) => {
                 const fullCommand = commandEntry.value;
-                commandHistory.push(fullCommand);
+                commandHistory.add(fullCommand);
 
                 commandEntry.value = '';
 
@@ -15577,8 +15699,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     app.selected.clear();
                     app.selected.add(part);
 
-                    const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
-                    showShape(item[0]);
+                                            app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        showShape(shapes[0]);
 
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
                     part.showComponents();
@@ -15619,12 +15742,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         path.forEach((part) => {
                             part.showComponents();
                         });
-                        const item = app.view.shapes.get(part) || [app.view.addPart(part, parent)];
+                        app.view.addPart(part);
+                        const shapes = app.view.shapes.get(part);
+                        
                         if (first) {
-                            showShape(item[0]);
+                            showShape(shapes[0]);
                             first = false;
                         }
-                        item[0].instances.forEach((instance) => instance.highlight())
+                        shapes.forEach((shape) =>
+                            shape.instances.forEach((instance) => instance.highlight()));
                     }
 
                     report(`Selected: ${selected.size}`);
@@ -15638,7 +15764,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             const processKey = (event) => {
                 if (event.key === 'Enter') {
-                    commandHistory.push(commandEntry.value);
+                    commandHistory.add(commandEntry.value);
                     commandHistory.save();
                     processCommand(event);
                 } else if (event.key === 'ArrowUp') {
@@ -15665,11 +15791,34 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         async function main(event) {
             await initialise();
+            const hash = location.hash.slice(1);
+
+            // Set the defailt source file
+            app.source = hash || 'start.txt';
+            if (hash !== 'ignore-state') {
+                loadState();
+            }
+            
+            if (location.protocol === 'http:') {
+                await loadFile(app.source);
+            } else {
+                makeGraph();
+            }
+
             requestAnimationFrame(render);
-            addCommandProcessing();
             report(location.protocol);
-            loadState();
         }
+
+        onpopstate = (event) => {
+            console.log('User navigated back! State:', event.state);
+            if (event.state) {
+                // Add your custom logic here (e.g., closing a modal, updating view state)
+                const previousView = app.viewHistory.previous();
+                if (previousView) {
+                    app.view = previousView;
+                }
+            }
+        };
 
         window.addEventListener('load', main);
     </script>
