@@ -3621,9 +3621,9 @@
                 app.viewHistory.add(view);
             } else {
                 const view = new View(subject);
-                app.view = view;
                 await view.loadConfiguration(configuration);
                 app.views.push(view);
+                app.view = view;
                 view.update([subject]);
                 app.viewHistory.add(view);
             }
@@ -4231,11 +4231,13 @@
                 width = image.width;
                 height = image.height;
 
-                Block.instanceGroup.initialise = true;
-                BevelledBlock.bevels.forEach((bevel) => bevel.initialise = true);
-                Cylinder.instanceGroups.forEach((instanceGroup) => instanceGroup.initialise = true);
-                Frustum.instanceGroups.forEach((instanceGroup) => instanceGroup.initialise = true);
-                Icosphere.level.forEach((level) => level.initialise = true);
+                if (Block.instanceGroups.has(app.view)) {
+                    Block.instanceGroups.get(app.view).initialise = true;
+                }
+                BevelledBlock.bevels.get(app.view)?.forEach((bevel) => bevel.initialise = true);
+                Cylinder.instanceGroups.get(app.view)?.forEach((instanceGroup) => instanceGroup.initialise = true);
+                Frustum.groups.get(app.view)?.forEach((instanceGroup) => instanceGroup.initialise = true);
+                Icosphere.groups.get(app.view)?.forEach((level) => level.initialise = true);
             }
             image.src = url;
 
@@ -6529,6 +6531,7 @@
 
                 name = this.node.name || this.node[meta].name[0] || name;
                 this.name = name;
+                //this.node[meta].name[0] = name;
                 this.state = {};
 
                 const scale = this.node.scale ?? 1;
@@ -6822,15 +6825,15 @@
                     ...positions[3], ...normal, 1, 1,
                     ...positions[2], ...normal, 0, 1,
                 ];
-                const instanceGroup = new InstanceGroup(gl.TRIANGLES, 6, { vertexData });
-                Block.instanceGroup = instanceGroup;
-                return instanceGroup;
+                return new InstanceGroup(gl.TRIANGLES, 6, { vertexData });
             }
             constructor(part, node) {
                 super(part, node, `quad`);
 
-                this.instanceGroup = Quad.instanceGroup || Quad.make();
-                this.children = [];
+                if (!Quad.instanceGroups.has(view)) {
+                    Quad.instanceGroups.set(view, Quad.make());
+                }
+                this.instanceGroup = Quad.instanceGroups.get(view);
                 this.instances = [this.instanceGroup.addInstance(part, this, `quad`)];
             }
             intersects(line, all) {
@@ -6884,6 +6887,7 @@
          * Manage blocks
          */
         class Block extends Shape {
+            static instanceGroups = new Map();
             static make() {
                 const positions = [
                     [0, 0, 0,],
@@ -6956,7 +6960,6 @@
                     ...t.p3, ...t.n, 0, 1]),
                 ...lines.flatMap((p) => [...p, ...normalised(p)])];
 
-                //Block.instanceGroup = new InstanceGroup({ shape, triangles: 12, lines: 12 });
                 Block.instanceGroup = new InstanceGroup(gl.TRIANGLES, 36, { vertexData });
                 new InstanceGroup(gl.LINES, 24, { buffer: Block.instanceGroup.buffers.vertices }, 36);
                 return Block.instanceGroup;
@@ -6964,7 +6967,12 @@
             constructor(view, part, node) {
                 super(view, part, node, `block`);
 
-                this.instanceGroup = Block.instanceGroup || Block.make();
+                this.instanceGroup = Block.instanceGroups.get(view);
+                if (!this.instanceGroup) {
+                    this.instanceGroup = Block.make();
+                    Block.instanceGroups.set(view, this.instanceGroup);
+                }
+
                 this.instanceGroup.effects = 1;
                 this.children = [];
                 this.instances = [this.instanceGroup.addInstance(part, this, `block`)];
@@ -8094,7 +8102,8 @@
          * Manage bevelledblocks
          */
         class BevelledBlock extends Shape {
-            static bevels = [];
+            static bevels = new Map();
+
             static make(bevel) {
                 const positions = [
                     [-1, -1, -1,],
@@ -8239,13 +8248,16 @@
                 const shortest = Math.min(...size) || 1;
                 const scaledBevel = size.map((length, index) => bevel[index] * shortest / (length || 1));
 
-                this.instanceGroup = BevelledBlock.bevels.find((instanceGroup) =>
-                    instanceGroup.key.every((value, index) => value === scaledBevel[index]));
-
-                if (this.instanceGroup === undefined) {
-                    this.instanceGroup = BevelledBlock.make(scaledBevel);
+                if (!BevelledBlock.bevels.has(view)) {
+                    BevelledBlock.bevels.set(view, new Map());
                 }
-                this.children = [];
+
+                if (!BevelledBlock.bevels.get(view).has(scaledBevel)) {
+                    BevelledBlock.bevels.get(view).set(scaledBevel, BevelledBlock.make(scaledBevel));
+                }
+
+                this.instanceGroup = BevelledBlock.bevels.get(view).get(scaledBevel);
+
                 this.instances = [this.instanceGroup.addInstance(part, this, 'BavelledBlock')];
             }
             intersects(line, all) {
@@ -8295,7 +8307,7 @@
          * create a cylinder
          */
         class Cylinder extends Shape {
-            static instanceGroups = [];
+            static instanceGroups = new Map();
             static make(sides) {
                 const vertexData = [];
 
@@ -8323,11 +8335,7 @@
                     );
                 }
 
-                //const instanceGroup = new InstanceGroup({ shape: triangles, triangles: triangles.length / 24 });
-                const instanceGroup = new InstanceGroup(gl.TRIANGLES, vertexData.length / 8, { vertexData });
-                instanceGroup.key = sides;
-                Cylinder.instanceGroups[sides] = instanceGroup;
-                return instanceGroup;
+                return new InstanceGroup(gl.TRIANGLES, vertexData.length / 8, { vertexData });
             }
             constructor(view, part, node) {
                 super(view, part, node, 'cylinder');
@@ -8337,9 +8345,14 @@
                 this.points = [this.origin]
                 const size = [this.radius, this.height, this.radius];
                 this.scale(size);
-                this.instanceGroup = Cylinder.instanceGroups[sides] || Cylinder.make(sides);
+                if (!Cylinder.instanceGroups.has(view)) {
+                    Cylinder.instanceGroups.set(view, new Map());
+                }
+                if (!Cylinder.instanceGroups.get(view).has(sides)) {
+                    Cylinder.instanceGroups.get(view).set(sides, Cylinder.make(sides));
+                }
+                this.instanceGroup = Cylinder.instanceGroups.get(view).get(sides);
 
-                this.children = [];
                 this.instances = [this.instanceGroup.addInstance(part, this, 'Cylinder')];
             }
             intersects(line, all) {
@@ -8378,7 +8391,7 @@
          * Manage conic Frustums
          */
         class Frustum extends Shape {
-            static instanceGroups = [];
+            static groups = new Map();
             static make(ratio, sides) {
 
                 const vertexData = [];
@@ -8405,11 +8418,7 @@
                     );
                 }
 
-                //const instanceGroup = new InstanceGroup({ shape: triangles, triangles: triangles.length / 24 });
-                const instanceGroup = new InstanceGroup(gl.TRIANGLES, vertexData.length / 8, { vertexData });
-                instanceGroup.key = [ratio, sides];
-                Frustum.instanceGroups[sides] = instanceGroup;
-                return instanceGroup;
+                return new InstanceGroup(gl.TRIANGLES, vertexData.length / 8, { vertexData });
             }
             constructor(view, part, node) {
                 super(view, part, node);
@@ -8423,12 +8432,17 @@
                 const size = [this.radius1, this.height, this.radius1];
                 this.scale(size);
 
-                if (Frustum.instanceGroups[sides] === undefined) {
-                    Frustum.make(this.ratio, sides);
+                const key = `${sides}:${this.ratio}`;
+                if (!Frustum.groups.has(view)) {
+                    Frustum.groups.set(view, new Map());
                 }
+                if (!Frustum.groups.get(view).has(key)) {
+                    Frustum.groups.get(view).set(key, Frustum.make(sides));
+                }
+
                 this.children = [];
-                this.name = `frustum (${sides}:${Frustum.instanceGroups[sides].instances.length})`;
-                this.instanceGroup = Frustum.instanceGroups[sides];
+                this.name = `frustum (${key})`;
+                this.instanceGroup = Frustum.groups.get(view).get(key);
                 this.instances = [this.instanceGroup.addInstance(part, this, 'Frustum')];
             }
             intersects(line, all) {
@@ -8458,8 +8472,8 @@
          * Manage Icospheres
          */
         class Icosphere extends Shape {
-            static level = [];
-            static make(subdivisions) {
+            static groups = new Map();
+            static make(viewGroup, subdivisions) {
                 const points = [];
                 let faces = [];
                 let edges = [];
@@ -8529,7 +8543,7 @@
 
                 let i = 0;
                 while (i <= subdivisions) {
-                    if (Icosphere.level[i] === undefined) {
+                    if (viewGroup.get(i) === undefined) {
                         const vertexData = points.flatMap((point) => [
                             ...point.map((p) => p * 0.5), ...point,
                             0.5 * (1 + Math.atan2(point[0], point[2]) / Math.PI),
@@ -8545,18 +8559,22 @@
                         edges = edges.flatMap((edge) => divideEdge(edge));
                         faces = faces.flatMap((face) => divideFace(face));
 
-                        instanceGroup.key = i;
-
-                        Icosphere.level[i] = instanceGroup;
+                        viewGroup.set(i, instanceGroup);
                     }
                     ++i;
                 }
-                return Icosphere.level[subdivisions];
+                return viewGroup.get(subdivisions);
             }
             constructor(view, part, node) {
                 super(view, part, node, 'icosphere');
                 const subdivisions = getAttribute(part.node, 'subdivisions', 4);
-                this.instanceGroup = Icosphere.level[subdivisions] || Icosphere.make(subdivisions);
+                if (!Icosphere.groups.has(view)) {
+                    Icosphere.groups.set(view, new Map());
+                }
+                if (!Icosphere.groups.get(view).has(subdivisions)) {
+                    Icosphere.groups.get(view).set(subdivisions, Icosphere.make(Icosphere.groups.get(view), subdivisions));
+                }
+                this.instanceGroup = Icosphere.groups.get(view).get(subdivisions);
                 this.instances = [this.instanceGroup.addInstance(part, this, 'icosphere')];
                 this.radius = getAttribute(part.node, 'radius');
                 const diameter = this.radius * 2;
@@ -8564,7 +8582,7 @@
                 this.scale([diameter, diameter, diameter]);
 
                 this.children = [];
-                this.name = part.name || `icosphere (${subdivisions}:${Icosphere.level[subdivisions].instances.length})`;
+                this.name = part.name || `icosphere (${subdivisions}})`;
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
@@ -13240,6 +13258,21 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Make a test graph.
+         */
+        function makeGraph(source, replace) {
+            if (source) {
+                processDefinition(source, replace);
+            } else {
+                const root = new Icosphere();
+                app.boxes.push(root);
+                app.view.roots.push(root);
+            }
+            showSceneData();
+            //updateText();
+        }
+
+        /**
          * Return a normalised version of the given vector.
          */
         function normalised(vector) {
@@ -13839,14 +13872,14 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Load State
+         * Load state 
          */
         async function loadState() {
             const stateStr = localStorage.getItem('view3d-state');
             if (stateStr) {
                 const state = JSON.parse(stateStr);
                 if (state.view) {
-                    const object = await findPart(state.view.subject);
+                    const object = await findPart(state.view.subject, /\t/g);
                     const view = object?.node.views.find((view) => view.name === state.view.name);
                     if (view) {
                         showView(view);
@@ -13872,7 +13905,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (app.view.name) {
                 state.view = {
                     name: app.view.name,
-                    subject: app.view.subject.path().map((part) => part.name),
+                    subject: app.view.subject.path().map((part) => part.name).join('\t'),
                 };
             }
             localStorage.setItem('view3d-state', JSON.stringify(state));
@@ -14487,7 +14520,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 event.preventDefault();
                 const replace = event.shiftKey;
 
-                function loadDroppedFile(file) {
+                function loadFile(file) {
                     const reader = new FileReader();
                     reader.addEventListener('load', (event) => {
                         app.filename = file.name;
@@ -14501,7 +14534,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     [...event.dataTransfer.items].forEach((item, index) => {
                         if (item.kind === 'file') {
                             const file = item.getAsFile();
-                            loadDroppedFile(file);
+                            loadFile(file);
                             item.getAsFileSystemHandle().then((handle) => {
                                 //saveFileHandles([{ name: file.name, handle }]);
                             });
@@ -15569,7 +15602,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         /**
          * Look up designator.
          */
-        async function findPart(path) {
+        async function findPart(pathStr, pattern = /\t/g) {
+            const path = pathStr.split(pattern);
+
             let parts = app.parts;
             let part;
             while (parts && path.length > 0) {
@@ -15783,6 +15818,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             
             if (location.protocol === 'http:') {
                 await loadFile(app.source);
+            } else {
+                makeGraph();
             }
 
             requestAnimationFrame(render);
