@@ -1919,11 +1919,9 @@
             link.remove();
         }
 
-
-        const children = Symbol('children');
+        const meta = Symbol('meta');
         const parts = Symbol('parts');
         const connections = Symbol('connections');
-
 
         /**
          * Create matrix control.
@@ -2416,7 +2414,16 @@
          * Clear the scene graph
          */
         function clearScene() {
-            app.graph = [];
+            app.graph = {
+                name: '*root*',
+                [meta]: {
+                    name: [],
+                    data: [],
+                    test: () => true,
+                    context: {},
+                },
+                [parts]: [],
+            };
             app.nodes = [];
             app.items = [];
             app.stock = {};
@@ -2588,6 +2595,15 @@
                 this.projectionMatrix = identityMatrix();
                 this.viewProjection = identityMatrix();
                 this.inverseViewProjection = identityMatrix();
+            }
+            static fromDefinition(definition) {
+                return new Camera(
+                    definition.position ?? [0, 1, 10],
+                    definition['look at'] ?? [0, 1, 0],
+                    definition.up ?? [0, 1, 0],
+                    definition['field of view'] ?? 45,
+                    definition.near ?? 1,
+                    definition.far ?? 1000);
             }
             get position() { return this._position; }
             set position(value) {
@@ -2828,7 +2844,8 @@
                 this.shapes = new Map();
                 this.drawGround = true;
                 this.customisation = new Map();
-                this.tab = addViewLabel(`${subject.name}: ${name}`, () => showView(subject, name));
+                const subjectName = subject?.name ?? '*Root*' 
+                this.tab = addViewLabel(`${subjectName}: ${name}`, () => showView(subject, name));
                 this.tab.classList.add('active-view');
             }
             async loadConfiguration(configuration) {
@@ -2838,6 +2855,10 @@
                             const part = await this.subject.find(node.name.split(/\s*\/\s*/g));
                             this.customisation.set(part, node);//Object.assign(Object.create(part.node), node));
                         }));
+                }
+                this.cameras = configuration.cameras.map(Camera.fromDefinition)
+                if (this.cameras.length) {
+                    this.camera = this.cameras[configuration.camera || 0];
                 }
                 for (const name in configuration) {
                     if (commands[name]) {
@@ -2946,8 +2967,12 @@
             }
             refresh() {
             }
-            update(parts) {
-                parts.forEach((part) => this.addPart(part));
+            update() {
+                if (this.subject) {
+                    this.addPart(this.subject);
+                } else {
+                    app.parts.forEach((part) => this.addPart(part));
+                }
             }
             findByName(name, caseSensitive = false) {
                 // get the list of parts in this view
@@ -3414,7 +3439,16 @@
             },
             background: [0, 0, 0],
             movement: {},
-            graph: [],
+            graph: {
+                name: '*root*',
+                [meta]: {
+                    name: [],
+                    data: [],
+                    test: () => true,
+                    context: {},
+                },
+                [parts]: [],
+            },
             items: [],
             stock: {},
             nodes: [],
@@ -3628,12 +3662,14 @@
             } else {
                 const view = new View(subject, name);
                 app.view = view;
-                const configuration = subject.node.views.find((view) => view.name === name);
-                if (configuration) {
-                    await view.loadConfiguration(configuration);
+                if (subject?.node.views) {
+                    const configuration = subject.node.views.find((view) => view.name === name);
+                    if (configuration) {
+                        await view.loadConfiguration(configuration);
+                    }
                 }
                 app.views.push(view);
-                view.update([subject]);
+                view.update();
                 app.viewHistory.add(view);
             }
             history.pushState({}, '');
@@ -4119,7 +4155,6 @@
             return texture;
         }
 
-        const meta = Symbol('meta');
         const textureAtlas = {
             [meta]: {
                 width: 0,
@@ -4434,7 +4469,7 @@
                 }
                 if (command === 'newmtl') {
                     material = {};
-                    materials.value = material;
+                    materials[value] = material;
                 } else if (command === 'Ka') {
                     material.ambientColour = value.map((value) => parseFloat(value));
                     material.colour = value.map((value) => parseFloat(value));
@@ -7761,6 +7796,7 @@
          */
         class Room extends Shape {
             static all = new Set();
+            static views = new Set();
             static pointCount = 0;
             constructor(view, part, node) {
                 super(view, part, node, `room`);
@@ -7776,7 +7812,10 @@
                     Room.buffers = createPBRBuffers(fixed, null, true);
                     Room.vertices = [];
                     Room.indices = [];
-                    app.view.renderQueue.push(Room);
+                }
+                if (!Room.views.has(view)) {
+                    Room.views.add(view);
+                    view.renderQueue.push(Room);
                 }
                 this.partColour = getAttribute(part.node, 'colour', [0.6, 0.3, 0.8]);
 
@@ -11058,12 +11097,9 @@
                     products[product.name] = product;
                     return part;
                 }
-                app.parts = app.graph.map((node, index) => addPart(node, index));
+                app.parts = app.graph[parts].map((node, index) => addPart(node, index));
 
-                app.view.update(app.parts, this.node.parent);
-                //showTree();
-                //showModel(app.graph);
-                //showSceneData();
+                app.view.update();
                 showStock();
             }
         }
@@ -11384,7 +11420,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
             };
 
-            const view = new TreeView(container, app.graph, options);
+            const view = new TreeView(container, app.graph[parts], options);
         }
 
         /**
@@ -13013,21 +13049,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 singleFieldLineProcessor,
             ];
 
-            if (parent) {
-                context = {
-                    [symbols.object]: parent,
-                    [symbols.addNode]: (node) => parent[parts].push(node),
-                    [symbols.defaults]: [],
-                    values: {},
-                };
-            } else {
-                context = {
-                    [symbols.object]: { [parts]: app.graph },
-                    [symbols.addNode]: (node) => app.graph.push(node),
-                    [symbols.defaults]: [],
-                    values: {},
-                };
-            }
+            parent = parent ?? app.graph;
+            context = {
+                [symbols.object]: parent,
+                [symbols.addNode]: (node) => parent[parts].push(node),
+                [symbols.defaults]: [],
+                values: {},
+            };
 
             const stack = [{
                 indent: -1,
@@ -13155,7 +13183,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             // Update the object graph
             await processText(text, parent?.node);
 
-            processControlObjects(app.graph);
+            processControlObjects(app.graph[parts]);
+            // If there are multiple roots create a singular pseudo root
+            if (app.graph.name === '*root*' && app.graph[parts].length === 1) {
+                app.graph = app.graph[parts][0];
+            }
 
             const root = new Product('');
             const products = {};
@@ -13204,11 +13236,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             const scope = {};
-            const structure = app.graph.filter((object) => !controlObjects[object.name]);
+            const structure = app.graph[parts].filter((object) => !controlObjects[object.name]);
             app.allParts = [];
             app.parts = structure.flatMap((node, index) => addPart(node, index, null, scope));
 
-            const nodes = [...app.graph];
+            const nodes = [...app.graph[parts]];
             while (nodes.length) {
                 const node = nodes.shift();
                 app.nodes.push(node);
@@ -13218,11 +13250,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             updateCommandList();
 
-            //app.view.update(parent ? parent.parts : app.parts, parent);
-            //showTree();
-            //showModel(app.graph);
-            //updateText();
-            //showSceneData();
             showStock();
             if (app.detail) {
                 showDetails(app.detail);
@@ -13905,7 +13932,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (app.view.name) {
                 state.view = {
                     name: app.view.name,
-                    subject: app.view.subject.path().map((part) => part.name),
+                    subject: app.view.subject?.path().map((part) => part.name),
                 };
             }
             localStorage.setItem('view3d-state', JSON.stringify(state));
@@ -14131,6 +14158,18 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
+         * Select the next camera in the current view.
+         */
+        function nextCamera() {
+            const cameras = app.view.cameras;
+            if (cameras.length > 1) {
+                const index = cameras.indexOf(app.view.camera);
+                const nextIndex = (index + 1) % cameras.length;
+                app.view.camera = cameras[nextIndex];
+            }
+        }
+
+        /**
          * Toggle walking mode placing the camera at ~head height and allowing the user to walk around the scene.
          */
         function toggleWalk() {
@@ -14231,6 +14270,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             i: (event) => { app.solid = !app.solid; },
             l: (event) => setView([-1, 0, 0]),
             m: (event) => measure(event),
+            n: (event) => nextCamera(event),
             o: (event) => switchCamera(event),
             p: (event) => selectParent(event),
             P: (event) => app.view.showPoints = !app.view.showPoints,
@@ -14703,7 +14743,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const parser = new DOMParser();
             const doc = parser.parseFromString(text, 'image/svg+xml');
 
-            app.graph = [];
+            app.graph = {
+                name: '*root*',
+                [meta]: {
+                    name: [],
+                    data: [],
+                    test: () => true,
+                    context: {},
+                },
+                [parts]: [],
+            };
 
             let groupNode;
             for (const group of doc.lastElementChild.getElementsByTagName('g')) {
@@ -14732,7 +14781,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             groupNode.transform = parseTransform(group.getAttribute('transform'));
                         }
 
-                        app.graph.push(groupNode);
+                        app.graph[parts].push(groupNode);
                     }
                 }
                 for (const path of group.getElementsByTagName('path')) {
@@ -14784,11 +14833,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
             }
             app.view.clear();
-            app.view.update(app.graph, null);
-            showTree();
-            showModel(app.graph);
-            //updateText();
-            showSceneData();
+            app.view.update();
             showStock();
         }
 
@@ -15149,8 +15194,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             nodes.forEach((node) => app.view.addProperty(node));
 
-            showModel(app.graph);
-            //updateText();
+            showModel(app.graph[meta].part);
             showSceneData();
             showStock();
             app.views.forEach((view) => view.refresh());
@@ -15170,7 +15214,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     app.product.context = selection[0];
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
                 }
-                showPartsList([...app.selected][0] || app.graph[0]);
+                showPartsList([...app.selected][0] || app.graph[meta].part);
             }
         }
 
@@ -15231,7 +15275,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             });
                         }
                     } else {
-                        app.graph.push(part);
+                        app.graph[parts].push(part);
                         app.views.forEach((view) => view.addPart(part));
                     }
                 }
@@ -15841,7 +15885,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             if (!app.view) {
-                showView(app.parts[0], 'root');
+                showView(app.graph[meta].part, 'root');
                 moveCamera(
                     app.initial.position ?? [0, 10, 0],
                     app.initial.lookAt ?? [0, 0, 0],
