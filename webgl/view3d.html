@@ -1922,6 +1922,7 @@
         const meta = Symbol('meta');
         const parts = Symbol('parts');
         const connections = Symbol('connections');
+        const transform = Symbol('transform');
 
         /**
          * Create matrix control.
@@ -2221,7 +2222,7 @@
          * Add a new element
          */
         function newBlock(offset) {
-            const selected = app.view.items.filter((item) => app.selected.has(item.node));
+            const selected = app.view.items.filter((item) => app.selected.has(item._node));
             if (selected.length) {
 
             } else {
@@ -2245,7 +2246,7 @@
          * Add a block next to the current block
          */
         function addBlocks(offset) {
-            const selected = app.view.items.filter((item) => app.selected.has(item.node));
+            const selected = app.view.items.filter((item) => app.selected.has(item._node));
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             selected.forEach((selected) => {
                 offset = applyTransform(offset, selected.rotation);
@@ -2265,14 +2266,14 @@
                     const newBox = Box.make(selected.parent, attributes);
                     app.view.items.push(newBox);
                     selected.parent.push(newBox);
-                    app.view.roots.push(newBox.node);
+                    app.view.roots.push(newBox._node);
                 } else {
                     const newBox = Box.make(null, ...attributes);
                     app.view.items.push(newBox);
                     app.view.roots.push(newBox);
-                    app.selected.add(newBox.node);
+                    app.selected.add(newBox._node);
                 }
-                app.selected.delete(selected.node);
+                app.selected.delete(selected._node);
             });
             //updateText();
             showSceneData();
@@ -2282,7 +2283,7 @@
          * Delete the selected items
          */
         function deleteBlocks(offset) {
-            const selected = app.view.items.filter((item) => app.selected.has(item.node));
+            const selected = app.view.items.filter((item) => app.selected.has(item._node));
             selected.forEach((selected) => selected.delete());
             app.view.items = app.view.items.filter((item) => !selected.includes(item));
             //updateText();
@@ -2297,6 +2298,9 @@
 
             if (app.selected.size) {
                 const selected = [...app.selected].flatMap((part) => app.view.shapes.get(part));
+                if (selected.length < 1) {
+                    return;
+                }
                 const orientation = extractRotation(selected[0].world);
                 const transforms = selected.map((shape) => shape.world);
                 const centres = transforms.map((matrix) => applyTransform([0, 0, 0], matrix));
@@ -2427,16 +2431,15 @@
             app.nodes = [];
             app.items = [];
             app.stock = {};
-            app.nodes = [];
             app.named = {};
             app.points = [];
             app.vectors = [];
             app.connections = [];
             app.text = [];
-            app.view.clear();
+            app.detail = null;
+            app.views.forEach((view) => view.clear());
             Part.all = []
             Part.id = 0;
-            showSceneData();
         }
 
         /**
@@ -2595,15 +2598,16 @@
                 this.projectionMatrix = identityMatrix();
                 this.viewProjection = identityMatrix();
                 this.inverseViewProjection = identityMatrix();
+                this.updateMatrices();
             }
             static fromDefinition(definition) {
                 return new Camera(
-                    definition.position ?? [0, 1, 10],
-                    definition['look at'] ?? [0, 1, 0],
-                    definition.up ?? [0, 1, 0],
-                    definition['field of view'] ?? 45,
-                    definition.near ?? 1,
-                    definition.far ?? 1000);
+                    definition.position ?? app.initial.position,
+                    definition['look at'] ?? app.initial.lookAt,
+                    definition.up ?? app.initial.up,
+                    definition['field of view'] ?? app.initial.fov,
+                    definition.near ?? app.initial.near,
+                    definition.far ?? app.initial.far);
             }
             get position() { return this._position; }
             set position(value) {
@@ -2842,9 +2846,9 @@
                 this.items = [];
                 this.roots = [];
                 this.shapes = new Map();
-                this.drawGround = true;
+                this.gridSize = [0, 0];
                 this.customisation = new Map();
-                const subjectName = subject?.name ?? '*Root*' 
+                const subjectName = subject?.name ?? '*Root*'
                 this.tab = addViewLabel(`${subjectName}: ${name}`, () => showView(subject, name));
                 this.tab.classList.add('active-view');
             }
@@ -2853,13 +2857,25 @@
                     await Promise.all(
                         configuration[parts].map(async (node) => {
                             const part = await this.subject.find(node.name.split(/\s*\/\s*/g));
-                            this.customisation.set(part, node);//Object.assign(Object.create(part.node), node));
+                            this.customisation.set(part, node);
                         }));
                 }
                 this.cameras = (configuration.cameras || []).map(Camera.fromDefinition)
+                if (['camera position', 'look at', 'up', 'near', 'far', 'field of view']
+                    .some((parameter) => configuration[parameter])) {
+                    const camera = new Camera(
+                        configuration['camera position'] ?? app.initial.position,
+                        configuration['look at'] ?? app.initial.lookAt,
+                        configuration.up ?? app.initial.up,
+                        configuration['field of view'] ?? app.initial.fov,
+                        configuration.near ?? app.initial.near,
+                        configuration.far ?? app.initial.far);
+                    this.cameras.unshift(camera);
+                }
                 if (this.cameras.length) {
                     this.camera = this.cameras[configuration.camera || 0];
                 }
+                this.girdSize = configuration['grid size'] ?? [1, 1];
                 for (const name in configuration) {
                     if (commands[name]) {
                         commands[name](configuration[name]);
@@ -2892,18 +2908,17 @@
                 if (this.shapes.has(part)) {
                     return this.shapes.get(part)[0];
                 }
-                const node = this.customisation.get(part) || part.node;
+                const viewNode = this.customisation.get(part) || part._node;
 
-                //if (this.customisation.get(part)) {
-                let descend = !getAttribute(node, 'on selection');
+                let descend = !getAttribute(viewNode, 'on selection');
 
-                if (getAttribute(node, 'position')) {
-                    if (node.shape && node.shape.length > 0) {
-                        const shapes = node.shape.flatMap((shape) => this.addShape(shape, part));
+                if (getAttribute(viewNode, 'position')) {
+                    if (viewNode.shape && viewNode.shape.length > 0) {
+                        const shapes = viewNode.shape.flatMap((shape) => this.addShape(shape, part));
                         this.shapes.set(part, shapes);
                         this.items.push(...shapes);
                     } else {
-                        const shapeType = getShape(node) || Shape;
+                        const shapeType = getShape(viewNode) || Shape;
                         if (shapeType === Shape) {
                             descend = true;
                         }
@@ -2912,7 +2927,7 @@
                         this.items.push(shape);
                     }
 
-                    if (getAttribute(part.node, 'show label') || getAttribute(part.node, 'label')) {
+                    if (getAttribute(viewNode, 'show label') || getAttribute(viewNode, 'label')) {
                         const label = getLabel(part);
                         if (label) {
                             app.labels.push(label);
@@ -2920,7 +2935,7 @@
                         }
                     }
 
-                } else if (part.node[meta].connection) {
+                } else if (part._node[meta].connection) {
                     const start = part.start;
                     const end = part.end;
                     if (start && end) {
@@ -2929,10 +2944,10 @@
                 } else {
                     part.parts.forEach((part) => this.addPart(part));
                 }
-                (part.node[meta].connections || []).forEach((connection) => {
+                (part._node[meta].connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
-                        const start = part.parts.find((part) => part.node[meta].name.includes(connection.start));
-                        const end = part.parts.find((part) => part.node[meta].name.includes(connection.end));
+                        const start = part.parts.find((part) => part._node[meta].name.includes(connection.start));
+                        const end = part.parts.find((part) => part._node[meta].name.includes(connection.end));
                         if (start && end) {
                             const starShape = this.shapes.get(start);
                             const endShape = this.shapes.get(end);
@@ -2978,13 +2993,13 @@
                 // get the list of parts in this view
                 const parts = [...this.shapes.keys()];
                 // Try exact match
-                const matches = parts.filter((part) => part.name === name || part.node[meta].name.includes(name));
+                const matches = parts.filter((part) => part.name === name || part._node[meta].name.includes(name));
                 if (matches.length > 0) {
                     return matches;
                 }
                 // No exact match, try regular expression
                 const re = new RegExp(name, caseSensitive ? '' : 'i');
-                return parts.filter((part) => re.test(name) || part.node[meta].name.some((name) => re.test(name)));
+                return parts.filter((part) => re.test(name) || part._node[meta].name.some((name) => re.test(name)));
             }
             render(time) {
                 const width = ctx.canvas.width;
@@ -3186,6 +3201,77 @@
         }
 
         /**
+         * Generate a table based on the given criteria.
+         */
+        async function getTable(roots, criteria = {}) {
+            function makeRow(row) {
+                return criteria.columns.map((column) => {
+                    if (column.attr) {
+                        return row.item[column.attr] ?? column.default;
+                    }
+                    return column.get(row.item, row.level);
+                });
+            }
+
+            criteria.getParts = criteria.getParts || (async (part) => {
+                if  (part.parts.length === 0 && part._node[meta].sources) {
+                    await part.loadContent();
+                }
+                return part.parts;
+            });
+            const stack = roots.map((item) => ({ item, level: 0 }));
+            const rows = [];
+            while (stack.length > 0) {
+                const next = stack.shift();
+                rows.push(next);
+                if (next.level === criteria.maxDepth) {
+                    continue;
+                }
+                const parts = await criteria.getParts(next.item);
+                if (criteria.groupBy) {
+                    const groups = new Map();
+                    const groupIds = new Set();
+                    parts.forEach((part) => {
+                        const groupId = criteria.groupBy(part);
+                        groupIds.add(groupId);
+                        const group = groups.get(groupId) || [];
+                        groups.set(groupId, group);
+                        group.push(part)
+                    });
+                    const reduced = groups.values().map((group) => {
+                        // Get the attributes of the first element of the group
+                        const attrs = Object.keys(group[0]);
+                        // Reduce the list to an object containing the common elements
+                        const common = group.slice(1).reduce((common, part) =>
+                            common.filter((attr) => common[attr] == part[attr]), attrs);
+                        return common.reduce((common, attr) => {
+                            common[attr] = group[0][attr];
+                            return common;
+                        }, { qty: group.length, parts: criteria.getParts(group[0]) });
+                    });
+                    if (criteria.sort) {
+                        reduced.sort(criteria.sort);
+                    }
+                    stack.unshift(...reduced.map((item) => ({ item, level: next.level + 1 })));
+                } else {
+                    if (criteria.sort) {
+                        parts.sort(criteria.sort)
+                    }
+                    stack.unshift(...parts.map((item) => ({ item, level: next.level + 1 })));
+                }
+            }
+            if (!criteria.columns) {
+                const columns = {};
+                rows.forEach((row) => Object.keys(row.item).filter((attr) => attr[0] !== '_')
+                    .forEach((attr) => columns[attr] = { attr, default: '' }));
+                criteria.columns = Object.values(columns);
+                criteria.columns.unshift({ get: (item, level) => level });
+            }
+            return rows.map(makeRow);
+        }
+
+
+        /**
          * Use of a instance of a component within a system.
          */
         class Part {
@@ -3200,10 +3286,11 @@
                     ((this._id >> 16) & 0xFF) / 0xFF,
                     ((this._id >> 24) & 0xFF) / 0xFF,];
                 //this._idBytes = [Math.random(), Math.random(), Math.random(), 1];
+                this._node = node;
+                this.name = getAttribute(node, 'name') || component.product.getUniqueName();
                 this.component = component;
                 this.parent = parent;
-                this.name = getAttribute(node, 'name') || component.product.getUniqueName();
-                this.node = node;
+                this.location = this._node.location;
                 if (parent) {
                     this.transform = this.parent.transform.clone();
                 } else {
@@ -3253,14 +3340,14 @@
                     const position = extractTranslation(shapes[0].world);
                     const rotation = extractQuaternion(shapes[0].world);
                     fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
-                } else if (getAttribute(this.node, 'position')) {
+                } else if (getAttribute(this._node, 'position')) {
                     const position = extractTranslation(this.transform.matrix);
                     const rotation = extractQuaternion(this.transform.matrix);
                     fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
                 }
 
                 fields.push(...fieldNames.flatMap((field) => {
-                    const value = getAttribute(this.node, field);
+                    const value = getAttribute(this._node, field);
                     if (value !== undefined) {
                         return `${field} = ${value}`;
                     } else {
@@ -3278,15 +3365,26 @@
                 return path;
             }
             async loadContent() {
-                if (!this.node.load) {
-                    this.node.load = 'in-progress';
-                    await load(this.node.url, this, false);
-                    this.node.load = true;
-                    //this.showComponents();
+                if (this._node[meta].sources.some((source) => source.state === 'loading')) {
+                    return;
                 }
+                await Promise.all(this._node[meta].sources.map(async (source) => {
+                    if (source.state === 'loading' || source.state === 'loaded') {
+                        return;
+                    }
+                    source.state = 'loading';
+                    const response = await fetch(source.url);
+                    if (response.ok) {
+                        const text = await response.text();
+                        await updateGraph(text, this);
+                        source.state = 'loaded';
+                    } else {
+                        source.state = 'failed';
+                    }
+                }));
             }
             async find(path) {
-                if (this.parts.length === 0 && this.node.url) {
+                if (this.parts.length === 0 && this._node[meta].sources) {
                     await this.loadContent();
                 }
                 let part = this;
@@ -3295,7 +3393,7 @@
                     if (name === '.' || name === '') {
                         continue;
                     } else {
-                        part = part.find((part) => part.name === name || part.node[meta].name.includes(name));
+                        part = part.parts.find((part) => part.name === name || part._node[meta].name.includes(name));
                     }
                 }
                 return part;
@@ -3314,24 +3412,24 @@
                         return colour;
                     }
                 }
-                return this.colour || getAttribute(this.node, 'colour', [0.5, 0.5, 0.5]);
+                return this.colour || getAttribute(this._node, 'colour', [0.5, 0.5, 0.5]);
             }
             showComponents() {
                 // Check there are internal components to show
-                if (this.node.url && !this.node.load) {
+                if (this._node.url && !this._node.load) {
                     this.loadContent();
                 }
-                if (this.componentView || (this.parts.length === 0 && !this.node.url)) {
+                if (this.componentView || (this.parts.length === 0 && !this._node[meta].sources)) {
                     return;
                 }
-                const size = getAttribute(this.node, 'size', [0, 0, 0]);
+                const size = getAttribute(this._node, 'size', [0, 0, 0]);
                 if (Math.hypot(...size) > 0) {
-                    const type = getShape(this.node);
+                    const type = getShape(this._node);
                     if (type === Block) {
                         const oldShapes = app.view.shapes.get(this);
                         app.view.removePart(this);
 
-                        const t = getAttribute(this.node, 'walls', 10);
+                        const t = getAttribute(this._node, 'walls', 10);
                         const walls = [
                             {
                                 position: [0, 0, 0],
@@ -3488,7 +3586,7 @@
         const colourFunctions = {
             enumerated(key, attribute) {
                 return (part) =>
-                    key[part[attribute] || getAttribute(part.node, attribute)] || key['*'];
+                    key[part[attribute] || getAttribute(part._node, attribute)] || key['*'];
             }
         }
 
@@ -3497,7 +3595,7 @@
          */
         function filterParts(rules) {
             if (rules === undefined || rules.length === 0) {
-                return app.nodes;
+                return app.allParts;
             }
             // Ensure rules is an array
             rules = [rules].flatMap((rule) => rule);
@@ -3518,7 +3616,7 @@
 
             const filter = (node) => filters.every((filter) => filter(node));
 
-            return app.nodes.filter(filter);
+            return app.allParts.filter(filter);
         }
 
         const grid = {
@@ -3549,8 +3647,17 @@
          */
         function initialiseDialogs() {
             const ok = document.getElementById('user-variables-dialog-ok');
-            ok.addEventListener('click', (event) => {
+            ok.addEventListener('click', async (event) => {
+                document.body.style.pointer = 'progress';
                 document.getElementById('user-variables-dialog').close();
+                const detail = app.detail?.path().map((part) => part.name);
+                clearScene();
+                await updateGraph(app.source);
+                app.view.update();
+                if (detail) {
+                    showDetails(await findPart(detail));
+                }
+                document.body.style.pointer = 'auto';
             });
 
             const cancel = document.getElementById('user-variables-dialog-cancel');
@@ -3626,11 +3733,17 @@
                     control.addEventListener('change', (event) => variable.value = control.valueAsDate);
                     return control;
                 },
-                enumeration(variable, index) {
-                    const control = document.createElement('input');
+                enum(variable, index) {
+                    const control = document.createElement('select');
                     control.id = `var-${index}`;
-                    control.checked = variable.value;
-                    control.addEventListener('change', (event) => variable.value = control.checked);
+                    variable.values.forEach((value) => {
+                        const node = document.createElement('option');
+                        node.innerText = value;
+                        node.value = value;
+                        control.append(node);
+                    });
+                    control.value = variable.value;
+                    control.addEventListener('change', (event) => variable.value = control.value);
                     return control;
                 },
             }
@@ -3647,7 +3760,7 @@
                 content.append(row);
             }
 
-            app.variables.forEach(addVariable);
+            Object.values(app.variables).forEach(addVariable);
             document.getElementById('user-variables-dialog').showModal();
         }
 
@@ -3662,8 +3775,29 @@
             } else {
                 const view = new View(subject, name);
                 app.view = view;
-                if (subject?.node.views) {
-                    const configuration = subject.node.views.find((view) => view.name === name);
+                if (subject?._node.views) {
+                    const configuration = subject._node.views.find((view) => view.name === name);
+                    if (configuration) {
+                        if (configuration[meta].sources) {
+                            if (configuration[meta].sources.some((source) => source.state === 'loading')) {
+                                return;
+                            }
+                            await Promise.all(configuration[meta].sources.map(async (source) => {
+                                if (source.state === 'loading' || source.state === 'loaded') {
+                                    return;
+                                }
+                                source.state = 'loading';
+                                const response = await fetch(source.url);
+                                if (response.ok) {
+                                    const text = await response.text();
+                                    await processText(text, configuration);
+                                    source.state = 'loaded';
+                                } else {
+                                    source.state = 'failed';
+                                }
+                            }));
+                        }
+                    }
                     if (configuration) {
                         await view.loadConfiguration(configuration);
                     }
@@ -3682,11 +3816,11 @@
          */
         async function showDetails(part) {
             app.detail = part;
-            if (part.node[meta].sources) {
-                if (part.node[meta].sources.some((source) => source.state === 'loading')) {
+            if (part._node[meta].sources) {
+                if (part._node[meta].sources.some((source) => source.state === 'loading')) {
                     return;
                 }
-                await Promise.all(part.node[meta].sources.map(async (source) => {
+                await Promise.all(part._node[meta].sources.map(async (source) => {
                     if (source.state === 'loading' || source.state === 'loaded') {
                         return;
                     }
@@ -3705,8 +3839,8 @@
             const container = document.getElementById('detail-view');
             container.classList.remove('hide');
             const tip = [];
-            if (part.node.position) {
-                tip.push(`Position: ${part.node.position}`);
+            if (part._node.position) {
+                tip.push(`Position: ${part._node.position}`);
             }
             if (tip.length) {
                 container.title = tip.join('\n');
@@ -3718,7 +3852,7 @@
             pathView.innerHTML = '/';
             const path = part.path();
 
-            const location = path.flatMap((part) => part.node[meta].name[0] || []).join('-');
+            const location = path.flatMap((part) => part._node[meta].name[0] || []).join('-');
             const subtitle = document.getElementById('detail-view-subtitle');
             subtitle.innerText = location;
 
@@ -3737,7 +3871,7 @@
             }
             const views = document.getElementById('detail-view-views');
             views.innerHTML = '';
-            views.append(...(part.node.views ?? []).map((view) => {
+            views.append(...(part._node.views ?? []).map((view) => {
                 const node = document.createElement('div');
                 node.innerText = view.name;
                 node.classList.add('clickable');
@@ -3747,7 +3881,7 @@
                 return node;
             }));
             const links = document.getElementById('detail-view-links');
-            links.innerHTML = (part.node.links || []).map((link) =>
+            links.innerHTML = (part._node.links || []).map((link) =>
                 `<a href=${link.url}>${link.label}</a>`).join('<br>');
             const parts = document.getElementById('detail-view-parts');
             parts.innerHTML = '';
@@ -3784,8 +3918,8 @@
                 part.parts.forEach((child) => select(child, event));
             }
             if (event.altKey) {
-                const types = new Set(part.node[meta].types);
-                const all = app.allParts.filter((part) => new Set(part.node[meta].types).intersection(types).size);
+                const types = new Set(part._node[meta].types);
+                const all = app.allParts.filter((part) => new Set(part._node[meta].types).intersection(types).size);
                 all.forEach((part) => app.selected.add(part));
             }
             app.selected.add(part);
@@ -3796,7 +3930,7 @@
          * Deselect the part, removing from the list of selected parts.
          */
         function deselect(part, event = {}) {
-            if (getAttribute(part.node, 'position') === undefined || Math.hypot(...getAttribute(part.node, 'size', [0])) === 0) {
+            if (getAttribute(part._node, 'position') === undefined || Math.hypot(...getAttribute(part._node, 'size', [0])) === 0) {
                 part.parts.forEach((child) => deselect(child, event));
             }
             if (event.ctrlKey) {
@@ -3809,7 +3943,7 @@
          * Toggle the selection of the part.
          */
         function toggleSelection(part) {
-            if (getAttribute(part.node, 'position') === undefined || Math.hypot(...getAttribute(part.node, 'size', [0])) === 0) {
+            if (getAttribute(part._node, 'position') === undefined || Math.hypot(...getAttribute(part._node, 'size', [0])) === 0) {
                 part.parts.forEach((child) => toggleSelection(child));
             }
             if (app.selected.has(part)) {
@@ -5733,8 +5867,8 @@
 
                 app.view.render(time);
 
-                if (app.gridSize[0] && app.gridSize[1] && app.view.drawGround) {
-                    drawPlane(app.view.referencePlane, app.gridSize);
+                if (app.view.gridSize[0] && app.view.gridSize[1]) {
+                    drawPlane(app.view.referencePlane, app.view.gridSize);
                 }
 
                 if (app.planes) {
@@ -5881,7 +6015,7 @@
          * Load the comments (if any) for the selected item
          */
         async function loadComments(item, node) {
-            const path = getPath(item.node).map((element) => element[meta].name[0]).join('/');
+            const path = getPath(item._node).map((element) => element[meta].name[0]).join('/');
             const url = `comments/${path}/comments.txt`;
             const response = await fetch(url);
             if (response.ok) {
@@ -6421,23 +6555,22 @@
          */
         class Instance {
             constructor(part, shape, instanceGroup, label) {
-                const node = part.node;
                 this.shape = shape;
                 this.instanceGroup = instanceGroup;
                 this.label = label;
                 this.hidden = false;
 
                 this.material = {
-                    roughness: getAttribute(node, 'roughness', 0.1),
+                    roughness: getAttribute(part._node, 'roughness', 0.1),
                     colour: part.getColour(),
-                    emissivityColour: getAttribute(node, 'emissivity', [0, 0, 0]),
-                    reflectivity: getAttribute(node, 'reflectivity', [0.2, 0.2, 0.2]),
-                    opacity: getAttribute(node, 'opacity', 1),
-                    metallic: getAttribute(node, 'metallic', 0.1),
-                    mirror: getAttribute(node, 'mirror', 0.3),
+                    emissivityColour: getAttribute(part._node, 'emissivity', [0, 0, 0]),
+                    reflectivity: getAttribute(part._node, 'reflectivity', [0.2, 0.2, 0.2]),
+                    opacity: getAttribute(part._node, 'opacity', 1),
+                    metallic: getAttribute(part._node, 'metallic', 0.1),
+                    mirror: getAttribute(part._node, 'mirror', 0.3),
                 };
 
-                this.texture = addTexture(getAttribute(node, 'texture', 'white'));
+                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
 
                 this.state = {};
             }
@@ -6492,7 +6625,7 @@
             }
             highlight() {
                 if (!this.highlighted) {
-                    this.instanceGroup.data.set([1, 1, 0.2], this.offset + 28);
+                    this.instanceGroup.data?.set([1, 1, 0.2], this.offset + 28);
                     this.instanceGroup.updateRequired = true;
                     this.highlighted = true;
                 }
@@ -6567,7 +6700,7 @@
             constructor(view, part, node, name) {
                 this.view = view;
                 this.part = part;
-                this.node = node || part.node;
+                this.node = node || part._node;
                 this.children = [];
                 this.instances = [];
 
@@ -6577,7 +6710,6 @@
 
                 name = this.node.name || this.node[meta].name[0] || name;
                 this.name = name;
-                //this.node[meta].name[0] = name;
                 this.state = {};
 
                 const scale = this.node.scale ?? 1;
@@ -7448,9 +7580,9 @@
                 if (!Shed.viewData.get(view)) {
 
                     const fixed = {
-                        emissivityColour: getAttribute(part.node, 'emissivity', [0, 0, 0]),
-                        reflectivity: getAttribute(part.node, 'reflectivity', [0.2, 0.2, 0.2]),
-                        texture: addTexture(getAttribute(part.node, 'texture', 'white')),
+                        emissivityColour: getAttribute(part._node, 'emissivity', [0, 0, 0]),
+                        reflectivity: getAttribute(part._node, 'reflectivity', [0.2, 0.2, 0.2]),
+                        texture: addTexture(getAttribute(part._node, 'texture', 'white')),
                     };
                     const viewData = {
                         buffers: createPBRBuffers(fixed),
@@ -7761,7 +7893,9 @@
             }
             render() {
                 const viewData = Shed.viewData.get(this.view);
-                Shed.render(viewData);
+                if (viewData) {
+                    Shed.render(viewData);
+                }
             }
             static pickerRender(viewData) {
                 const world = identityMatrix();
@@ -7782,9 +7916,7 @@
                 Shed.pickerRender(viewData);
             }
             reset() {
-                const viewData = Shed.viewData.get(this.view);
-                viewData.buffers = this.view;
-                viewData.vertices = [];
+                Shed.viewData.clear();
                 this.view.renderQueue = app.view.renderQueue.filter((item) => item !== Shed);
             }
         }
@@ -7806,7 +7938,7 @@
                         emissivityColour: [0, 0, 0],
                         reflectivity: [0.04, 0.04, 0.04],
                         materialParameters: [0.1, 1, 0.1, 0.3],
-                        texture: addTexture(getAttribute(part.node, 'texture', 'white')),
+                        texture: addTexture(getAttribute(part._node, 'texture', 'white')),
                     };
 
                     Room.buffers = createPBRBuffers(fixed, null, true);
@@ -7817,19 +7949,19 @@
                     Room.views.add(view);
                     view.renderQueue.push(Room);
                 }
-                this.partColour = getAttribute(part.node, 'colour', [0.6, 0.3, 0.8]);
+                this.partColour = getAttribute(part._node, 'colour', [0.6, 0.3, 0.8]);
 
                 // A room can be defined using a path or as a length and width,
                 // convert length and width to a path for common processing.
-                this.definition = getAttribute(this.part.node, 'path');
+                this.definition = getAttribute(this.part._node, 'path');
                 if (!this.definition) {
-                    const size = getAttribute(this.part.node, 'size', [0, 0, 0]);
+                    const size = getAttribute(this.part._node, 'size', [0, 0, 0]);
                     if (size.length === 2) {
                         size[2] = size[1];
                         size[1] = 0;
                     }
-                    const length = getAttribute(this.part.node, 'length', 1);
-                    const width = getAttribute(this.part.node, 'width', 1);
+                    const length = getAttribute(this.part._node, 'length', 1);
+                    const width = getAttribute(this.part._node, 'width', 1);
 
                     this.definition = [`0 0`, `${width} 0`, `${width} ${length}`, `0 ${length}`];
                 }
@@ -8389,9 +8521,9 @@
             }
             constructor(view, part, node) {
                 super(view, part, node, 'cylinder');
-                const sides = getAttribute(part.node, 'sides', 12);
-                this.radius = getAttribute(part.node, 'radius');
-                this.height = getAttribute(part.node, 'height');
+                const sides = getAttribute(part._node, 'sides', 12);
+                this.radius = getAttribute(part._node, 'radius');
+                this.height = getAttribute(part._node, 'height');
                 this.points = [this.origin]
                 const size = [this.radius, this.height, this.radius];
                 this.scale(size);
@@ -8473,12 +8605,12 @@
             constructor(view, part, node) {
                 super(view, part, node);
                 this.points = [this.origin];
-                const sides = getAttribute(part.node, 'sides', 12);
-                this.radius1 = getAttribute(part.node, 'radius1');
-                this.radius2 = getAttribute(part.node, 'radius2');
+                const sides = getAttribute(part._node, 'sides', 12);
+                this.radius1 = getAttribute(part._node, 'radius1');
+                this.radius2 = getAttribute(part._node, 'radius2');
                 this.ratio = this.radius2 / this.radius1;
 
-                this.height = getAttribute(part.node, 'height');
+                this.height = getAttribute(part._node, 'height');
                 const size = [this.radius1, this.height, this.radius1];
                 this.scale(size);
 
@@ -8617,7 +8749,7 @@
             }
             constructor(view, part, node) {
                 super(view, part, node, 'icosphere');
-                const subdivisions = getAttribute(part.node, 'subdivisions', 4);
+                const subdivisions = getAttribute(part._node, 'subdivisions', 4);
                 if (!Icosphere.groups.has(view)) {
                     Icosphere.groups.set(view, new Map());
                 }
@@ -8626,7 +8758,7 @@
                 }
                 this.instanceGroup = Icosphere.groups.get(view).get(subdivisions);
                 this.instances = [this.instanceGroup.addInstance(part, this, 'icosphere')];
-                this.radius = getAttribute(part.node, 'radius');
+                this.radius = getAttribute(part._node, 'radius');
                 const diameter = this.radius * 2;
                 this.points = [this.origin];
                 this.scale([diameter, diameter, diameter]);
@@ -9299,17 +9431,17 @@
             constructor(view, part, node) {
                 super(view, part, node, 'Wall');
                 this.children = [];
-                this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
+                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
 
                 this.material = {
-                    colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: getAttribute(this.part._node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
                 }
-                this.textureParameters = addTexture(getAttribute(part.node, 'texture', 'white'));
-                this.height = getAttribute(part.node, 'height', 1);
-                this.thickness = getAttribute(part.node, 'thickness', 1);
+                this.textureParameters = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.height = getAttribute(part._node, 'height', 1);
+                this.thickness = getAttribute(part._node, 'thickness', 1);
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeWalls();
@@ -9326,7 +9458,7 @@
             }
             initialiseBuffers() {
                 const fixed = {
-                    colour: getAttribute(this.part.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: getAttribute(this.part._node, 'colour', [0.6, 0.3, 0.8]),
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     //materialParameters: [0.1, 1, 0.1, 0.3],
@@ -9337,10 +9469,10 @@
                 this.vao = buffers.vao;
             }
             getPoints() {
-                const path = getAttribute(this.part.node, 'path');
+                const path = getAttribute(this.part._node, 'path');
                 this.points = pathToPoints(path).filter((point) => point);
 
-                const thickness = getAttribute(this.part.node, 'thickness');
+                const thickness = getAttribute(this.part._node, 'thickness');
                 const offset = [];
                 if (!Array.isArray(thickness)) {
                     offset.push(thickness / 2, thickness / 2);
@@ -9386,7 +9518,7 @@
                 };
 
                 this.corners = this.points.map(getCorner);
-                if (!getAttribute(this.part.node, 'closed')) {
+                if (!getAttribute(this.part._node, 'closed')) {
                     // First and last corners are perpendicular to segment
                     const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
                     const l1 = Math.hypot(...d1);
@@ -9414,7 +9546,7 @@
                     ];
                     this.corners = [[p1, p2], ...this.corners.slice(1, -1), [p3, p4]];
                 }
-                const height = getAttribute(this.part.node, 'height');
+                const height = getAttribute(this.part._node, 'height');
                 const get2dNormal = (p1, p2) => {
                     const vector = [p2[0] - p1[0], p2[1] - p1[1]];
                     const length = Math.hypot(...vector);
@@ -9453,7 +9585,7 @@
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
                 this.origin = [centre[0], height / 2, centre[1]];
-                if (!getAttribute(this.part.node, 'closed')) {
+                if (!getAttribute(this.part._node, 'closed')) {
                     this.segments.pop();
                 }
                 this.outer = this.segments.reduce((sum, segment) => sum + segment.outer, 0);
@@ -9464,8 +9596,8 @@
                 const vectors = [];
                 const vertices = [];
 
-                const height = getAttribute(this.part.node, 'height', 1);
-                const closed = getAttribute(this.part.node, 'closed');
+                const height = getAttribute(this.part._node, 'height', 1);
+                const closed = getAttribute(this.part._node, 'closed');
                 let inner = 0;
                 let outer = 0;
                 this.segments.forEach((segment, i) => {
@@ -9841,9 +9973,9 @@
                         getAttribute(this.node, 'mirror', 0.3),
                     ],
                 };
-                this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
+                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
 
-                this.height = getAttribute(part.node, 'height', 1);
+                this.height = getAttribute(part._node, 'height', 1);
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeWalls();
@@ -10065,9 +10197,9 @@
             constructor(view, part, node) {
                 super(view, part, node, 'polygon');
                 this.children = [];
-                this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
+                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
 
-                this.getPoints(node ?? part.node);
+                this.getPoints(node ?? part._node);
                 this.initialiseBuffers();
                 this.makeSurface();
                 app.view.renderQueue.push(this);
@@ -10080,7 +10212,7 @@
             }
             initialiseBuffers() {
                 const transform = identityMatrix();
-                const position = getAttribute(this.part.node, 'position', [0, 0, 0]);
+                const position = getAttribute(this.part._node, 'position', [0, 0, 0]);
                 transform[12] = position[0];
                 transform[13] = position[1];
                 transform[14] = position[2];
@@ -10262,7 +10394,7 @@
             constructor(view, part, node) {
                 super(view, part, node, 'lathed');
                 this.children = [];
-                this.texture = addTexture(getAttribute(part.node, 'texture', 'white'));
+                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
 
                 this.material = {
                     colour: part.getColour(),
@@ -10270,8 +10402,8 @@
                     reflectivity: [0.04, 0.04, 0.04],
                     parameters: [0.1, 1, 0.1, 0.3],
                 }
-                this.angle = getAttribute(part.node, 'sweep', 360);
-                this.sides = getAttribute(part.node, 'sides', 12);
+                this.angle = getAttribute(part._node, 'sweep', 360);
+                this.sides = getAttribute(part._node, 'sides', 12);
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeVolume();
@@ -10697,7 +10829,7 @@
             constructor(view, part, node) {
                 super(view, part, node, `lightwave object`);
 
-                this.url = getAttribute(part.node, 'obj');
+                this.url = getAttribute(part._node, 'obj');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
 
                 this.patches = LightWaveObject.loaded[this.url];
@@ -10868,7 +11000,7 @@
                     patch.instanceGroup = new InstanceGroup(gl.TRIANGLES, patch.points, { buffer }, patch.offset);
                     patch.effects = 0;
                     LightWaveObject.pending[this.url].forEach((obj) => {
-                        const instance = patch.instanceGroup.addInstance(obj.node[meta].part, obj, materialName);
+                        const instance = patch.instanceGroup.addInstance(obj._node[meta].part, obj, materialName);
                         obj.instances.push(instance);
                         instance.material = {
                             colour: materials[materialName].colour ?? materials[materialName].diffuseColour,
@@ -10929,7 +11061,7 @@
             constructor(view, part, node) {
                 super(view, part, node, `gltf`);
                 this.load();
-                const position = getAttribute(part.node, 'position', [0, 0, 0]);
+                const position = getAttribute(part._node, 'position', [0, 0, 0]);
                 this.transform.move(position);
             }
             async load() {
@@ -10960,7 +11092,7 @@
             constructor(view, part, node) {
                 super(view, part, node, `svg`);
 
-                this.url = getAttribute(part.node, 'svg');
+                this.url = getAttribute(part._node, 'svg');
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
 
                 const nodes = SVGObject.loaded[this.url];
@@ -11067,7 +11199,7 @@
                 }
 
                 SVGObject.pending[this.url].forEach((pending) =>
-                    pending.node[parts].push(...nodes.map((node) => Object.assign({}, node))));
+                    pending._node[parts].push(...nodes.map((node) => Object.assign({}, node))));
 
                 const root = new Product('');
                 const products = {};
@@ -11323,7 +11455,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             grid.show = false;
             if (action.moved) {
                 const items = new Set();
-                app.view.items.filter((item) => app.selected.has(item.node))
+                app.view.items.filter((item) => app.selected.has(item._node))
                     .forEach((item) => item.apply((item) => items.add(item)));
                 const undo = Array.from(items).map((item) => ({
                     item, start: [...item.start],
@@ -11431,7 +11563,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             container.innerHTML = '';
             const columns = new Set();
             columns.add('name');
-            app.nodes.forEach((node) => {
+            app.allParts.forEach((node) => {
                 Object.getOwnPropertyNames(node).forEach((property) => columns.add(property));
             });
             const headings = Array.from(columns).map((column) =>
@@ -11690,7 +11822,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 headings,
                 data(node) {
                     const result = decompose(node.world);
-                    result.name = node.node.name;
+                    result.name = node._node.name;
                     return result;
                 },
                 actions: {
@@ -11727,7 +11859,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Show parts list
          */
         function showPartsList(part) {
-            const parts = filterParts(part.node?.[meta].parts);
+            const parts = filterParts(part._node?.[meta].parts);
             const properties = [{
                 attribute: 'name',
                 action(event, part, item) {
@@ -11749,7 +11881,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function updatePartsList(part) {
             if (partsList) {
-                const parts = filterParts(part.node[meta].parts);
+                const parts = filterParts(part._node[meta].parts);
                 partsList.updateList(parts);
             }
         }
@@ -12082,12 +12214,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (new Set(['false', 'no']).has(string.toLowerCase())) {
                 return false;
             }
-            const coordPattern = /([0-9]+)°([0-9]+)'([0-9]+)[NS]\s+([0-9]+)°([0-9]+)'([0-9]+)[EW]/;
+            const coordPattern = /([0-9]+)°([0-9]+)'([0-9]+)([NS])\s+([0-9]+)°([0-9]+)'([0-9]+)([EW])/;
             const match = string.match(coordPattern);
             if (match) {
-                const lat = parseInt(match[1]) + parseInt(match[2]) / 60 + parseInt(match[3]) / 3600;
-                const long = parseInt(match[4]) + parseInt(match[5]) / 60 + parseInt(match[6]) / 3600;
-                return [long, lat];
+                const lat = (match[4] === 'N' ? 1 : -1) * (parseInt(match[1]) + parseInt(match[2]) / 60 + parseInt(match[3]) / 3600);
+                const long = (match[8] === 'E' ? 1 : -1) * (parseInt(match[5]) + parseInt(match[6]) / 60 + parseInt(match[7]) / 3600);
+                return [lat, long];
             }
             return string;
         }
@@ -12118,7 +12250,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const content = await response.text();
                 if (content) {
                     if (replace) {
-                        resetGraph();
+                        clearScene();
                     }
                     updateGraph(content, parent);
                 }
@@ -12376,7 +12508,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         class Variable {
             constructor(type, name, value, description, data) {
-                this.type = type;
+                if (type.startsWith('enum')) {
+                    this.type = 'enum';
+                    this.values = type.replace(/^enum\s*\(\s*/, '').replace(/\s*\)\s*$/, '').split(/\s*, \s*/g);
+                } else {
+                    this.type = type;
+                }
                 this.name = name;
                 this.initialValue = value;
                 this.description = description;
@@ -12451,8 +12588,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         .replace(/<([^>]+)>/g, (match, name) => context[name] ?? match)
                         .replace(/\{([^\}]+)\}(:([0-9]+),(.))?/g, (match, expr, format) => {
                             try {
-                                const keys = app.variables.map((variable) => variable.name);
-                                const values = app.variables.map((variable) => variable.value);
+                                const keys = Object.keys(app.variables);
+                                const values = Object.values(app.variables);
                                 for (const key in context) {
                                     keys.push(key);
                                     values.push(context[key]);
@@ -12528,13 +12665,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 pattern: /^\s*!/,
                 async processInstance(line, instance) {
                     debug(`processContext: ${line.text} at line ${line.source.lineNumber}`);
-                    const fields = getFields(line.text.replace(/^\s*!/, ''));
-                    app.variables.push(new Variable(
-                        fields[0],
-                        fields[1],
-                        interpret(resolve(fields[2], instance)),
-                        fields[3],
-                        fields.slice(4)));
+                    const [type, name, strValue, description, ...data] = getFields(line.text.replace(/^\s*!/, ''));
+
+                    const value = interpret(resolve(strValue, instance));
+
+                    if (!app.variables[name]) {
+                        app.variables[name] = new Variable(type, name, value, description, data);
+                    }
                 },
                 __proto__: lineProcessor,
             };
@@ -12609,7 +12746,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     try {
                         const expr = line.text.replace(/^\s*\?\s*/, '').trim()
                             .replace(/<([^>]+)>/g, (match, name) => `scope.${name}`);
-                        const keys = app.variables.map((variable) => variable.name);
+                        const keys = Object.keys(app.variables);
                         for (const key in context.values) {
                             keys.push(key);
                         }
@@ -12622,7 +12759,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 async processInstance(line, instance) {
                     debug(`processOption`);
                     if (line.test) {
-                        const values = app.variables.map((variable) => variable.values);
+                        const values = Object.values(app.variables).map((variable) => variable.value);
                         for (const key in instance) {
                             values.push(instance[key]);
                         }
@@ -12640,9 +12777,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         .replace(/<([^>]+)>/g, (match, name) => `scope.${name}`)
                         .replace(/<>/, 'scope[symbols.value]')
                         .replace(/<n>/, 'scope[symbols.index]');
-                    const keys = app.variables.map((variable) => variable.name);
+                    const keys = Object.keys(app.variables);
                     const test = makeFunction([...keys, 'symbols', 'scope'], expr);
-                    const values = app.variables.map((variable) => variable.value);
+                    const values = Object.values(app.variables);
 
                     const addNode = instance[symbols.addNode];
                     instance[symbols.addNode] = (newNode) => {
@@ -12795,12 +12932,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const keys = app.variables.map((variable) => variable.name);
                     const values = app.variables.map((variable) => variable.value);
 
-                    const func = makeFunction([...keys, 'time'], expr);
+                    const func = makeFunction([...keys, 'time', 'self'], expr);
 
                     Object.defineProperty(obj, arg, {
                         enumerable: true,
                         get() {
-                            return func(...values, app.time, this);
+                            return func(...values, app.time, context[symbols.object]);
                         }
                     });
                     node[meta].dynamic = true;
@@ -13010,6 +13147,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             };
 
             /**
+             * Return a string withe the source information for a givent line.
+             */
+            function getSourceInfo(line) {
+                return `${line.source.url}: ${line.source.lineNumber})`;
+            }
+
+            /**
              * Process an object line, defining a new object in the structure.
              */
             const objectUpdateProcessor = {
@@ -13035,8 +13179,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         });
 
                     } else {
-                        console.log(`Warning: attempt to update non-existant object ${path}`);
-                        console.log(lines[lineNumber - 1].source);
+                        const line = lines[lineNumber - 1];
+                        console.log(`Warning: attempt to update non-existant object ${path} (${getSourceInfo(line)})`);
                     }
                 },
                 __proto__: lineProcessor,
@@ -13161,34 +13305,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
 
         /**
-         * Clear the existing graph
-         */
-        function resetGraph() {
-            app.stock = {};
-
-            if (app.view) {
-                app.view.items.forEach((item) => app.view.removePart(item.part));
-                app.view.items = [];
-                app.view.roots = [];
-
-                app.view.clear();
-            }
-
-            //** todo remove other views
-        }
-
-
-
-        /**
          * load the objects defined in the text into the app.graph.
          */
         async function updateGraph(text, parent) {
 
-            source = document.getElementById('source');
-            source.innerHTML = text;
+            const sourceDisplay = document.getElementById('source');
+            sourceDisplay.innerHTML = text;
 
             // Update the object graph
-            await processText(text, parent?.node);
+            await processText(text, parent?._node);
 
             processControlObjects(app.graph[parts]);
             // If there are multiple roots create a singular pseudo root
@@ -13303,8 +13428,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         const destructuredMath = `{${[...Object.keys(mathFunctions)].join(',')}}`;
         function makeFunction(args, expr) {
-            //const appArgs = app.variables.map((variable) => variable.name);
-            //const appValues = app.variables.map((variable) => variable.value);
             args = args.map((arg) => arg.replace(/^([0-9])/, '_$1'));
             try {
                 const func = new Function(...args, `const ${destructuredMath} = Math;
@@ -14038,13 +14161,13 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function nodeAction(part) {
             const shape = app.view.shapes.get(part);
-            const url = part.node.url || `views/${part.name.toLowerCase().replace(/\s+/, '-')}.txt`;
+            const url = part._node.url || `views/${part.name.toLowerCase().replace(/\s+/, '-')}.txt`;
             if (url) {
-                if (part.node.click === 'load page') {
+                if (part._node.click === 'load page') {
                     location = url;
-                } else if (part.node.click === 'import') {
+                } else if (part._node.click === 'import') {
                     location.hash = url;
-                } else if (part.node.click === 'visit') {
+                } else if (part._node.click === 'visit') {
                     clearScene();
                     location.hash = url;
                     /*
@@ -14055,21 +14178,21 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     */
                 } else if (part.componentView) {
                     part.hideComponents();
-                } else if (event.crtlKey || part.node.load !== true) {
+                } else if (event.crtlKey || part._node.load !== true) {
                     load(url, part, event.shiftKey);
-                    part.node.load = true;
+                    part._node.load = true;
                     part.showComponents();
                     if (!app.walk) {
                         setView([-0.2, 0.2, 1], [0, 1, 0]);
                     }
                 }
-            } else if (part.node[meta].states.selected) {
-                if (part.node[meta].currentState.has(part.node[meta].states.selected)) {
-                    part.node[meta].currentState.delete(part.node[meta].states.selected);
+            } else if (part._node[meta].states.selected) {
+                if (part._node[meta].currentState.has(part._node[meta].states.selected)) {
+                    part._node[meta].currentState.delete(part._node[meta].states.selected);
                 } else {
-                    part.node[meta].currentState.add(part.node[meta].states.selected);
+                    part._node[meta].currentState.add(part._node[meta].states.selected);
                 }
-                part.node[meta].dynamic = true;
+                part._node[meta].dynamic = true;
             } else {
                 if (!app.walk) {
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
@@ -14090,11 +14213,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function getLabel(part, labelPosition) {
             if (app.view.shapes.get(part)) {
-                const text = part.node.label || part.name;
+                const text = part._node.label || part.name;
                 if (labelPosition) {
                     return { text, position: labelPosition };
                 }
-                const position = getAttribute(part.node, 'label offset', [0, 0, 0]);
+                const position = getAttribute(part._node, 'label offset', [0, 0, 0]);
                 const point = part.transform.apply(position);
                 return { text, position: point };
             }
@@ -14231,7 +14354,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             ArrowLeft: (event) => rotateLeft(),
             ArrowRight: (event) => rotateLeft(-1),
             l: (event) => document.getElementById('load-file').click(),
-            r: (event) => { resetGraph(); updateGraph(app.definition); },
+            r: (event) => { clearScene(); updateGraph(app.definition); },
             z: (event) => undo(),
             Z: (event) => redo(),
         }
@@ -14573,7 +14696,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         app.filename = file.name;
                         app.definition = reader.result;
                         if (replace) {
-                            resetGraph();
+                            clearScene();
                         }
                         updateGraph(app.definition);
                     });
@@ -14879,25 +15002,24 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         async function loadFile(url) {
             const indicator = addDataSource(url);
-            app.sourceFile = url;
             app.labels = [];
             const result = await fetch(url);
             if (result.ok) {
                 indicator.style.backgroundColor = 'lightgreen';
-                const content = await result.text();
+                app.source = await result.text();
                 if (app.sourceFile.endsWith('.svg')) {
-                    processSVG(content, true);
+                    processSVG(app.source, true);
                 } else if (url.endsWith('.csv')) {
                     const reords = new TableData();
-                    records.loadCSV(content).transpose().interpret();
+                    records.loadCSV(app.source).transpose().interpret();
                     console.log(records.data);
                 } else if (url.endsWith('.tsv')) {
                     const reords = new TableData();
-                    records.loadCSV(content, '\t').transpose().interpret();
+                    records.loadCSV(app.source, '\t').transpose().interpret();
                     console.log(records.data);
                 } else {
-                    resetGraph();
-                    await updateGraph(content);
+                    clearScene();
+                    await updateGraph(app.source);
                 }
             } else {
                 indicator.style.backgroundColor = 'pink';
@@ -15052,12 +15174,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
             const source = document.getElementById('source');
             source.addEventListener('blur', (event) => {
-                resetGraph();
+                clearScene();
                 updateGraph(source.innerText);
             });
             source.addEventListener('keydown', (event) => {
                 if (event.key === 'Escape') {
-                    resetGraph();
+                    clearScene();
                     updateGraph(source.innerText);
                     sourceView.querySelector('h2').classList.remove('expanded');
                     for (const node of sourceView.querySelectorAll('.expandable')) {
@@ -15123,7 +15245,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Edit the line containing the selected item.
          */
         function editLine(event) {
-            const node = app.nodes.find((node) => app.selected.has(node));
+            const node = app.allParts.find((node) => app.selected.has(node));
             if (node) {
                 event.preventDefault(); // Ignore the keypress
                 const sourceView = document.getElementById('source-view');
@@ -15153,7 +15275,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                 // 4. Locate the text node and apply Selection/Range APIs
                 const textNode = source.firstChild;
-                if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+                if (!textNode || textNode.nodeType !== Node.TEXT._node) {
                     return;
                 }
 
@@ -15287,6 +15409,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                 }
             },
+            {
+                name: 'export',
+                async action(text) {
+                    const parameters = text.replace(/^export\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                    const table = await getTable(app.parts);
+                    const output = table.map((row) => row.join('\t')).join('\n');
+                    downloadText(output, 'deployment.tsv');
+                }
+            },
+
             // Change a node
             {
                 name: 'move',
@@ -15424,11 +15556,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'list',
                 action(text) {
                     const parameters = text.replace(/^list\s*/, '').split(/\s*,\s*/);
-                    const items = app.view.items.filter((item) => app.selected.has(item.node));
+                    const items = app.view.items.filter((item) => app.selected.has(item._node));
                     if (items.length === 0) {
                         items.push(...app.view.items);
                     }
-                    const nodes = items.map((item) => item.node);
+                    const nodes = items.map((item) => item._node);
                     app.windows.push(new ListWindow(nodes, parameters));
                 }
             },
@@ -15441,8 +15573,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     // If the target is the name of a part in the view - look at that from the current location
                     if (parts.length > 0) {
                         const part = parts[0];
-                        const node = app.view.customisation.get(part) || part.node;
-                        const lookAt = part.transform.apply(node.position);
+                        const viewNode = app.view.customisation.get(part) || part._node;
+                        const lookAt = part.transform.apply(viewNode.position);
                         moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
                     } else {
                         // Assume the target is a position
@@ -15472,9 +15604,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                     app.gridSize = size;
                     if (size[0] > 0) {
-                        app.view.drawGround = true;
+                        app.drawGround = true;
                     } else {
-                        app.view.drawGround = false;
+                        app.drawGround = false;
                     }
                 }
             },
@@ -15537,7 +15669,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             {
                 name: 'all',
                 action(text) {
-                    app.view.items.forEach((item) => app.selected.add(item.node));
+                    app.view.items.forEach((item) => app.selected.add(item._node));
                 },
             },
             {
@@ -15550,7 +15682,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             {
                 name: 'action',
                 action(text) {
-                    const part = app.view.items.find((item) => app.selected.has(item.part) && item.node?.url);
+                    const part = app.view.items.find((item) => app.selected.has(item.part) && item._node?.url);
                     if (part) {
                         nodeAction(part);
                     } else {
@@ -15659,9 +15791,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 commandList.append(option);
             });
 
-            app.nodes.forEach((node) => {
+            const names = new Set(app.allParts.map((part) => part.name));
+            names.forEach((name) => {
                 const option = document.createElement('option');
-                option.innerText = node.name;
+                option.innerText = name;
                 commandList.append(option);
             });
         }
@@ -15678,24 +15811,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 if (!part) {
                     return;
                 }
-                if (part.parts.length === 0 && part.node[meta].sources) {
-                    if (part.node[meta].sources.some((source) => source.state === 'loading')) {
-                        return;
-                    }
-                    await Promise.all(part.node[meta].sources.map(async (source) => {
-                        if (source.state === 'loading' || source.state === 'loaded') {
-                            return;
-                        }
-                        source.state = 'loading';
-                        const response = await fetch(source.url);
-                        if (response.ok) {
-                            const text = await response.text();
-                            await updateGraph(text, part);
-                            source.state = 'loaded';
-                        } else {
-                            source.state = 'failed';
-                        }
-                    }));
+                if (part.parts.length === 0 && part._node[meta].sources) {
+                    await part.loadContent();
                 }
                 parts = part.parts;
             }
@@ -15709,12 +15826,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const path = pathStr.split(pattern);
 
             const getLocations = (parts) => {
-                const locations = parts.filter((part) => part.node[meta].name[0]);
-                const unnamed = parts.filter((part) => !part.node[meta].name[0]);
+                const locations = parts.filter((part) => part._node[meta].name[0]);
+                const unnamed = parts.filter((part) => !part._node[meta].name[0]);
                 while (unnamed.length) {
                     const next = unnamed.shift();
-                    locations.push(...next.parts.filter((part) => part.node[meta].name[0]));
-                    unnamed.push(...next.parts.filter((part) => !part.node[meta].name[0]));
+                    locations.push(...next.parts.filter((part) => part._node[meta].name[0]));
+                    unnamed.push(...next.parts.filter((part) => !part._node[meta].name[0]));
                 }
                 return locations;
             }
@@ -15723,28 +15840,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             let part;
             while (parts.length > 0 && path.length > 0) {
                 const name = path.shift();
-                part = parts.find((part) => part.node[meta].name.includes(name));
+                part = parts.find((part) => part._node[meta].name.includes(name));
                 if (!part) {
                     break;
                 }
-                if (part.parts.length === 0 && part.node[meta].sources) {
-                    if (part.node[meta].sources.some((source) => source.state === 'loading')) {
-                        return;
-                    }
-                    await Promise.all(part.node[meta].sources.map(async (source) => {
-                        if (source.state === 'loading' || source.state === 'loaded') {
-                            return;
-                        }
-                        source.state = 'loading';
-                        const response = await fetch(source.url);
-                        if (response.ok) {
-                            const text = await response.text();
-                            await updateGraph(text, part);
-                            source.state = 'loaded';
-                        } else {
-                            source.state = 'failed';
-                        }
-                    }));
+                if (part.parts.length === 0 && part._node[meta].sources) {
+                    await part.loadContent();
                 }
                 parts = getLocations(part?.parts);
             }
@@ -15876,16 +15977,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const hash = location.hash.slice(1);
 
             // Set the defailt source file
-            app.source = hash || 'start.txt';
+            app.sourceFile = hash || 'start.txt';
             const state = hash !== 'ignore-state' ? loadState() : {};
 
             if (location.protocol === 'http:') {
-                await loadFile(app.source);
+                await loadFile(app.sourceFile);
             }
 
             if (state.view) {
                 const object = await findPart(state.view.subject);
-                const view = object?.node.views.find((view) => view.name === state.view.name);
+                const view = object?._node.views.find((view) => view.name === state.view.name);
                 if (view) {
                     showView(view.subject, view.name);
                 }
@@ -15894,14 +15995,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (!app.view) {
                 showView(app.graph[meta].part, 'root');
                 moveCamera(
-                    app.initial.position ?? [0, 10, 0],
-                    app.initial.lookAt ?? [0, 0, 0],
-                    app.initial.up ?? [0, 1, 0],
+                    app.initial.position,
+                    app.initial.lookAt,
+                    app.initial.up,
                 );
                 app.view.camera.near = app.initial.near;
                 app.view.camera.far = app.initial.far;
-                app.view.camera.fieldOfView = app.initial.fieldOfView;
-                
+                app.view.camera.fieldOfView = app.initial.fov;
+                app.view.drawGround = app.drawGround;
+
             }
             if (state.camera) {
                 moveCamera(state.camera.position, state.camera.lookAt, state.camera.up);
