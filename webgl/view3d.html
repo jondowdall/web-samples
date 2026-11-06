@@ -583,6 +583,10 @@
             margin-left: 0.5em;
         }
 
+        .not-shown {
+            color: orange;
+        }
+
         #detail-view-parts div {
             line-height: 1.5;
         }
@@ -762,7 +766,7 @@
             </h3>
             <div id="detail-view-path"></div>
             <div class="scrollable">
-                <h3>Description</h3>
+                <!--h3>Description</h3-->
                 <p id="detail-view-description"></p>
                 <h3>Views</h3>
                 <div id="detail-view-views"></div>
@@ -2783,7 +2787,7 @@
          */
         function getShape(node) {
             // Determine the shape from it's attributes
-            const size = getAttribute(node, 'size', [0, 0, 0]);
+            const size = node.size ?? [0, 0, 0];
             const radius = Math.hypot(...size);
 
             if (size.length === 2) {
@@ -2795,35 +2799,35 @@
                 node.size = [size[0], 1, size[2]];
             }
 
-            if (getAttribute(node, 'obj')) {
+            if (node.obj) {
                 return LightWaveObject;
-            } else if (getAttribute(node, 'gltf')) {
+            } else if (node.gltf) {
                 return GLTFObject;
-            } else if (getAttribute(node, 'svg')) {
+            } else if (node.svg) {
                 return SVGObject;
-            } else if ((size[1] === 0 || size.length === 2 || getAttribute(node, 'ceiling')) && radius > 0) {
+            } else if ((size[1] === 0 || size.length === 2 || node.ceiling) && radius > 0) {
                 return Room;
-            } else if (getAttribute(node, 'bevel')) {
+            } else if (node.bevel) {
                 return BevelledBlock;
-            } else if (getAttribute(node, 'walls') && radius > 0) {
+            } else if (node.walls && radius > 0) {
                 return Block;
-            } else if (getAttribute(node, 'apex') && radius > 0) {
+            } else if (node.apex && radius > 0) {
                 return Shed;
             } else if (radius > 0) {
                 return Block;
-            } else if (getAttribute(node, 'radius') && getAttribute(node, 'height')) {
+            } else if (node.radius && node.height) {
                 return Cylinder;
-            } else if (getAttribute(node, 'radius1') && getAttribute(node, 'radius2')) {
+            } else if (node.radius1 && node.radius2) {
                 return Frustum;
-            } else if (getAttribute(node, 'radius')) {
+            } else if (node.radius) {
                 return Icosphere;
-            } else if (getAttribute(node, 'path') && getAttribute(node, 'height') && getAttribute(node, 'thickness')) {
+            } else if (node.path && node.height && node.thickness) {
                 return Wall;
-            } else if (getAttribute(node, 'path') && getAttribute(node, 'height')) {
+            } else if (node.path && node.height) {
                 return Prism;
-            } else if (getAttribute(node, 'path') && getAttribute(node, 'sweep')) {
+            } else if (node.path && node.sweep) {
                 return Lathed;
-            } else if (getAttribute(node, 'path')) {
+            } else if (node.path) {
                 return Polygon;
             }
         }
@@ -2845,6 +2849,7 @@
                 this.renderQueue = [edges];
                 this.items = [];
                 this.roots = [];
+                this.parts = new Map();
                 this.shapes = new Map();
                 this.gridSize = [0, 0];
                 this.customisation = new Map();
@@ -2904,18 +2909,35 @@
                 }
                 return [];
             }
-            addPart(part) {
-                if (this.shapes.has(part)) {
-                    return this.shapes.get(part)[0];
+            addPart(part, parent) {
+                const partView = this.parts.get(part);
+                if (partView) {
+                    part.parts.forEach((part) => this.addPart(part, partView));
+                    return;
                 }
+
                 const viewNode = this.customisation.get(part) || part._node;
 
-                let descend = !getAttribute(viewNode, 'on selection');
+                let descend = !viewNode['on selection'];
 
-                if (getAttribute(viewNode, 'position')) {
+                if (viewNode.position) {
+                    const transform = parent?.transform.clone() || new Transform();
+                    if (viewNode.position) {
+                        transform.move(viewNode.position);
+                    }
+                    if (viewNode.angle) {
+                        transform.rotate(viewNode.angle, viewNode.axis ?? [0, 1, 0]);
+                    }
+                    if (viewNode.scale) {
+                        transform.mode(viewNode.scale);
+                    }
+                    const partView = { part, parent, transform };
+                    parent = partView || parent;
+                    this.parts.set(part, partView);
                     if (viewNode.shape && viewNode.shape.length > 0) {
                         const shapes = viewNode.shape.flatMap((shape) => this.addShape(shape, part));
                         this.shapes.set(part, shapes);
+                        partView.shapes = shapes;
                         this.items.push(...shapes);
                     } else {
                         const shapeType = getShape(viewNode) || Shape;
@@ -2924,25 +2946,23 @@
                         }
                         const shape = new shapeType(this, part, this.customisation.get(part));
                         this.shapes.set(part, [shape]);
+                        partView.shapes = [shape];
                         this.items.push(shape);
                     }
 
-                    if (getAttribute(viewNode, 'show label') || getAttribute(viewNode, 'label')) {
+                    if (viewNode['show label'] || viewNode.label) {
                         const label = getLabel(part);
                         if (label) {
                             app.labels.push(label);
                             app.showNames = true;
                         }
                     }
-
                 } else if (part._node[meta].connection) {
                     const start = part.start;
                     const end = part.end;
                     if (start && end) {
                         app.connections.push(new Connection(start, end));
                     }
-                } else {
-                    part.parts.forEach((part) => this.addPart(part));
                 }
                 (part._node[meta].connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
@@ -2956,7 +2976,7 @@
                     }
                 });
                 if (descend) {
-                    part.parts.forEach((part) => this.addPart(part));
+                    part.parts.forEach((part) => this.addPart(part, parent));
                 }
             }
             removePart(part) {
@@ -2967,6 +2987,7 @@
                 }
                 part.parts.forEach((part) => this.removePart(part));
                 this.shapes.delete(part);
+                this.parts.delete(part);
             }
             within(point) {
                 // Return list of shapes that the given point is inside
@@ -2975,6 +2996,7 @@
             clear() {
                 const shapes = this.shapes.values();
                 shapes.forEach((list) => list.forEach((shape) => shape.remove()));
+                this.parts.clear();
                 this.shapes.clear();
                 this.items = [];
                 this.roots = [];
@@ -3123,7 +3145,8 @@
                 path.forEach((part) => {
                     part.showComponents();
                 });
-                app.view.addPart(part);
+                const parentView = this.parts.get(part.parent);
+                app.view.addPart(part, parentView?.transform.clone());
                 return shapes = app.view.shapes.get(part);
             }
         }
@@ -3150,14 +3173,14 @@
             static byIdentifier = {};
             static identifier(node) {
                 return node[meta].type ||
-                    getAttribute(node, 'number') ||
-                    getAttribute(node, 'id') ||
-                    getAttribute(node, 'name');
+                    node.number ||
+                    node.id ||
+                    node.name;
             }
             static fromNode(node) {
                 const identifier = Product.identifier(node);
-                const name = node[meta].type || getAttribute(node, 'name');
-                const number = getAttribute(node, 'number') || getAttribute(node, 'id');
+                const name = node[meta].type || node.name;
+                const number = node.number || node.id;
                 const product = Product.byIdentifier[identifier] || new Product(name, number);
                 Product.byIdentifier[identifier] = product;
                 return product;
@@ -3189,9 +3212,9 @@
                 this.transform = new Transform();
                 this.components = [];
 
-                this.transform.move(getAttribute(node, 'position', [0, 0, 0]));
-                this.transform.rotate(getAttribute(node, 'angle', 0),
-                    getAttribute(node, 'axis', [0, 1, 0]));
+                this.transform.move(node.position ?? [0, 0, 0]);
+                this.transform.rotate(node.angle ?? 0,
+                    node.axis ?? [0, 1, 0]);
             }
             check(node) {
                 // Check if the node is a match for this component
@@ -3287,7 +3310,7 @@
                     ((this._id >> 24) & 0xFF) / 0xFF,];
                 //this._idBytes = [Math.random(), Math.random(), Math.random(), 1];
                 this._node = node;
-                this.name = getAttribute(node, 'name') || component.product.getUniqueName();
+                this.name = node.name || component.product.getUniqueName();
                 this.component = component;
                 this.parent = parent;
                 this.location = this._node.location;
@@ -3340,14 +3363,14 @@
                     const position = extractTranslation(shapes[0].world);
                     const rotation = extractQuaternion(shapes[0].world);
                     fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
-                } else if (getAttribute(this._node, 'position')) {
+                } else if (this._node.position) {
                     const position = extractTranslation(this.transform.matrix);
                     const rotation = extractQuaternion(this.transform.matrix);
                     fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
                 }
 
                 fields.push(...fieldNames.flatMap((field) => {
-                    const value = getAttribute(this._node, field);
+                    const value = this._node[field];
                     if (value !== undefined) {
                         return `${field} = ${value}`;
                     } else {
@@ -3412,7 +3435,7 @@
                         return colour;
                     }
                 }
-                return this.colour || getAttribute(this._node, 'colour', [0.5, 0.5, 0.5]);
+                return (this.colour || this._node.colour) ?? [0.5, 0.5, 0.5];
             }
             showComponents() {
                 // Check there are internal components to show
@@ -3422,14 +3445,14 @@
                 if (this.componentView || (this.parts.length === 0 && !this._node[meta].sources)) {
                     return;
                 }
-                const size = getAttribute(this._node, 'size', [0, 0, 0]);
+                const size = this._node.size ?? [0, 0, 0];
                 if (Math.hypot(...size) > 0) {
                     const type = getShape(this._node);
                     if (type === Block) {
                         const oldShapes = app.view.shapes.get(this);
                         app.view.removePart(this);
 
-                        const t = getAttribute(this._node, 'walls', 10);
+                        const t = this._node.walls ?? 10;
                         const walls = [
                             {
                                 position: [0, 0, 0],
@@ -3463,7 +3486,7 @@
                             }];
 
                         const shapes = walls.map((wall) => {
-                            const shape = new Block(this);
+                            const shape = new Block(app.view, this);
                             app.view.items.push(shape);
                             shape.move(wall.position, true);
                             shape.scale(wall.size);
@@ -3485,7 +3508,7 @@
                         view.removePart(part));
                     view.removePart(this);
                 });
-                const shape = new Block(this);
+                const shape = new Block(app.view, this);
                 app.view.items.push(shape);
                 app.view.shapes.set(this, [shape]);
                 this.componentView = false;
@@ -3586,7 +3609,7 @@
         const colourFunctions = {
             enumerated(key, attribute) {
                 return (part) =>
-                    key[part[attribute] || getAttribute(part._node, attribute)] || key['*'];
+                    key[part[attribute] || part._node[attribute]] || key['*'];
             }
         }
 
@@ -3604,10 +3627,10 @@
             const filters = rules.map((rule) => {
                 if (rule.includes('!=')) {
                     const [key, value] = rule.trim().split(/\s*!=\s*/);
-                    return (node) => getAttribute(node, key) !== value;
+                    return (node) => node[key] !== value;
                 } else if (rule.includes('=')) {
                     const [key, value] = rule.trim().split(/\s*=\s*/);
-                    return (node) => (getAttribute(node, key) === value || getAttribute(node, key) + '' === value);
+                    return (node) => (node[key] === value || node[key] + '' === value);
                 } else {
                     const pattern = new RegExp(rule);
                     return (node) => node[meta].name.some((name) => pattern.test(name));
@@ -3777,26 +3800,8 @@
                 app.view = view;
                 if (subject?._node.views) {
                     const configuration = subject._node.views.find((view) => view.name === name);
-                    if (configuration) {
-                        if (configuration[meta].sources) {
-                            if (configuration[meta].sources.some((source) => source.state === 'loading')) {
-                                return;
-                            }
-                            await Promise.all(configuration[meta].sources.map(async (source) => {
-                                if (source.state === 'loading' || source.state === 'loaded') {
-                                    return;
-                                }
-                                source.state = 'loading';
-                                const response = await fetch(source.url);
-                                if (response.ok) {
-                                    const text = await response.text();
-                                    await processText(text, configuration);
-                                    source.state = 'loaded';
-                                } else {
-                                    source.state = 'failed';
-                                }
-                            }));
-                        }
+                    if (configuration && configuration[meta].sources) {
+                        await loadContent(configuration);
                     }
                     if (configuration) {
                         await view.loadConfiguration(configuration);
@@ -3810,6 +3815,31 @@
             app.labels = [];
             saveState();
         }
+
+        /**
+         * Load deferred content
+         */
+        async function loadContent(node) {
+            if (node[meta].sources.some((source) => source.state === 'loading')) {
+                return;
+            }
+            await Promise.all(node[meta].sources.map(async (source) => {
+                if (source.state === 'loading' || source.state === 'loaded') {
+                    return;
+                }
+                source.state = 'loading';
+                const response = await fetch(source.url);
+                if (response.ok) {
+                    const text = await response.text();
+                    await processText(text, node);
+                    app.view.update();
+                    source.state = 'loaded';
+                } else {
+                    source.state = 'failed';
+                }
+            }));
+        }
+
 
         /**
          * Display details of the given part.
@@ -3829,6 +3859,7 @@
                     if (response.ok) {
                         const text = await response.text();
                         await updateGraph(text, part);
+                        app.view.update();
                         source.state = 'loaded';
                     } else {
                         source.state = 'failed';
@@ -3865,9 +3896,13 @@
                 pathView.append(node, '/');
             });
 
-            if (part.description) {
-                const description = document.getElementById('detail-view-description');
-                title.innerText = part.description;
+            const description = document.getElementById('detail-view-description');
+            if (part._node.Description?.length) {
+                const indent = part._node.Description[0].length - part._node.Description[0].trim().length;
+                const text = part._node.Description.map((line) => line.slice(indent)).join('\n');
+                description.innerText = text;
+            } else {
+                description.innerHTML = '';
             }
             const views = document.getElementById('detail-view-views');
             views.innerHTML = '';
@@ -3885,25 +3920,20 @@
                 `<a href=${link.url}>${link.label}</a>`).join('<br>');
             const parts = document.getElementById('detail-view-parts');
             parts.innerHTML = '';
+            const partsList = [...part.parts];
             if (app.sort) {
-                const sorted = [...part.parts];
-                sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
-                parts.append(...sorted.map((part) => {
-                    const node = document.createElement('div');
-                    node.innerText = part.name;
-                    node.classList.add('clickable');
-                    node.addEventListener('click', (event) => select(part, event));
-                    return node;
-                }));
-            } else {
-                parts.append(...part.parts.map((part) => {
-                    const node = document.createElement('div');
-                    node.innerText = part.name;
-                    node.classList.add('clickable');
-                    node.addEventListener('click', (event) => select(part, event));
-                    return node;
-                }));
+                partsList.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
             }
+            parts.append(...partsList.map((part) => {
+                const node = document.createElement('div');
+                node.innerText = part.name;
+                node.classList.add('clickable');
+                node.addEventListener('click', (event) => select(part, event));
+                if (app.view.shapes.get(part) === undefined) {
+                    node.classList.add('not-shown');
+                }
+                return node;
+            }));
         }
 
         /**
@@ -3930,7 +3960,7 @@
          * Deselect the part, removing from the list of selected parts.
          */
         function deselect(part, event = {}) {
-            if (getAttribute(part._node, 'position') === undefined || Math.hypot(...getAttribute(part._node, 'size', [0])) === 0) {
+            if (part._node.position === undefined || Math.hypot(...part._node.size ?? [0]) === 0) {
                 part.parts.forEach((child) => deselect(child, event));
             }
             if (event.ctrlKey) {
@@ -3943,7 +3973,7 @@
          * Toggle the selection of the part.
          */
         function toggleSelection(part) {
-            if (getAttribute(part._node, 'position') === undefined || Math.hypot(...getAttribute(part._node, 'size', [0])) === 0) {
+            if (part._node.position === undefined || Math.hypot(...part._node.size ?? [0]) === 0) {
                 part.parts.forEach((child) => toggleSelection(child));
             }
             if (app.selected.has(part)) {
@@ -6025,27 +6055,6 @@
         }
 
         /**
-         * Return an attribute value, doing a breadth first search of the types.
-         */
-        function getAttribute(item, attribute, defaultValue) {
-            if (item[attribute] !== undefined) {
-                return item[attribute];
-            }
-            if (item[meta].type) {
-                console.log('***********');
-                const stack = [...item[meta].types];
-                while (stack.length > 0) {
-                    const prototype = stack.shift();
-                    if (prototype[attribute] !== undefined) {
-                        return prototype[attribute];
-                    }
-                    stack.push(...prototype[meta].types);
-                }
-            }
-            return defaultValue;
-        }
-
-        /**
          * Add event to make element moveable with the mouse.
          *
          * Assumes the element position is 'fixed'
@@ -6478,8 +6487,8 @@
                 gl.vertexAttribDivisor(app.pbrShader.textureParameters, 1);
                 gl.enableVertexAttribArray(app.pbrShader.textureParameters);
             }
-            addInstance(part, shape, label) {
-                const instance = new Instance(part, shape, this, label);
+            addInstance(part, shape) {
+                const instance = new Instance(part, shape, this);
                 this.instances.push(instance);
                 this.initialise = true;
                 return instance;
@@ -6554,23 +6563,22 @@
          * Class to manage association of a particular instance of a instanceGroup and a 'shape'.
          */
         class Instance {
-            constructor(part, shape, instanceGroup, label) {
+            constructor(part, shape, instanceGroup) {
                 this.shape = shape;
                 this.instanceGroup = instanceGroup;
-                this.label = label;
                 this.hidden = false;
 
                 this.material = {
-                    roughness: getAttribute(part._node, 'roughness', 0.1),
+                    roughness: part._node.roughness ?? 0.1,
                     colour: part.getColour(),
-                    emissivityColour: getAttribute(part._node, 'emissivity', [0, 0, 0]),
-                    reflectivity: getAttribute(part._node, 'reflectivity', [0.2, 0.2, 0.2]),
-                    opacity: getAttribute(part._node, 'opacity', 1),
-                    metallic: getAttribute(part._node, 'metallic', 0.1),
-                    mirror: getAttribute(part._node, 'mirror', 0.3),
+                    emissivityColour: part._node.emissivity ?? [0, 0, 0],
+                    reflectivity: part._node.reflectivity ?? [0.2, 0.2, 0.2],
+                    opacity: part._node.opacity ?? 1,
+                    metallic: part._node.metallic ?? 0.1,
+                    mirror: part._node.mirror ?? 0.3,
                 };
 
-                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.texture = addTexture(part._node.texture ?? 'white');
 
                 this.state = {};
             }
@@ -6713,27 +6721,32 @@
                 this.state = {};
 
                 const scale = this.node.scale ?? 1;
-                const size = getAttribute(this.node, 'size', [scale, scale, scale]);
-                const position = getAttribute(this.node, 'position', [0, 0, 0]);
-                const offset = product(getAttribute(this.node, 'offset', [0, 0, 0]), size);
+                const size = this.node.size ?? [scale, scale, scale];
+                const position = this.node.position ?? [0, 0, 0];
+                const offset = product(this.node.offset ?? [0, 0, 0], size);
 
                 this.transform.scale(size);
                 if (node) {
-                    this.transform.move(position);
+                    //this.transform.move(position);
                 }
                 this.transform.move(offset);
-                this.offset(getAttribute(this.node, 'offset', [0, 0, 0]));
+                this.offset(this.node.offset ?? [0, 0, 0]);
 
                 if (node) {
-                    this.transform.rotate(getAttribute(this.node, 'angle', 0),
-                        getAttribute(this.node, 'axis', [0, 1, 0]));
+                    //this.transform.rotate(this.node.angle ?? 0,
+                    //    this.node.axis ?? [0, 1, 0]);
                 }
 
-                const texture = getAttribute(this.node, 'texture');
+                const texture = this.node.texture;
                 if (texture) {
                     this.texture = getTexture(texture);
                 }
-                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                const partView = view.parts.get(part);
+                if (partView) {
+                    this.world = multiply(this.transform.matrix, partView.transform.matrix);
+                } else {
+                    this.world = multiply(this.transform.matrix, part.transform.matrix);
+                }
             }
             set opacity(value) {
                 this.instances.forEach((instance) => instance.opacity = value);
@@ -6771,11 +6784,11 @@
 
                     this.transform = new Transform();
 
-                    this.transform.move(getAttribute(this.node, 'position', [0, 0, 0]));
-                    this.transform.rotate(getAttribute(this.node, 'angle', 0),
-                        getAttribute(this.node, 'axis', [0, 1, 0]));
+                    this.transform.move(this.node.position ?? [0, 0, 0]);
+                    this.transform.rotate(this.node.angle ?? 0,
+                        this.node.axis ?? [0, 1, 0]);
 
-                    //this.transform.scale(getAttribute(this.node, 'size', [1, 1, 1]));
+                    //this.transform.scale(this.node.size ?? [1, 1, 1]);
                     this.instances.forEach((instance) => instance.updateInstanceData());
                 }
                 if (app.selected.has(this.part)) {
@@ -6937,7 +6950,7 @@
                 return;
                 const reference = this.parent ? this.parent.world : identityMatrix();
                 const scale = extractScale(reference);
-                const size = getAttribute(this.node, 'size', [1, 1, 1]);
+                const size = this.node.size ?? [1, 1, 1];
                 this.transform.matrix[12] += size[0] * offset[0] / scale[0];
                 this.transform.matrix[13] += size[1] * offset[1] / scale[1];
                 this.transform.matrix[14] += size[2] * offset[2] / scale[2];
@@ -7005,14 +7018,14 @@
                 ];
                 return new InstanceGroup(gl.TRIANGLES, 6, { vertexData });
             }
-            constructor(part, node) {
-                super(part, node, `quad`);
+            constructor(view, part, node) {
+                super(view, part, node);
 
                 if (!Quad.instanceGroups.has(view)) {
                     Quad.instanceGroups.set(view, Quad.make());
                 }
                 this.instanceGroup = Quad.instanceGroups.get(view);
-                this.instances = [this.instanceGroup.addInstance(part, this, `quad`)];
+                this.instances = [this.instanceGroup.addInstance(part, this,)];
             }
             intersects(line, all) {
                 const size = extractScale(this.transform.scale);
@@ -7143,7 +7156,7 @@
                 return Block.instanceGroup;
             }
             constructor(view, part, node) {
-                super(view, part, node, `block`);
+                super(view, part, node);
 
                 this.instanceGroup = Block.instanceGroups.get(view);
                 if (!this.instanceGroup) {
@@ -7575,14 +7588,14 @@
             static instances = []
             static viewData = new Map();
             constructor(view, part, node) {
-                super(view, part, node, `shed`);
+                super(view, part, node);
                 // If the shed buffers don't exist create them
                 if (!Shed.viewData.get(view)) {
 
                     const fixed = {
-                        emissivityColour: getAttribute(part._node, 'emissivity', [0, 0, 0]),
-                        reflectivity: getAttribute(part._node, 'reflectivity', [0.2, 0.2, 0.2]),
-                        texture: addTexture(getAttribute(part._node, 'texture', 'white')),
+                        emissivityColour: part._node.emissivity ?? [0, 0, 0],
+                        reflectivity: part._node.reflectivity ?? [0.2, 0.2, 0.2],
+                        texture: addTexture(part._node.texture ?? 'white'),
                     };
                     const viewData = {
                         buffers: createPBRBuffers(fixed),
@@ -7609,8 +7622,8 @@
                 const colour = this.node.colour ?? [0.7, 0.2, 0.3];
                 // Return the vertices for this shed in world space.
                 // The vertices are in groups of 3, representing the triangles that make the shape.
-                const size = getAttribute(this.node, 'size');
-                const apex = getAttribute(this.node, 'apex');
+                const size = this.node.size;
+                const apex = this.node.apex;
                 //const [w, h, d] = size.map((v) => v);
                 const w2 = 0;
                 const w = 0.5;
@@ -7931,14 +7944,14 @@
             static views = new Set();
             static pointCount = 0;
             constructor(view, part, node) {
-                super(view, part, node, `room`);
+                super(view, part, node);
                 // If the room buffers don't exist create them
                 if (!Room.buffers) {
                     const fixed = {
                         emissivityColour: [0, 0, 0],
                         reflectivity: [0.04, 0.04, 0.04],
                         materialParameters: [0.1, 1, 0.1, 0.3],
-                        texture: addTexture(getAttribute(part._node, 'texture', 'white')),
+                        texture: addTexture(this.node.texture ?? 'white'),
                     };
 
                     Room.buffers = createPBRBuffers(fixed, null, true);
@@ -7949,19 +7962,19 @@
                     Room.views.add(view);
                     view.renderQueue.push(Room);
                 }
-                this.partColour = getAttribute(part._node, 'colour', [0.6, 0.3, 0.8]);
+                this.partColour = this.node.colour ?? [0.6, 0.3, 0.8];
 
                 // A room can be defined using a path or as a length and width,
                 // convert length and width to a path for common processing.
-                this.definition = getAttribute(this.part._node, 'path');
+                this.definition = this.node.path;
                 if (!this.definition) {
-                    const size = getAttribute(this.part._node, 'size', [0, 0, 0]);
+                    const size = this.node.size ?? [0, 0, 0];
                     if (size.length === 2) {
                         size[2] = size[1];
                         size[1] = 0;
                     }
-                    const length = getAttribute(this.part._node, 'length', 1);
-                    const width = getAttribute(this.part._node, 'width', 1);
+                    const length = this.node.length ?? 1;
+                    const width = this.node.width ?? 1;
 
                     this.definition = [`0 0`, `${width} 0`, `${width} ${length}`, `0 ${length}`];
                 }
@@ -8415,9 +8428,9 @@
                 return instanceGroup;
             }
             constructor(view, part, node) {
-                super(view, part, node, `BevelledBlock`);
+                super(view, part, node);
 
-                const bevel = [getAttribute(node, 'bevel', 0.05)].flatMap((item) => item);
+                const bevel = [node.bevel ?? 0.05].flatMap((item) => item);
                 if (bevel.length < 3) {
                     const length = bevel.length;
                     const value = bevel.at(-1);
@@ -8425,7 +8438,7 @@
                     bevel.fill(value, length, 3);
                 }
 
-                const size = getAttribute(node, 'size');
+                const size = node.size;
                 const longest = Math.max(...size) || 1;
                 const shortest = Math.min(...size) || 1;
                 const scaledBevel = size.map((length, index) => bevel[index] * shortest / (length || 1));
@@ -8520,10 +8533,10 @@
                 return new InstanceGroup(gl.TRIANGLES, vertexData.length / 8, { vertexData });
             }
             constructor(view, part, node) {
-                super(view, part, node, 'cylinder');
-                const sides = getAttribute(part._node, 'sides', 12);
-                this.radius = getAttribute(part._node, 'radius');
-                this.height = getAttribute(part._node, 'height');
+                super(view, part, node);
+                const sides = part._node.sides ?? 12;
+                this.radius = part._node.radius;
+                this.height = part._node.height;
                 this.points = [this.origin]
                 const size = [this.radius, this.height, this.radius];
                 this.scale(size);
@@ -8605,12 +8618,12 @@
             constructor(view, part, node) {
                 super(view, part, node);
                 this.points = [this.origin];
-                const sides = getAttribute(part._node, 'sides', 12);
-                this.radius1 = getAttribute(part._node, 'radius1');
-                this.radius2 = getAttribute(part._node, 'radius2');
+                const sides = part._node.sides ?? 12;
+                this.radius1 = part._node.radius1;
+                this.radius2 = part._node.radius2;
                 this.ratio = this.radius2 / this.radius1;
 
-                this.height = getAttribute(part._node, 'height');
+                this.height = part._node.height;
                 const size = [this.radius1, this.height, this.radius1];
                 this.scale(size);
 
@@ -8748,8 +8761,8 @@
                 return viewGroup.get(subdivisions);
             }
             constructor(view, part, node) {
-                super(view, part, node, 'icosphere');
-                const subdivisions = getAttribute(part._node, 'subdivisions', 4);
+                super(view, part, node);
+                const subdivisions = part._node.subdivisions ?? 4;
                 if (!Icosphere.groups.has(view)) {
                     Icosphere.groups.set(view, new Map());
                 }
@@ -8758,7 +8771,7 @@
                 }
                 this.instanceGroup = Icosphere.groups.get(view).get(subdivisions);
                 this.instances = [this.instanceGroup.addInstance(part, this, 'icosphere')];
-                this.radius = getAttribute(part._node, 'radius');
+                this.radius = part._node.radius;
                 const diameter = this.radius * 2;
                 this.points = [this.origin];
                 this.scale([diameter, diameter, diameter]);
@@ -8780,7 +8793,7 @@
                 const n = l / direction.reduce((s, v) => s + v * v, 0);
                 const p = sum(point, Vector.scale(direction, n));
                 const dist = Math.hypot(...p);
-                const radius = getAttribute(this.node, 'radius');
+                const radius = this.node.radius;
                 if (dist <= 0.5) {
                     const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
@@ -8825,7 +8838,7 @@
                         const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
 
                         // Convert to view space
-                        const radius = 2 * getAttribute(this.node, 'radius') / point[3];
+                        const radius = 2 * this.node.radius / point[3];
 
                         const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
 
@@ -8950,10 +8963,10 @@
                 this.segments = [];
             }
             getPoints() {
-                const path = getAttribute(this.node, 'path');
+                const path = this.node.path;
                 this.points = pathToPoints(path).filter((point) => point);
 
-                const thickness = getAttribute(this.node, 'thickness');
+                const thickness = this.node.thickness;
                 const offset = [];
                 if (!Array.isArray(thickness)) {
                     offset.push(thickness / 2, thickness / 2);
@@ -8999,7 +9012,7 @@
                 };
 
                 this.corners = this.points.map(getCorner);
-                if (!getAttribute(this.node, 'closed')) {
+                if (!this.node.closed) {
                     // First and last corners are perpendicular to segment
                     const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
                     const l1 = Math.hypot(...d1);
@@ -9027,7 +9040,7 @@
                     ];
                     this.corners = [[p1, p2], ...this.corners.slice(1, -1), [p3, p4]];
                 }
-                const height = getAttribute(this.node, 'height');
+                const height = this.node.height;
                 const get2dNormal = (p1, p2) => {
                     const vector = [p2[0] - p1[0], p2[1] - p1[1]];
                     const length = Math.hypot(...vector);
@@ -9064,7 +9077,7 @@
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
                 this.origin = [centre[0], height / 2, centre[1]];
-                if (!getAttribute(this.node, 'closed')) {
+                if (!this.node.closed) {
                     this.segments.pop();
                 }
                 this.outer = this.segments.reduce((sum, segment) => sum + segment.outer, 0);
@@ -9075,8 +9088,8 @@
                 const vectors = [];
                 const vertices = [];
 
-                const height = getAttribute(this.node, 'height', 1);
-                const closed = getAttribute(this.node, 'closed');
+                const height = this.node.height ?? 1;
+                const closed = this.node.closed;
                 let inner = 0;
                 let outer = 0;
                 this.segments.forEach((segment, i) => {
@@ -9429,19 +9442,19 @@
           */
         class Wall extends Shape {
             constructor(view, part, node) {
-                super(view, part, node, 'Wall');
+                super(view, part, node);
                 this.children = [];
-                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.texture = addTexture(part._node.texture ?? 'white');
 
                 this.material = {
-                    colour: getAttribute(this.part._node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.part._node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [0.1, 1, 0.1, 0.3],
                 }
-                this.textureParameters = addTexture(getAttribute(part._node, 'texture', 'white'));
-                this.height = getAttribute(part._node, 'height', 1);
-                this.thickness = getAttribute(part._node, 'thickness', 1);
+                this.textureParameters = addTexture(part._node.texture ?? 'white');
+                this.height = part._node.height ?? 1;
+                this.thickness = part._node.thickness ?? 1;
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeWalls();
@@ -9458,7 +9471,7 @@
             }
             initialiseBuffers() {
                 const fixed = {
-                    colour: getAttribute(this.part._node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.part._node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     //materialParameters: [0.1, 1, 0.1, 0.3],
@@ -9469,10 +9482,10 @@
                 this.vao = buffers.vao;
             }
             getPoints() {
-                const path = getAttribute(this.part._node, 'path');
+                const path = this.part._node.path;
                 this.points = pathToPoints(path).filter((point) => point);
 
-                const thickness = getAttribute(this.part._node, 'thickness');
+                const thickness = this.part._node.thickness;
                 const offset = [];
                 if (!Array.isArray(thickness)) {
                     offset.push(thickness / 2, thickness / 2);
@@ -9518,7 +9531,7 @@
                 };
 
                 this.corners = this.points.map(getCorner);
-                if (!getAttribute(this.part._node, 'closed')) {
+                if (!this.part._node.closed) {
                     // First and last corners are perpendicular to segment
                     const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
                     const l1 = Math.hypot(...d1);
@@ -9546,7 +9559,7 @@
                     ];
                     this.corners = [[p1, p2], ...this.corners.slice(1, -1), [p3, p4]];
                 }
-                const height = getAttribute(this.part._node, 'height');
+                const height = this.part._node.height;
                 const get2dNormal = (p1, p2) => {
                     const vector = [p2[0] - p1[0], p2[1] - p1[1]];
                     const length = Math.hypot(...vector);
@@ -9585,7 +9598,7 @@
                 });
                 const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
                 this.origin = [centre[0], height / 2, centre[1]];
-                if (!getAttribute(this.part._node, 'closed')) {
+                if (!this.part._node.closed) {
                     this.segments.pop();
                 }
                 this.outer = this.segments.reduce((sum, segment) => sum + segment.outer, 0);
@@ -9596,8 +9609,8 @@
                 const vectors = [];
                 const vertices = [];
 
-                const height = getAttribute(this.part._node, 'height', 1);
-                const closed = getAttribute(this.part._node, 'closed');
+                const height = this.part._node.height ?? 1;
+                const closed = this.part._node.closed;
                 let inner = 0;
                 let outer = 0;
                 this.segments.forEach((segment, i) => {
@@ -9959,23 +9972,23 @@
           */
         class Prism extends Shape {
             constructor(view, part, node) {
-                super(view, part, node, 'prism');
+                super(view, part, node);
                 this.children = [];
 
                 this.material = {
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     parameters: [
-                        getAttribute(this.node, 'roughness', 0.1),
-                        getAttribute(this.node, 'opacity', 1),
-                        getAttribute(this.node, 'metalic', 0.1),
-                        getAttribute(this.node, 'mirror', 0.3),
+                        this.node.roughness ?? 0.1,
+                        this.node.opacity ?? 1,
+                        this.node.metalic ?? 0.1,
+                        this.node.mirror ?? 0.3,
                     ],
                 };
-                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.texture = addTexture(part._node.texture ?? 'white');
 
-                this.height = getAttribute(part._node, 'height', 1);
+                this.height = part._node.height ?? 1;
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeWalls();
@@ -9989,14 +10002,14 @@
             }
             initialiseBuffers() {
                 const fixed = {
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [
-                        getAttribute(this.node, 'roughness', 0.1),
-                        getAttribute(this.node, 'opacity', 1),
-                        getAttribute(this.node, 'metalic', 0.1),
-                        getAttribute(this.node, 'mirror', 0.3),
+                        this.node.roughness ?? 0.1,
+                        this.node.opacity ?? 1,
+                        this.node.metalic ?? 0.1,
+                        this.node.mirror ?? 0.3,
                     ],
                     texture: this.texture,
                 }
@@ -10005,7 +10018,7 @@
                 this.vao = buffers.vao;
             }
             getPoints() {
-                const path = getAttribute(this.node, 'path');
+                const path = this.node.path;
                 this.points = pathToPoints(path);
                 const minx = Math.min(...this.points.map((point) => point[0]));
                 const miny = Math.min(...this.points.map((point) => point[1]));
@@ -10132,7 +10145,7 @@
                 const n = l / direction.reduce((s, v) => s + v * v, 0);
                 const p = sum(point, Vector.scale(direction, n));
                 const dist = Math.hypot(...p);
-                const radius = getAttribute(this.node, 'radius');
+                const radius = this.node.radius;
                 if (dist <= radius) {
                     const offset = Vector.scale(direction, Math.sqrt(radius * radius - dist * dist));
                     return [{
@@ -10195,9 +10208,9 @@
 
         class Polygon extends Shape {
             constructor(view, part, node) {
-                super(view, part, node, 'polygon');
+                super(view, part, node);
                 this.children = [];
-                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.texture = addTexture(part._node.texture ?? 'white');
 
                 this.getPoints(node ?? part._node);
                 this.initialiseBuffers();
@@ -10212,19 +10225,19 @@
             }
             initialiseBuffers() {
                 const transform = identityMatrix();
-                const position = getAttribute(this.part._node, 'position', [0, 0, 0]);
+                const position = this.part._node.position ?? [0, 0, 0];
                 transform[12] = position[0];
                 transform[13] = position[1];
                 transform[14] = position[2];
                 const fixed = {
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [
-                        getAttribute(this.node, 'roughness', 0.1),
-                        getAttribute(this.node, 'opacity', 1),
-                        getAttribute(this.node, 'metalic', 0.1),
-                        getAttribute(this.node, 'mirror', 0.3),
+                        this.node.roughness ?? 0.1,
+                        this.node.opacity ?? 1,
+                        this.node.metalic ?? 0.1,
+                        this.node.mirror ?? 0.3,
                     ],
                     texture: this.texture,
                 };
@@ -10234,7 +10247,7 @@
                 this.indices = buffers.index;
             }
             getPoints(node) {
-                const path = getAttribute(node, 'path');
+                const path = node.path;
                 this.points = pathToPoints(path);
                 this.minx = Math.min(...this.points.map((point) => point[0]));
                 this.miny = Math.min(...this.points.map((point) => point[1]));
@@ -10261,14 +10274,14 @@
                 setFixedPBRAttributes({
                     world: this.world,
                     orientation,
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
-                    emissivityColour: getAttribute(this.node, 'colour', [0, 0, 0]),
-                    reflectivity: getAttribute(this.node, 'reflectivity', [0.04, 0.04, 0.04]),
+                    colour: this.node.colour ?? [0.6, 0.3, 0.8],
+                    emissivityColour: this.node.colour ?? [0, 0, 0],
+                    reflectivity: this.node.reflectivity ?? [0.04, 0.04, 0.04],
                     materialParameters: [
-                        getAttribute(this.node, 'roughness', 0.1),
-                        this.show ? getAttribute(this.node, 'opacity', 1) : 0.5,
-                        getAttribute(this.node, 'metalic', 0.1),
-                        getAttribute(this.node, 'mirror', 0.3),
+                        this.node.roughness ?? 0.1,
+                        this.show ? this.node.opacity ?? 1 : 0.5,
+                        this.node.metalic ?? 0.1,
+                        this.node.mirror ?? 0.3,
                     ],
                     texture: this.texture,
                 });
@@ -10392,9 +10405,9 @@
 
         class Lathed extends Shape {
             constructor(view, part, node) {
-                super(view, part, node, 'lathed');
+                super(view, part, node);
                 this.children = [];
-                this.texture = addTexture(getAttribute(part._node, 'texture', 'white'));
+                this.texture = addTexture(part._node.texture ?? 'white');
 
                 this.material = {
                     colour: part.getColour(),
@@ -10402,8 +10415,8 @@
                     reflectivity: [0.04, 0.04, 0.04],
                     parameters: [0.1, 1, 0.1, 0.3],
                 }
-                this.angle = getAttribute(part._node, 'sweep', 360);
-                this.sides = getAttribute(part._node, 'sides', 12);
+                this.angle = part._node.sweep ?? 360;
+                this.sides = part._node.sides ?? 12;
                 this.getPoints();
                 this.initialiseBuffers();
                 this.makeVolume();
@@ -10420,19 +10433,19 @@
             }
             initialiseBuffers() {
                 const transform = identityMatrix();
-                const position = getAttribute(this.node, 'position', [0, 0, 0]);
+                const position = this.node.position ?? [0, 0, 0];
                 transform[12] = position[0];
                 transform[13] = position[1];
                 transform[14] = position[2];
                 const fixed = {
-                    colour: getAttribute(this.node, 'colour', [0.6, 0.3, 0.8]),
+                    colour: this.node.colour ?? [0.6, 0.3, 0.8],
                     emissivityColour: [0, 0, 0],
                     reflectivity: [0.04, 0.04, 0.04],
                     materialParameters: [
-                        getAttribute(this.node, 'roughness', 0.1),
-                        getAttribute(this.node, 'opacity', 1),
-                        getAttribute(this.node, 'metalic', 0.1),
-                        getAttribute(this.node, 'mirror', 0.3),
+                        this.node.roughness ?? 0.1,
+                        this.node.opacity ?? 1,
+                        this.node.metalic ?? 0.1,
+                        this.node.mirror ?? 0.3,
                     ],
                     texture: this.texture,
                 };
@@ -10442,7 +10455,7 @@
                 this.indices = buffers.index;
             }
             getPoints() {
-                const path = getAttribute(this.node, 'path');
+                const path = this.node.path;
                 this.points = pathToPoints(path);
                 this.minx = Math.min(...this.points.map((point) => point[0]));
                 this.miny = Math.min(...this.points.map((point) => point[1]));
@@ -10455,7 +10468,7 @@
                 const vertices = [];
                 const indices = [];
 
-                if (getAttribute(this.node, 'faceted')) {
+                if (this.node.faceted) {
                     const getNormal = (points) =>
                         cross(subtract(points[1], points[0]), subtract(points[2], points[0]));
                     for (let side = 0; side < this.sides; ++side) {
@@ -10533,7 +10546,7 @@
                                 vertices.push(...point, ...normalised(normal), 0, 0);
                             }
 
-                            if ((i < this.points.length - 1) || getAttribute(this.node, 'loop')) {
+                            if ((i < this.points.length - 1) || this.node.loop) {
                                 indices.push(n, n1, n2);
                                 indices.push(n3, n2, n1);
                             }
@@ -10827,9 +10840,9 @@
             static loaded = {};
             static pending = {};
             constructor(view, part, node) {
-                super(view, part, node, `lightwave object`);
+                super(view, part, node);
 
-                this.url = getAttribute(part._node, 'obj');
+                this.url = part._node.obj;
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
 
                 this.patches = LightWaveObject.loaded[this.url];
@@ -11059,13 +11072,13 @@
          */
         class GLTFObject extends Shape {
             constructor(view, part, node) {
-                super(view, part, node, `gltf`);
+                super(view, part, node);
                 this.load();
-                const position = getAttribute(part._node, 'position', [0, 0, 0]);
+                const position = part._node.position ?? [0, 0, 0];
                 this.transform.move(position);
             }
             async load() {
-                const uri = getAttribute(this.node, 'gltf');
+                const uri = this.node.gltf;
                 this.gltf = new GLTFLoader(gl, this.transform);
                 await this.gltf.load(uri);   // or 'model.gltf', or an ArrayBuffer
                 app.view.renderQueue.push(this);
@@ -11090,9 +11103,9 @@
             static loaded = {};
             static pending = {};
             constructor(view, part, node) {
-                super(view, part, node, `svg`);
+                super(view, part, node);
 
-                this.url = getAttribute(part._node, 'svg');
+                this.url = part._node.svg;
                 this.name = this.url.split('/').at(-1).replace(/\.obj$/i, '');
 
                 const nodes = SVGObject.loaded[this.url];
@@ -11132,7 +11145,7 @@
                 const nodes = [];
                 let groupNode;
                 let style = {};
-                const styles = getAttribute(this.node, 'group styles', []).reduce((styles, style) => {
+                const styles = this.node['group styles'] ?? [].reduce((styles, style) => {
                     styles[style.name] = style;
                     return styles;
                 }, {});
@@ -11217,7 +11230,7 @@
                                 console.log(`Component mismatch for ${node.name} in ${context.product.name}. Creating new component.`);
                             }
                         }
-                    } else if (getAttribute(node, 'position')) {
+                    } else if (node.position) {
                         component = new Component(product, node, root);
                         context = { product: root, part: parent };
                         root.components.push(component);
@@ -12158,9 +12171,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 app.initial.gridNormal = value;
                 app.gridNormal = [...app.initial.gridNormal];
             },
-            transform(value) {
-                app.transform = value;
-            },
             background(value) {
                 const colour = value;
                 app.background = colour;
@@ -12978,6 +12988,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     } else {
                         if (!node.name) {
                             addName(node, field.trim(), context);
+                        } else if (field.startsWith('~')) {
+                            node[meta].sources = node[meta].sources || [];
+                            node[meta].sources.push({url: field.slice(1)});
                         } else {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
@@ -13043,10 +13056,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             /**
              * Get or create a node based on a qualified name, which may include a path and type.
              */
-            function makeNode(context) {
+            function makeNode(context, text) {
                 const node = {
                     [meta]: {
                         name: [],
+                        text,
                         data: [],
                         test: () => true,
                         parent: context[symbols.object],
@@ -13074,7 +13088,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const text = line.text.trim();
                     const defaultParameters = [...instance[symbols.defaults]];
 
-                    if (text.endsWith('={}')) { // line ends in ':' add children as attributes for last parameter
+                    if (text.endsWith('={}')) { // line ends in '{}' add children as attributes for last parameter
                         const parameter = text.replace(/\s*=\{\}$/, '');
                         const object = instance[symbols.object];
                         object[parameter] = object[parameter] ?? {};
@@ -13097,18 +13111,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         instance[symbols.addNode] = (newNode) => {
                             const object = instance[symbols.object];
                             if (object[parameter] === undefined) {
-                                object[parameter] = newNode;
-                            } else if (Array.isArray(object[parameter])) {
-                                object[parameter].push(newNode);
+                                object[parameter] = [newNode[meta].text];
                             } else {
-                                object[parameter] = [object[parameter], newNode];
+                                object[parameter].push(newNode[meta].text);
                             }
                         };
                     } else if (text.includes('=')) {
                         processField(text, instance, defaultParameters); // Single element not a link or type
                     } else {
                         const addNode = instance[symbols.addNode];
-                        const node = makeNode(instance);
+                        const node = makeNode(instance, line.text);
                         addName(node, text.trim(), instance);
                         instance[symbols.object] = node;
                         instance[symbols.addNode] = (newNode) => node[parts].push(newNode);
@@ -13132,7 +13144,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                     const defaultParameters = [...instance[symbols.defaults]];
                     const addNode = instance[symbols.addNode];
-                    const node = makeNode(instance);
+                    const node = makeNode(instance, line.text);
                     line.fields.forEach((field) => processField(field, instance, defaultParameters));
 
                     // Add remaining defaults.
@@ -13341,7 +13353,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             console.log(`Component mismatch for ${node.name} in ${context.product.name}. Creating new component.`);
                         }
                     }
-                } else if (getAttribute(node, 'position')) {
+                } else if (node.position) {
                     component = new Component(product, node, root);
                     context = { product: root, part: parent };
                     root.components.push(component);
@@ -14217,7 +14229,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 if (labelPosition) {
                     return { text, position: labelPosition };
                 }
-                const position = getAttribute(part._node, 'label offset', [0, 0, 0]);
+                const position = part._node['label offset'] ?? [0, 0, 0];
                 const point = part.transform.apply(position);
                 return { text, position: point };
             }
