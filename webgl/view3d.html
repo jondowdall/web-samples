@@ -1093,6 +1093,7 @@
             gl_Position = viewProjection * model * vec4(position, 1.0);
         }
     </script>
+
     <script type="x-shader/x-fragment" id="picker-fragment-shader">
         #version 300 es
         precision highp float;
@@ -1323,6 +1324,7 @@
             fragmentColour = vec4(lo * occ, opacity) * texture(surfaceTexture, v_coord);
         }
     </script>
+
 
     <script type="x-shader/x-fragment" id="pbr-clear-fragment-shader">
         #version 300 es
@@ -1566,6 +1568,7 @@
             gl_Position.z = 1.0;
         }
     </script>
+
     <script type="x-shader/x-fragment" id="skybox-fragment-shader">
         #version 300 es
         precision highp float;
@@ -2851,7 +2854,7 @@
                 this.roots = [];
                 this.parts = new Map();
                 this.shapes = new Map();
-                this.gridSize = [0, 0];
+                this.gridSize = [1000, 1000];
                 this.customisation = new Map();
                 const subjectName = subject?.name ?? '*Root*'
                 this.tab = addViewLabel(`${subjectName}: ${name}`, () => showView(subject, name));
@@ -2887,10 +2890,12 @@
                     }
                 }
             }
-            addShape(shape, part) {
+            addShape(shape, part, customisation = {}) {
                 const shapeType = {
                     lightwave: LightWaveObject,
+                    lightwaveobject: LightWaveObject,
                     gltf: GLTFObject,
+                    gltfobject: GLTFObject,
                     svg: SVGObject,
                     room: Room,
                     'bevelled block': BevelledBlock,
@@ -2903,51 +2908,66 @@
                     prism: Prism,
                     lathed: Lathed,
                     polygon: Polygon,
-                }[shape.name.toLowerCase()];
+                }[shape.name.toLowerCase()] || [];
                 if (shapeType) {
-                    return new shapeType(this, part, shape);
+                    return new shapeType(this, part, Object.assign({}, shape, customisation));
                 }
                 return [];
             }
-            addPart(part, parent) {
+            addPart(part, reference = identityMatrix()) {
                 const partView = this.parts.get(part);
                 if (partView) {
-                    part.parts.forEach((part) => this.addPart(part, partView));
+                    part.parts.forEach((part) => this.addPart(part, partView.transform));
                     return;
                 }
+                const transform = identityMatrix();
 
-                const viewNode = this.customisation.get(part) || part._node;
+                const viewNode = {};
+                // Need to ensure the inherited properties are copied to the view node.
+                for (const property in part._node) {
+                    viewNode[property] = part._node[property];
+                }
+                const customisation = this.customisation.get(part);
+                if (customisation) {
+                    for (const property in customisation) {
+                        viewNode[property] = customisation[property];
+                    }
+                }
 
                 let descend = !viewNode['on selection'];
 
                 if (viewNode.position) {
-                    const transform = parent?.transform.clone() || new Transform();
-                    if (viewNode.position) {
-                        transform.move(viewNode.position);
-                    }
+                    //transform.multiply(reference.matrix);
                     if (viewNode.angle) {
-                        transform.rotate(viewNode.angle, viewNode.axis ?? [0, 1, 0]);
+                        const rotation = getRotation(viewNode.angle, viewNode.axis ?? [0, 1, 0]);
+                        multiply(transform, rotation, transform);
+                    }
+                    if (viewNode.position) {
+                        transform[12] = viewNode.position[0];
+                        transform[13] = viewNode.position[1];
+                        transform[14] = viewNode.position[2];
                     }
                     if (viewNode.scale) {
-                        transform.mode(viewNode.scale);
+                        const x = viewNode.scale[0] ?? 1;
+                        const y = viewNode.scale[1] ?? 1;
+                        const z = viewNode.scale[2] ?? 1;
+                        const scale = [
+                            x, 0, 0, 0,
+                            0, y, 0, 0,
+                            0, 0, z, 0,
+                            0, 0, 0, 1
+                        ];
+                        multiply(transform, scale, transform);
                     }
-                    const partView = { part, parent, transform };
-                    parent = partView || parent;
+                    multiply(transform, reference, transform);
+                    const partView = { part, transform, shapes: [], view: this };
                     this.parts.set(part, partView);
                     if (viewNode.shape && viewNode.shape.length > 0) {
-                        const shapes = viewNode.shape.flatMap((shape) => this.addShape(shape, part));
+                        const customisation = this.customisation.get(part);
+                        const shapes = viewNode.shape.flatMap((shape) => this.addShape(shape, part, customisation));
                         this.shapes.set(part, shapes);
                         partView.shapes = shapes;
                         this.items.push(...shapes);
-                    } else {
-                        const shapeType = getShape(viewNode) || Shape;
-                        if (shapeType === Shape) {
-                            descend = true;
-                        }
-                        const shape = new shapeType(this, part, this.customisation.get(part));
-                        this.shapes.set(part, [shape]);
-                        partView.shapes = [shape];
-                        this.items.push(shape);
                     }
 
                     if (viewNode['show label'] || viewNode.label) {
@@ -2976,18 +2996,22 @@
                     }
                 });
                 if (descend) {
-                    part.parts.forEach((part) => this.addPart(part, parent));
+                    part.parts.forEach((part) => this.addPart(part, transform));
                 }
             }
             removePart(part) {
-                const shapes = this.shapes.get(part);
+                const partView = this.parts.get(part);
+                if (!partView) {
+                    return;
+                }
+                const shapes = partView.shapes;
                 if (shapes) {
                     shapes.forEach((shape) => shape.remove());
                     this.items = this.items.filter((shape) => !shapes.includes(shape));
                 }
-                part.parts.forEach((part) => this.removePart(part));
+                //part.parts.forEach((part) => this.removePart(part));
                 this.shapes.delete(part);
-                this.parts.delete(part);
+                partView.shapes = [];
             }
             within(point) {
                 // Return list of shapes that the given point is inside
@@ -3237,7 +3261,7 @@
             }
 
             criteria.getParts = criteria.getParts || (async (part) => {
-                if  (part.parts.length === 0 && part._node[meta].sources) {
+                if (part.parts.length === 0 && part._node[meta].sources) {
                     await part.loadContent();
                 }
                 return part.parts;
@@ -3439,7 +3463,7 @@
             }
             showComponents() {
                 // Check there are internal components to show
-                if (this._node.url && !this._node.load) {
+                if (this._node[meta].sources && this._node[meta].sources.some((source) => source.state !== 'loaded')) {
                     this.loadContent();
                 }
                 if (this.componentView || (this.parts.length === 0 && !this._node[meta].sources)) {
@@ -3450,7 +3474,6 @@
                     const type = getShape(this._node);
                     if (type === Block) {
                         const oldShapes = app.view.shapes.get(this);
-                        app.view.removePart(this);
 
                         const t = this._node.walls ?? 10;
                         const walls = [
@@ -3493,11 +3516,14 @@
                             shape.cull = normalised(wall.normal);
                             return shape;
                         });
+                        app.view.removePart(this);
 
                         app.view.shapes.set(this, shapes);
 
-                        app.views.forEach((view) =>
-                            this.parts.forEach((part) => view.addPart(part)));
+                        const viewPart = app.view.parts.get(this);
+                        if (viewPart) {
+                            this.parts.forEach((part) => app.view.addPart(part, viewPart.transform));
+                        }
                     }
                 }
                 this.componentView = true;
@@ -3570,6 +3596,7 @@
                 },
                 [parts]: [],
             },
+            time: 0,
             items: [],
             stock: {},
             nodes: [],
@@ -5453,6 +5480,8 @@
          * Calculate the product of 2 4 x 4 matrices and store the result in the third.
          */
         function multiply(a, b, matrix) {
+            if (a === matrix) a = [...a];
+            if (b === matrix) b = [...b];
             matrix = matrix || Array(16);
             matrix[0] = a[0] * b[0] + a[1] * b[4] + a[2] * b[8] + a[3] * b[12];
             matrix[1] = a[0] * b[1] + a[1] * b[5] + a[2] * b[9] + a[3] * b[13];
@@ -5764,7 +5793,7 @@
         /**
          * Render an arbitrary plane as a checkerboard.
          */
-        function drawPlane(plane, size) {
+        function drawPlane(plane, size = [1, 1]) {
             // Get the view projection matrix
             const viewProjection = app.view.camera.viewProjection;
             const inverseViewProjection = app.view.camera.inverseViewProjection;
@@ -5773,7 +5802,7 @@
             gl.uniformMatrix4fv(app.referencePlaneShader.viewProjection, false, viewProjection);
             gl.uniformMatrix4fv(app.referencePlaneShader.inverseViewProjection, false, inverseViewProjection);
             gl.uniform3fv(app.referencePlaneShader.cameraPosition, app.view.camera.position);
-            gl.uniform2fv(app.referencePlaneShader.gridSize, size || app.gridSize);
+            gl.uniform2fv(app.referencePlaneShader.gridSize, size);
 
             gl.uniform3fv(app.referencePlaneShader.origin, plane.point ?? app.view.referencePlane.origin);
             gl.uniform3fv(app.referencePlaneShader.normal, plane.normal ?? app.view.referencePlane.normal);
@@ -5897,7 +5926,7 @@
 
                 app.view.render(time);
 
-                if (app.view.gridSize[0] && app.view.gridSize[1]) {
+                if (app.view.drawGround && app.view.gridSize[0] && app.view.gridSize[1]) {
                     drawPlane(app.view.referencePlane, app.view.gridSize);
                 }
 
@@ -6309,6 +6338,9 @@
                 return this;
             }
             scale(size) {
+                if (!Array.isArray(size)) {
+                    size = [size, size, size];
+                }
                 if (Math.hypot(...size) > 0) {
                     const scale = [size[0], 0, 0, 0, 0, size[1], 0, 0, 0, 0, size[2], 0, 0, 0, 0, 1];
                     this.multiply(scale);
@@ -6519,21 +6551,26 @@
             render() {
                 if (this.instances.length > 0) {
                     gl.bindVertexArray(this.buffers.vao);
-                    if (this.initialise) {
-                        this.initialiseInstances();
-                        this.initialise = false;
-                    } else if (this.updateRequired) {
-                        this.updateData();
-                        this.updateRequired = false;
+                    if (this.instances.length > 0) {
+                        if (this.initialise) {
+                            this.initialiseInstances();
+                            this.initialise = false;
+                        } else if (this.updateRequired) {
+                            this.updateData();
+                            this.updateRequired = false;
+                        }
+                        gl.uniform1i(app.pbrShader.effects, this.effects ?? 0);
+
+                        gl.bindVertexArray(this.buffers.vao); 
+
+                        if (this.count > 0) {
+                            gl.drawArraysInstanced(this.mode, this.offset, this.count, this.instances.length);
+                        }
+                        if (this.buffers.indices && this.points > 0) {
+                            gl.drawElementsInstanced(this.mode, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
+                        }
+                        gl.bindVertexArray(null);
                     }
-                    gl.uniform1i(app.pbrShader.effects, this.effects ?? 0);
-                    if (this.count > 0) {
-                        gl.drawArraysInstanced(this.mode, this.offset, this.count, this.instances.length);
-                    }
-                    if (this.buffers.indices && this.points > 0) {
-                        gl.drawElementsInstanced(this.mode, this.points, gl.UNSIGNED_SHORT, 0, this.instances.length);
-                    }
-                    gl.bindVertexArray(null);
                 }
             }
             pickerRender() {
@@ -6546,12 +6583,11 @@
                         gl.uniformMatrix4fv(app.pickerShader.model, false, instance.shape.world);
                         gl.uniform4fv(app.pickerShader.id, id);
 
-
                         if (this.count > 0) {
-                            gl.drawArrays(this.mode, 0, this.count);
+                            gl.drawArrays(this.mode, this.offset, this.count);
                         }
                         if (this.buffers.indices && this.points > 0) {
-                            gl.drawElements(this.mode, this.points, gl.UNSIGNED_SHORT, 0);
+                            gl.drawElements(this.mode, this.points, gl.UNSIGNED_SHORT, index * this.points);
                         }
                     });
                     gl.bindVertexArray(null);
@@ -6727,14 +6763,13 @@
 
                 this.transform.scale(size);
                 if (node) {
-                    //this.transform.move(position);
+                    this.transform.move(position);
                 }
                 this.transform.move(offset);
                 this.offset(this.node.offset ?? [0, 0, 0]);
 
-                if (node) {
-                    //this.transform.rotate(this.node.angle ?? 0,
-                    //    this.node.axis ?? [0, 1, 0]);
+                if (node && node.angle) {
+                    this.transform.rotate(node.angle, node.axis ?? [0, 1, 0]);
                 }
 
                 const texture = this.node.texture;
@@ -6743,9 +6778,7 @@
                 }
                 const partView = view.parts.get(part);
                 if (partView) {
-                    this.world = multiply(this.transform.matrix, partView.transform.matrix);
-                } else {
-                    this.world = multiply(this.transform.matrix, part.transform.matrix);
+                    this.world = multiply(this.transform.matrix, partView.transform);
                 }
             }
             set opacity(value) {
@@ -6855,7 +6888,8 @@
                 this.instanceGroup.updateRequired = true;
             }
             setWorld(reference) {
-                reference = reference || (this.part ? this.part.transform.matrix : identityMatrix());
+                const partView = this.view.parts.get(this.part);
+                reference = reference || (partView.transform || identityMatrix());
                 this.world = multiply(this.transform.matrix, reference);
                 this.children.forEach((child) => child.setWorld(this.world));
             }
@@ -6892,7 +6926,8 @@
                     const localOffset = applyTransform(offset, invert(orientation));
                     this.transform.move(localOffset);
                 }
-                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                const partView = this.view.parts.get(this.part);
+                this.world = multiply(this.transform.matrix, partView.transform);
                 this.applyTransform();
             }
             drag(offset, event = {}) {
@@ -6907,7 +6942,8 @@
                 const current = [...this.transform.matrix];
                 this.requestedTransform.move(delta);
                 this.transform.matrix = [...this.requestedTransform.matrix];
-                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                const partView = this.view.parts.get(this.part);
+                this.world = multiply(this.transform.matrix, partView.transform);
 
                 if (!event.shiftKey) {
                     const position = applyTransform(this.origin, this.world);
@@ -6923,7 +6959,8 @@
                             const inverted = invert(this.parent ? this.parent.world : identityMatrix());
                             const delta = applyTransform(gridDelta, inverted);
                             this.transform.move(delta);
-                            this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                            const partView = this.view.parts.get(this.part);
+                            this.world = multiply(this.transform.matrix, partView.transform);
                         }
                     }
                 }
@@ -6938,12 +6975,14 @@
             }
             scale(size) {
                 this.transform.scale(size);
-                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                const partView = this.view.parts.get(this.part);
+                this.world = multiply(this.transform.matrix, partView.transform);
                 this.applyTransform();
             }
             rotate(angle, axis) {
                 this.transform.rotate(angle, axis);
-                this.world = multiply(this.transform.matrix, this.part.transform.matrix);
+                const partView = this.view.parts.get(this.part);
+                this.world = multiply(this.transform.matrix, partView.transform);
                 this.applyTransform();
             }
             offset(offset) {
@@ -11013,7 +11052,7 @@
                     patch.instanceGroup = new InstanceGroup(gl.TRIANGLES, patch.points, { buffer }, patch.offset);
                     patch.effects = 0;
                     LightWaveObject.pending[this.url].forEach((obj) => {
-                        const instance = patch.instanceGroup.addInstance(obj._node[meta].part, obj, materialName);
+                        const instance = patch.instanceGroup.addInstance(this.part, obj, materialName);
                         obj.instances.push(instance);
                         instance.material = {
                             colour: materials[materialName].colour ?? materials[materialName].diffuseColour,
@@ -11452,7 +11491,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 } else {
                 }
                 */
-                report(`${hits[0].shape.node[meta].name[0]}`);
+                report(`${hits[0].name}`);
             } else {
                 app.showName = null;
                 if (!app.showPoints) {
@@ -12595,11 +12634,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             }
                             return scope?.[symbols.index] ?? match;
                         })
-                        .replace(/<([^>]+)>/g, (match, name) => context[name] ?? match)
+                        .replace(/<([^>]+)>/g, (match, name) => (context[name] ?? match))
                         .replace(/\{([^\}]+)\}(:([0-9]+),(.))?/g, (match, expr, format) => {
                             try {
                                 const keys = Object.keys(app.variables);
-                                const values = Object.values(app.variables);
+                                const values = Object.values(app.variables).map((variable) => variable.value);
                                 for (const key in context) {
                                     keys.push(key);
                                     values.push(context[key]);
@@ -12789,7 +12828,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         .replace(/<n>/, 'scope[symbols.index]');
                     const keys = Object.keys(app.variables);
                     const test = makeFunction([...keys, 'symbols', 'scope'], expr);
-                    const values = Object.values(app.variables);
+                    const values = Object.values(app.variables).map((variable) => variable.value);
 
                     const addNode = instance[symbols.addNode];
                     instance[symbols.addNode] = (newNode) => {
@@ -12990,7 +13029,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             addName(node, field.trim(), context);
                         } else if (field.startsWith('~')) {
                             node[meta].sources = node[meta].sources || [];
-                            node[meta].sources.push({url: field.slice(1)});
+                            node[meta].sources.push({ url: field.slice(1) });
                         } else {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
@@ -13026,6 +13065,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
 
                 type[parts].forEach((child) => {
                     const part = { __proto__: child, };
+                    //for(const property in child) {
                     Object.keys(child).forEach((property) => {
                         const resolved = resolve(child[property], context);
                         if (resolved !== child[property]) {
@@ -13048,8 +13088,19 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     node.name = name;
                 }
                 named[name] = node;
-                if (named[type]) {
-                    addType(node, named[type], context);
+                // Try to find a type with the given name or a part.
+                if (type) {
+                    let scope = context[symbols.object];
+                    while (scope) {
+                        if (scope[meta].types?.[type]) {
+                            addType(node, scope[meta].types[type], context);
+                            break;
+                        }
+                        scope = scope[meta].parent;
+                    }
+                    if (!scope && named[type]) {
+                        addType(node, named[type], context);
+                    }
                 }
             }
 
@@ -13159,6 +13210,35 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             };
 
             /**
+             * Process a type line, defining a new type in the structure.
+             */
+            const typeProcessor = {
+                pattern: /^\s*::/u,
+                async preprocess(line, stack) {
+                    line.fields = getFields(line.text.trim());
+                },
+                async processInstance(line, instance) {
+                    debug(`processType: ${line.text} from ${line.source.url} line ${line.source.lineNumber}`);
+
+                    const defaultParameters = [...instance[symbols.defaults]];
+                    const parent = instance[symbols.object];
+                    const node = makeNode(instance, line.text);
+                    line.fields[0] = line.fields[0].replace(/^::/, '');
+                    line.fields.forEach((field) => processField(field, instance, defaultParameters));
+
+                    // Add remaining defaults.
+                    defaultParameters.forEach((parameter) => {
+                        if (node[parameter.name] === undefined && parameter.value !== undefined) {
+                            node[parameter.name] = interpret(resolve(parameter.value, instance));
+                        }
+                    });
+                    parent[meta].types = parent[meta].types ?? {}; 
+                    parent[meta].types[node.name] = node;
+                },
+                __proto__: lineProcessor,
+            };
+
+            /**
              * Return a string withe the source information for a givent line.
              */
             function getSourceInfo(line) {
@@ -13208,6 +13288,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 loopProcessor,
                 defaultsProcessor,
                 objectUpdateProcessor,
+                typeProcessor,
                 objectProcessor,
                 singleFieldLineProcessor,
             ];
@@ -13315,7 +13396,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             return flat;
         }
 
-
         /**
          * load the objects defined in the text into the app.graph.
          */
@@ -13360,7 +13440,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
 
                 // If the part has already been created for this node, then reuse it.
-                const part = node[meta].part || new Part(node, component, context?.part);
+                //const part = node[meta].part || new Part(node, component, context?.part);
+                const part = new Part(node, component, context?.part);
                 if (node[meta].part) {
                     if (node.position) {
                         part.transform.move(node.position);
@@ -13388,6 +13469,35 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             while (nodes.length) {
                 const node = nodes.shift();
                 app.nodes.push(node);
+                // Defining a shape as part of the node is shorthand for creating a part with a shape.
+                const shape = getShape(node);
+                if (shape) {
+                    if (!Object.hasOwn(node, 'shape')) {
+                        node.shape = [];
+                    }
+                    const shapeNode = {
+                        name: shape.name, position: [0, 0, 0],
+                        size: node.size,
+                        obj: node.obj,
+                        gltf: node.gltf,
+                        svg: node.svg,
+                        ceiling: node.ceiling,
+                        bevel: node.bevel,
+                        walls: node.walls,
+                        apex: node.apex,
+                        height: node.height,
+                        radius: node.radius,
+                        radius1: node.radius1,
+                        radius2: node.radius2,
+                        path: node.path,
+                        thickness: node.thickness,
+                        height: node.height,
+                        sweep: node.sweep,
+                        scale: node.scale,
+                        [meta]: {}
+                    };
+                    node.shape.unshift(shapeNode);
+                }
                 node[parts].forEach((child) => child[meta].parent = node);
                 nodes.push(...node[parts]);
             }
@@ -14221,7 +14331,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
         }
 
         /**
-         * Get teh label for a part.
+         * Get the label for a part.
          */
         function getLabel(part, labelPosition) {
             if (app.view.shapes.get(part)) {
@@ -15120,7 +15230,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 ['projection', 'view', 'texture']);
 
             app.pbrShader = makeProgram(pbrShaderSource,
-                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters',],
+                ['model', 'normalMatrix', 'position', 'normal', 'coord', 'colour', 'emissivityColour', 'reflectivity', 'materialParameters', 'textureParameters', ],
                 ['projection', 'view', 'lightPosition1', 'lightColour1', 'lightPosition2', 'lightColour2', 'lightPosition3', 'lightColour3', 'cameraPosition', 'surfaceTexture', 'envTexture', 'pass', 'effects',]
             );
 
