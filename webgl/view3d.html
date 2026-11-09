@@ -2304,7 +2304,7 @@
             // Use the initial position to determine the desired distance from viewpoint
 
             if (app.selected.size) {
-                const selected = [...app.selected].flatMap((part) => app.view.shapes.get(part));
+                const selected = [...app.selected].flatMap((part) => app.view.parts.get(part)?.[0] ?? []);
                 if (selected.length < 1) {
                     return;
                 }
@@ -2913,10 +2913,10 @@
                 }
                 return [];
             }
-            addPart(part, reference = identityMatrix()) {
+            addPart(part, parent = {transform: identityMatrix()}) {
                 const partView = this.parts.get(part);
                 if (partView) {
-                    part.parts.forEach((part) => this.addPart(part, partView.transform));
+                    part.parts.forEach((part) => this.addPart(part, partView));
                     return;
                 }
                 const transform = identityMatrix();
@@ -2957,8 +2957,9 @@
                         ];
                         multiply(transform, scale, transform);
                     }
-                    multiply(transform, reference, transform);
-                    const partView = { part, transform, shapes: [], view: this };
+                    multiply(transform, parent.transform, transform);
+                    const partView = { part, transform, parent, shapes: [], view: this };
+                    parent = partView;
                     this.parts.set(part, partView);
                     if (viewNode.shape && viewNode.shape.length > 0) {
                         //const customisation = this.customisation.get(part);
@@ -2980,8 +2981,6 @@
                     if (start && end) {
                         app.connections.push(new Connection(start, end));
                     }
-                } else {
-                    multiply(transform, reference, transform);
                 }
                 (part._node[meta].connections || []).forEach((connection) => {
                     if (connection.start && connection.end) {
@@ -2995,7 +2994,7 @@
                     }
                 });
                 if (descend) {
-                    part.parts.forEach((part) => this.addPart(part, transform));
+                    part.parts.forEach((part) => this.addPart(part, parent));
                 }
             }
             removePart(part) {
@@ -3034,6 +3033,42 @@
                     app.parts.forEach((part) => this.addPart(part));
                 }
             }
+            updatePart(part, time) {
+                const partView = this.parts.get(part);
+                if (!partView) {
+                    return;
+                }
+                const viewNode = part._node;
+                const transform = identityMatrix();
+                if (viewNode.position) {
+                    if (viewNode.angle) {
+                        const rotation = getRotation(viewNode.angle, viewNode.axis ?? [0, 1, 0]);
+                        multiply(transform, rotation, transform);
+                    }
+                    if (viewNode.position) {
+                        transform[12] = viewNode.position[0];
+                        transform[13] = viewNode.position[1];
+                        transform[14] = viewNode.position[2];
+                    }
+                    if (viewNode.scale) {
+                        const x = viewNode.scale[0] ?? 1;
+                        const y = viewNode.scale[1] ?? 1;
+                        const z = viewNode.scale[2] ?? 1;
+                        const scale = [
+                            x, 0, 0, 0,
+                            0, y, 0, 0,
+                            0, 0, z, 0,
+                            0, 0, 0, 1
+                        ];
+                        multiply(transform, scale, transform);
+                    }
+                    partView.transform = multiply(transform, partView.parent.transform);
+                    partView.shapes.forEach((shape) => {
+                        shape.world = multiply(shape.transform.matrix, partView.transform);
+                        shape.applyTransform();
+                    });
+                }
+            }
             findByName(name, caseSensitive = false) {
                 // get the list of parts in this view
                 const parts = [...this.shapes.keys()];
@@ -3050,6 +3085,8 @@
                 const width = ctx.canvas.width;
                 const height = ctx.canvas.height;
                 ctx.clearRect(0, 0, width, height);
+
+                this.parts.keys().filter((part) => part._node[meta].dynamic).forEach((part) => this.updatePart(part, time));
 
                 if (app.show) {
                     const transform = app.view.camera.viewProjection;
@@ -3101,7 +3138,6 @@
                         ctx.stroke();
                     }
                 }
-                this.items.forEach((item) => item.update(time));
 
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_CUBE_MAP, app.envTexture);
@@ -6811,17 +6847,6 @@
                 return this.children.flatMap((child) => child.intersects(line));
             }
             update() {
-                if (this.node[meta].dynamic) {
-
-                    this.transform = new Transform();
-
-                    this.transform.move(this.node.position ?? [0, 0, 0]);
-                    this.transform.rotate(this.node.angle ?? 0,
-                        this.node.axis ?? [0, 1, 0]);
-
-                    //this.transform.scale(this.node.size ?? [1, 1, 1]);
-                    this.instances.forEach((instance) => instance.updateInstanceData());
-                }
                 if (app.selected.has(this.part)) {
                     this.instances.forEach((instance) => instance.highlight());
                 } else {
@@ -11274,38 +11299,6 @@
                         root.components.push(component);
                     }
 
-                    // Defining a shape as part of the node is shorthand for creating a part with a shape.
-                    const shape = getShape(node);
-                    if (shape) {
-                        if (!Object.hasOwn(node, 'shape')) {
-                            node.shape = [];
-                        }
-                        const shapeNode = {
-                            name: shape.name,
-                            position: [0, 0, 0],
-                            size: node.size,
-                            obj: node.obj,
-                            gltf: node.gltf,
-                            svg: node.svg,
-                            ceiling: node.ceiling,
-                            bevel: node.bevel,
-                            walls: node.walls,
-                            apex: node.apex,
-                            height: node.height,
-                            radius: node.radius,
-                            radius1: node.radius1,
-                            radius2: node.radius2,
-                            path: node.path,
-                            thickness: node.thickness,
-                            height: node.height,
-                            sweep: node.sweep,
-                            scale: node.scale,
-                            colour: node.colour,
-                            [meta]: {}
-                        };
-                        node.shape.unshift(shapeNode);
-                    }
-
                     const part = new Part(node, component, context?.part);
                     app.allParts.push(part);
                     product.instances.push(part);
@@ -11933,7 +11926,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function updatePartsList(part) {
             if (partsList) {
-                const parts = filterParts(part._node[meta].parts);
+                const parts = filterParts(part._node._parts);
                 partsList.updateList(parts);
             }
         }
@@ -12989,7 +12982,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             return func(...values, app.time, context[symbols.object]);
                         }
                     });
-                    node[meta].dynamic = true;
+                    obj[meta].dynamic = true;
                 } else if (field.includes('=')) {
                     const [name, ...values] = field.split(/\s*=\s*/);
                     let value = values.join('=');
@@ -13474,10 +13467,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
 
                 // If the part has already been created for this node, i.e. when loading
-                // internals are deferred, then reuse it.
-                const part = node[meta].part || new Part(node, component, context?.part);
+                // components have been deferred, then reuse it.
+                const part = node._part || new Part(node, component, context?.part);
                 //const part = new Part(node, component, context?.part);
-                if (node[meta].part) {
+                if (node._part) {
                     if (node.position) {
                         part.transform.move(node.position);
                     }
@@ -13485,7 +13478,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         part.transform.rotate(node.angle, node.axis ?? [0, 1, 0]);
                     }
                 }
-                node[meta].part = part;
+                node._part = part;
 
                 app.allParts.push(part);
                 product.instances.push(part);
