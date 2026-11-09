@@ -2913,7 +2913,7 @@
                 }
                 return [];
             }
-            addPart(part, parent = {transform: identityMatrix()}) {
+            addPart(part, parent = { transform: identityMatrix() }) {
                 const partView = this.parts.get(part);
                 if (partView) {
                     part.parts.forEach((part) => this.addPart(part, partView));
@@ -2964,7 +2964,6 @@
                     if (viewNode.shape && viewNode.shape.length > 0) {
                         //const customisation = this.customisation.get(part);
                         const shapes = viewNode.shape.flatMap((shape) => this.addShape(shape, part)); //, customisation));
-                        this.shapes.set(part, shapes);
                         partView.shapes = shapes;
                         this.items.push(...shapes);
                     }
@@ -2987,9 +2986,9 @@
                         const start = part.parts.find((part) => part._node[meta].name.includes(connection.start));
                         const end = part.parts.find((part) => part._node[meta].name.includes(connection.end));
                         if (start && end) {
-                            const starShape = this.shapes.get(start);
-                            const endShape = this.shapes.get(end);
-                            app.connections.push(new Connection(starShape[0], endShape[0]));
+                            const starShape = this.parts.get(start)?.shapes[0];
+                            const endShape = this.parts.get(end)?.shapes[0];
+                            app.connections.push(new Connection(starShape, endShape));
                         }
                     }
                 });
@@ -2997,18 +2996,17 @@
                     part.parts.forEach((part) => this.addPart(part, parent));
                 }
             }
+            removeShapes(shapes) {
+                shapes.forEach((shape) => shape.remove());
+                this.items = this.items.filter((shape) => !shapes.includes(shape));
+            }
             removePart(part) {
                 const partView = this.parts.get(part);
                 if (!partView) {
                     return;
                 }
-                const shapes = partView.shapes;
-                if (shapes) {
-                    shapes.forEach((shape) => shape.remove());
-                    this.items = this.items.filter((shape) => !shapes.includes(shape));
-                }
+                this.removeShapes(partView.shapes);
                 //part.parts.forEach((part) => this.removePart(part));
-                this.shapes.delete(part);
                 partView.shapes = [];
             }
             within(point) {
@@ -3016,10 +3014,8 @@
                 return this.items.filter((shape) => shape.contains(point));
             }
             clear() {
-                const shapes = this.shapes.values();
-                shapes.forEach((list) => list.forEach((shape) => shape.remove()));
+                this.items.forEach((shape) => shape.remove());
                 this.parts.clear();
-                this.shapes.clear();
                 this.items = [];
                 this.roots = [];
                 this.renderQueue.forEach((item) => item.reset());
@@ -3071,7 +3067,7 @@
             }
             findByName(name, caseSensitive = false) {
                 // get the list of parts in this view
-                const parts = [...this.shapes.keys()];
+                const parts = [...this.parts.keys()];
                 // Try exact match
                 const matches = parts.filter((part) => part.name === name || part._node[meta].name.includes(name));
                 if (matches.length > 0) {
@@ -3087,6 +3083,7 @@
                 ctx.clearRect(0, 0, width, height);
 
                 this.parts.keys().filter((part) => part._node[meta].dynamic).forEach((part) => this.updatePart(part, time));
+                this.items.forEach((item) => item.update());
 
                 if (app.show) {
                     const transform = app.view.camera.viewProjection;
@@ -3191,8 +3188,8 @@
                 }
             }
             showPart(part) {
-                if (this.shapes.get(part)) {
-                    return this.shapes.get(part);
+                if (this.parts.get(part)?.shapes) {
+                    return this.parts.get(part).shapes;
                 }
                 let parent = part.parent;
                 const path = [];
@@ -3206,8 +3203,19 @@
                 });
                 const parentView = this.parts.get(part.parent);
                 app.view.addPart(part, parentView?.transform.clone());
-                return shapes = app.view.shapes.get(part);
+                return shapes = app.view.parts.get(part)?.shapes;
             }
+        }
+
+        /**
+         * Get the projection matrix from frustum.
+         */
+        function getOrthographic(x, y, width, height) {
+            return multiply(app.view.camera.projectionMatrix, [
+                width, 0, 0, 0,
+                0, height, 0, 0,
+                0, 0, 1, 0,
+                width - 2 * x, height - 2 * y, 0, 1]);
         }
 
         /**
@@ -3417,14 +3425,10 @@
                     'colour',
                 ];
                 const fields = [this.name];
-                const shapes = app.view.shapes.get(this);
-                if (shapes) {
-                    const position = extractTranslation(shapes[0].world);
-                    const rotation = extractQuaternion(shapes[0].world);
-                    fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
-                } else if (this._node.position) {
-                    const position = extractTranslation(this.transform.matrix);
-                    const rotation = extractQuaternion(this.transform.matrix);
+                const partView = app.view.parts.get(this);
+                if (partView) {
+                    const position = extractTranslation(partView.transform);
+                    const rotation = extractQuaternion(partView.transform);
                     fields.push(`position = ${position.map((v) => v.toFixed(2))}`);
                 }
 
@@ -3482,7 +3486,7 @@
             }
             setColour(colour) {
                 this.colour = colour;
-                const shapes = app.view.shapes.get(this);
+                const shapes = app.view.parts.get(this)?.shapes;
                 if (shapes) {
                     shapes.forEach((shape) => shape.colour = colour);
                 }
@@ -3508,7 +3512,8 @@
                 if (Math.hypot(...size) > 0) {
                     const type = getShape(this._node);
                     if (type === Block) {
-                        const oldShapes = app.view.shapes.get(this);
+                        const partView = app.view.parts.get(this);
+                        const oldShapes = partView?.shapes;
 
                         const t = this._node.walls ?? 10;
                         const walls = [
@@ -3551,14 +3556,8 @@
                             shape.cull = normalised(wall.normal);
                             return shape;
                         });
-                        app.view.removePart(this);
-
-                        app.view.shapes.set(this, shapes);
-
-                        const viewPart = app.view.parts.get(this);
-                        if (viewPart) {
-                            this.parts.forEach((part) => app.view.addPart(part, viewPart.transform));
-                        }
+                        app.view.removeShapes(oldShapes);
+                        partView.shapes = shapes;
                     }
                 }
                 this.componentView = true;
@@ -3571,7 +3570,10 @@
                 });
                 const shape = new Block(app.view, this);
                 app.view.items.push(shape);
-                app.view.shapes.set(this, [shape]);
+                const partView = app.view.parts.get(this);
+                if (partView) {
+                    partView.shapes = [shape];
+                }
                 this.componentView = false;
             }
             scale(size) {
@@ -5487,7 +5489,7 @@
          */
         function updateTextBuffer() {
             const data = [];
-            const selected = [...app.selected].flatMap((node) => app.view.shapes.get(node) || []);
+            const selected = [...app.selected].flatMap((node) => app.view.parts.get(node)?.shapes || []);
             if (app.showName && !selected.includes(app.showName)) {
                 selected.push(app.showName);
             }
@@ -6012,13 +6014,15 @@
             const subHeight = nearHeight / gl.canvas.height;
 
             // make a frustum for that 1 pixel
-            const projectionMatrix = getFrustum(
-                subLeft,
-                subLeft + subWidth,
-                subBottom,
-                subBottom + subHeight,
-                app.view.camera.near,
-                app.view.camera.far);
+            const projectionMatrix = app.view.camera.isOrthographic ?
+                getOrthographic(pixelX, pixelY, gl.canvas.width, gl.canvas.height) :
+                getFrustum(
+                    subLeft,
+                    subLeft + subWidth,
+                    subBottom,
+                    subBottom + subHeight,
+                    app.view.camera.near,
+                    app.view.camera.far);
 
             const viewProjectionMatrix = multiply(app.view.camera.viewMatrix, projectionMatrix);
 
@@ -6613,6 +6617,9 @@
 
                     this.instances.forEach((instance, index) => {
                         const id = instance.shape.part.getIdBytes();
+                        if (instance.hidden) {
+                            return;
+                        }
 
                         gl.uniformMatrix4fv(app.pickerShader.model, false, instance.shape.world);
                         gl.uniform4fv(app.pickerShader.id, id);
@@ -6916,12 +6923,12 @@
                 this.world = multiply(this.transform.matrix, reference);
                 this.children.forEach((child) => child.setWorld(this.world));
             }
-            get path() {
+            get path__DeleteMe() {
                 const path = [this.part];
                 while (path[0].parent) {
                     path.unshift(path[0].parent);
                 }
-                return path.flatMap((part) => this.shapes.get(part));
+                return path.flatMap((part) => this.view.parts.get(part));
             }
             apply(action) {
                 action(this);
@@ -6955,7 +6962,7 @@
             }
             drag(offset, event = {}) {
                 const parts = this.part.parent.parts;
-                const siblings = parts.flatMap((part) => app.view.shapes.get(this.part));
+                const siblings = parts.flatMap((part) => app.view.parts.get(part)?.shapes || []);
                 this.requestedTransform = this.requestedTransform || this.transform.clone();
 
                 // Translate the movement from world to local coordinates.
@@ -11576,7 +11583,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 actions: {
                     click(event, part) {
                         app.view.addPart(part);
-                        const shapes = app.view.shapes.get(part);
+                        const shapes = app.view.parts.get(part)?.shapes;
                         showShape(shapes[0]);
                         shapes.forEach((shape) =>
                             shapes.instances.forEach((instance) => instance.highlight()));
@@ -11584,7 +11591,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     },
                     dblclick(event, part) {
                         app.view.addPart(part);
-                        const shapes = app.view.shapes.get(part);
+                        const shapes = app.view.parts.get(part)?.shapes;
                         showShape(shapes[0]);
                         if (shapes.length > 0) {
                             showShape(shapes[0]);
@@ -11619,7 +11626,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 actions: {
                     click(event, part) {
                         app.view.addPart(part);
-                        const shapes = app.view.shapes.get(part);
+                        const shapes = app.view.parts.get(part)?.shapes;
                         showShape(shapes[0]);
                         shapes.forEach((shape) =>
                             shape.instances.forEach((instance) => instance.highlight()));
@@ -11627,9 +11634,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     },
                     dblclick(event, part) {
                         app.view.addPart(part);
-                        const shapes = app.view.shapes.get(part);
+                        const shapes = app.view.parts.get(part)?.shapes;
                         showShape(shapes[0]);
-                        shape.forEach((shape) =>
+                        shapes.forEach((shape) =>
                             shape.instances.forEach((instance) => instance.highlight()));
                         select(part, event);
                         setView([0, 0, 1]);
@@ -11892,7 +11899,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          */
         function addPart(part) {
             if (app.product.context) {
-                const parent = app.view.shapes.get(app.product.context)[0];
+                const parent = app.view.parts.get(app.product.context)?.shapes[0];
                 const newPart = Part.clone(part);
                 //app.product.context.parts.push(newPart);
                 app.view.addPart(newPart);
@@ -11904,20 +11911,22 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Show parts list
          */
         function showPartsList(part) {
-            const parts = filterParts(part._node?.[meta].parts);
-            const properties = [{
-                attribute: 'name',
-                action(event, part, item) {
-                    addPart(part);
-                },
-            }];
-            if (parts.length) {
-                partsList = new ListWindow(parts, properties, 'Products', { hideTitle: true });
-                partsList.main.style.top = '0';
-                partsList.main.style.right = '0';
-                partsList.main.style.position = 'fixed';
+            if (part) {
+                const parts = filterParts(part._node?.[meta].parts);
+                const properties = [{
+                    attribute: 'name',
+                    action(event, part, item) {
+                        addPart(part);
+                    },
+                }];
+                if (parts.length) {
+                    partsList = new ListWindow(parts, properties, 'Products', { hideTitle: true });
+                    partsList.main.style.top = '0';
+                    partsList.main.style.right = '0';
+                    partsList.main.style.position = 'fixed';
 
-                partsList.main.classList.add('unselectable');
+                    partsList.main.classList.add('unselectable');
+                }
             }
         }
 
@@ -14081,7 +14090,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
 
             // Remove hits behind the camera.
-            // hits = hits.filter((child) => dot(app.view.camera.lookAt, subtract(child.points[0], app.view.camera.position) > 1));
 
             // Find the closest to the view position that isn't a parent
             const cmp = (a, b) => {
@@ -14278,8 +14286,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Perform the action associated with a node
          */
         function nodeAction(part) {
-            const shape = app.view.shapes.get(part);
-            const url = part._node.url || `views/${part.name.toLowerCase().replace(/\s+/, '-')}.txt`;
+            const shape = app.view.parts.get(part)?.shapes[0];
+            const url = part._node.url;// || `views/${part.name.toLowerCase().replace(/\s+/, '-')}.txt`;
             if (url) {
                 if (part._node.click === 'load page') {
                     location = url;
@@ -14304,7 +14312,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         setView([-0.2, 0.2, 1], [0, 1, 0]);
                     }
                 }
-            } else if (part._node[meta].states.selected) {
+            } else if (part._node[meta].states?.selected) {
                 if (part._node[meta].currentState.has(part._node[meta].states.selected)) {
                     part._node[meta].currentState.delete(part._node[meta].states.selected);
                 } else {
@@ -14315,7 +14323,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 if (!app.walk) {
                     setView([-0.2, 0.2, 1], [0, 1, 0]);
                 }
-                showShape(shape[0]);
+                showShape(shape);
                 if (part.parts.length > 0) {
                     if (part.componentView) {
                         part.hideComponents();
@@ -14567,7 +14575,10 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 action.moved = false;
 
                 const mouseLine = getRay(action.lastX, action.lastY);
-                const hits = setSelected(getIntersection(mouseLine), event);
+                app.view.parts.keys((part) => deselect(part));
+                if (app.picked) {
+                    select(app.picked.part, event);
+                }
 
                 app.connections.forEach((connection) => connection.selected = (connection.getDist(mouseLine) < 5));
 
@@ -14583,10 +14594,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 */
 
                 action.item = null;
-                if (event.button === 0 && hits) {
+                if (event.button === 0 && app.picked) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                    action.item = hits[0].shape;
+                    const viewPart = app.view.parts.get(app.picked.part);
+                    action.item = viewPart.shapes[0];
                     if (event.metaKey && action.item.material) {
                         materialControl(action.item.material, [action.item]);
                     }
@@ -14602,7 +14614,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             app.nodeMap.get(action.item).forEach((node) => node.classList.add('selected'));
                         }
                         if (app.mode === 'edit') {
-                            action.plane = { point: hits[0].points[0] };
+                            action.plane = { point: app.picked.position };
                             const parent = action.item.part.parent || app;
                             const siblings = parent.parts;
                             app.snapPoints = {
@@ -14611,7 +14623,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                 z: new Set(),
                             };
                             siblings.forEach((part) => {
-                                const shapes = app.view.shapes.get(part) || [];
+                                const shapes = app.view.parts.get(part)?.shapes || [];
                                 shapes.forEach((shape) =>
                                     shape.getSnapPoints().forEach((point) => {
                                         app.snapPoints.x.add(point[0]);
@@ -14680,12 +14692,12 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                 up: [...app.view.camera.up],
                                 x: event.clientX,
                                 y: event.clientY,
-                                length: Math.hypot(...subtract(hits[0].points[0], app.view.camera.position)),
+                                length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
                             };
                             const { xAxis, yAxis, zAxis, distance } = viewVectors();
                             const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                            hits.forEach((hit) =>
-                                hit.shape.apply((shape) => shape.start = [...shape.transform.matrix]));
+                            const viewPart = app.view.parts.get(app.picked.part);
+                            viewPart.shapes.forEach((shape) => shape.start = [...shape.transform.matrix]);
 
                             // Rotate the view
                             action.move = (event) => {
@@ -14767,13 +14779,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             canvas.addEventListener('dblclick', (event) => {
                 report('double click');
                 const box = canvas.getBoundingClientRect();
-                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                const hits = setSelected(getIntersection(mouseLine));
-                if (hits && hits[0].shape.node) {
+                if (app.picked) {
                     if (app.mode === 'edit') {
                         setView([-0.2, 0.2, 1], [0, 1, 0]);
                     } else {
-                        nodeAction(hits[0].shape.part);
+                        nodeAction(app.picked.part);
                     }
                 }
             });
@@ -14835,15 +14845,11 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const types = event.dataTransfer.types;
                 if (types.length) {
                     const box = canvas.getBoundingClientRect();
-                    const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                    const hits = getIntersection(mouseLine).filter((instance) => instance.parts?.includes(types[0]));
-                    if (hits.length) {
-                        const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
-                        hits.sort((a, b) => dist(app.view.camera.position, a.points[0]) - dist(app.view.camera.position, b.points[0]));
-                        if (hits[0]) {
-                            hits[0].shape.serialNumber = event.dataTransfer.getData(types[0]);
-                            hits[0].shape.colour = [1, 0, 0];
-                        }
+
+                    if (app.picked) {
+                        app.picked.part.serialNumber = event.dataTransfer.getData(types[0]);
+                        app.view.parts.get(app.picked.part)?.shapes.forEach((shape) =>
+                            shape.colour = [1, 0, 0]);
                     }
                 }
             }
@@ -14855,18 +14861,17 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const types = event.dataTransfer.types;
                 if (types.length) {
                     const box = canvas.getBoundingClientRect();
-                    const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                    const hits = getIntersection(mouseLine).filter((item) => item.parts?.includes(types[0]));
-                    if (hits.length) {
-                        const dist = (p1, p2) => Math.hypot(...subtract(p1, p2));
-                        hits.sort((a, b) => dist(app.view.camera.position, a.points[0]) - dist(app.view.camera.position, b.points[0]));
+                    if (app.picked) {
+                        const shapes = app.view.parts.get(app.picked.part)?.shapes || [];
+                        app.view.items.forEach((item) => {
+                            item.state.highlight = shapes.includes(item);
+                            item.state.hasPart = item.serialNumber;
+                            item.state.constraint = item.parts?.includes(types[0]);
+                            item.state.ghost = true;
+                        });
+                    } else {
+                        app.view.items.forEach((item) => item.state.highlight = false);
                     }
-                    app.view.items.forEach((item) => {
-                        item.state.highlight = item === hits[0].shape;
-                        item.state.hasPart = item.serialNumber;
-                        item.state.constraint = item.parts?.includes(types[0]);
-                        item.state.ghost = true;
-                    });
                 }
             }
 
@@ -15512,7 +15517,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                             parent.parts.push(part);
                             part.parent = parent;
                             app.views.forEach((view) => {
-                                const parentItem = view.shapes.get(parent)[0];
+                                const parentItem = view.parts.get(parent)?.shapes[0];
                                 if (parentItem) {
                                     view.addPart(part);
                                 }
@@ -15547,7 +15552,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.move(offset));
                     });
                 }
@@ -15565,7 +15570,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     normalise(axis);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.rotate(angle, axis));
                     });
                 }
@@ -15582,7 +15587,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.colour = colour);
                     });
                 }
@@ -15599,7 +15604,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     }
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.reflectivity = reflectivity);
                     });
                 }
@@ -15611,7 +15616,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const roughness = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.roughness = roughness);
                     });
                 }
@@ -15623,7 +15628,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const metallic = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.metallic = metallic);
                     });
                 }
@@ -15635,7 +15640,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const mirror = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.shapes.get(node) || []);
+                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.mirror = mirror);
                     });
                 }
@@ -15881,7 +15886,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             if (shape) {
                 const part = shape.part;
                 for (const parentPart of part.path()) {
-                    const shapes = app.view.shapes.get(parentPart);
+                    const shapes = app.view.parts.get(parentPart)?.shapes;
                     if (shapes) {
                         shapes.forEach((shape) => shape.showInterior?.());
                     }
