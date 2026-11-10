@@ -3930,6 +3930,9 @@
                 }));
             }
             console.log(part);
+            console.log(app.view.parts.get(part));
+
+
             const container = document.getElementById('detail-view');
             container.classList.remove('hide');
             const tip = [];
@@ -3974,7 +3977,7 @@
                 node.innerText = view.name;
                 node.classList.add('clickable');
                 node.addEventListener('click', (event) => {
-                    showView(view[meta].parent[meta].part, view.name);
+                    showView(part, view.name);
                 });
                 return node;
             }));
@@ -8604,9 +8607,9 @@
             }
             constructor(view, part, node) {
                 super(view, part, node);
-                const sides = part._node.sides ?? 12;
-                this.radius = part._node.radius;
-                this.height = part._node.height;
+                const sides = this.node.sides ?? 12;
+                this.radius = this.node.radius;
+                this.height = this.node.height;
                 this.points = [this.origin]
                 const size = [this.radius, this.height, this.radius];
                 this.scale(size);
@@ -12615,30 +12618,33 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
              */
             function resolve(string, instance) {
                 context = instance.values;
-                while (string.replace) {
-                    const result = string.replace(/<>/g, (match) => context[symbols.value] ?? match)
-                        .replace(/<n>/g, (match) => context[symbols.index] ?? match)
-                        .replace(/<([0-9]*)>/g, (match, num) => {
-                            let scope = context;
-                            let level = parseInt(num);
-                            while (scope && level > 0) {
-                                scope = Object.getPrototypeOf(scope);
-                                level--;
-                            }
-                            return scope?.[symbols.value] ?? match;
-                        })
-                        .replace(/<n([0-9]*)>/g, (match, num) => {
-                            let scope = context;
-                            let level = parseInt(num);
-                            while (scope && level > 0) {
-                                scope = Object.getPrototypeOf(scope);
-                                level--;
-                            }
-                            return scope?.[symbols.index] ?? match;
-                        })
-                        .replace(/<([^>]+)>/g, (match, name) => (context[name] ?? match))
-                        .replace(/\{([^\}]+)\}(([0-9]+),(.))?/g, (match, expr, format) => {
-                            try {
+
+                const outerScope = (index, value) => {
+                    let scope = context;
+                    let level = parseInt(index);
+                    while (scope && level > 0) {
+                        scope = Object.getPrototypeOf(scope);
+                        level--;
+                    }
+                    return scope?.[value];
+                }
+
+                const formatted = (string, format) => {
+                    if (string && format) {
+                        const [length, char] = format.split(/,/);
+                        return string.toString().padStart(parseInt(length), char);
+                    }
+                    return string;
+                }
+
+                try {
+                    while (string.replace) {
+                        const result = string.replace(/<>(([0-9]+),(.))?/g, (match, format) => formatted(context[symbols.value], format) ?? match)
+                            .replace(/<n>(([0-9]+),(.))?/g, (match, format) => formatted(context[symbols.index], format) ?? match)
+                            .replace(/<([0-9]*)>(([0-9]+),(.))?/g, (match, num, format) => formatted(outerScope(num, symbols.value), format) ?? match)
+                            .replace(/<n([0-9]*)(([0-9]+),(.))?>/g, (match, num, format) => formatted(outerScope(num, symbols.index), format) ?? match)
+                            .replace(/<([^>]+)>(([0-9]+),(.))?/g, (match, name, format) => (formatted(context[name], format) ?? match))
+                            .replace(/\{([^\}]+)\}(([0-9]+),(.))?/g, (match, expr, format) => {
                                 const keys = Object.keys(app.variables);
                                 const values = Object.values(app.variables).map((variable) => variable.value);
                                 for (const key in context) {
@@ -12651,21 +12657,15 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                                 }
                                 const func = makeFunction(keys, expr).bind(instance[symbols.object]);
                                 const result = func(...values);
-                                if (format) {
-                                    const [length, char] = format.split(/,/);
-                                    return result.toString().padStart(parseInt(length), char);
-                                } else {
-                                    return result;
-                                }
-                            } catch (err) {
-                                report(err.message);
-                                return `${err.message}: ${match}`;
-                            }
-                        });
-                    if (string === result) {
-                        return string;
+                                return formatted(result, format);
+                            });
+                        if (string === result) {
+                            return string;
+                        }
+                        string = result;
                     }
-                    string = result;
+                } catch (err) {
+                    report(err.message);
                 }
                 return string;
             }
@@ -12948,27 +12948,16 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const getTarget = (name, value) => {
                     if (name.toString().startsWith('&')) {
                         if (name === '&type') {
-                            if (value) {
-                                Object.defineProperty(node[meta], 'type', {
-                                    enumerable: true,
-                                    set(type) {
-                                        const proto = all.find((obj) => obj[value] === type) ?? named[type];
-                                        if (proto) {
-                                            addType(node, proto, context);
-                                        }
+                            const getProto = (type) => value ? all.find((obj) => obj[value] === type) ?? named[type] : named[type];
+                            Object.defineProperty(node[meta], 'type', {
+                                enumerable: true,
+                                set(type) {
+                                    const proto = getProto(type);
+                                    if (proto) {
+                                        addType(node, proto, context);
                                     }
-                                });
-                            } else {
-                                Object.defineProperty(node[meta], 'type', {
-                                    enumerable: true,
-                                    set(type) {
-                                        const proto = named[type];
-                                        if (proto) {
-                                            addType(node, proto, context);
-                                        }
-                                    }
-                                });
-                            }
+                                }
+                            });
                         }
                         return [node[meta], name.replace(/^&\s*/, '')];
                     }
@@ -13147,6 +13136,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         object[parameter] = object[parameter] ?? {};
                         instance[symbols.addNode] = (newNode) =>
                             object[parameter][newNode.name] = newNode;
+                        instance[symbols.object] = object[parameter];
                     } else if (text.endsWith('=[]')) { // line ends in '=[]' add children array of parameter
                         const parameter = text.replace(/\s*=\[\]$/, '');
                         const object = instance[symbols.object];
@@ -13185,10 +13175,44 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             }
 
             /**
+             * Process an array line, defining a new array in the structure.
+             */
+            const listProcessor = {
+                pattern: /^\s*\[(?<name>[^\]]+)\]:\s*(?<detail>.*)/u,
+                async preprocess(line, stack) {
+                    line.fields = getFields(line.text.trim());
+                },
+                async processInstance(line, instance) {
+                    debug(`processArray: ${line.text} from ${line.source.url} line ${line.source.lineNumber}`);
+
+                    const match = line.text.match(this.pattern);
+                    const name = resolve(match.groups.name, instance);
+                    const detail = match.groups.detail;
+                    const object = instance[symbols.object];
+
+                    const defaultParameters = [...instance[symbols.defaults]];
+                    const node = makeNode(instance, line.text);
+                    const fields = getFields(detail);
+                    fields.forEach((field) => processField(field, instance, defaultParameters));
+
+                    // Add remaining defaults.
+                    defaultParameters.forEach((parameter) => {
+                        if (node[parameter.name] === undefined && parameter.value !== undefined) {
+                            node[parameter.name] = interpret(resolve(parameter.value, instance));
+                        }
+                    });
+
+                    object[name] = object[name] ?? [];
+                    object[name].push(node);
+                },
+                __proto__: lineProcessor,
+            };
+
+            /**
              * Process an object line, defining a new object in the structure.
              */
             const objectProcessor = {
-                pattern: /[;\|\t\u{1f}]\s*/u,
+                pattern: /\S[;\|\t\u{1f}]\s*/u,
                 async preprocess(line, stack) {
                     line.fields = getFields(line.text.trim());
                 },
@@ -13287,6 +13311,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 repeatProcessor,
                 conditionalProcessor,
                 importProcessor,
+                listProcessor,
                 loopProcessor,
                 defaultsProcessor,
                 objectUpdateProcessor,
