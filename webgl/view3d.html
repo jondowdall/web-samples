@@ -549,7 +549,8 @@
             background-color: rgb(50, 50, 30, 0.9);
             border-radius: 1em;
             padding: 0.6em;
-            box-shadow: 5px 5px 8px rgb(50, 50, 30, 0.5);
+            box-shadow: 0 0 4px 2px rgb(255, 255, 0, 0.95),
+                5px 5px 8px rgb(50, 50, 30, 0.5);
             display: flex;
             flex-direction: column;
         }
@@ -2785,6 +2786,26 @@
             reset() { },
         }
 
+        /*
+         * Get the bounds of the shapes associated with a node.
+         */
+        function getBounds(node) {
+            const bounds = {
+                min: [Infinity, Infinity, Infinity],
+                max: [-Infinity, -Infinity, -Infinity],
+            };
+            // ToDo: allow for different shapes, rotation and scale.
+            node.shape.forEach((shape) => {
+                bounds.min[0] = Math.min(bounds.min[0], (shape.position?.[0] || 0));
+                bounds.min[1] = Math.min(bounds.min[1], (shape.position?.[1] || 0));
+                bounds.min[2] = Math.min(bounds.min[2], (shape.position?.[2] || 0));
+                bounds.max[0] = Math.max(bounds.max[0], (shape.position?.[0] || 0) + (shape.size?.[0] || 0));
+                bounds.max[1] = Math.max(bounds.max[1], (shape.position?.[1] || 0) + (shape.size?.[1] || 0));
+                bounds.max[2] = Math.max(bounds.max[2], (shape.position?.[2] || 0) + (shape.size?.[2] || 0));
+            });
+            return bounds;
+        }
+
         /**
          * Return a shape class based on the node attributes.
          */
@@ -3175,6 +3196,7 @@
                 if (app.labels.length > 0) {
                     drawLabels();
                 }
+
                 if (grid) {
                     drawGrid(grid);
                 }
@@ -3188,22 +3210,19 @@
                 }
             }
             showPart(part) {
-                if (this.parts.get(part)?.shapes) {
-                    return this.parts.get(part).shapes;
+                const partView = this.parts.get(part);
+                if (!partView) {
+                    return;
                 }
-                let parent = part.parent;
                 const path = [];
+                let parent = part.parent;
                 while (parent) {
                     path.unshift(parent);
                     parent = parent.parent;
                 }
-                parent = null;
                 path.forEach((part) => {
                     part.showComponents();
                 });
-                const parentView = this.parts.get(part.parent);
-                app.view.addPart(part, parentView?.transform.clone());
-                return shapes = app.view.parts.get(part)?.shapes;
             }
         }
 
@@ -3380,6 +3399,7 @@
                 this.name = node.name || component.product.getUniqueName();
                 this.component = component;
                 this.parent = parent;
+                this.parts = [];
                 this.location = this._node.location;
                 if (parent) {
                     this.transform = this.parent.transform.clone();
@@ -3579,8 +3599,29 @@
             scale(size) {
                 this.transform.scale(size);
             }
+            move(offset) {
+                const partView = app.view.parts.get(this);
+                if (partView) {
+                    partView.transform[12] += offset[0];
+                    partView.transform[13] += offset[1];
+                    partView.transform[14] += offset[2];
+                    partView.shapes.forEach((shape) => shape.setWorld(partView.transform));
+                }
+            }
             rotate(angle, axis) {
-                this.transform.rotate(angle, axis);
+                const partView = app.view.parts.get(this);
+                if (partView) {
+                    const offset = extractTranslation(partView.transform);
+                    partView.transform[12] = 0;
+                    partView.transform[13] = 0;
+                    partView.transform[14] = 0;
+                    const rotation = getRotation(angle, axis);
+                    multiply(partView.transform, rotation, partView.transform);
+                    partView.transform[12] = offset[0];
+                    partView.transform[13] = offset[1];
+                    partView.transform[14] = offset[2];
+                    partView.shapes.forEach((shape) => shape.setWorld(partView.transform));
+                }
             }
         }
 
@@ -3706,6 +3747,8 @@
             return app.allParts.filter(filter);
         }
 
+        let grid;
+/*
         const grid = {
             size: [4, 5, 3],
             spacing: [1, 0.1, 1.5],
@@ -3721,6 +3764,7 @@
                 this.content[index] = value;
             },
         }
+            */
 
         /**
          * Convert a name to an id be replacing disallowed characters with hyphens
@@ -3932,6 +3976,7 @@
             console.log(part);
             console.log(app.view.parts.get(part));
 
+            app.view.showPart(part);
 
             const container = document.getElementById('detail-view');
             container.classList.remove('hide');
@@ -5760,10 +5805,10 @@
         }
 
         /**
-         * Draw points used for debugging.
+         * Draw the grid used for snapping when moving parts.
          */
         function drawGrid(grid) {
-            if (!grid.show) {
+            if (!grid) {
                 return;
             }
             const width = ctx.canvas.width;
@@ -6088,7 +6133,7 @@
             worldPosWithW[1] /= worldPosWithW[3];
             worldPosWithW[2] /= worldPosWithW[3];
 
-            const world = applyTransform4(worldPosWithW, invert(app.view.camera.viewMatrix));
+            const world = applyTransform(worldPosWithW, invert(app.view.camera.viewMatrix));
 
             return world;
         }
@@ -6100,6 +6145,19 @@
         function touch(event) {
             event.preventDefault();
             event.stopPropagation();
+            const box = canvas.getBoundingClientRect();
+            app.mouse = {
+                x: event.touches[0].clientX - box.left,
+                y: event.touches[0].clientY - box.top,
+            }
+            if (app.view) {
+                app.picked = pickPart(app.mouse.x, app.mouse.y);
+                if (app.picked) {
+                    report(app.picked.part.name);
+                }
+            }
+
+
             return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
         }
 
@@ -6925,17 +6983,9 @@
                 this.instanceGroup.updateRequired = true;
             }
             setWorld(reference) {
-                const partView = this.view.parts.get(this.part);
-                reference = reference || (partView.transform || identityMatrix());
+                reference = reference || identityMatrix();
                 this.world = multiply(this.transform.matrix, reference);
-                this.children.forEach((child) => child.setWorld(this.world));
-            }
-            get path__DeleteMe() {
-                const path = [this.part];
-                while (path[0].parent) {
-                    path.unshift(path[0].parent);
-                }
-                return path.flatMap((part) => this.view.parts.get(part));
+                this.instances.forEach((instance) => instance.updateInstanceData());
             }
             apply(action) {
                 action(this);
@@ -11517,28 +11567,25 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * End a mouse movement and store change in action history.
          */
         function endMove(event) {
-            grid.show = false;
+            grid = null;
             if (action.moved) {
-                const items = new Set();
-                app.view.items.filter((item) => app.selected.has(item._node))
-                    .forEach((item) => item.apply((item) => items.add(item)));
-                const undo = Array.from(items).map((item) => ({
-                    item, start: [...item.start],
+                const partViews = [...app.selected].flatMap((part) => app.view.parts.get(part) || [])
+                    .filter((partView) => partView.start);
+                const undo = partViews.map((partView) => ({
+                    partView: partView, start: [...partView.start],
                 }));
-                const redo = Array.from(items).map((item) => ({
-                    item, end: extractTranslation(action.item.origin),
+                const redo = partViews.map((partView) => ({
+                    partView: partView, end: [...partView.transform],
                 }));
                 actionHistory.add({
                     undo: () =>
                         undo.forEach((action) => {
-                            action.item.transform.matrix = action.start;
-                            action.item.setWorld();
-                            action.item.instances.forEach((instance) => instance.updateInstanceData());
+                            action.partView.transform = action.start;
+                            action.partView.shapes.forEach((shape) => shape.setWorld(action.partView.transform));
                         }),
                     redo: () => redo.forEach((action) => {
-                        action.item.transform.matrix = action.end;
-                        action.item.setWorld();
-                        action.item.instances.forEach((instance) => instance.updateInstanceData());
+                        action.partView.transform = action.end;
+                        action.partView.shapes.forEach((shape) => shape.setWorld(action.partView.transform));
                     }),
                 });
             }
@@ -11593,7 +11640,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         const shapes = app.view.parts.get(part)?.shapes;
                         showShape(shapes[0]);
                         shapes.forEach((shape) =>
-                            shapes.instances.forEach((instance) => instance.highlight()));
+                            shape.instances.forEach((instance) => instance.highlight()));
                         select(part, event);
                     },
                     dblclick(event, part) {
@@ -11603,7 +11650,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         if (shapes.length > 0) {
                             showShape(shapes[0]);
                             shapes.forEach((shape) =>
-                                shapes.instances.forEach((instance) => instance.highlight()));
+                                shape.instances.forEach((instance) => instance.highlight()));
                             select(part, event);
                             setView([0, 0, 1]);
                         }
@@ -13025,7 +13072,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         } else if (field.startsWith('~')) {
                             node[meta].sources = node[meta].sources || [];
                             node[meta].sources.push({ url: field.slice(1) });
-                        } else {
+                        } else if (field !== '') {
                             const [obj, arg] = getTarget(field);
                             obj[arg] = obj[arg] ?? true;
                         }
@@ -13213,6 +13260,42 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
             };
 
             /**
+             * Process an array line, defining a new array in the structure.
+             */
+            const dictProcessor = {
+                pattern: /^\s*\{(?<name>[^\]]+)\}:\s*(?<detail>.*)/u,
+                async preprocess(line, stack) {
+                    line.fields = getFields(line.text.trim());
+                },
+                async processInstance(line, instance) {
+                    debug(`processArray: ${line.text} from ${line.source.url} line ${line.source.lineNumber}`);
+
+                    const match = line.text.match(this.pattern);
+                    const name = resolve(match.groups.name, instance);
+                    const detail = match.groups.detail;
+                    const object = instance[symbols.object];
+
+                    const dict = {};
+                    object[name] = dict;
+
+                    instance[symbols.object] = dict;
+
+                    const defaultParameters = [...instance[symbols.defaults]];
+                    const fields = getFields(detail);
+                    fields.forEach((field) => processField(field, instance, defaultParameters));
+
+                    // Add remaining defaults.
+                    defaultParameters.forEach((parameter) => {
+                        if (dict[parameter.name] === undefined && parameter.value !== undefined) {
+                            dict[parameter.name] = interpret(resolve(parameter.value, instance));
+                        }
+                    });
+                    instance[symbols.object] = object;
+                },
+                __proto__: lineProcessor,
+            };
+
+            /**
              * Process an object line, defining a new object in the structure.
              */
             const objectProcessor = {
@@ -13316,6 +13399,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 conditionalProcessor,
                 importProcessor,
                 listProcessor,
+                dictProcessor,
                 loopProcessor,
                 defaultsProcessor,
                 objectUpdateProcessor,
@@ -13393,26 +13477,33 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                     const shapeNode = {
                         name: shape.name,
                         position: [0, 0, 0],
-                        size: node.size,
-                        obj: node.obj,
-                        gltf: node.gltf,
-                        svg: node.svg,
-                        ceiling: node.ceiling,
-                        bevel: node.bevel,
-                        walls: node.walls,
-                        apex: node.apex,
-                        height: node.height,
-                        radius: node.radius,
-                        radius1: node.radius1,
-                        radius2: node.radius2,
-                        path: node.path,
-                        thickness: node.thickness,
-                        height: node.height,
-                        sweep: node.sweep,
-                        scale: node.scale,
-                        colour: node.colour,
-                        [meta]: {}
+                        [meta]: {},
                     };
+
+                    [
+                        'size',
+                        'obj',
+                        'gltf',
+                        'svg',
+                        'ceiling',
+                        'bevel',
+                        'walls',
+                        'apex',
+                        'height',
+                        'radius',
+                        'radius1',
+                        'radius2',
+                        'path',
+                        'thickness',
+                        'height',
+                        'sweep',
+                        'scale',
+                        'colour',
+                    ].forEach((property) => {
+                        if (node[property] !== undefined) {
+                            shapeNode[property] = node[property];
+                        }
+                    });
                     node.shape.unshift(shapeNode);
                 }
             });
@@ -14616,146 +14707,147 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 }
 
                 /** ToDo: fix creating connection between parts.
-                if (hits && action.item && event.ctrlKey) {
+                if (hits && action.part && event.ctrlKey) {
                     hits.forEach((hit) =>
-                        app.connections.push(new Connection(action.item, hit.shape)));
+                        app.connections.push(new Connection(action.part, hit.shape)));
                 }
                 */
 
-                action.item = null;
+                action.part = null;
                 if (event.button === 0 && app.picked) {
                     // Move the clicked object
                     const { xAxis, yAxis, zAxis, distance } = viewVectors();
                     const viewPart = app.view.parts.get(app.picked.part);
-                    action.item = viewPart.shapes[0];
-                    if (event.metaKey && action.item.material) {
-                        materialControl(action.item.material, [action.item]);
+                    action.part = app.picked.part;
+                    const partView = app.view.parts.get(action.part);
+                    /* ToDo: fix material control
+                    if (event.metaKey && action.part.material) {
+                        materialControl(action.part.material, [action.part]);
                     }
+                    */
 
-                    if (action.item.nodes) {
-                        action.item.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+                    if (action.part) {
+                        // ToDo: Fix Scroll the part into view in the parts list
+                        //action.part.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                     }
-                    if (action.item.serialNumber) {
+                    if (action.part.serialNumber) {
 
-                    } else {
-                        report(action.item.name);
-                        if (app.nodeMap.get(action.item)) {
-                            app.nodeMap.get(action.item).forEach((node) => node.classList.add('selected'));
-                        }
-                        if (app.mode === 'edit') {
-                            action.plane = { point: app.picked.position };
-                            const parent = action.item.part.parent || app;
-                            const siblings = parent.parts;
-                            app.snapPoints = {
-                                x: new Set(),
-                                y: new Set(),
-                                z: new Set(),
-                            };
-                            siblings.forEach((part) => {
-                                const shapes = app.view.parts.get(part)?.shapes || [];
-                                shapes.forEach((shape) =>
-                                    shape.getSnapPoints().forEach((point) => {
-                                        app.snapPoints.x.add(point[0]);
-                                        app.snapPoints.y.add(point[1]);
-                                        app.snapPoints.z.add(point[2]);
-                                    }));
-                            });
-                            if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
-                                action.plane.normal = zAxis;
-                            } else {
-                                action.plane.normal = [0, 1, 0];
-                            }
-                            const apply = (item, action) => {
-                                action(item);
-                                item.children.forEach((child) => apply(child, action));
-                            }
-                            const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
-                            selected.forEach((item) =>
-                                item.apply((item) => {
-                                    item.start = [...item.transform.matrix];
-                                    item.requestedTransform = item.transform.clone();
+                    } else if (app.mode === 'edit') {
+                        action.plane = { point: app.picked.position };
+                        const parent = action.part.parent || app;
+                        const siblings = parent.parts;
+                        app.snapPoints = {
+                            x: new Set(),
+                            y: new Set(),
+                            z: new Set(),
+                        };
+                        siblings.forEach((part) => {
+                            const shapes = app.view.parts.get(part)?.shapes || [];
+                            shapes.forEach((shape) =>
+                                shape.getSnapPoints().forEach((point) => {
+                                    app.snapPoints.x.add(point[0]);
+                                    app.snapPoints.y.add(point[1]);
+                                    app.snapPoints.z.add(point[2]);
                                 }));
-                            //app.view.referencePlane.origin = action.plane.point;
-                            app.view.referencePlane.normal = action.plane.normal;
-
-                            showShape(selected[0]);
-                            grid.show = true;
-                            let screenspace = false;
-                            action.move = (event) => {
-                                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-
-                                if (event.altKey) {
-                                    if (!screenspace) {
-                                        action.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
-                                        app.view.referencePlane.normal = action.plane.normal;
-                                        screenspace = true;
-                                    }
-                                } else if (screenspace) {
-                                    app.view.referencePlane.normal = action.plane.normal = [0, 1, 0];
-                                    screenspace = false;
-                                }
-                                action.item.state.moving = true;
-
-                                action.moved = true;
-                                const point = planeIntercept(mouseLine, action.plane);
-                                const delta = subtract(point, action.plane.point);
-                                action.plane.point = point;
-
-                                selected.forEach((selected) => {
-                                    selected.statusColour = null;
-                                    //selected.move(delta, !event.shiftKey);
-                                    selected.move(delta);
-                                    selected.update();
-                                });
-                                const pt = applyTransform(selected[0].origin, selected[0].world);
-                                //const pt = applyTransform([0,0,0], selected[0].transform.matrix);
-                                app.show.point = pt;
-                                app.show.toWorld = selected[0].world;
-                            };
-                            action.end = endMove;
-                            report(`Moving ${action.item.name}`);
+                        });
+                        if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
+                            action.plane.normal = zAxis;
                         } else {
-                            const start = {
-                                position: [...app.view.camera.position],
-                                lookAt: [...app.view.camera.lookAt],
-                                up: [...app.view.camera.up],
-                                x: event.clientX,
-                                y: event.clientY,
-                                length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
-                            };
-                            const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                            const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                            const viewPart = app.view.parts.get(app.picked.part);
-                            viewPart.shapes.forEach((shape) => shape.start = [...shape.transform.matrix]);
-
-                            // Rotate the view
-                            action.move = (event) => {
-                                action.moved = true;
-                                const deltaX = start.x - event.clientX;
-                                const deltaY = start.y - event.clientY;
-
-                                if (event.shiftKey) {
-                                    const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
-                                    const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
-                                        Vector.scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
-                                    app.view.camera.position = sum(start.position, movement);
-                                    app.view.camera.lookAt = sum(start.lookAt, movement);
-                                } else {
-                                    // Determine angle based on proportion of the field of view represented by the delta
-                                    const xAngle = deltaX * app.view.camera.fieldOfView / canvas.height;
-                                    const yAngle = deltaY * app.view.camera.fieldOfView / canvas.height;
-
-                                    const xRotation = getRotation(xAngle, yAxis);
-                                    const yRotation = getRotation(yAngle, xAxis);
-                                    const rotation = multiply(yRotation, xRotation);
-
-                                    app.view.camera.lookAt = sum(app.view.camera.position, applyTransform(sightLine, rotation));
-                                    //app.view.camera.up = applyTransform(app.view.camera.up, rotation);
-                                }
-                                app.view.camera.updateViewControls();
-                            };
-                            action.end = endMove;
+                            action.plane.normal = [0, 1, 0];
                         }
+                        const apply = (part, action) => {
+                            action();
+                            part.parts.forEach((part) => apply(part, action));
+                        }
+                        const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
+                        selected.forEach((part) =>
+                            part.apply((part) => {
+                                const partView = app.view.parts.get(part);
+                                if (partView) {
+                                    partView.start = [...partView.transform.matrix];
+                                }
+                            }));
+                        app.view.referencePlane.normal = action.plane.normal;
+
+                        showShape(selected[0]);
+                        grid = null;
+                        {
+                            let parent = action.part.parent;
+                            while (parent && !grid) {
+                                grid = parent._node.grid;
+                                parent = parent.parent;
+                            }
+                        }
+
+                        let screenspace = false;
+                        action.move = (event) => {
+                            action.moved = true;
+                            
+                            if (event.altKey) {
+                                if (!screenspace) {
+                                    action.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
+                                    app.view.referencePlane.normal = action.plane.normal;
+                                    screenspace = true;
+                                }
+                            } else if (screenspace) {
+                                app.view.referencePlane.normal = action.plane.normal = [0, 1, 0];
+                                screenspace = false;
+                            }
+                            
+                            const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
+                            const point = planeIntercept(mouseLine, action.plane);
+                            const delta = subtract(point, action.plane.point);
+                            action.plane.point = point;
+
+                            app.selected.forEach((part) =>
+                                part.move(delta)); //!event.shiftKey));
+
+                            app.show.point = applyTransform(selected[0].origin, selected[0].world);
+                            app.show.toWorld = selected[0].world;
+                        };
+                        action.end = endMove;
+                        report(`Moving ${action.part.name}`);
+                    } else {
+                        const start = {
+                            position: [...app.view.camera.position],
+                            lookAt: [...app.view.camera.lookAt],
+                            up: [...app.view.camera.up],
+                            x: event.clientX,
+                            y: event.clientY,
+                            length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
+                        };
+                        const { xAxis, yAxis, zAxis, distance } = viewVectors();
+                        const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
+                        const viewPart = app.view.parts.get(app.picked.part);
+                        viewPart.shapes.forEach((shape) => shape.start = [...shape.transform.matrix]);
+
+                        // Rotate the view
+                        action.move = (event) => {
+                            action.moved = true;
+                            const deltaX = start.x - event.clientX;
+                            const deltaY = start.y - event.clientY;
+
+                            if (event.shiftKey) {
+                                const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
+                                const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
+                                    Vector.scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
+                                app.view.camera.position = sum(start.position, movement);
+                                app.view.camera.lookAt = sum(start.lookAt, movement);
+                            } else {
+                                // Determine angle based on proportion of the field of view represented by the delta
+                                const xAngle = deltaX * app.view.camera.fieldOfView / canvas.height;
+                                const yAngle = deltaY * app.view.camera.fieldOfView / canvas.height;
+
+                                const xRotation = getRotation(xAngle, yAxis);
+                                const yRotation = getRotation(yAngle, xAxis);
+                                const rotation = multiply(yRotation, xRotation);
+
+                                app.view.camera.lookAt = sum(app.view.camera.position, applyTransform(sightLine, rotation));
+                                //app.view.camera.up = applyTransform(app.view.camera.up, rotation);
+                            }
+                            app.view.camera.updateViewControls();
+                        };
+                        action.end = endMove;
                     }
                 } else {
                     // Rotate the view
@@ -15394,8 +15486,8 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
          * Edit the line containing the selected item.
          */
         function editLine(event) {
-            const node = app.allParts.find((node) => app.selected.has(node));
-            if (node) {
+            const part = [...app.selected][0];
+            if (part) {
                 event.preventDefault(); // Ignore the keypress
                 const sourceView = document.getElementById('source-view');
                 sourceView.querySelector('h2').classList.add('expanded');
@@ -15413,7 +15505,7 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 const lines = text.split("\n");
 
                 let charIndex = 0;
-                const lineNumber = node[meta].source.lineNumber - 1;
+                const lineNumber = part._node[meta].source.lineNumber - 1;
                 for (let i = 0; i < Math.min(lineNumber, lines.length); i++) {
                     // Add the length of previous lines plus 1 for the omitted newline character
                     charIndex += lines[i].length + 1;
@@ -15524,7 +15616,35 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                 name: 'add',
                 action(text) {
                     const parameters = text.replace(/^add\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
-                    /*
+                    const name = parameters.join(' ');
+                    const selected = [...app.selected][0];
+                    const type = selected?._node[meta].types?.[name];
+                    const source = partsList?.find((part) => part.name === name)?._node ??
+                        Part.all.find((part) => part.name === name)?._node ?? type;
+
+                    if (!source) {
+                        report(`No loaded part named ${name}`);
+                        return;
+                    }
+
+                    if (app.selected.size > 0) {
+                        for (const parent of app.selected) {
+                            if (source.position) {
+                                const bounds = getBounds(source);
+                                source.position[0] += bounds.max[0];
+                            }
+                            const part = new Part(source, new Component({}, source, {}), parent);
+                            parent.parts.push(part);
+                            part.parent = parent;
+                            const parentItem = app.view.parts.get(parent);
+                            app.view.addPart(part, parentItem);
+                        }
+                    } else {
+                        app.graph[parts].push(part);
+                        app.views.forEach((view) => view.addPart(part));
+                    }
+   
+                        /*
                     const part = parameters.reduce((part, parameter) => {
                         if (parameter.includes('=')) {
                             const [name, value] = parameter.trim().split(/\s*=\s* /);
@@ -15539,7 +15659,6 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                         return part;
                     }, { [meta]: { source: { text }, name: [], data: [], typeNames: [], parent: null, states: {}, currentState: new Set() }, [parts]: [] });
-                    */
                     const part = new Part(parameters[0], parameters.slice(1).join(' '));
                     if (app.selected.size > 0) {
                         for (const parent of app.selected) {
@@ -15554,8 +15673,9 @@ ${closest[0].local.map((v) => v.toFixed(2)).join(', ')}`;
                         }
                     } else {
                         app.graph[parts].push(part);
-                        app.views.forEach((view) => view.addPart(part));
-                    }
+                    app.views.forEach((view) => view.addPart(part));
+                }
+                */
                 }
             },
             {
