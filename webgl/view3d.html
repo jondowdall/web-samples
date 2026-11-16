@@ -212,9 +212,32 @@
             display: inline-block;
         }
 
-        #controls {
+
+        #button-bar {
             position: fixed;
             top: 0;
+            left: 0;
+        }
+        
+        #button-bar button {
+            color: yellow;
+            background: none;
+            border: 1px solid rgb(255, 255, 0, 0.5);
+            border-radius: 6px;
+            font-size: 120%;
+            aspect-ratio: 1;
+        }
+
+        #button-bar button:hover {
+            font-weight: bold;
+            border: 1px solid yellow;
+            box-shadow: 0 0 4px 2px rgb(255, 255, 0, 0.75);
+        }
+
+
+        #controls {
+            position: fixed;
+            top: 3em;
             left: 0;
             display: flex;
             flex-direction: column;
@@ -539,10 +562,10 @@
 
         #action-history {
             position: fixed;
-            top: 1em;
-            left: 1em;
+            top: 2em;
+            left: 0;
             width: 30%;
-            max-height: 90%;
+            max-height: calc(100% - 2em);
         }
 
         .action-view {
@@ -764,6 +787,10 @@
         <div id="stock"></div>
     </div>
 
+    <div id="button-bar">
+        <button id="show-actions-button">&#9776;</button>
+        <button id="replay-actions-button">&#10227;</button>
+    </div>
     <div id="controls">
         <div id="source-view" class="window">
             <h2 class="unselectable">Source</h2>
@@ -1361,6 +1388,15 @@
 
             vec3 viewVector = normalize(cameraPosition - v_position);
             vec3 normal = normalize(v_normal);
+            float occ = 1.0;
+
+            if (effects == 2) {
+                const float offset = 0.1;
+                const float sharpness = 5.0;
+                occ = 1.0 / (1.0 + exp(-sharpness * (dot(normal, vec3(0.0, 1.0, 0.0)) + offset)));
+
+                normal = vec3(0.0, 1.0, 0.0);
+            }
 
             vec3 lightVector1 = normalize(lightPosition1);
             float intensity1 = 1.0;
@@ -1407,7 +1443,6 @@
             float clear = max(totalShine * 0.2, 0.0) * v_opacity;
             float opacity = clear + (1.0 - clear) * pow(v_opacity, 5.0);
 
-            float occ = 1.0;
             if (effects == 1) {
                 const float offset = 0.6;
                 const float sharpness = 15.0;
@@ -1992,7 +2027,7 @@
             }
             toJSON() {
                 return {
-                    content: this.content,
+                    content: this.content.filter((item) => item),
                     position: this.position,
                     wrap: this.wrap,
                 };
@@ -2007,7 +2042,7 @@
                     //data.content.slice(0, data.position).forEach((item) => item.redo());
                     data.content.filter((action) => action instanceof Action)
                         .forEach((action) => this.add(action, false));
-                    this.position = data.position;
+                    this.position = data.content.length;//data.position;
                     this.wrap = data.wrap;
                 }
             }
@@ -2045,16 +2080,16 @@
                 const undo = actionView.querySelector('.undo');
                 const redo = actionView.querySelector('.redo');
                 const del = actionView.querySelector('.delete');
-                redo.disabled = true;
+                //redo.disabled = true;
                 undo.addEventListener('click', (event) => {
                     item.undo();
-                    undo.disabled = true;
-                    redo.removeAttribute('disabled');
+                    //undo.disabled = true;
+                    //redo.removeAttribute('disabled');
                 });
                 redo.addEventListener('click', (event) => {
                     item.redo();
-                    undo.removeAttribute('disabled');
-                    redo.disabled = true;
+                    //undo.removeAttribute('disabled');
+                    //redo.disabled = true;
                 });
                 del.addEventListener('click', (event) => {
                     item.undo();
@@ -2489,13 +2524,15 @@
             // Use the initial position to determine the desired distance from viewpoint
 
             if (app.selected.size) {
-                const selected = [...app.selected].flatMap((part) => app.view.parts.get(part)?.[0] ?? []);
+                const selected = [...app.selected].flatMap((part) => app.view.parts.get(part) ?? []);
                 if (selected.length < 1) {
                     return;
                 }
-                const orientation = extractRotation(selected[0].world);
-                const transforms = selected.map((shape) => shape.world);
-                const centres = transforms.map((matrix) => applyTransform([0, 0, 0], matrix));
+                const shapes = selected.flatMap((partView) => partView.shapes);
+                const orientation = extractRotation(selected[0].shapes[0].world);
+
+                const transforms = shapes.map((shape) => shape.world);
+                const centres = shapes.map((shape) => shape.centre);
                 const lookAt = Vector.scale(sum(...centres), 1 / transforms.length);
                 const radius = Math.max(...transforms.map((matrix) => Math.hypot(...extractScale(matrix))));
                 const delta = [
@@ -2506,6 +2543,7 @@
                 const size = 0.5 * Math.hypot(...delta) + radius;
                 const dist = Math.max(1.0 * size / Math.tan(180 * app.view.camera.fieldOfView / Math.PI), app.view.camera.near * 2);
                 const viewDirection = applyTransform(direction, orientation);
+                up = applyTransform(up, orientation);
                 const position = sum(lookAt, Vector.scale(viewDirection, dist));
                 moveCamera(position, lookAt, up);
             } else {
@@ -2795,11 +2833,21 @@
             static fromDefinition(definition) {
                 return new Camera(
                     definition.position ?? app.initial.position,
-                    definition['look at'] ?? app.initial.lookAt,
+                    definition.lookAt ?? definition['look at'] ?? app.initial.lookAt,
                     definition.up ?? app.initial.up,
-                    definition['field of view'] ?? app.initial.fov,
+                    definition.fov ?? definition['field of view'] ?? app.initial.fov,
                     definition.near ?? app.initial.near,
                     definition.far ?? app.initial.far);
+            }
+            toJSON() {
+                return {
+                    position: this.position,
+                    lookAt: this.lookAt,
+                    up: this.up,
+                    fov: this.fov,
+                    near: this.near,
+                    far: this.far,
+                }
             }
             get position() { return this._position; }
             set position(value) {
@@ -4067,32 +4115,6 @@
         function showActions() {
             const container = document.getElementById('action-history');
             container.classList.remove('transparent');
-            return;
-
-            const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-            actionHistory.content.forEach(async (item) => {
-                const template = document.getElementById('action-view-template');
-                const actionView = template.content.cloneNode(true).firstElementChild;
-                /*
-                actionView.addEventListener('click', (event) => {
-                    actionView.classList.add('transparent');
-                    actionView.addEventListener('transitionend', (event) => container.remove());
-                });
-                */
-                actionView.classList.remove('transparent');
-                const title = actionView.querySelector('.action-view-title');
-                title.innerText = item.title ?? 'Action';
-
-                const time = actionView.querySelector('.action-view-time');
-                time.innerText = item.time.toLocaleString();
-
-                const detail = actionView.querySelector('.action-view-detail');
-                detail.innerText = item.detail ?? 'Details...';
-
-                container.append(actionView);
-                await delay(100);
-            });
         }
 
         /**
@@ -4101,6 +4123,22 @@
         function hideActions() {
             const container = document.getElementById('action-history');
             container.classList.add('transparent');
+        }
+
+        /**
+         * Show the action history.
+         */
+        function toggleActions() {
+            const container = document.getElementById('action-history');
+            container.classList.toggle('transparent');
+        }
+
+        /**
+         * Replay the actions then disable the replay button.
+         */
+        function replayActions() {
+            actionHistory.content.forEach((action) => action.redo());        
+            document.getElementById('replay-actions-button').disabled = true;
         }
 
         /**
@@ -7131,6 +7169,9 @@
                     this.world = multiply(this.transform.matrix, partView.transform);
                 }
             }
+            get centre() {
+                return applyTransform([0.5, 0.5, 0.5], this.world);
+            }
             set opacity(value) {
                 this.instances.forEach((instance) => instance.opacity = value);
                 this.instanceGroup.updateRequired = true;
@@ -8366,8 +8407,17 @@
                 const tessellation = tessellate(this.points);
                 const indices = tessellation.indices.flatMap((triangle) => triangle);
 
+                const getNormal = (index) => {
+                    const next = (index + 1) % this.points.length;
+                    const previous = (index + this.points.length - 1) % this.points.length;
+                    const v1 = subtract(this.points[previous], this.points[index]);
+                    const v2 = subtract(this.points[next], this.points[index]);
+                    const v3 = sum(normalised(v1), normalised(v2));
+                    return normalised([v3[0], 0.5, v3[1]]);
+                }
+
                 const positions = this.points.map((point) => applyTransform([point[0], 0, point[1]], this.world));
-                const vertices = positions.flatMap((point) => [...point, 0, 1, 0, (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.depth, ...this.partColour]);
+                const vertices = positions.flatMap((point, i) => [...point, ...getNormal(i), (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.depth, ...this.partColour]);
                 this.vertexData = {
                     start: Room.vertices.length,
                     vertices,
@@ -8637,7 +8687,7 @@
                     colour: [0.6, 0.6, 0.6],
                 });
 
-                gl.uniform1i(app.pbrShader.effects, 0);
+                gl.uniform1i(app.pbrShader.effects, 2);
                 gl.bindVertexArray(Room.buffers.vao);
                 gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -9149,6 +9199,9 @@
 
                 this.children = [];
                 this.name = part.name || `icosphere (${subdivisions}})`;
+            }
+            get centre() {
+                return applyTransform([0, 0, 0], this.world);
             }
             intersects(line, all) {
                 // Allow for non-uniform scaling by converting the line to icosphere space
@@ -10632,7 +10685,18 @@
             makeSurface() {
                 const tessellation = tessellate(this.points);
                 const indices = tessellation.indices.flatMap((triangle) => triangle);
-                const vertices = this.points.flatMap((point) => [point[0], 0, point[1], 0, 1, 0, (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.height]);
+
+                const getNormal = (index) => {
+                    const next = (index + 1) % this.points.length;
+                    const previous = (index + this.points.length - 1) % this.points.length;
+                    const v1 = subtract(this.points[previous], this.points[index]);
+                    const v2 = subtract(this.points[next], this.points[index]);
+                    const v3 = sum(normalised(v1), normalised(v2));
+                    return normalised([v3[0], 0.2, v3[1]]);
+                }
+
+                const vertices = this.points.flatMap((point, i) =>
+                    [point[0], 0, point[1], ...getNormal(i), (point[0] - this.minx) / this.width, (point[1] - this.miny) / this.height]);
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
@@ -10658,7 +10722,7 @@
                     ],
                     texture: this.texture,
                 });
-                gl.uniform1i(app.pbrShader.effects, 0);
+                gl.uniform1i(app.pbrShader.effects, 2);
                 gl.bindVertexArray(this.vao);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -11777,6 +11841,7 @@
             const actionTypes = {
                 setView: SetViewAction,
                 setVariable: SetVariableAction,
+                command: CommandAction,
                 moveParts: MovePartAction,
                 moveCamera: MoveCameraAction,
             };
@@ -11819,8 +11884,8 @@ ${vectorFixed(closest[0].local)}`;
                 app.view.closest = closest[0];
                 if (app.showPoints) {
                     app.points[0] = { position: closest[0].point, colour: [1, 1, 0] };
-                    canvas.title = `${vectorFixd(closest[0].point)}
-${vectorFixd(closest[0].local)}`;
+                    canvas.title = `${vectorFixed(closest[0].point)}
+${vectorFixed(closest[0].local)}`;
                 }
             }
         }
@@ -11869,7 +11934,6 @@ ${vectorFixd(closest[0].local)}`;
             }
         }
 
-
         /**
          * Record change of view.
          */
@@ -11912,6 +11976,42 @@ ${vectorFixd(closest[0].local)}`;
                 variable.prior = definition.prior;
                 if (variable) {
                     return new SetVariableAction(variable);
+                }
+            }
+        }
+
+        /**
+         * Record a user command.
+         */
+        class CommandAction extends Action {
+            constructor(command, state) {
+                super();
+                this.title = 'Command';
+                this.detail = `${command.name}: ${command.parameters}`;
+                this.command = command;
+                this.state = state ?? command.getState();
+            }
+            async undo() {
+                if (this.command.undo) {
+                    this.command.undo(this.state);
+                }
+            }
+            async redo() {
+                if (this.command.redo) {
+                    this.command.redo(this.state);
+                }
+            }
+            toJSON() {
+                return {
+                    action: 'command',
+                    commandName: this.command.name,
+                    state: this.state,
+                };
+            }
+            static fromJSON(definition) {
+                const command = userCommands.find((command) => command.name === definition.commandName);
+                if (command) {
+                    return new CommandAction(command, definition.state);
                 }
             }
         }
@@ -14667,9 +14767,9 @@ ${vectorFixd(closest[0].local)}`;
          */
         function exportPart() {
             const lines = [];
-            lines.push(`> eye position = ${vectorFixd(app.view.camera.position)}`);
-            lines.push(`> look at = ${vectorFixd(app.view.camera.lookAt)}`);
-            lines.push(`> up = ${vectorFixd(app.view.camera.up)}`);
+            lines.push(`> eye position = ${vectorFixed(app.view.camera.position)}`);
+            lines.push(`> look at = ${vectorFixed(app.view.camera.lookAt)}`);
+            lines.push(`> up = ${vectorFixed(app.view.camera.up)}`);
             if (app.unit) {
                 lines.push(`> units = ${app.units}`);
             }
@@ -15056,7 +15156,7 @@ ${vectorFixd(closest[0].local)}`;
             ' ': (event) => stop(event),
             a: (event) => right(-1), //showAll(event),
             A: (event) => { app.showNames = !app.showNames; showAllNames(); },
-            b: (event) => setView([0, -1, 0], [0, 0, -1]),
+            b: (event) => setView([0, -1, 0], [0, 0, 1]),
             c: (event) => toggleColourPicker(),
             C: (event) => { app.showCoordinate = !app.showCoordinate; },
             e: (event) => toggleEdit(event),
@@ -15078,7 +15178,7 @@ ${vectorFixd(closest[0].local)}`;
             q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
             r: (event) => setView([1, 0, 0]),
             s: (event) => forward(-2),
-            t: (event) => setView([0, 1, 0], [0, 0, -1]),
+            t: (event) => setView([0, 1, 0], [0, 0, 1]),
             u: (event) => upright(),
             v: (event) => displayVariableDialog(),
             w: (event) => forward(2),
@@ -15754,6 +15854,8 @@ ${vectorFixd(closest[0].local)}`;
             viewControl(document.getElementById('camera-control'));
             addCanvasEvents(canvas);
             initialiseDialogs();
+            document.getElementById('show-actions-button').addEventListener('click', (event) => toggleActions());
+            document.getElementById('replay-actions-button').addEventListener('click', (event) => replayActions());
             app.pickerBuffer = addPickerBuffer();
 
             // Set clear color to black, fully opaque
@@ -16016,6 +16118,13 @@ ${vectorFixd(closest[0].local)}`;
         }
 
         /**
+         * Prototype for user commands.
+         */
+        const UserCommand = {
+            parameters: [],
+            state() { return {} },
+        }
+        /**
          * List of commands
          */
         const userCommands = [
@@ -16023,21 +16132,24 @@ ${vectorFixd(closest[0].local)}`;
                 name: '?',
                 action(text) {
                     console.log(userCommands.map((command) => command.name).join(', '));
-                }
+                },
+                __proto__: UserCommand,
             },
             // Scene graph commands
             {
                 name: 'clear',
                 action(text) {
                     clearScene();
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'load',
                 action(text) {
                     const parameters = text.replace(/^load\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
                     parameters.forEach((name) => loadFile(name));
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'add',
@@ -16103,7 +16215,8 @@ ${vectorFixd(closest[0].local)}`;
                 app.views.forEach((view) => view.addPart(part));
             }
             */
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'export',
@@ -16112,7 +16225,8 @@ ${vectorFixd(closest[0].local)}`;
                     const table = await getTable(app.parts);
                     const output = table.map((row) => row.join('\t')).join('\n');
                     downloadText(output, 'deployment.tsv');
-                }
+                },
+                __proto__: UserCommand,
             },
 
             // Change a node
@@ -16131,7 +16245,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.move(offset));
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'rotate',
@@ -16149,7 +16264,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.rotate(angle, axis));
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'colour',
@@ -16166,7 +16282,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.colour = colour);
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'reflectivity',
@@ -16183,7 +16300,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.reflectivity = reflectivity);
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'roughness',
@@ -16195,7 +16313,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.roughness = roughness);
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'metallic',
@@ -16207,7 +16326,8 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.metallic = metallic);
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'mirror',
@@ -16219,14 +16339,16 @@ ${vectorFixd(closest[0].local)}`;
                         const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
                         items.forEach((item) => item.mirror = mirror);
                     });
-                }
+                },
+                __proto__: UserCommand,
             },
             // View commands
             {
                 name: 'reset',
                 action(text) {
                     reset();
-                }
+                },
+                __proto__: UserCommand,
             },
             // View commands
             {
@@ -16234,19 +16356,22 @@ ${vectorFixd(closest[0].local)}`;
                 action(text) {
                     toggleWalk();
                     canvas.focus();
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'orthographic',
                 action(text) {
                     app.view.camera.isOrthographic = true;
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'perspective',
                 action(text) {
                     app.view.camera.isOrthographic = false;
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'list',
@@ -16258,7 +16383,8 @@ ${vectorFixd(closest[0].local)}`;
                     }
                     const nodes = items.map((item) => item._node);
                     app.windows.push(new ListWindow(nodes, parameters));
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'look at',
@@ -16281,14 +16407,16 @@ ${vectorFixd(closest[0].local)}`;
                         lookAt[2] = position[2] ?? lookAt[2];
                         moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
                     }
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'position',
                 action(text) {
                     const position = text.replace(/^\s*position\s*/, '').split(/\s*,\s*/).map((str) => parseFloat(str));
                     moveCamera(position, app.view.camera.lookAt, app.view.camera.up);
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'grid size',
@@ -16304,48 +16432,74 @@ ${vectorFixd(closest[0].local)}`;
                     } else {
                         app.drawGround = false;
                     }
-                }
+                },
+                __proto__: UserCommand,
             },
 
             {
                 name: 'below',
                 action(text) { setView([0, -1, 0], [0, 0, -1]); },
+                __proto__: UserCommand,
             },
             {
                 name: 'front',
                 action(text) { setView([0, 0, 1]); },
+                __proto__: UserCommand,
             },
             {
                 name: 'back',
                 action(text) { setView([0, 0, -1]); },
+                __proto__: UserCommand,
             },
             {
                 name: 'top',
                 action(text) { setView([0, 1, 0], [0, 0, -1]); },
+                getState() {
+                    return {
+                        parts: [...app.selected].map((part) => part.path().map((part) => part.name)),
+                        prior: app.view.camera.toJSON(),
+                    }
+                },
+                undo(state) { },
+                async redo(state) {
+                    const parts = state.parts.flatMap((path) => findPart(path) || []);
+                    if (parts.length) {
+                        app.selected.clear();
+                        await Promise.all(parts.map(async (part) => app.selected.add(await part)));
+                        setView([0, 1, 0], [0, 0, -1]);
+                    }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'hide',
                 action(text) { hideSelected(event); },
+                __proto__: UserCommand,
             },
             {
                 name: 'left',
                 action(text) { setView([-1, 0, 0]); },
+                __proto__: UserCommand,
             },
             {
                 name: 'right',
                 action(text) { setView([1, 0, 0]); },
+                __proto__: UserCommand,
             },
             {
                 name: 'parent',
                 action(text) { selectParent(event); },
+                __proto__: UserCommand,
             },
             {
                 name: 'toggle text canvas',
                 action(text) { document.querySelector('.texture-canvas').classList.toggle('hide'); },
+                __proto__: UserCommand,
             },
             {
                 name: 'save',
                 action(text) { save(); },
+                __proto__: UserCommand,
             },
             {
                 name: 'snapshot',
@@ -16353,6 +16507,7 @@ ${vectorFixd(closest[0].local)}`;
                     app.snapshotName = text.replace(/^\s*snapshot\s*/, '');
                     app.savePNG = true;
                 },
+                __proto__: UserCommand,
             },
             {
                 name: 'none',
@@ -16360,13 +16515,15 @@ ${vectorFixd(closest[0].local)}`;
                     app.selected.clear();
                     app.views.forEach((view) => view.refresh());
                     app.show = null;
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'all',
                 action(text) {
                     app.view.items.forEach((item) => app.selected.add(item._node));
                 },
+                __proto__: UserCommand,
             },
             {
                 name: 'skybox',
@@ -16374,6 +16531,7 @@ ${vectorFixd(closest[0].local)}`;
                     const images = text.replace(/^\s*skybox\s*/, '');
                     skybox(images);
                 },
+                __proto__: UserCommand,
             },
             {
                 name: 'action',
@@ -16385,33 +16543,38 @@ ${vectorFixd(closest[0].local)}`;
                         report('No node selected');
                     }
                 },
+                __proto__: UserCommand,
             },
             {
                 name: 'forward',
                 action(text) {
                     const ammount = text;
                 },
+                __proto__: UserCommand,
             },
             {
                 name: 'edit',
                 description: 'Toggle editing',
                 action(text) {
                     toggleEdit();
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'show actions',
                 description: 'Show the action history',
                 action(text) {
                     showActions();
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'hide actions',
                 description: 'Hide the action history',
                 action(text) {
                     hideActions();
-                }
+                },
+                __proto__: UserCommand,
             },
             {
                 name: 'toggle errors',
@@ -16420,6 +16583,7 @@ ${vectorFixd(closest[0].local)}`;
                     app.reportErrors = !app.reportErrors;
                     report(`Error reporting ${app.reportErrors ? 'On' : 'Off'}`)
                 },
+                __proto__: UserCommand,
             }
         ];
 
@@ -16613,6 +16777,7 @@ ${vectorFixd(closest[0].local)}`;
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
 
                 if (commands.length > 0) {
+                    actionHistory.add(new CommandAction(commands[0]));
                     commands[0].action(fullCommand);
                 } else if (commands.length === 0) {
                     const names = fullCommand.split(/\s*,\s*/);
