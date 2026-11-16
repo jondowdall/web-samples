@@ -618,7 +618,7 @@
                 5px 5px 8px rgb(50, 50, 30, 0.5);
             display: flex;
             flex-direction: column;
-            rotate: random(-3deg, 3deg);
+            rotate: random(-1deg, 1deg);
             transition: opacity 1s;
         }
 
@@ -3965,6 +3965,8 @@
             const ok = document.getElementById('user-variables-dialog-ok');
             ok.addEventListener('click', async (event) => {
                 document.body.style.pointer = 'progress';
+                Object.values(app.variables).filter((variable) => variable.value !== variable.prior)
+                    .forEach((variable) => actionHistory.add(new SetVariableAction(variable)));
                 document.getElementById('user-variables-dialog').close();
                 const detail = app.detail?.path().map((part) => part.name);
                 clearScene();
@@ -4052,6 +4054,7 @@
                 cell.append(types[variable.type](variable, index));
                 row.append(cell);
                 content.append(row);
+                variable.prior = variable.value;
             }
 
             Object.values(app.variables).forEach(addVariable);
@@ -11773,6 +11776,7 @@
         function reviveActions(key, value, context) {
             const actionTypes = {
                 setView: SetViewAction,
+                setVariable: SetVariableAction,
                 moveParts: MovePartAction,
                 moveCamera: MoveCameraAction,
             };
@@ -11862,6 +11866,53 @@ ${vectorFixd(closest[0].local)}`;
             static fromJSON(definition) {
                 const subject = findPart(definition.subject);
                 return new SetViewAction(subject, definition.name);
+            }
+        }
+
+
+        /**
+         * Record change of view.
+         */
+        class SetVariableAction extends Action {
+            constructor(variable) {
+                super();
+                this.title = 'Set Variable';
+                this.detail = `Set ${variable.name} to ${variable.value}`;
+                this.variable = variable;
+                this.value = variable.value;
+                this.previous = variable.prior;
+            }
+            async undo() {
+                if (this.variable.value !== this.previous) {
+                    this.variable.value = this.previous;
+                    clearScene();
+                    await updateGraph(app.source);
+                    app.view.update();
+                }
+            }
+            async redo() {
+                if (this.variable.value !== this.value) {
+                    this.variable.value = this.value;
+                    clearScene();
+                    await updateGraph(app.source);
+                    app.view.update();
+                }
+            }
+            toJSON() {
+                return {
+                    action: 'setVariable',
+                    variableName: this.variable.name,
+                    value: this.value,
+                    previous: this.previous,
+                };
+            }
+            static fromJSON(definition) {
+                const variable = app.variables[definition.variableName];
+                variable.value = definition.value;
+                variable.prior = definition.prior;
+                if (variable) {
+                    return new SetVariableAction(variable);
+                }
             }
         }
 
@@ -13001,6 +13052,9 @@ ${vectorFixd(closest[0].local)}`;
                 return this.userValue ?? this.initialValue;
             }
             set value(value) {
+                if (value !== this.value) {
+
+                }
                 this.userValue = value;
             }
         }
@@ -13393,8 +13447,8 @@ ${vectorFixd(closest[0].local)}`;
                 if (field.includes('=>')) {
                     const [name, expr] = field.split(/\s*=>\s*/);
                     const [obj, arg] = getTarget(name || defaultParameters.shift()?.name);
-                    const keys = app.variables.map((variable) => variable.name);
-                    const values = app.variables.map((variable) => variable.value);
+                    const keys = Object.keys(app.variables);
+                    const values = Object.values(app.variables).map((variable) => variable.value);
 
                     const func = makeFunction([...keys, 'time', 'self'], expr);
 
