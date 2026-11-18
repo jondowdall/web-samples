@@ -2040,11 +2040,13 @@
             save(name) {
                 localStorage.setItem(name, JSON.stringify(this))
             }
-            load(name, reviver) {
+            async load(name, reviver) {
                 const string = localStorage.getItem(name);
                 if (string) {
                     const data = JSON.parse(string, reviver);
-                    //data.content.slice(0, data.position).forEach((item) => item.redo());
+                    // Resolve state data for actions as reviver function cannot be async.
+                    await Promise.all(data.content.filter((action) => action.state?.unresolved)
+                        .map(async (action) => await action.resolve));
                     data.content.filter((action) => action instanceof Action)
                         .forEach((action) => this.add(action, false));
                     this.position = data.content.length;//data.position;
@@ -3174,7 +3176,7 @@
                     polygon: Polygon,
                 }[shape.name.toLowerCase()] || [];
                 if (shapeType) {
-                    return new shapeType(this, part, Object.assign({}, shape, customisation));
+                    return new shapeType(this, part, {...shape, ...customisation});
                 }
                 return [];
             }
@@ -11315,7 +11317,7 @@
                         this.patches.forEach((patch) => {
                             const instance = patch.addInstance(part, this, '');
                             this.instances.push(instance);
-                            instance.material = Object.assign({}, patch.material);
+                            instance.material = {...patch.material};
                         });
                     }
                 } else {
@@ -11576,7 +11578,7 @@
                     // Check whether load is complete
                     if (nodes.length) {
                         // Duplicate the nodes
-                        this.node[parts].push(...nodes.map((node) => Object.assign({}, node)));
+                        this.node[parts].push(...nodes.map((node) => ({...node})));
                     } else {
                         // Add this object to the list to be populated when load complete
                         SVGObject.pending[this.url].push(this);
@@ -11645,25 +11647,22 @@
                         const svgPath = path.getAttribute('d');
                         if (groupNode) { //} && !/ [cC] /.test(svgPath)) {
                             const local = parsePath(svgPath);
-                            let pathNode = Object.assign(
-                                {},
-                                style,
-                                {
-                                    name: path.id,
-                                    position: style.position || [0, 0, 0],
-                                    path: local.trim().split(/\s*,\s*/g),
-                                    [meta]: {
-                                        source: { text: '' },
-                                        name: [path.id],
-                                        data: [],
-                                        typeNames: [],
-                                        parent: groupNode,
-                                        states: {},
-                                        currentState: new Set(),
-                                    },
-                                    [parts]: [],
-                                }
-                            );
+                            let pathNode = {
+                                ...style,
+                                name: path.id,
+                                position: style.position || [0, 0, 0],
+                                path: local.trim().split(/\s*,\s*/g),
+                                [meta]: {
+                                    source: { text: '' },
+                                    name: [path.id],
+                                    data: [],
+                                    typeNames: [],
+                                    parent: groupNode,
+                                    states: {},
+                                    currentState: new Set(),
+                                },
+                                [parts]: [],
+                            };
                             if (path.getAttribute('transform')) {
                                 pathNode.transform = parseTransform(path.getAttribute('transform'));
                             }
@@ -11674,7 +11673,7 @@
                 }
 
                 SVGObject.pending[this.url].forEach((pending) =>
-                    pending._node[parts].push(...nodes.map((node) => Object.assign({}, node))));
+                    pending._node[parts].push(...nodes.map((node) => ({...node}))));
 
                 const root = new Product('');
                 const products = {};
@@ -12009,13 +12008,13 @@ ${vectorFixed(closest[0].local)}`;
          * Record a user command.
          */
         class CommandAction extends Action {
-            constructor(command, text) {
+            constructor(command, text, state) {
                 super();
                 this.title = 'Command';
-                this.text = text;
-                this.state = command.getState();
-                this.detail = command.description(this.state);
                 this.command = command;
+                this.text = text;
+                this.state = state;
+                this.detail = command.description(this.state);
             }
             async undo() {
                 if (this.command.undo) {
@@ -12037,9 +12036,8 @@ ${vectorFixed(closest[0].local)}`;
             }
             static fromJSON(definition) {
                 const command = userCommands.find((command) => command.name === definition.commandName);
-
                 if (command) {
-                    return new CommandAction(command, definition.text);
+                    return command.fromJSON(definition);
                 }
             }
         }
@@ -16170,7 +16168,19 @@ ${vectorFixed(closest[0].local)}`;
          */
         const UserCommand = {
             parameters: [],
-            state() { return {} },
+            getState() { return {} },
+            do(text) {
+                actionHistory.add(new CommandAction(this, text));
+                const parameters = text.replace(this.name, '').trim().split(/\s*[;\|\t\u{1f}]\s*/ug);
+                this.action(parameters);
+            },
+            fromJSON(definition) {
+                const state = this.recreateState(definition.state);
+                return new CommandAction(this, definition.text, state);
+            },
+            recreateState(json) {
+                // Empty function for commands that don't require state to be retained.
+            },
         }
         /**
          * List of commands
@@ -16178,7 +16188,7 @@ ${vectorFixed(closest[0].local)}`;
         const userCommands = [
             {
                 name: '?',
-                action(text) {
+                action(parameters) {
                     console.log(userCommands.map((command) => command.name).join(', '));
                 },
                 __proto__: UserCommand,
@@ -16186,23 +16196,21 @@ ${vectorFixed(closest[0].local)}`;
             // Scene graph commands
             {
                 name: 'clear',
-                action(text) {
+                action(parameters) {
                     clearScene();
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'load',
-                action(text) {
-                    const parameters = text.replace(/^load\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     parameters.forEach((name) => loadFile(name));
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'add',
-                action(text) {
-                    const parameters = text.replace(/^add\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const name = parameters.join(' ');
                     const selected = [...app.selected][0];
                     const type = selected?._node[meta].types?.[name];
@@ -16268,8 +16276,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'export',
-                async action(text) {
-                    const parameters = text.replace(/^export\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                async action(parameters) {
                     const table = await getTable(app.parts);
                     const output = table.map((row) => row.join('\t')).join('\n');
                     downloadText(output, 'deployment.tsv');
@@ -16280,8 +16287,7 @@ ${vectorFixed(closest[0].local)}`;
             // Change a node
             {
                 name: 'move',
-                action(text) {
-                    const parameters = text.replace(/^move\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const offset = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
                     if (offset.length !== 3) {
                         const start = offset.length;
@@ -16298,8 +16304,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'rotate',
-                action(text) {
-                    const parameters = text.replace(/^rotate\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const [angle, ...axis] = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
                     if (axis.length !== 3) {
                         const start = axis.length;
@@ -16317,8 +16322,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'colour',
-                action(text) {
-                    const parameters = text.replace(/^colour\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const colour = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
                     if (colour.length !== 3) {
                         const start = colour.length;
@@ -16335,8 +16339,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'reflectivity',
-                action(text) {
-                    const parameters = text.replace(/^reflectivity\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const reflectivity = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
                     if (reflectivity.length !== 3) {
                         const start = reflectivity.length;
@@ -16353,8 +16356,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'roughness',
-                action(text) {
-                    const parameters = text.replace(/^roughness\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const roughness = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
@@ -16366,8 +16368,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'metallic',
-                action(text) {
-                    const parameters = text.replace(/^metallic\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const metallic = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
@@ -16379,8 +16380,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'mirror',
-                action(text) {
-                    const parameters = text.replace(/^mirror\s*/, '').split(/\s*[;\|\t\u{1f}]\s*/ug);
+                action(parameters) {
                     const mirror = Number(parameters[0]);
                     const selected = [...app.selected];
                     app.views.forEach((view) => {
@@ -16393,7 +16393,7 @@ ${vectorFixed(closest[0].local)}`;
             // View commands
             {
                 name: 'reset',
-                action(text) {
+                action(parameters) {
                     reset();
                 },
                 __proto__: UserCommand,
@@ -16401,7 +16401,7 @@ ${vectorFixed(closest[0].local)}`;
             // View commands
             {
                 name: 'walk',
-                action(text) {
+                action(parameters) {
                     toggleWalk();
                     canvas.focus();
                 },
@@ -16409,22 +16409,21 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'orthographic',
-                action(text) {
+                action(parameters) {
                     app.view.camera.isOrthographic = true;
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'perspective',
-                action(text) {
+                action(parameters) {
                     app.view.camera.isOrthographic = false;
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'list',
-                action(text) {
-                    const parameters = text.replace(/^list\s*/, '').split(/\s*,\s*/);
+                action(parameters) {
                     const items = app.view.items.filter((item) => app.selected.has(item._node));
                     if (items.length === 0) {
                         items.push(...app.view.items);
@@ -16436,8 +16435,8 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'look at',
-                action(text) {
-                    const target = text.replace(/^look at\s*/, '');
+                action(parameters) {
+                    const target = parameters[0];
                     const parts = app.view.findByName(target);
 
                     // If the target is the name of a part in the view - look at that from the current location
@@ -16460,16 +16459,16 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'position',
-                action(text) {
-                    const position = text.replace(/^\s*position\s*/, '').split(/\s*,\s*/).map((str) => parseFloat(str));
+                action(parameters) {
+                    const position = parameteres[0].split(/\s*,\s*/).map((str) => parseFloat(str));
                     moveCamera(position, app.view.camera.lookAt, app.view.camera.up);
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'grid size',
-                action(text) {
-                    const size = text.replace(/^\s*grid size\s*/, '').split(/\s*,\s*/).map((str) => parseFloat(str));
+                action(parameters) {
+                    const size = parameters[0].split(/\s*,\s*/).map((str) => parseFloat(str));
                     if (size.length !== 2) {
                         size.length = 2;
                         size[1] = size[0];
@@ -16485,24 +16484,24 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'below',
-                action(text) { setView([0, -1, 0], [0, 0, -1]); },
+                action(parameters) { setView([0, -1, 0], [0, 0, -1]); },
                 __proto__: UserCommand,
             },
             {
                 name: 'front',
-                action(text) { setView([0, 0, 1]); },
+                action(parameters) { setView([0, 0, 1]); },
                 __proto__: UserCommand,
             },
             {
                 name: 'back',
-                action(text) { setView([0, 0, -1]); },
+                action(parameters) { setView([0, 0, -1]); },
                 __proto__: UserCommand,
             },
             {
                 name: 'top',
-                action(text) {
-                    if (text) {
-                        const partNames = text.replace(/^\s*top\s*/, '').split(/\s*,\s*/);
+                action(parameters) {
+                    if (parameters.length > 0) {
+                        const partNames = parameters;
                         const parts = partNames.flatMap((name) => app.allParts.filter((part) => part.name === name));
                         app.selected.clear();
                         parts.forEach((part) => app.selected.add(part));
@@ -16520,6 +16519,16 @@ ${vectorFixed(closest[0].local)}`;
                         prior: app.view?.camera.toJSON(),
                     };
                 },
+                recreateState(state) {
+                    return {
+                        parts: state.parts.map((part) => findPart(part)),
+                        prior: state.prior,
+                        unresolved: true,
+                    }
+                },
+                resolve(state) {
+                    this.state.unresolved = false;
+                },
                 undo(state) {
                     moveCamera(state.prior.position, state.prior.lookAt, state.prior.up);
                 },
@@ -16535,45 +16544,45 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'hide',
-                action(text) { hideSelected(event); },
+                action(parameters) { hideSelected(event); },
                 __proto__: UserCommand,
             },
             {
                 name: 'left',
-                action(text) { setView([-1, 0, 0]); },
+                action(parameters) { setView([-1, 0, 0]); },
                 __proto__: UserCommand,
             },
             {
                 name: 'right',
-                action(text) { setView([1, 0, 0]); },
+                action(parameters) { setView([1, 0, 0]); },
                 __proto__: UserCommand,
             },
             {
                 name: 'parent',
-                action(text) { selectParent(event); },
+                action(parameters) { selectParent(event); },
                 __proto__: UserCommand,
             },
             {
                 name: 'toggle text canvas',
-                action(text) { document.querySelector('.texture-canvas').classList.toggle('hide'); },
+                action(parameters) { document.querySelector('.texture-canvas').classList.toggle('hide'); },
                 __proto__: UserCommand,
             },
             {
                 name: 'save',
-                action(text) { save(); },
+                action(parameters) { save(); },
                 __proto__: UserCommand,
             },
             {
                 name: 'snapshot',
-                action(text) {
-                    app.snapshotName = text.replace(/^\s*snapshot\s*/, '');
+                action(parameters) {
+                    app.snapshotName = parameters.join(' ');
                     app.savePNG = true;
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'none',
-                action(text) {
+                action(parameters) {
                     app.selected.clear();
                     app.views.forEach((view) => view.refresh());
                     app.show = null;
@@ -16582,22 +16591,21 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'all',
-                action(text) {
+                action(parameters) {
                     app.view.items.forEach((item) => app.selected.add(item._node));
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'skybox',
-                action(text) {
-                    const images = text.replace(/^\s*skybox\s*/, '');
-                    skybox(images);
+                action(parameters) {
+                    skybox(parameters);
                 },
                 __proto__: UserCommand,
             },
             {
                 name: 'action',
-                action(text) {
+                action(parameters) {
                     const part = app.view.items.find((item) => app.selected.has(item.part) && item._node?.url);
                     if (part) {
                         nodeAction(part);
@@ -16609,7 +16617,7 @@ ${vectorFixed(closest[0].local)}`;
             },
             {
                 name: 'forward',
-                action(text) {
+                action(parameters) {
                     const ammount = text;
                 },
                 __proto__: UserCommand,
@@ -16617,7 +16625,7 @@ ${vectorFixed(closest[0].local)}`;
             {
                 name: 'edit',
                 description: 'Toggle editing',
-                action(text) {
+                action(parameters) {
                     toggleEdit();
                 },
                 __proto__: UserCommand,
@@ -16625,7 +16633,7 @@ ${vectorFixed(closest[0].local)}`;
             {
                 name: 'show actions',
                 description: 'Show the action history',
-                action(text) {
+                action(parameters) {
                     showActions();
                 },
                 __proto__: UserCommand,
@@ -16633,7 +16641,7 @@ ${vectorFixed(closest[0].local)}`;
             {
                 name: 'hide actions',
                 description: 'Hide the action history',
-                action(text) {
+                action(parameters) {
                     hideActions();
                 },
                 __proto__: UserCommand,
@@ -16641,7 +16649,7 @@ ${vectorFixed(closest[0].local)}`;
             {
                 name: 'toggle errors',
                 description: 'Toggle reporting of GL errors to console',
-                action(text) {
+                action(parameters) {
                     app.reportErrors = !app.reportErrors;
                     report(`Error reporting ${app.reportErrors ? 'On' : 'Off'}`)
                 },
@@ -16838,8 +16846,7 @@ ${vectorFixed(closest[0].local)}`;
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
 
                 if (commands.length > 0) {
-                    actionHistory.add(new CommandAction(commands[0], fullCommand));
-                    commands[0].action(fullCommand);
+                    commands[0].do(fullCommand);
                 } else if (commands.length === 0) {
                     const names = fullCommand.split(/\s*,\s*/);
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
