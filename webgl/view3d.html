@@ -694,6 +694,7 @@
             border-radius: 6px;
             font-size: 120%;
             aspect-ratio: 1;
+            width: 2em;
         }
 
         .note button:hover {
@@ -987,7 +988,7 @@
             <h4 class="note-time"></h4>
             <div class="note-detail"></div>
             <div class="buttons">
-                <button class="edit">&#9999;</button>
+                <button class="edit">&crarr;</button>
                 <button class="reply">&#8617;</button>
                 <button class="delete">&#9587;</button>
             </div>
@@ -2041,6 +2042,15 @@
         /******************************************************************
          * Utility functions
          ******************************************************************/
+
+        /**
+         * Generate a V4 UUID
+         */
+        function uuidv4() {
+            return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+                (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+            );
+        }
 
         /**
          * Update report display.
@@ -4461,6 +4471,53 @@
             });
         }
 
+        /**
+         * Save the notes.
+         */
+        function saveNotes() {
+            const str = JSON.stringify(app.notes);
+            localStorage.setItem('notes', str);
+        }
+
+        /**
+         * Prototype for Note objects.
+         */
+        const Note = {
+            title: 'Note',
+            toJSON() {
+                return {
+                    id: this.id,
+                    time: this.time.getTime(),
+                    title: this.title,
+                    text: this.text,
+                    author: this.author,
+                    part: this.part.path().map((part) => part.name),
+                };
+            }
+        }
+
+        /**
+         * Load the notes.
+         */
+        async function loadNotes() {
+            const str = localStorage.getItem('notes');
+
+            const fromJSON = async (definition) =>
+                app.notes.push({
+                    id: definition.id,
+                    time: new Date(definition.time),
+                    title: definition.title,
+                    text: definition.text,
+                    author: definition.author,
+                    part: await findPart(definition.part),
+                    __proto__: Note,
+                });
+
+            if (str) {
+                const notes = JSON.parse(str);
+                await Promise.all(notes.map(fromJSON));
+            }
+        }
 
         /**
          * show the notes for the specified part.
@@ -4479,7 +4536,7 @@
                 container.classList.add('transparent');
             });
 
-            notes.forEach((note) => {
+            const makeView = (note) => {
                 const template = document.getElementById('note-template');
                 const noteView = template.content.cloneNode(true).firstElementChild;
 
@@ -4488,11 +4545,12 @@
                 title.innerText = note.title ?? 'Note';
 
                 const time = noteView.querySelector('.note-time');
-                time.innerText = item.time.toLocaleString();
+                time.innerText = note.time.toLocaleString();
 
                 const detail = noteView.querySelector('.note-detail');
 
-                detail.append(...(item.detail ?? ['Details...']));
+                detail.append(...(note.text ?? 'Details...').split(/(\r?\n)/g)
+                    .map((str) => /\r?\n/.test(str) ? document.createElement('br'): str));
 
                 const edit = noteView.querySelector('.edit');
                 const del = noteView.querySelector('.delete');
@@ -4500,7 +4558,6 @@
                     //item.redo();
                 });
                 del.addEventListener('click', (event) => {
-                    item.undo();
                     noteView.classList.add('transparent');
                     let next = noteView.nextElementSibling;
                     const y = noteView.getBoundingClientRect().y - next?.getBoundingClientRect().y;
@@ -4518,17 +4575,15 @@
                             node.style.transform = 'none';
                         });
                     });
-                    this.content.splice(this.content.indexOf(item), 1);
-                    this.save(this.id);
+                    app.notes.splice(app.notes.indexOf(note), 1);
+                    saveNotes();
                 });
 
-                container.append(noteView);
                 noteView.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+                return noteView;
+            };
 
-                if (save) {
-                    this.save(this.id);
-                }
-            });
+            notes.forEach((note) => container.append(makeView(note)));
 
             const template = document.getElementById('note-template');
             const noteView = template.content.cloneNode(true).firstElementChild;
@@ -4542,6 +4597,28 @@
 
             const detail = noteView.querySelector('.note-detail');
             detail.contentEditable = true;
+            detail.addEventListener('blur', (event) => {
+                if (detail.innerText.trim() === '') {
+                    return;
+                } 
+                const note = {
+                    id: uuidv4(),
+                    part: part,
+                    time: new Date(),
+                    text: detail.innerText,
+                    author: app.user || 'anon',
+                    __proto__: Note,
+                };
+                app.notes.push(note);
+                container.insertBefore(makeView(note), noteView);
+                detail.innerText = '';
+                saveNotes();
+            });
+            detail.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    detail.innerHTML = '';
+                }
+            });
 
             const edit = noteView.querySelector('.edit');
             const del = noteView.querySelector('.delete');
@@ -17209,6 +17286,7 @@ ${vectorFixed(closest[0].local)}`;
             if (location.protocol === 'http:') {
                 await loadFile(app.sourceFile);
             }
+            loadNotes();
 
             if (state.view) {
                 const object = await findPart(state.view.subject);
