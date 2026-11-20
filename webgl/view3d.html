@@ -734,6 +734,14 @@
             transition: opacity 0.75s;
         }
 
+        .product-view {
+            color: rgb(150, 150, 255);
+            border: 1px solid rgb(150, 150, 255);            
+            box-shadow: 0 0 4px 2px rgb(150, 150, 255, 0.75),
+                5px 5px 8px rgb(50, 50, 30, 0.5);
+        }
+
+
         @starting-style {
             .detail-view {
                 opacity: 0;
@@ -778,6 +786,10 @@
 
         .detail-view-parts {
             margin-left: 0.5em;
+        }
+
+        .part-number {
+            font-style: italic;
         }
 
         .detail-view .button-bar {
@@ -3620,7 +3632,8 @@
         class Product {
             static byIdentifier = {};
             static identifier(node) {
-                return node[meta].type ||
+                return node['part number'] ||
+                    node.partNumber ||
                     node.number ||
                     node.id ||
                     node.name;
@@ -3628,7 +3641,7 @@
             static fromNode(node) {
                 const identifier = Product.identifier(node);
                 const name = node[meta].type || node.name;
-                const number = node.number || node.id;
+                const number = node['part number'] || node.number || node.id;
                 const product = Product.byIdentifier[identifier] || new Product(name, number);
                 Product.byIdentifier[identifier] = product;
                 return product;
@@ -3646,6 +3659,9 @@
                     index += 1;
                 }
                 return `${this.name} (${index})`;
+            }
+            path() {
+                return [];
             }
         }
 
@@ -3748,7 +3764,7 @@
         class Part {
             static all = [];
             static id = 0;
-            constructor(node, component, parent) {
+            constructor(node, product, component, parent) {
                 Part.all.push(this);
                 this._id = ++Part.id;
                 this._idBytes = [
@@ -3759,6 +3775,7 @@
                 //this._idBytes = [Math.random(), Math.random(), Math.random(), 1];
                 this._node = node;
                 this.name = node.name || component.product.getUniqueName();
+                this.product = product;
                 this.component = component;
                 this.parent = parent;
                 this.parts = [];
@@ -3783,7 +3800,7 @@
             clone(context) {
                 // Create a new part from this part.
                 const name = this.product.getUniqueName();
-                return new Part(this.product, context, name);
+                return new Part(this._node, this.product, this.component, this.parent);
             }
             getDefinition(indent = 0) {
                 const fieldNames = [
@@ -4373,7 +4390,7 @@
             const container = app.detailViews.get(part) ?? addContainer(part);
             document.body.append(container);
             container.classList.remove('transparent');
-            const tip = [];
+            const tip = [`${part._node[meta].source.url} (${part._node[meta].source.lineNumber})`];
             if (part._node.position) {
                 tip.push(`Position: ${part._node.position}`);
             }
@@ -4387,10 +4404,6 @@
             pathView.innerHTML = '/';
             const path = part.path();
 
-            const location = path.flatMap((part) => part._node[meta].name[0] || []).join('-');
-            const subtitle = container.querySelector('.detail-view-subtitle');
-            subtitle.innerText = location;
-
             path.pop();
             path.forEach((part) => {
                 const node = document.createElement('span');
@@ -4399,6 +4412,10 @@
                 node.addEventListener('click', (event) => select(part, event));
                 pathView.append(node, '/');
             });
+
+            const location = path.flatMap((part) => part._node[meta].name[0] || []).join('-');
+            const subtitle = container.querySelector('.detail-view-subtitle');
+            subtitle.innerText = location;
 
             const description = container.querySelector('.detail-view-description');
             if (part._node.Description?.length) {
@@ -4429,18 +4446,32 @@
                 partsList.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
             }
             parts.append(...partsList.map((part) => {
-                const node = document.createElement('div');
+                const partNode = document.createElement('div');
+                const node = document.createElement('span');
+                partNode.append(node);
+                node.append(part.name);
                 if (part._node[meta].name.length > 0) {
-                    node.innerText = `${part.name} (${part._node[meta].name[0]})`;
-                } else {
-                    node.innerText = part.name;
+                    node.append(` (${part._node[meta].name[0]})`);
+                }
+                if (part.product.number) {
+                    const number = document.createElement('span');
+                    number.innerText = part.product.number;
+                    number.classList.add('part-number', 'clickable');
+                    number.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        showProductDetails(part.product);
+                    });
+                    partNode.append(' ', number);
                 }
                 node.classList.add('clickable');
-                node.addEventListener('click', (event) => select(part, event));
+                node.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    select(part, event);
+                });
                 if (app.view.parts.get(part) === undefined) {
                     node.classList.add('not-shown');
                 }
-                return node;
+                return partNode;
             }));
 
             const components = container.querySelector('.detail-view-components');
@@ -4468,6 +4499,146 @@
             notes.addEventListener('click', (event) => {
                 event.stopPropagation();
                 showNotes(part);
+            });
+        }
+
+        /**
+         * Display details of the given product.
+         */
+        async function showProductDetails(product) {
+            /*
+            if (product._node[meta].sources) {
+                if (product._node[meta].sources.some((source) => source.state === 'loading')) {
+                    return;
+                }
+                await Promise.all(product._node[meta].sources.map(async (source) => {
+                    if (source.state === 'loading' || source.state === 'loaded') {
+                        return;
+                    }
+                    source.state = 'loading';
+                    const response = await fetch(source.url);
+                    if (response.ok) {
+                        const text = await response.text();
+                        app.view.update();
+                        source.state = 'loaded';
+                    } else {
+                        source.state = 'failed';
+                    }
+                }));
+            }
+                */
+            console.log(product);
+
+            const addContainer = (product) => {
+                const template = document.getElementById('detail-view-template');
+                const container = template.content.cloneNode(true).firstElementChild;
+                app.detailViews.set(product, container);
+                container.classList.add('product-view');
+                container.addEventListener('click', (event) => {
+                    container.classList.add('transparent');
+                    container.addEventListener('transitionend', (event) => container.remove());
+                    app.detailViews.delete(product);
+                });
+                return container;
+            };
+            const container = app.detailViews.get(product) ?? addContainer(product);
+            document.body.append(container);
+            container.classList.remove('transparent');
+            const tip = [];
+            if (tip.length) {
+                container.title = tip.join('\n');
+            }
+            const title = container.querySelector('.detail-view-title');
+            title.innerText = product.name;
+
+            const pathView = container.querySelector('.detail-view-path');
+            pathView.innerHTML = '/';
+            const path = product.path();
+
+            path.pop();
+            path.forEach((product) => {
+                const node = document.createElement('span');
+                node.innerText = product.name;
+                node.classList.add('clickable');
+                node.addEventListener('click', (event) => select(product, event));
+                pathView.append(node, '/');
+            });
+
+            const subtitle = container.querySelector('.detail-view-subtitle');
+            subtitle.innerText = product.number;
+
+            const description = container.querySelector('.detail-view-description');
+            if (product.description?.length) {
+                const indent = product._node.Description[0].length - product._node.Description[0].trim().length;
+                const text = product._node.Description.map((line) => line.slice(indent)).join('\n');
+                description.innerText = text;
+            } else {
+                description.innerHTML = '';
+            }
+            const views = container.querySelector('.detail-view-views');
+            views.innerHTML = '';
+            /*
+            views.append(...(product._node.views ?? []).map((view) => {
+                const node = document.createElement('div');
+                node.innerText = view.name;
+                node.classList.add('clickable');
+                node.addEventListener('click', (event) => {
+                    showView(product, view.name);
+                });
+                return node;
+            }));
+            const links = container.querySelector('.detail-view-links');
+            links.innerHTML = (product._node.links || []).map((link) =>
+                `<a href=${link.url}>${link.label}</a>`).join('<br>');
+                */
+            const products = container.querySelector('.detail-view-parts');
+            products.innerHTML = product.instances.length;
+            
+            const productsList = [...product.instances];
+            if (app.sort) {
+                productsList.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
+            }
+            products.append(...productsList.map((part) => {
+                const partNode = document.createElement('div');
+                const node = document.createElement('span');
+                partNode.append(node);
+                node.append(part.name);
+                if (part._node[meta].name.length > 0) {
+                    node.append(` (${part._node[meta].name[0]})`);
+                }
+                node.classList.add('clickable');
+                node.addEventListener('click', (event) => select(part, event));
+                if (app.view.parts.get(part) === undefined) {
+                    node.classList.add('not-shown');
+                }
+                return partNode;
+            }));
+/*
+            const components = container.querySelector('.detail-view-components');
+            components.addEventListener('click', (event) => {
+                if (app.sort === 'name') {
+                    app.sort = null;
+                } else {
+                    app.sort = 'name';
+                }
+                products.innerHTML = '';
+                const sorted = [...app.detail.products];
+                if (app.sort) {
+                    sorted.sort((a, b) => a[app.sort].localeCompare(b[app.sort]));
+                }
+                products.append(...sorted.map((product) => {
+                    const node = document.createElement('div');
+                    node.innerText = product.name;
+                    node.classList.add('clickable');
+                    node.addEventListener('click', (event) => select(product, event));
+                    return node;
+                }));
+            });
+*/
+            const notes = container.querySelector('.notes');
+            notes.addEventListener('click', (event) => {
+                event.stopPropagation();
+                showNotes(product);
             });
         }
 
@@ -11984,7 +12155,7 @@
                         root.components.push(component);
                     }
 
-                    const part = new Part(node, component, context?.part);
+                    const part = new Part(node, product, component, context?.part);
                     app.allParts.push(part);
                     product.instances.push(part);
                     part.parts = node[parts].map((child, index) => addPart(child, index, { product, part }));
@@ -14012,11 +14183,12 @@ ${vectorFixed(closest[0].local)}`;
             /**
              * Get or create a node based on a qualified name, which may include a path and type.
              */
-            function makeNode(context, text) {
+            function makeNode(context, line) {
                 const node = {
                     [meta]: {
                         name: [],
-                        text,
+                        text: line.text,
+                        source: line.source,
                         data: [],
                         test: () => true,
                         parent: context[symbols.object],
@@ -14077,7 +14249,7 @@ ${vectorFixed(closest[0].local)}`;
                         processField(text, instance, defaultParameters); // Single element not a link or type
                     } else {
                         const addNode = instance[symbols.addNode];
-                        const node = makeNode(instance, line.text);
+                        const node = makeNode(instance, line);
                         addName(node, text.trim(), instance);
                         instance[symbols.object] = node;
                         instance[symbols.addNode] = (newNode) => node[parts].push(newNode);
@@ -14105,7 +14277,7 @@ ${vectorFixed(closest[0].local)}`;
                     const object = instance[symbols.object];
 
                     const defaultParameters = [...instance[symbols.defaults]];
-                    const node = makeNode(instance, line.text);
+                    const node = makeNode(instance, line);
                     const fields = getFields(detail);
                     fields.forEach((field) => processField(field, instance, defaultParameters));
 
@@ -14171,7 +14343,7 @@ ${vectorFixed(closest[0].local)}`;
 
                     const defaultParameters = [...instance[symbols.defaults]];
                     const addNode = instance[symbols.addNode];
-                    const node = makeNode(instance, line.text);
+                    const node = makeNode(instance, line);
                     line.fields.forEach((field) => processField(field, instance, defaultParameters));
 
                     // Add remaining defaults.
@@ -14198,7 +14370,7 @@ ${vectorFixed(closest[0].local)}`;
 
                     const defaultParameters = [...instance[symbols.defaults]];
                     const parent = instance[symbols.object];
-                    const node = makeNode(instance, line.text);
+                    const node = makeNode(instance, line);
                     line.fields[0] = line.fields[0].replace(/^::/, '');
                     line.fields.forEach((field) => processField(field, instance, defaultParameters));
 
@@ -14460,7 +14632,7 @@ ${vectorFixed(closest[0].local)}`;
 
                 // If the part has already been created for this node, i.e. when loading
                 // components have been deferred, then reuse it.
-                const part = node._part || new Part(node, component, context?.part);
+                const part = node._part || new Part(node, product, component, context?.part);
                 //const part = new Part(node, component, context?.part);
                 if (node._part) {
                     if (node.position) {
@@ -16588,7 +16760,7 @@ ${vectorFixed(closest[0].local)}`;
                                 const bounds = getBounds(source);
                                 source.position[0] += bounds.max[0];
                             }
-                            const part = new Part(source, new Component({}, source, {}), parent);
+                            const part = new Part(source, {}, new Component({}, source, {}), parent);
                             parent.parts.push(part);
                             part.parent = parent;
                             const parentItem = app.view.parts.get(parent);
