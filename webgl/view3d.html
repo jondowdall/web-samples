@@ -583,7 +583,7 @@
                 5px 5px 8px rgb(50, 50, 30, 0.5);
             display: flex;
             flex-direction: column;
-            transition: all 0.75s;
+            transition: all 0.25s;
         }
 
         .action-view h2 {
@@ -651,7 +651,7 @@
                 5px 5px 8px rgb(50, 50, 30, 0.5);
             display: flex;
             flex-direction: column;
-            transition: all 0.75s;
+            transition: all 0.25s;
         }
 
         .note {
@@ -667,7 +667,7 @@
                 5px 5px 8px rgb(50, 50, 30, 0.5);
             display: flex;
             flex-direction: column;
-            transition: all 0.75s;
+            transition: all 0.25s;
         }
 
         .note h2 {
@@ -731,7 +731,7 @@
             display: flex;
             flex-direction: column;
             rotate: random(-1deg, 1deg);
-            transition: opacity 0.75s;
+            transition: opacity 0.25s;
         }
 
         .product-view {
@@ -1508,6 +1508,10 @@
             return (Kd * lambert + specular) * NdotL;
         }
 
+        float random(vec2 st) {
+            return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+        }
+
         void main() {
             if ((pass == 0 && v_opacity < 0.98) ||
                 (pass == 1 && v_opacity >= 0.98)) {
@@ -1520,6 +1524,11 @@
             float occ = 1.0;
 
             if (effects == 2) {
+                const float offset = 0.01;
+                const float sharpness = 15.0;
+                occ = (0.9 + 0.1 * random(v_position.xz));
+            }
+            if (effects == 3) {
                 const float offset = 0.01;
                 const float sharpness = 15.0;
                 occ = 1.0 / (1.0 + exp(-sharpness * (dot(normal, vec3(0.0, 1.0, 0.0)) + offset)));
@@ -2227,13 +2236,13 @@
                     while (next) {
                         nodes.push(next);
                         next.style.transform = `translateY(${y}px)`;
-                        next.style.transition = `all 0.75s`;
+                        next.style.transition = `all 0.25s`;
                         next = next.nextElementSibling;
                     }
                     actionView.addEventListener('transitionend', (event) => {
                         actionView.remove();
                         nodes.forEach((node) => {
-                            node.style.transition = `opacity 0.75s`;
+                            node.style.transition = `opacity 0.25s`;
                             node.style.transform = 'none';
                         });
                     });
@@ -2509,6 +2518,21 @@
         }
 
         /**
+         * Move up.
+         */
+        function up(amount = 1) {
+            const { xAxis, yAxis, zAxis, distance } = viewVectors();
+            let rate = distance;
+            if (app.walk) {
+                yAxis[1] = 0;
+                rate = 8000 * app.scale;
+            }
+            add(app.force, Vector.scale(yAxis, amount * rate * 0.1));
+            limit(app.force, rate);
+            canvas.focus();
+        }
+
+        /**
          * Pitch up - Rotate camera around local x axis.
          */
         function lookUp(amount = 1) {
@@ -2729,8 +2753,20 @@
             // Get the current directions and distance to view point.
             const { xAxis, yAxis, zAxis, distance } = viewVectors();
             const newX = cross([0, 1, 0], zAxis);
-            const up = cross(zAxis, newX);
-            moveCamera(app.view.camera.position, app.view.camera.lookAt, up);
+            if (Math.hypot(...newX) < 0.5) {
+                if (Math.abs(dot(zAxis, [1, 0, 0])) > Math.abs(dot(zAxis, [0, 0, 1]))) {
+                    const newX = cross([1, 0, 0], zAxis);
+                    const up = cross(zAxis, newX);
+                    moveCamera(app.view.camera.position, app.view.camera.lookAt, [1, 0, 0]);
+                } else {
+                    const newX = cross([0, 0, 1], zAxis);
+                    const up = cross(zAxis, newX);
+                    moveCamera(app.view.camera.position, app.view.camera.lookAt, up);
+                }
+            } else {
+                const up = cross(zAxis, newX);
+                moveCamera(app.view.camera.position, app.view.camera.lookAt, up);
+            }
         }
 
         /**
@@ -3569,6 +3605,9 @@
                 }
                 if (app.picked || app.labels.length > 0) {
                     drawLabels();
+                }
+                if (action.newWall) {
+                    action.newWall.draw2d();
                 }
 
                 if (grid) {
@@ -4748,13 +4787,13 @@
                     while (next) {
                         nodes.push(next);
                         next.style.transform = `translateY(${y}px)`;
-                        next.style.transition = `all 0.75s`;
+                        next.style.transition = `all 0.25s`;
                         next = next.nextElementSibling;
                     }
                     noteView.addEventListener('transitionend', (event) => {
                         noteView.remove();
                         nodes.forEach((node) => {
-                            node.style.transition = `opacity 0.75s`;
+                            node.style.transition = `opacity 0.25s`;
                             node.style.transform = 'none';
                         });
                     });
@@ -9183,7 +9222,7 @@
                     colour: [0.6, 0.6, 0.6],
                 });
 
-                gl.uniform1i(app.pbrShader.effects, 2);
+                gl.uniform1i(app.pbrShader.effects, 3);
                 gl.bindVertexArray(Room.buffers.vao);
                 gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -9878,482 +9917,79 @@
         }
 
         /**
-          * A wall section consists of a number of segments that are of the same height and offset from the base plane
-          */
-        class WallSection {
-            constructor(wall) {
-                this.wall = wall;
-                this.segments = [];
+         * Class used for interactive wall building.
+         */
+        class AddWall {
+            constructor() {
+                this.points = [];
+                this.height = 2.4;
+                this.thickness = [0.050, 0.050];
             }
-            getPoints() {
-                const path = this.node.path;
-                this.points = pathToPoints(path).filter((point) => point);
-
-                const thickness = this.node.thickness;
-                const offset = [];
-                if (!Array.isArray(thickness)) {
-                    offset.push(thickness / 2, thickness / 2);
-                } else {
-                    offset[0] = thickness[0];
-                    offset[1] = thickness[1];
-                }
-                // Generate the points for the wall segments based on wall thickness
-                const getCorner = (point, i) => {
-                    const prior = (i + this.points.length - 1) % this.points.length;
-                    const d1 = [point[0] - this.points[prior][0], point[1] - this.points[prior][1]];
-                    const l1 = Math.hypot(...d1);
-
-                    const next = (i + 1) % this.points.length;
-                    const d2 = [this.points[next][0] - point[0], this.points[next][1] - point[1]];
-                    const l2 = Math.hypot(...d2);
-
-                    // Get the points for the inner and outer faces of the wall segment
-                    const p1 = [
-                        point[0] - d1[1] * offset[0] / l1,
-                        point[1] + d1[0] * offset[0] / l1
-                    ];
-                    const p2 = [
-                        point[0] - d2[1] * offset[0] / l2,
-                        point[1] + d2[0] * offset[0] / l2
-                    ];
-
-                    const p3 = [
-                        point[0] + d1[1] * offset[1] / l1,
-                        point[1] - d1[0] * offset[1] / l1
-                    ];
-                    const p4 = [
-                        point[0] + d2[1] * offset[1] / l2,
-                        point[1] - d2[0] * offset[1] / l2
-                    ];
-
-                    const u = (p2[1] * d2[0] + d2[1] * p1[0] - d2[1] * p2[0] - p1[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
-                    const v = (p4[1] * d2[0] + d2[1] * p3[0] - d2[1] * p4[0] - p3[1] * d2[0]) / (d1[1] * d2[0] - d2[1] * d1[0]);
-                    return [
-                        [p1[0] + u * d1[0], p1[1] + u * d1[1]],
-                        [p3[0] + v * d1[0], p3[1] + v * d1[1]]
-                    ];
-                };
-
-                this.corners = this.points.map(getCorner);
-                if (!this.node.closed) {
-                    // First and last corners are perpendicular to segment
-                    const d1 = [this.points[1][0] - this.points[0][0], this.points[1][1] - this.points[0][1]];
-                    const l1 = Math.hypot(...d1);
-
-                    const p1 = [
-                        this.points[0][0] - d1[1] * offset[0] / l1,
-                        this.points[0][1] + d1[0] * offset[0] / l1
-                    ];
-                    const p2 = [
-                        this.points[0][0] + d1[1] * offset[1] / l1,
-                        this.points[0][1] - d1[0] * offset[1] / l1
-                    ];
-
-                    const last = this.points.length - 1;
-                    const d2 = [this.points[last][0] - this.points[last - 1][0], this.points[last][1] - this.points[last - 1][1]];
-                    const l2 = Math.hypot(...d2);
-
-                    const p3 = [
-                        this.points[last][0] - d2[1] * offset[0] / l2,
-                        this.points[last][1] + d2[0] * offset[0] / l2
-                    ];
-                    const p4 = [
-                        this.points[last][0] + d2[1] * offset[1] / l2,
-                        this.points[last][1] - d2[0] * offset[1] / l2
-                    ];
-                    this.corners = [[p1, p2], ...this.corners.slice(1, -1), [p3, p4]];
-                }
-                const height = this.node.height;
-                const get2dNormal = (p1, p2) => {
-                    const vector = [p2[0] - p1[0], p2[1] - p1[1]];
-                    const length = Math.hypot(...vector);
-                    return [vector[1] / length, 0, -vector[0] / length];
-                }
-                const get3d = (point, height) => [point[0], height, point[1]];
-                this.segments = this.points.map((point, i) => {
-                    const next = (i + 1) % this.points.length;
-                    const inner = Math.hypot(this.corners[next][0][0] - this.corners[i][0][0],
-                        this.corners[next][0][1] - this.corners[i][0][1]);
-
-                    const outer = Math.hypot(this.corners[next][1][0] - this.corners[i][1][0],
-                        this.corners[next][1][1] - this.corners[i][1][1]);
-
-                    const normal = get2dNormal(point, this.points[next]);
-                    const startNormal = get2dNormal(this.corners[i][1], this.corners[i][0]);
-                    const endNormal = get2dNormal(this.corners[next][0], this.corners[next][1]);
-                    return {
-                        centre: [(point[0] + this.points[next][0]) / 2, height / 2, (point[1] + this.points[next][1]) / 2],
-                        radius: Math.hypot(this.points[next][0] - point[0], height, this.points[next][1] - point[1]),
-                        visible: true,
-                        normal, startNormal, endNormal,
-                        inner, outer,
-                        corner1: get3d(this.corners[i][0], 0),
-                        corner2: get3d(this.corners[i][1], 0),
-                        corner3: get3d(this.corners[i][1], this.height),
-                        corner4: get3d(this.corners[i][0], this.height),
-
-                        corner5: get3d(this.corners[next][0], 0),
-                        corner6: get3d(this.corners[next][1], 0),
-                        corner7: get3d(this.corners[next][1], this.height),
-                        corner8: get3d(this.corners[next][0], this.height),
-                    };
-                });
-                const centre = this.points.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]).map((v) => v / this.points.length);
-                this.origin = [centre[0], height / 2, centre[1]];
-                if (!this.node.closed) {
-                    this.segments.pop();
-                }
-                this.outer = this.segments.reduce((sum, segment) => sum + segment.outer, 0);
-                this.inner = this.segments.reduce((sum, segment) => sum + segment.inner, 0);
-            }
-            makeWalls() {
-                const cross2d = (v1, v2) => v1[0] * v2[1] - v2[0] * v1[1];
-                const vectors = [];
-                const vertices = [];
-
-                const height = this.node.height ?? 1;
-                const closed = this.node.closed;
-                let inner = 0;
-                let outer = 0;
-                this.segments.forEach((segment, i) => {
-                    const p = (i + this.segments.length - 1) % this.segments.length;
-                    const n = (i + 1) % this.corners.length;
-                    const next = this.corners[n];
-
-                    const start = this.corners[i];
-                    const end = this.corners[n];
-
-                    const parameters = [...this.material.materialParameters];
-                    if (this.segments[i].visible === false) {
-                        parameters[1] = 0.5;
-                    }
-
-                    const u1 = inner / this.inner;
-                    inner += segment.inner;
-                    const u2 = inner / this.inner;
-
-                    const u3 = outer / this.outer;
-                    outer += segment.outer;
-                    const u4 = outer / this.outer;
-
-                    if ((!closed && i === 0) || (this.segments[i].visible && !this.segments[p].visible)) {
-                        vertices.push(start[0][0], 0, start[0][1], ...segment.startNormal, 0, 0, ...parameters);
-                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 1, 0, ...parameters);
-                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, 1, ...parameters);
-                        vertices.push(start[1][0], 0, start[1][1], ...segment.startNormal, 0, 0, ...parameters);
-                        vertices.push(start[0][0], height, start[0][1], ...segment.startNormal, 1, 1, ...parameters);
-                        vertices.push(start[1][0], height, start[1][1], ...segment.startNormal, 0, 1, ...parameters);
-                    }
-
-                    vertices.push(start[0][0], 0, start[0][1], 0, -1, 0, 0, 0, ...parameters);
-                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 1, 0, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, 0, ...parameters);
-                    vertices.push(start[1][0], 0, start[1][1], 0, -1, 0, 0, 0, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], 0, -1, 0, 1, 0, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], 0, -1, 0, 0, 0, ...parameters);
-
-                    vertices.push(start[0][0], height, start[0][1], 0, 1, 0, 0, 1, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 1, 1, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, 1, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], 0, 1, 0, 0, 1, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], 0, 1, 0, 1, 1, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], 0, 1, 0, 0, 1, ...parameters);
-
-                    vertices.push(start[0][0], 0, start[0][1], ...segment.normal, u1, 0, ...parameters);
-                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, u1, 0.5, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
-                    vertices.push(start[0][0], height, start[0][1], ...segment.normal, u1, 0.5, ...parameters);
-                    vertices.push(end[0][0], height, end[0][1], ...segment.normal, u2, 0.5, ...parameters);
-                    vertices.push(end[0][0], 0, end[0][1], ...segment.normal, u2, 0, ...parameters);
-
-                    vertices.push(start[1][0], 0, start[1][1], ...Vector.scale(segment.normal, -1), u3, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
-                    vertices.push(start[1][0], height, start[1][1], ...Vector.scale(segment.normal, -1), u3, 1, ...parameters);
-                    vertices.push(end[1][0], height, end[1][1], ...Vector.scale(segment.normal, -1), u4, 1, ...parameters);
-                    vertices.push(end[1][0], 0, end[1][1], ...Vector.scale(segment.normal, -1), u4, 0.5, ...parameters);
-
-                    if ((!closed && i === this.segments.length - 1)
-                        || this.segments[i].visible && !this.segments[n].visible) {
-                        vertices.push(end[0][0], 0, end[0][1], ...segment.endNormal, 0, 0, ...parameters);
-                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 1, 0, ...parameters);
-                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, 1, ...parameters);
-                        vertices.push(end[1][0], 0, end[1][1], ...segment.endNormal, 0, 0, ...parameters);
-                        vertices.push(end[0][0], height, end[0][1], ...segment.endNormal, 1, 1, ...parameters);
-                        vertices.push(end[1][0], height, end[1][1], ...segment.endNormal, 1, 1, ...parameters);
-                    }
-                });
-
-                gl.vertexAttrib4f(app.pbrShader.textureParameters, this.texture.x, this.texture.y, this.texture.width, this.texture.height);
-
-                this.count = vertices.length / 12;
-                gl.bindBuffer(gl.ARRAY_BUFFER, this.vertex);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
-            }
-            render() {
-                const orientation = extractRotation(this.world);
-                setFixedPBRAttributes({
-                    world: this.world,
-                    orientation,
-                    colour: this.material.colour,
-                    emissivityColour: this.material.emissivityColour,
-                    reflectivity: this.material.reflectivity,
-                    materialParameters: [0, this.show ? 1 : 0.5, 0, 0],
-                    texture: this.texture,
-                });
-
-                gl.uniform1i(app.pbrShader.effects, 0);
-                gl.bindVertexArray(this.vao);
-                gl.drawArrays(gl.TRIANGLES, 0, this.count);
-                gl.bindVertexArray(null);
-            }
-            pickerRender() {
-                const world = identityMatrix();
-
-                gl.uniformMatrix4fv(app.pickerShader.model, false, world);
-                gl.bindVertexArray(this.vao);
-
-                const id = this.part.getIdBytes();
-
-                gl.uniform4fv(app.pickerShader.id, id);
-                gl.drawArrays(gl.TRIANGLES, 0, this.count);
-                gl.bindVertexArray(null);
-
-
-            }
-            get vertices() {
-            }
-            intersects(line, all) {
-                const get3D = (position, height = 0) => [position[0], height, position[1]];
-                const orientation = extractRotation(this.world);
-                return this.segments.flatMap((segment, index) => {
-                    if (segment.visible) {
-                        const p1 = applyTransform(get3D(this.points[index]), this.world);
-                        const p2 = applyTransform(get3D(this.points[(index + 1) % this.points.length]), this.world);
-                        const p3 = applyTransform(get3D(this.points[index], this.height), this.world);
-                        // Find the insersection of the ray and the plane of the wall segment
-                        // and check if it is within the segment.
-                        const normal = applyTransform(segment.normal, orientation);
-                        const point = planeIntercept(line, { point: p1, normal });
-                        // convert to wall space
-                        const v1 = subtract(point, p1);
-                        const v2 = subtract(p2, p1);
-                        const v3 = subtract(p3, p1);
-                        const x = dot(v1, v2) / dot(v2, v2);
-                        const y = dot(v1, v3) / dot(v3, v3);
-                        if (app.dots) {
-                            if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
-                                app.points.push({ position: point, colour: [0, 0, 0.1] });
-                            }
-                        }
-                        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
-                            return [{ shape: this, t: [2], points: [point] }];
-                        }
-                    }
-                    return [];
-                });
-            }
-            closestVertex(line) {
-                const closest = {
-                    distance: Infinity,
-                    point: null,
-                };
-
-                const check = (point) => {
-                    const world = applyTransform(point, this.world);
-                    const dist = distanceToPoint(line, world);
-                    if (dist < closest.distance) {
-                        closest.point = world;
-                        closest.local = point;
-                        closest.distance = dist;
-                    }
-                }
-                this.points.forEach((point) => {
-                    check([point[0], 0, point[1]]);
-                    check([point[0], this.height, point[1]]);
-                });
-                return closest;
+            addPoint(point) {
+                this.points.push(point);
+                this.update();
             }
             update() {
-                if (this.hidden) {
-                    this.segments.forEach((segment) => segment.visible = false);
-                } else if (app.show && app.show.shape !== this) {
-                    this.segments.forEach((segment) => {
-                        // Get the origin of this element
-                        const origin = applyTransform(segment.centre, this.world);
-                        const dist = Math.hypot(...subtract(origin, app.view.camera.position));
-                        if ((dist - segment.radius) < app.show.distance) {
-
-                            const point = applyTransform4([...origin, 1], app.view.camera.viewProjection);
-                            const position = [app.aspect * point[0] / point[3], point[1] / point[3]];
-                            const radius = segment.radius / point[3];
-
-                            const gap = 0.5 * Math.hypot(...subtract(position, app.show.position));
-
-                            if (gap < (radius + app.show.radius)) {
-                                segment.visible = false;
-                            } else {
-                                segment.visible = true;
-                            }
-
-                            if (app.showConstruction) {
-                                const width = ctx.canvas.width;
-                                const height = ctx.canvas.height;
-                                const x = 0.5 * width * (position[0] / app.aspect + 1);
-                                const y = 0.5 * height * (1 - position[1]);
-
-                                ctx.strokeStyle = segment.visible ? 'grey' : 'red';
-                                ctx.fillStyle = 'rgb(255, 100, 100, 0.1)';
-                                ctx.beginPath();
-                                ctx.arc(x, y, height * radius, 0, 2 * Math.PI);
-                                ctx.stroke();
-                            }
-
-                        } else {
-                            segment.visible = true;
-                        }
-                    });
-                } else {
-                    this.segments.forEach((segment) => segment.visible = true);
+                if (this.points < 2) {
+                    // Clear buffers
                 }
-                this.makeWalls();
             }
-            showPoints() {
-                const viewProjection = app.view.camera.viewProjection;
-                const transform = multiply(this.world, viewProjection)
+            draw2d() {
                 const width = ctx.canvas.width;
                 const height = ctx.canvas.height;
+                const transform = app.view.camera.viewProjection;
+                ctx.textAlign = 'center';
                 const screen = (point) => {
-                    point = applyTransform4([...point, 1], transform);
-                    return [0.5 * width * (point[0] / point[3] + 1),
-                    0.5 * height * (1 - point[1] / point[3])];
+                    const projectedPoint = applyTransform4([...point, 1], transform);
+                    return [
+                        0.5 * width * (projectedPoint[0] / projectedPoint[3] + 1),
+                        0.5 * height * (1 - projectedPoint[1] / projectedPoint[3])];
                 }
-                const radius = 2;
+                // Draw the user created points and lines
+                ctx.strokeStyle = 'darkgrey';
+                ctx.beginPath();
+                this.points.forEach((point) => ctx.lineTo(...screen(point)));
+                ctx.stroke();
 
-                ctx.fillStyle = 'red';
+                //ctx.fillStyle = point.colour || 'magenta';
                 this.points.forEach((point) => {
+                    const projected = screen(point);
                     ctx.beginPath();
-                    ctx.arc(...screen([point[0], 0, point[1]]), radius, 0, 2 * Math.PI);
-                    ctx.arc(...screen([point[0], this.height, point[1]]), radius, 0, 2 * Math.PI);
-                    ctx.fill();
+                    ctx.arc(...projected, 5, 0, 2 * Math.PI);
+                    ctx.stroke();
                 });
-            }
-            edges(segment) {
-                const corner1 = applyTransform(segment.corner1, this.world);
-                const corner2 = applyTransform(segment.corner2, this.world);
-                const corner3 = applyTransform(segment.corner3, this.world);
-                const corner4 = applyTransform(segment.corner4, this.world);
 
-                const corner5 = applyTransform(segment.corner5, this.world);
-                const corner6 = applyTransform(segment.corner6, this.world);
-                const corner7 = applyTransform(segment.corner7, this.world);
-                const corner8 = applyTransform(segment.corner8, this.world);
+                // Add dimensions
+                if (this.points.length > 1) {
+                    ctx.fillStyle = 'darkgrey';
+                    ctx.font = '10px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
 
-                return [
-                    { point: corner1, direction: subtract(corner5, corner1) },
-                    { point: corner2, direction: subtract(corner6, corner2) },
-                    { point: corner3, direction: subtract(corner7, corner3) },
-                    { point: corner4, direction: subtract(corner8, corner4) },
-
-                    { point: corner1, direction: subtract(corner2, corner1) },
-                    { point: corner2, direction: subtract(corner3, corner2) },
-                    { point: corner3, direction: subtract(corner4, corner3) },
-                    { point: corner4, direction: subtract(corner1, corner4) },
-
-                    { point: corner5, direction: subtract(corner6, corner5) },
-                    { point: corner6, direction: subtract(corner7, corner6) },
-                    { point: corner7, direction: subtract(corner8, corner7) },
-                    { point: corner8, direction: subtract(corner5, corner8) },
-                ];
-            }
-            faces(segment) {
-                const corner1 = applyTransform(segment.corner1, this.world);
-                const corner2 = applyTransform(segment.corner2, this.world);
-                const corner3 = applyTransform(segment.corner3, this.world);
-                const corner4 = applyTransform(segment.corner4, this.world);
-
-                const corner5 = applyTransform(segment.corner5, this.world);
-                const corner6 = applyTransform(segment.corner6, this.world);
-                const corner7 = applyTransform(segment.corner7, this.world);
-                const corner8 = applyTransform(segment.corner8, this.world);
-
-                return [
-                    { point1: corner1, point2: corner2, point3: corner3 },
-                    { point1: corner5, point2: corner6, point3: corner7 },
-                    { point1: corner1, point2: corner2, point3: corner6 },
-                    { point1: corner2, point2: corner3, point3: corner7 },
-                    { point1: corner3, point2: corner4, point3: corner8 },
-                    { point1: corner4, point2: corner1, point3: corner5 },
-                ];
-            }
-            boxTest(box) {
-                return this.segments.some((segment) => {
-                    const centre = applyTransform(segment.centre, this.world);
-                    const boxCentre = applyTransform(box.origin, box.world);
-
-                    const distance = Math.hypot(...subtract(centre, boxCentre));
-                    if (distance < segment.radius + box.radius) {
-                        const toThis = invert(this.world);
-                        const thisOrientation = [...toThis];
-                        thisOrientation[12] = 0;
-                        thisOrientation[13] = 0;
-                        thisOrientation[14] = 0;
-
-                        const toBox = invert(box.world);
-                        const boxOrientation = [...toBox];
-                        boxOrientation[12] = 0;
-                        boxOrientation[13] = 0;
-                        boxOrientation[14] = 0;
-
-                        const planes = [
-                            { point: [-0.5, -0.5, -0.5], normal: [-1, 0, 0] },
-                            { point: [-0.5, -0.5, -0.5], normal: [0, -1, 0] },
-                            { point: [-0.5, -0.5, -0.5], normal: [0, 0, -1] },
-                            { point: [0.5, 0.5, 0.5], normal: [1, 0, 0] },
-                            { point: [0.5, 0.5, 0.5], normal: [0, 1, 0] },
-                            { point: [0.5, 0.5, 0.5], normal: [0, 0, 1] },
-                        ];
-
-                        const first = this.edges(segment).some((edge) => {
-                            const line = {
-                                point: applyTransform(edge.point, toBox),
-                                direction: applyTransform(edge.direction, boxOrientation),
-                            };
-                            return planes.some((plane) => {
-                                const point = planeSegmentIntercept(line, plane);
-                                return point && point[0] >= -0.5 && point[0] <= 0.5 &&
-                                    point[1] >= -0.5 && point[1] <= 0.5 &&
-                                    point[2] >= -0.5 && point[2] <= 0.5;
-                            });
-                        });
-                        if (first) {
-                            return true;
-                        }
-                        const second = box.edges().some((edge) =>
-                            this.faces(segment).some((face) =>
-                                edgeFaceIntercept(edge, face)));
-                        return second;
-                    }
-                    return false;
-                });
-            }
-            wallTest(other) {
-                return this.segments.some((segment) =>
-                    other.segments.some((otherSegment) => {
-                        const centre = applyTransform(segment.centre, this.world);
-                        const otherCentre = applyTransform(otherSegment.centre, other.world);
-
-                        const distance = Math.hypot(...subtract(centre, otherCentre));
-                        if (distance < segment.radius + otherSegment.radius) {
-                            return other.edges(otherSegment).some((edge) =>
-                                this.faces(segment).some((face) =>
-                                    edgeFaceIntercept(edge, face))) ||
-                                this.edges(segment).some((edge) =>
-                                    other.faces(otherSegment).some((face) =>
-                                        edgeFaceIntercept(edge, face)));
-                        }
-                        return false;
-                    }));
+                    ctx.beginPath();
+                    this.points.slice(1).forEach((point, i) => {
+                        const previous = this.points[i];
+                        const direction = subtract(point, previous);
+                        const offset = normalised(cross(direction, [0, -1, 0]));
+                        ctx.moveTo(...screen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.1))));
+                        ctx.lineTo(...screen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.3))));
+                        ctx.moveTo(...screen(sum(point, Vector.scale(offset, this.thickness[0] + 0.1))));
+                        ctx.lineTo(...screen(sum(point, Vector.scale(offset, this.thickness[0] + 0.300))));
+                        ctx.moveTo(...screen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.250))));
+                        ctx.lineTo(...screen(sum(point, Vector.scale(offset, this.thickness[0] + 0.250))));
+                    });
+                    ctx.stroke();
+                    this.points.slice(1).forEach((point, i) => {
+                        const previous = this.points[i];
+                        const direction = subtract(point, previous);
+                        const offset = normalised(cross(direction, [0, -1, 0]));
+                        const start = sum(previous, Vector.scale(offset, this.thickness[0] + 0.250));
+                        const end = sum(point, Vector.scale(offset, this.thickness[0] + 0.250));
+                        const centre = Vector.scale(sum(start, end), 0.5);
+                        const length = Math.hypot(...direction);
+                        ctx.fillText(`${length.toFixed(2)}${app.units}`, ...screen(centre));
+                    });
+                }
             }
         }
 
@@ -10392,6 +10028,12 @@
                     app.view.renderQueue.splice(pos, 1);
                 }
             }
+            /*
+            get centre() {
+                const centre2d = Vector.scale(add(this.max, this.min), 0.5);
+                return applyTransform([centre2d[0], 0, centre2d[1]], this.world);
+            }
+                */
             initialiseBuffers() {
                 const fixed = {
                     colour: this.part._node.colour ?? [0.6, 0.3, 0.8],
@@ -10407,6 +10049,14 @@
             getPoints() {
                 const path = this.node.path;
                 this.points = pathToPoints(path).filter((point) => point);
+                this.min = this.points.reduce((min, point) => point.map((v, i) => Math.min(v, min[i])), [Infinity, Infinity]);
+                this.max = this.points.reduce((max, point) => point.map((v, i) => Math.max(v, max[i])), [-Infinity, -Infinity]);
+
+                this.size = [
+                    this.max[0] - this.min[0],
+                    this.height,
+                    this.max[1] - this.min[1],
+                ];
 
                 const thickness = this.part._node.thickness;
                 const offset = [];
@@ -11219,7 +10869,7 @@
                     ],
                     texture: this.texture,
                 });
-                gl.uniform1i(app.pbrShader.effects, 2);
+                gl.uniform1i(app.pbrShader.effects, 3);
                 gl.bindVertexArray(this.vao);
                 gl.drawElements(gl.TRIANGLES, this.pointCount, gl.UNSIGNED_SHORT, 0);
                 gl.bindVertexArray(null);
@@ -12630,6 +12280,10 @@ ${vectorFixed(closest[0].local)}`;
                     }
                     actionHistory.add(new MoveCameraAction(action.start, end));
                 }
+            } else if (app.mode === 'add wall') {
+                const mouseLine = getRay(action.lastX, action.lastY);
+                const position = planeIntercept(mouseLine, {point: [0, 0, 0], normal: [0, 1, 0]});
+                action.newWall.addPoint(position);
             }
             app.show = null;
             action.move = closestVertex;
@@ -15700,7 +15354,7 @@ ${vectorFixed(closest[0].local)}`;
             o: (event) => switchCamera(event),
             p: (event) => selectParent(event),
             P: (event) => app.view.showPoints = !app.view.showPoints,
-            q: (event) => document.querySelector('.texture-canvas').classList.toggle('hide'),
+            q: (event) => up(),
             r: (event) => setView([1, 0, 0]),
             s: (event) => forward(-2),
             t: (event) => setView([0, 1, 0], [0, 0, 1]),
@@ -15881,9 +15535,12 @@ ${vectorFixed(closest[0].local)}`;
 
                         // Rotate the view
                         action.move = (event) => {
-                            action.moved = true;
+                            //action.moved = true;
                             const deltaX = start.x - event.clientX;
                             const deltaY = start.y - event.clientY;
+                            if (Math.hypot(deltaX, deltaY) > 5) {
+                                action.moved = true;
+                            }
 
                             if (event.shiftKey) {
                                 const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
@@ -15952,6 +15609,9 @@ ${vectorFixed(closest[0].local)}`;
                 //updateTextBuffer();
                 updatePoints();
             };
+
+            action.mouseDown = mouseDown;
+
             canvas.addEventListener('dblclick', (event) => {
                 report('double click');
                 const box = canvas.getBoundingClientRect();
@@ -15963,8 +15623,8 @@ ${vectorFixed(closest[0].local)}`;
                     }
                 }
             });
-            canvas.addEventListener('mousedown', (event) => mouseDown(event));
-            canvas.addEventListener('touchstart', (event) => mouseDown(touch(event)));
+            canvas.addEventListener('mousedown', (event) => action.mouseDown(event));
+            canvas.addEventListener('touchstart', (event) => action.mouseDown(touch(event)));
             canvas.addEventListener('wheel', (event) => {
                 report(`Wheel (${event.deltaY})`);
                 event.preventDefault();
@@ -16815,6 +16475,20 @@ ${vectorFixed(closest[0].local)}`;
                 app.views.forEach((view) => view.addPart(part));
             }
             */
+                },
+                __proto__: UserCommand,
+            },
+            {
+                name: 'add wall',
+                description() {
+                    return 'Add a wall';
+                },
+                serialiseState() {
+
+                },
+                async action(parameters) {
+                    app.mode = 'add wall';
+                    action.newWall = new AddWall();
                 },
                 __proto__: UserCommand,
             },

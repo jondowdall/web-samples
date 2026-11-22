@@ -14,7 +14,7 @@ const app = {
     history: [],
     index: 0,
     max: 0,
-    bufferSize: 512,
+    bufferSize: 256,
     i: 0,
     window: 3,
     threshold: 110,
@@ -29,10 +29,9 @@ function start(event) {
     // Basic Setup
     app.audioContext = new AudioContext();
     app.analyser = app.audioContext.createAnalyser();
-    app.analyser.minDecibels = -90;
+    app.analyser.minDecibels = -110;
     app.analyser.maxDecibels = -10;
-    app.analyser.fftSize = 4096; // Sets frequency resolution
-
+    app.analyser.fftSize = 2048; // Sets frequency resolution
 
     if (event.shiftKey) {
         // 2. Load audio file (simplified)
@@ -86,7 +85,7 @@ const frequencies = [261.63, 277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392
 
 /**
  * 
- * @param {number} frequency frequency to convert to note
+ * @param {number} frequency to convert to note
  * @returns {object} Midi note number, note name as string, octave.
  */
 function getNote(frequency) {
@@ -97,7 +96,6 @@ function getNote(frequency) {
 
     return { number, name, octave, str: `${name}${octave}` };
 }
-
 
 /**
  * Convert a note to a frequency
@@ -208,7 +206,7 @@ function drawSpectrum() {
         const y = app.i * height / app.bufferSize;
         for (let bin = 0; bin < app.analyser.frequencyBinCount / divisor; ++bin) {
             const x = width * bin / app.analyser.frequencyBinCount * divisor;
-            waterfallContext.fillStyle = `hsl(${app.dataArray[bin] * 360 / 255} 80% 80%)`;
+            waterfallContext.fillStyle = `hsl(${(255 - app.dataArray[bin]) * 180 / 255} 60% 80%)`;
             waterfallContext.fillRect(x, y, divisor * width / app.analyser.frequencyBinCount, height / app.bufferSize);
         }
         app.i = (app.i + 1) % app.bufferSize;
@@ -220,7 +218,7 @@ function drawSpectrum() {
 
     for (let bin = 0; bin < app.analyser.frequencyBinCount; ++bin) {
         const y = app.dataArray[bin] * height / 255;
-        context.fillStyle = `hsl(${app.dataArray[bin]} 80% 80%)`;
+        context.fillStyle = `hsl(${(255 - app.dataArray[bin]) * 180 / 255} 60% 80%)`;
         context.fillRect(bin * binWidth, height - y, binWidth, y);
     }
 
@@ -305,3 +303,7 @@ reset.addEventListener('click', (event) => {
     app.maxFrequency = 0;
     app.max = 0;
 });
+
+if (location.protocol !== 'https') {
+
+}
