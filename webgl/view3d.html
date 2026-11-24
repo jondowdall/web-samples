@@ -2486,25 +2486,45 @@
             addMoveControl(container, title);
         }
 
+
         /**
-         * Prototype for user input mode management.
+         * Prototype for user input action management.
          */
-        const Mode = {
-            mouseDown(event) { },
+        const inputAction = {
+            initialise(event) { },
             mouseMove(event) { },
-            mouseUp(event) { },
-            mouseLeave(event) { },
-            touchStart(event) { },
-            touchMove(event) { },
-            touchEnd(event) { },
-            keyDown(event) { },
-            keyUp(event) { },
-            rotateView(event) {
+        };
+
+        /**
+         * Rotate the view
+         */
+        const rotateView = {
+            initialise(event) {
                 const box = canvas.getBoundingClientRect();
-                const deltaX = event.clientX - box.left - action.lastX;
-                const deltaY = event.clientY - box.top - action.lastY;
-                action.lastX = event.clientX - box.left;
-                action.lastY = event.clientY - box.top;
+                this.last = {
+                    x: event.clientX - box.left,
+                    y: event.clientY - box.top,
+                };
+                this.start = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                };
+                this.moved = false;
+            },
+            mouseMove(event) {
+                if (event.buttons === 0) {
+                    this.end();
+                    return;
+                }
+                this.moved = true;
+                const box = canvas.getBoundingClientRect();
+                const deltaX = event.clientX - box.left - this.last.x;
+                const deltaY = event.clientY - box.top - this.last.y;
+                this.last = {
+                    x: event.clientX - box.left,
+                    y: event.clientY - box.top,
+                };
                 const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
                 const xAxis = cross(sightLine, app.view.camera.up);
                 const yAxis = cross(sightLine, xAxis);
@@ -2522,206 +2542,52 @@
                 }
                 app.view.camera.updateViewControls();
             },
-        };
+            end(event) {
+                action.move = closestVertex;
+                app.action = app.actionStack.pop();
+                const end = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                };
+                if (this.moved) {
+                    actionHistory.add(new MoveCameraAction(this.start, end));
+                }
+            },
+            __proto__: inputAction,
+        }
 
         /**
-         * Camera Move Mode
+         * Drag the view
          */
-        const ViewMode = {
-            name: 'view',
-            mouseDown(event) {
+        const dragView = {
+            initialise(event) {
                 const box = canvas.getBoundingClientRect();
-                action.lastX = event.clientX - box.left;
-                action.lastY = event.clientY - box.top;
-                action.startTime = event.timeStamp;
-                action.moved = false;
-
-                const mouseLine = getRay(action.lastX, action.lastY);
-                app.view.parts.keys((part) => deselect(part));
-                if (app.picked) {
-                    select(app.picked.part, event);
-                }
-
-                app.connections.forEach((connection) => connection.selected = (connection.getDist(mouseLine) < 5));
-
-                for (const node of document.body.querySelectorAll('.selected')) {
-                    node.classList.remove('selected');
-                }
-
-                action.part = null;
-                if (event.button === 0 && app.picked) {
-                    const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                    const viewPart = app.view.parts.get(app.picked.part);
-                    action.part = app.picked.part;
-                    const partView = app.view.parts.get(action.part);
-                    /* ToDo: fix material control
-                    if (event.metaKey && action.part.material) {
-                        materialControl(action.part.material, [action.part]);
-                    }
-                    */
-
-                    if (action.part) {
-                        // ToDo: Fix Scroll the part into view in the parts list
-                        //action.part.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
-                    }
-                    if (action.part.serialNumber) {
-
-                    } else if (app.mode[0] === 'edit') {
-                        action.plane = { point: app.picked.position };
-                        const parent = action.part.parent || app;
-                        const siblings = parent.parts;
-                        app.snapPoints = {
-                            x: new Set(),
-                            y: new Set(),
-                            z: new Set(),
-                        };
-                        siblings.forEach((part) => {
-                            const shapes = app.view.parts.get(part)?.shapes || [];
-                            shapes.forEach((shape) =>
-                                shape.getSnapPoints().forEach((point) => {
-                                    app.snapPoints.x.add(point[0]);
-                                    app.snapPoints.y.add(point[1]);
-                                    app.snapPoints.z.add(point[2]);
-                                }));
-                        });
-                        if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
-                            action.plane.normal = zAxis;
-                        } else {
-                            action.plane.normal = [0, 1, 0];
-                        }
-                        const apply = (part, action) => {
-                            action();
-                            part.parts.forEach((part) => apply(part, action));
-                        }
-                        const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
-                        selected.forEach((part) =>
-                            part.apply((part) => {
-                                const partView = app.view.parts.get(part);
-                                if (partView) {
-                                    partView.start = [...partView.transform.matrix];
-                                }
-                            }));
-                        app.view.referencePlane.normal = action.plane.normal;
-
-                        showShape(selected[0]);
-                        grid = null;
-                        {
-                            let parent = action.part.parent;
-                            while (parent && !grid) {
-                                grid = parent._node.grid;
-                                parent = parent.parent;
-                            }
-                        }
-                        action.parts = [...app.selected];
-                        action.initial = app.parts.map((part) =>
-                            app.view.parts.get(part)?.transform.slice(12, 15) || [0, 0, 0]);
-
-                        let screenspace = false;
-                        action.move = (event) => {
-                            action.moved = true;
-
-                            if (event.altKey) {
-                                if (!screenspace) {
-                                    action.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
-                                    app.view.referencePlane.normal = action.plane.normal;
-                                    screenspace = true;
-                                }
-                            } else if (screenspace) {
-                                app.view.referencePlane.normal = action.plane.normal = [0, 1, 0];
-                                screenspace = false;
-                            }
-
-                            const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                            const point = planeIntercept(mouseLine, action.plane);
-                            const delta = subtract(point, action.plane.point);
-                            action.plane.point = point;
-
-                            app.selected.forEach((part) =>
-                                part.move(delta)); //!event.shiftKey));
-
-                            app.show.point = applyTransform(selected[0].origin, selected[0].world);
-                            app.show.toWorld = selected[0].world;
-                        };
-                        action.end = endMove;
-                        report(`Moving ${action.part.name}`);
-                    } else {
-                        const start = {
-                            position: [...app.view.camera.position],
-                            lookAt: [...app.view.camera.lookAt],
-                            up: [...app.view.camera.up],
-                            x: event.clientX,
-                            y: event.clientY,
-                            length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
-                        };
-                        action.start = start;
-                        const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                        const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                        const viewPart = app.view.parts.get(app.picked.part);
-                        if (!viewPart) {
-                            return;
-                        }
-                        viewPart.shapes.forEach((shape) => shape.start = [...shape.transform.matrix]);
-
-                        action.end = endMove;
-                    }
-                } else {
-                    // Rotate the view
-                    action.move = (event) => {
-                        action.moved = true;
-                        const deltaX = event.clientX - box.left - action.lastX;
-                        const deltaY = event.clientY - box.top - action.lastY;
-                        action.lastX = event.clientX - box.left;
-                        action.lastY = event.clientY - box.top;
-                        const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                        const xAxis = cross(sightLine, app.view.camera.up);
-                        const yAxis = cross(sightLine, xAxis);
-                        if (event.shiftKey) {
-                            const dist = Math.hypot(...sightLine) / -1000;
-                            const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist), Vector.scale(normalised(yAxis), deltaY * dist));
-                            app.view.camera.position = sum(app.view.camera.position, movement);
-                            app.view.camera.lookAt = sum(app.view.camera.lookAt, movement);
-                        } else {
-                            const xRotation = getRotation(deltaY * Math.PI / 30, xAxis);
-                            const yRotation = getRotation(deltaX * Math.PI / 30, app.view.camera.up);
-                            const rotation = multiply(xRotation, yRotation);
-                            app.view.camera.position = subtract(app.view.camera.lookAt, applyTransform(sightLine, rotation));
-                            app.view.camera.up = applyTransform(app.view.camera.up, rotation);
-                        }
-                        app.view.camera.updateViewControls();
-                    };
-                    const start = {
-                        position: [...app.view.camera.position],
-                        lookAt: [...app.view.camera.lookAt],
-                        up: [...app.view.camera.up],
-                    };
-                    action.end = () => {
-                        action.move = closestVertex;
-                        const end = {
-                            position: [...app.view.camera.position],
-                            lookAt: [...app.view.camera.lookAt],
-                            up: [...app.view.camera.up],
-                        };
-                        if (action.moved) {
-                            actionHistory.add(new MoveCameraAction(start, end));
-                        }
-                    }
-                }
-                updatePoints();
+                this.moved = false;
+                this.start = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                    x: event.clientX,
+                    y: event.clientY,
+                    length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
+                };
+                this.sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
             },
             mouseMove(event) {
-                const deltaX = start.x - event.clientX;
-                const deltaY = start.y - event.clientY;
-                if (Math.hypot(deltaX, deltaY) > 5) {
-                    action.moved = true;
+                if (event.buttons === 0) {
+                    this.end();
+                    return;
                 }
+                //action.moved = true;
+                const deltaX = this.start.x - event.clientX;
+                const deltaY = this.start.y - event.clientY;
+                if (Math.hypot(deltaX, deltaY) > 5) {
+                    this.moved = true;
+                }
+                const { xAxis, yAxis, zAxis, distance } = viewVectors();
 
                 if (event.shiftKey) {
-                    const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
-                    const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
-                        Vector.scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
-                    app.view.camera.position = sum(start.position, movement);
-                    app.view.camera.lookAt = sum(start.lookAt, movement);
-                } else {
                     // Determine angle based on proportion of the field of view represented by the delta
                     const xAngle = deltaX * app.view.camera.fieldOfView / canvas.height;
                     const yAngle = deltaY * app.view.camera.fieldOfView / canvas.height;
@@ -2730,11 +2596,173 @@
                     const yRotation = getRotation(yAngle, xAxis);
                     const rotation = multiply(yRotation, xRotation);
 
-                    app.view.camera.lookAt = sum(app.view.camera.position, applyTransform(sightLine, rotation));
-                    //app.view.camera.up = applyTransform(app.view.camera.up, rotation);
+                    app.view.camera.lookAt = sum(app.view.camera.position, applyTransform(this.sightLine, rotation));
+                } else {
+                    const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
+                    const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * this.start.length / canvas.height),
+                        Vector.scale(normalised(yAxis), -deltaY * dist * this.start.length / canvas.height));
+                    app.view.camera.position = sum(this.start.position, movement);
+                    app.view.camera.lookAt = sum(this.start.lookAt, movement);
                 }
                 app.view.camera.updateViewControls();
             },
+            end(event) {
+                action.move = closestVertex;
+                app.action = app.actionStack.pop();
+                const end = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                };
+                if (this.moved) {
+                    actionHistory.add(new MoveCameraAction(this.start, end));
+                }
+            },
+            __proto__: inputAction,
+        }
+
+        /**
+         * Drag parts
+         */
+        const dragParts = {
+            initialise(event) {
+                this.plane = { point: app.picked.position };
+                const parent = app.picked.part.parent || app;
+                const siblings = parent.parts;
+                app.snapPoints = {
+                    x: new Set(),
+                    y: new Set(),
+                    z: new Set(),
+                };
+                siblings.forEach((part) => {
+                    const shapes = app.view.parts.get(part)?.shapes || [];
+                    shapes.forEach((shape) =>
+                        shape.getSnapPoints().forEach((point) => {
+                            app.snapPoints.x.add(point[0]);
+                            app.snapPoints.y.add(point[1]);
+                            app.snapPoints.z.add(point[2]);
+                        }));
+                });
+                if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
+                    this.plane.normal = zAxis;
+                } else {
+                    this.plane.normal = [0, 1, 0];
+                }
+                this.partViews = [...app.selected].flatMap((part) => app.view.parts.get(part) || []);
+                const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
+                this.partViews.forEach((partView) => partView.start = [...partView.transform]);
+                app.view.referencePlane.normal = this.plane.normal;
+
+                showShape(this.partViews[0].shapes[0]);
+                grid = null;
+                {
+                    let parent = action.part.parent;
+                    while (parent && !grid) {
+                        grid = parent._node.grid;
+                        parent = parent.parent;
+                    }
+                }
+                this.parts = [...app.selected];
+                this.initial = app.parts.map((part) =>
+                    app.view.parts.get(part)?.transform.slice(12, 15) || [0, 0, 0]);
+
+                this.screenSpace = false;
+            },
+            mouseMove(event) {
+                if (event.buttons === 0) {
+                    this.end();
+                    return;
+                }
+                this.moved = true;
+                const box = canvas.getBoundingClientRect();
+
+                if (event.altKey) {
+                    if (!this.screenSpace) {
+                        this.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
+                        app.view.referencePlane.normal = this.plane.normal;
+                        this.screenSpace = true;
+                    }
+                } else if (this.screenSpace) {
+                    app.view.referencePlane.normal = this.plane.normal = [0, 1, 0];
+                    this.screenSpace = false;
+                }
+
+                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
+                const point = planeIntercept(mouseLine, this.plane);
+                const delta = subtract(point, this.plane.point);
+                this.plane.point = point;
+
+                this.parts.forEach((part) => part.move(delta)); //!event.shiftKey));
+
+                app.show.point = applyTransform(this.partViews[0].shapes[0].origin, this.partViews[0].shapes[0].world);
+                app.show.toWorld = this.partViews[0].shapes[0].world;
+            },
+            end(event) {
+                action.move = closestVertex;
+                app.action = app.actionStack.pop();
+            },
+            __proto__: inputAction,
+        }
+
+
+        /**
+         * Add point
+         */
+        const movePoint = {
+            initialise(event) {
+                const box = canvas.getBoundingClientRect();
+                this.moved = false;
+                if (app.picked) {
+                    const partView = app.view.parts.get(app.picked.part);
+                    const origin = applyTransform([0, 0, 0], partView.transform);
+                    const up = applyTransform([0, 1, 0], partView.transform);
+                    this.plane = {
+                        point: origin,
+                        normal: normalised(subtract(up, origin)),
+                    };
+                } else {
+                    this.plane = app.referencePlane || {
+                        point: [0,0,0], normal: [0,1,0],
+                    };
+                }
+            },
+            mouseMove(event) {
+                const box = canvas.getBoundingClientRect();
+                const x = event.clientX - box.left;
+                const y = event.clientY - box.top;
+                const mouseLine = getRay(x, y);
+                this.position = planeIntercept(mouseLine, this.plane);
+            },
+            end(event) {
+                action.move = closestVertex;
+                app.action = app.actionStack.pop();
+                const end = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                };
+                if (this.moved) {
+                    actionHistory.add(new MoveCameraAction(this.start, end));
+                }
+            },
+            __proto__: inputAction,
+        }
+
+        /**
+         * Set the current action
+         */
+        function setAction(action, event) {
+            app.actionStack.push(app.action);
+            action.initialise(event);
+            app.action = action;
+        }
+
+        /**
+         * Prototype for user input mode management.
+         */
+        const inputMode = {
+            mouseDown(event) { },
+            mouseMove(event) { },
             mouseUp(event) { },
             mouseLeave(event) { },
             touchStart(event) { },
@@ -2742,13 +2770,29 @@
             touchEnd(event) { },
             keyDown(event) { },
             keyUp(event) { },
-            __proto__: Mode,
         };
 
         /**
          * Camera Move Mode
          */
-        const WalkMode = {
+        const viewMode = {
+            name: 'view',
+            mouseDown(event) { },
+            mouseMove(event) { },
+            mouseUp(event) { },
+            mouseLeave(event) { },
+            touchStart(event) { },
+            touchMove(event) { },
+            touchEnd(event) { },
+            keyDown(event) { },
+            keyUp(event) { },
+            __proto__: inputMode,
+        };
+
+        /**
+         * Camera Move Mode
+         */
+        const walkMode = {
             name: 'walk',
             mouseDown(event) { },
             mouseMove(event) { },
@@ -2759,145 +2803,16 @@
             touchEnd(event) { },
             keyDown(event) { },
             keyUp(event) { },
-            __proto__: Mode,
+            __proto__: inputMode,
         };
 
         /**
          * Part Edit Mode
          */
-        const EditMode = {
+        const editMode = {
             name: 'edit',
-            mouseDown(event) {
-                const box = canvas.getBoundingClientRect();
-                action.lastX = event.clientX - box.left;
-                action.lastY = event.clientY - box.top;
-                action.startTime = event.timeStamp;
-                action.moved = false;
-
-                app.view.parts.keys((part) => deselect(part));
-                if (app.picked) {
-                    select(app.picked.part, event);
-                }
-
-                for (const node of document.body.querySelectorAll('.selected')) {
-                    node.classList.remove('selected');
-                }
-
-                action.part = null;
-                if (event.button === 0 && app.picked) {
-                    // Move the clicked object
-                    const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                    const viewPart = app.view.parts.get(app.picked.part);
-                    action.part = app.picked.part;
-                    const partView = app.view.parts.get(action.part);
-
-                    if (action.part) {
-                        // ToDo: Fix Scroll the part into view in the parts list
-                        //action.part.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
-                    }
-                    action.plane = { point: app.picked.position };
-                    const parent = action.part.parent || app;
-                    const siblings = parent.parts;
-                    app.snapPoints = {
-                        x: new Set(),
-                        y: new Set(),
-                        z: new Set(),
-                    };
-                    siblings.forEach((part) => {
-                        const shapes = app.view.parts.get(part)?.shapes || [];
-                        shapes.forEach((shape) =>
-                            shape.getSnapPoints().forEach((point) => {
-                                app.snapPoints.x.add(point[0]);
-                                app.snapPoints.y.add(point[1]);
-                                app.snapPoints.z.add(point[2]);
-                            }));
-                    });
-                    if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
-                        action.plane.normal = zAxis;
-                    } else {
-                        action.plane.normal = [0, 1, 0];
-                    }
-                    const apply = (part, action) => {
-                        action();
-                        part.parts.forEach((part) => apply(part, action));
-                    }
-                    const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
-                    selected.forEach((part) =>
-                        part.apply((part) => {
-                            const partView = app.view.parts.get(part);
-                            if (partView) {
-                                partView.start = [...partView.transform.matrix];
-                            }
-                        }));
-                    app.view.referencePlane.normal = action.plane.normal;
-
-                    showShape(selected[0]);
-                    grid = null;
-                    {
-                        let parent = action.part.parent;
-                        while (parent && !grid) {
-                            grid = parent._node.grid;
-                            parent = parent.parent;
-                        }
-                    }
-                    action.parts = [...app.selected];
-                    action.initial = app.parts.map((part) =>
-                        app.view.parts.get(part)?.transform.slice(12, 15) || [0, 0, 0]);
-
-                    this.screenSpace = false;
-                    action.move = (event) => {
-                    };
-                    action.end = endMove;
-                    report(`Moving ${action.part.name}`);
-                } else {
-                    // Rotate the view
-                    action.move = (event) => {
-                        action.moved = true;
-
-                    };
-                    const start = {
-                        position: [...app.view.camera.position],
-                        lookAt: [...app.view.camera.lookAt],
-                        up: [...app.view.camera.up],
-                    };
-                    action.end = () => {
-                        action.move = closestVertex;
-                        const end = {
-                            position: [...app.view.camera.position],
-                            lookAt: [...app.view.camera.lookAt],
-                            up: [...app.view.camera.up],
-                        };
-                        if (action.moved) {
-                            actionHistory.add(new MoveCameraAction(start, end));
-                        }
-                    }
-                }
-                updatePoints();
-            },
-            mouseMove(event) {
-                action.moved = true;
-
-                if (event.altKey) {
-                    if (!this.screenSpace) {
-                        action.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
-                        app.view.referencePlane.normal = action.plane.normal;
-                        this.screenSpace = true;
-                    }
-                } else if (this.screenSpace) {
-                    app.view.referencePlane.normal = action.plane.normal = [0, 1, 0];
-                    this.screenSpace = false;
-                }
-
-                const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                const point = planeIntercept(mouseLine, action.plane);
-                const delta = subtract(point, action.plane.point);
-                action.plane.point = point;
-
-                app.selected.forEach((part) => part.move(delta)); //!event.shiftKey));
-
-                app.show.point = applyTransform(selected[0].origin, selected[0].world);
-                app.show.toWorld = selected[0].world;
-            },
+            mouseDown(event) { },
+            mouseMove(event) { },
             mouseUp(event) { },
             mouseLeave(event) { },
             touchStart(event) { },
@@ -2905,13 +2820,13 @@
             touchEnd(event) { },
             keyDown(event) { },
             keyUp(event) { },
-            __proto__: Mode,
+            __proto__: inputMode,
         };
 
         /**
          * Input controls for adding / editing walls.
          */
-        const WallEditMode = {
+        const wallEditMode = {
             name: 'edit walls',
             mouseDown(event) { },
             mouseMove(event) { },
@@ -2922,7 +2837,7 @@
             touchEnd(event) { },
             keyDown(event) { },
             keyUp(event) { },
-            __proto__: Mode,
+            __proto__: inputMode,
         };
 
         /**
@@ -4044,8 +3959,8 @@
                 if (app.picked || app.labels.length > 0) {
                     drawLabels();
                 }
-                if (action.newWall) {
-                    action.newWall.draw2d();
+                if (app.mode.wall) {
+                    app.mode.wall.draw2d();
                 }
 
                 if (grid) {
@@ -4501,7 +4416,9 @@
          */
         const app = {
             tabSize: 4,
-            mode: [ViewMode],
+            mode: [viewMode],
+            action: null,
+            actionStack: [],
             scale: 1,
             windows: [],
             views: [],
@@ -4518,7 +4435,7 @@
                 gridSize: [1, 1],
             },
             referencePlane: {
-                origin: [0, 0, 0],
+                point: [0, 0, 0],
                 normal: [0, 1, 0],
             },
             background: [0, 0, 0],
@@ -7125,7 +7042,7 @@
             gl.uniform3fv(app.referencePlaneShader.cameraPosition, app.view.camera.position);
             gl.uniform2fv(app.referencePlaneShader.gridSize, size);
 
-            gl.uniform3fv(app.referencePlaneShader.origin, plane.point ?? app.view.referencePlane.origin);
+            gl.uniform3fv(app.referencePlaneShader.origin, plane.point ?? app.view.referencePlane.point);
             gl.uniform3fv(app.referencePlaneShader.normal, plane.normal ?? app.view.referencePlane.normal);
 
             // 1. Define the 4 vertices of the quad
@@ -10369,6 +10286,13 @@
                     ctx.stroke();
                 });
 
+                if (app.action?.position) {
+                    const projected = toScreen(app.action.position);
+                    ctx.beginPath();
+                    ctx.arc(...projected, 5, 0, 2 * Math.PI);
+                    ctx.stroke();
+                }
+
                 // Add dimensions
                 if (this.points.length > 1) {
                     ctx.fillStyle = 'darkgrey';
@@ -10399,6 +10323,8 @@
                         const length = Math.hypot(...direction);
                         ctx.fillText(`${length.toFixed(2)}${app.units}`, ...toScreen(centre));
                     });
+                } else {
+
                 }
             }
         }
@@ -12628,7 +12554,7 @@ ${vectorFixed(closest[0].local)}`;
                 this.title = 'Move Parts';
                 this.parts = parts;
                 this.offsets = offsets;
-                this.detail = `Move ${parts?.map((part) => part.name).join(', ')} ${offsets[0]}`;
+                this.detail = `Move ${parts?.map((part) => part.name).join(', ')} ${offsets[0].map((v) => v.toFixed(2))}`;
             }
             undo() {
                 const partViews = this.parts.map((part) => app.view.parts.get(part));
@@ -12668,7 +12594,7 @@ ${vectorFixed(closest[0].local)}`;
         function endMove(event) {
             grid = null;
             if (action.moved) {
-                if (app.mode[0].name === 'edit') {
+                if (app.mode.name === 'edit') {
                     const partViews = [...app.selected].flatMap((part) => app.view.parts.get(part) || []);
                     const offsets = partViews.map((partView, index) =>
                         subtract(partView?.transform.slice(12, 15) ?? [0, 0, 0], partView.start.slice(12, 15)));
@@ -12682,7 +12608,7 @@ ${vectorFixed(closest[0].local)}`;
                     }
                     actionHistory.add(new MoveCameraAction(action.start, end));
                 }
-            } else if (app.mode[0].name === 'edit walls') {
+            } else if (app.mode.name === 'edit walls') {
                 const mouseLine = getRay(action.lastX, action.lastY);
                 const position = planeIntercept(mouseLine, { point: [0, 0, 0], normal: [0, 1, 0] });
                 action.newWall.addPoint(position);
@@ -12692,14 +12618,10 @@ ${vectorFixed(closest[0].local)}`;
             app.view.items.forEach((item) => item.state = {});
         }
 
-        const completeAction = (event) => {
-            if (action.end) {
-                action.end(event);
-                action.end = null;
-            }
-            saveState();
-        }
-        document.body.addEventListener('mousemove', (event) => {
+        /**
+         * Function generic processing for mouse movement.
+         */
+        function mouseMove(event) {
             const box = canvas.getBoundingClientRect();
             app.mouse = {
                 x: event.clientX - box.left,
@@ -12711,9 +12633,24 @@ ${vectorFixed(closest[0].local)}`;
                     report(app.picked.part.name);
                 }
             }
-
             action.move?.(event);
-        });
+            if (app.action) {
+                app.action.mouseMove(event);
+            }
+        }
+
+        /**
+         * End the current action.
+         */
+        function completeAction(event) {
+            if (action.end) {
+                action.end(event);
+                action.end = null;
+            }
+            saveState();
+        }
+
+        document.body.addEventListener('mousemove', mouseMove);
         document.body.addEventListener('mouseup', completeAction);
         document.body.addEventListener('mouseleave', completeAction);
 
@@ -15837,182 +15774,17 @@ ${vectorFixed(closest[0].local)}`;
                         // ToDo: Fix Scroll the part into view in the parts list
                         //action.part.nodes[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
                     }
-                    if (action.part.serialNumber) {
+                    if (app.picked.part.serialNumber) {
 
-                    } else if (app.mode[0].name === 'edit') {
-                        action.plane = { point: app.picked.position };
-                        const parent = action.part.parent || app;
-                        const siblings = parent.parts;
-                        app.snapPoints = {
-                            x: new Set(),
-                            y: new Set(),
-                            z: new Set(),
-                        };
-                        siblings.forEach((part) => {
-                            const shapes = app.view.parts.get(part)?.shapes || [];
-                            shapes.forEach((shape) =>
-                                shape.getSnapPoints().forEach((point) => {
-                                    app.snapPoints.x.add(point[0]);
-                                    app.snapPoints.y.add(point[1]);
-                                    app.snapPoints.z.add(point[2]);
-                                }));
-                        });
-                        if (Math.abs(dot(app.view.camera.up, [0, 1, 0])) < 0.3) {
-                            action.plane.normal = zAxis;
-                        } else {
-                            action.plane.normal = [0, 1, 0];
-                        }
-                        const apply = (part, action) => {
-                            action();
-                            part.parts.forEach((part) => apply(part, action));
-                        }
-                        const partViews = [...app.selected].flatMap((part) => app.view.parts.get(part) || []);
-                        const selected = app.view.items.filter((shape) => app.selected.has(shape.part));
-                        partViews.forEach((partView) => partView.start = [...partView.transform]);
-                        /*
-                        selected.forEach((part) =>
-                            part.apply((part) => {
-                                const partView = app.view.parts.get(part);
-                                if (partView) {
-                                    partView.start = [...partView.transform.matrix];
-                                }
-                            }));
-                            */
-                        app.view.referencePlane.normal = action.plane.normal;
-
-                        showShape(partViews[0].shapes[0]);
-                        grid = null;
-                        {
-                            let parent = action.part.parent;
-                            while (parent && !grid) {
-                                grid = parent._node.grid;
-                                parent = parent.parent;
-                            }
-                        }
-                        action.parts = [...app.selected];
-                        action.initial = app.parts.map((part) =>
-                            app.view.parts.get(part)?.transform.slice(12, 15) || [0, 0, 0]);
-
-                        let screenspace = false;
-                        action.move = (event) => {
-                            action.moved = true;
-
-                            if (event.altKey) {
-                                if (!screenspace) {
-                                    action.plane.normal = normalised(subtract(app.view.camera.position, app.view.camera.lookAt));
-                                    app.view.referencePlane.normal = action.plane.normal;
-                                    screenspace = true;
-                                }
-                            } else if (screenspace) {
-                                app.view.referencePlane.normal = action.plane.normal = [0, 1, 0];
-                                screenspace = false;
-                            }
-
-                            const mouseLine = getRay(event.clientX - box.left, event.clientY - box.top);
-                            const point = planeIntercept(mouseLine, action.plane);
-                            const delta = subtract(point, action.plane.point);
-                            action.plane.point = point;
-
-                            app.selected.forEach((part) =>
-                                part.move(delta)); //!event.shiftKey));
-
-                            app.show.point = applyTransform(partViews[0].shapes[0].origin, partViews[0].shapes[0].world);
-                            app.show.toWorld = partViews[0].shapes[0].world;
-                        };
-                        action.end = endMove;
+                    } else if (app.mode.name === 'edit' && !event.altKey) {
+                        setAction(dragParts, event);
                         report(`Moving ${action.part.name}`);
                     } else {
-                        const start = {
-                            position: [...app.view.camera.position],
-                            lookAt: [...app.view.camera.lookAt],
-                            up: [...app.view.camera.up],
-                            x: event.clientX,
-                            y: event.clientY,
-                            length: Math.hypot(...subtract(app.picked.position, app.view.camera.position)),
-                        };
-                        action.start = start;
-                        const { xAxis, yAxis, zAxis, distance } = viewVectors();
-                        const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                        const viewPart = app.view.parts.get(app.picked.part);
-                        if (!viewPart) {
-                            return;
-                        }
-                        viewPart.shapes.forEach((shape) => shape.start = [...shape.transform.matrix]);
-
-                        // Rotate the view
-                        action.move = (event) => {
-                            //action.moved = true;
-                            const deltaX = start.x - event.clientX;
-                            const deltaY = start.y - event.clientY;
-                            if (Math.hypot(deltaX, deltaY) > 5) {
-                                action.moved = true;
-                            }
-
-                            if (event.shiftKey) {
-                                const dist = 1 * Math.tan(app.view.camera.fieldOfView * Math.PI / 180);
-                                const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist * start.length / canvas.height),
-                                    Vector.scale(normalised(yAxis), -deltaY * dist * start.length / canvas.height));
-                                app.view.camera.position = sum(start.position, movement);
-                                app.view.camera.lookAt = sum(start.lookAt, movement);
-                            } else {
-                                // Determine angle based on proportion of the field of view represented by the delta
-                                const xAngle = deltaX * app.view.camera.fieldOfView / canvas.height;
-                                const yAngle = deltaY * app.view.camera.fieldOfView / canvas.height;
-
-                                const xRotation = getRotation(xAngle, yAxis);
-                                const yRotation = getRotation(yAngle, xAxis);
-                                const rotation = multiply(yRotation, xRotation);
-
-                                app.view.camera.lookAt = sum(app.view.camera.position, applyTransform(sightLine, rotation));
-                                //app.view.camera.up = applyTransform(app.view.camera.up, rotation);
-                            }
-                            app.view.camera.updateViewControls();
-                        };
-                        action.end = endMove;
+                        setAction(dragView, event);
                     }
                 } else {
-                    // Rotate the view
-                    action.move = (event) => {
-                        action.moved = true;
-                        const deltaX = event.clientX - box.left - action.lastX;
-                        const deltaY = event.clientY - box.top - action.lastY;
-                        action.lastX = event.clientX - box.left;
-                        action.lastY = event.clientY - box.top;
-                        const sightLine = subtract(app.view.camera.lookAt, app.view.camera.position);
-                        const xAxis = cross(sightLine, app.view.camera.up);
-                        const yAxis = cross(sightLine, xAxis);
-                        if (event.shiftKey) {
-                            const dist = Math.hypot(...sightLine) / -1000;
-                            const movement = sum(Vector.scale(normalised(xAxis), deltaX * dist), Vector.scale(normalised(yAxis), deltaY * dist));
-                            app.view.camera.position = sum(app.view.camera.position, movement);
-                            app.view.camera.lookAt = sum(app.view.camera.lookAt, movement);
-                        } else {
-                            const xRotation = getRotation(deltaY * Math.PI / 30, xAxis);
-                            const yRotation = getRotation(deltaX * Math.PI / 30, app.view.camera.up);
-                            const rotation = multiply(xRotation, yRotation);
-                            app.view.camera.position = subtract(app.view.camera.lookAt, applyTransform(sightLine, rotation));
-                            app.view.camera.up = applyTransform(app.view.camera.up, rotation);
-                        }
-                        app.view.camera.updateViewControls();
-                    };
-                    const start = {
-                        position: [...app.view.camera.position],
-                        lookAt: [...app.view.camera.lookAt],
-                        up: [...app.view.camera.up],
-                    };
-                    action.end = () => {
-                        action.move = closestVertex;
-                        const end = {
-                            position: [...app.view.camera.position],
-                            lookAt: [...app.view.camera.lookAt],
-                            up: [...app.view.camera.up],
-                        };
-                        if (action.moved) {
-                            actionHistory.add(new MoveCameraAction(start, end));
-                        }
-                    }
+                    setAction(rotateView, event);
                 }
-                //updateTextBuffer();
                 updatePoints();
             };
 
@@ -16022,7 +15794,7 @@ ${vectorFixed(closest[0].local)}`;
                 report('double click');
                 const box = canvas.getBoundingClientRect();
                 if (app.picked) {
-                    if (app.mode[0].name === 'edit') {
+                    if (app.mode.name === 'edit') {
                         setView([-0.2, 0.2, 1], [0, 1, 0]);
                     } else {
                         nodeAction(app.picked.part);
@@ -16058,7 +15830,6 @@ ${vectorFixed(closest[0].local)}`;
              * Process a dropped file
              */
             function dropHandler(event) {
-                dragPart = false;
                 app.view.items.forEach((item) => item.state = {});
 
                 event.preventDefault();
@@ -16103,7 +15874,6 @@ ${vectorFixed(closest[0].local)}`;
                 }
             }
 
-            let dragPart = false;
             function dragOverHandler(event) {
                 // Prevent default behavior (Prevent file from being opened)
                 event.preventDefault();
@@ -16704,11 +16474,12 @@ ${vectorFixed(closest[0].local)}`;
          * Toggle edit mode to allow moving shapes.
          */
         function toggleEdit() {
-            if (app.mode[0].name === 'edit') {
-                app.mode.shift();
+            if (app.mode.name === 'edit') {
+                app.mode = app.mode.previous || viewMode;
                 hidePartsList();
             } else {
-                app.mode.unshift(EditMode);
+                editMode.previous = app.mode;
+                app.mode = editMode;
                 const selection = [...app.selected];
                 if (selection.length === 1) {
                     app.product.context = selection[0];
@@ -16890,11 +16661,12 @@ ${vectorFixed(closest[0].local)}`;
                     return 'Add a wall';
                 },
                 serialiseState() {
-
                 },
                 async action(parameters) {
-                    app.mode[0] = 'add wall';
-                    action.newWall = new AddWall();
+                    app.mode = wallEditMode;
+                    setAction(movePoint);
+                    //action.newWall = new AddWall();
+                    app.mode.wall = new AddWall();
                 },
                 __proto__: UserCommand,
             },
