@@ -2709,6 +2709,7 @@
          * Add point
          */
         const movePoint = {
+            point: [],
             initialise(event) {
                 const box = canvas.getBoundingClientRect();
                 this.moved = false;
@@ -2731,7 +2732,48 @@
                 const x = event.clientX - box.left;
                 const y = event.clientY - box.top;
                 const mouseLine = getRay(x, y);
-                this.position = planeIntercept(mouseLine, this.plane);
+                const point = planeIntercept(mouseLine, this.plane);
+                this.point[0] = point[0];
+                this.point[1] = point[1];
+                this.point[2] = point[2];
+            },
+            end(event) {
+                action.move = closestVertex;
+                app.action = app.actionStack.pop();
+                const end = {
+                    position: [...app.view.camera.position],
+                    lookAt: [...app.view.camera.lookAt],
+                    up: [...app.view.camera.up],
+                };
+                if (this.moved) {
+                    actionHistory.add(new MoveCameraAction(this.start, end));
+                }
+            },
+            __proto__: inputAction,
+        }
+
+
+        /**
+         * Pick a point
+         */
+        const pickPoint = {
+            points: [],
+            initialise(event) {
+                const box = canvas.getBoundingClientRect();
+                this.screenPoints = this.points.map((point) => toScreen(point));
+            },
+            mouseMove(event) {
+                const box = canvas.getBoundingClientRect();
+                const x = event.clientX - box.left;
+                const y = event.clientY - box.top;
+                this.nearest = {dist: Infinity};
+                this.screenPoints.forEach((point, i) => {
+                    const d = Math.hypot(point[0] - x, point[1] - y);
+                    if (d < this.nearest.dist) {
+                        this.nearest.dist = d;
+                        this.nearest.point = this.points[i];
+                    }
+                });
             },
             end(event) {
                 action.move = closestVertex;
@@ -2761,7 +2803,9 @@
          * Prototype for user input mode management.
          */
         const inputMode = {
-            mouseDown(event) { },
+            mouseDown(event) {
+                setAction(rotateView, event);
+            },
             mouseMove(event) { },
             mouseUp(event) { },
             mouseLeave(event) { },
@@ -2777,15 +2821,6 @@
          */
         const viewMode = {
             name: 'view',
-            mouseDown(event) { },
-            mouseMove(event) { },
-            mouseUp(event) { },
-            mouseLeave(event) { },
-            touchStart(event) { },
-            touchMove(event) { },
-            touchEnd(event) { },
-            keyDown(event) { },
-            keyUp(event) { },
             __proto__: inputMode,
         };
 
@@ -2794,15 +2829,6 @@
          */
         const walkMode = {
             name: 'walk',
-            mouseDown(event) { },
-            mouseMove(event) { },
-            mouseUp(event) { },
-            mouseLeave(event) { },
-            touchStart(event) { },
-            touchMove(event) { },
-            touchEnd(event) { },
-            keyDown(event) { },
-            keyUp(event) { },
             __proto__: inputMode,
         };
 
@@ -2811,15 +2837,6 @@
          */
         const editMode = {
             name: 'edit',
-            mouseDown(event) { },
-            mouseMove(event) { },
-            mouseUp(event) { },
-            mouseLeave(event) { },
-            touchStart(event) { },
-            touchMove(event) { },
-            touchEnd(event) { },
-            keyDown(event) { },
-            keyUp(event) { },
             __proto__: inputMode,
         };
 
@@ -2828,15 +2845,25 @@
          */
         const wallEditMode = {
             name: 'edit walls',
-            mouseDown(event) { },
-            mouseMove(event) { },
-            mouseUp(event) { },
-            mouseLeave(event) { },
-            touchStart(event) { },
-            touchMove(event) { },
-            touchEnd(event) { },
-            keyDown(event) { },
-            keyUp(event) { },
+            mouseDown(event) {
+                if (app.action?.nearest && app.action.nearest < 8) {
+                    movePoint.point = app.action.nearest.point;
+                    setAction(movePoint);
+                }
+                this.buttons = event.buttons;
+            },
+            mouseUp(event) {
+                if (this.buttons === 1 && app.action?.point) {
+                    const point = [...app.action.point];
+                    this.wall.addPoint(point);
+                }
+            },
+            keyDown(event) {
+                if (event.key === 'Escape') {
+                    pickPoint.points = this.wall.points;
+                    setAction(pickPoint);
+                }
+            },
             __proto__: inputMode,
         };
 
@@ -3054,7 +3081,7 @@
                 const transforms = shapes.map((shape) => shape.world);
                 const centres = shapes.map((shape) => shape.centre);
                 const lookAt = Vector.scale(sum(...centres), 1 / transforms.length);
-                const radius = Math.max(...transforms.map((matrix) => Math.hypot(...extractScale(matrix))));
+                const radius = Math.max(...shapes.map((shape) => Math.hypot(...shape.size))) / 2;
                 const delta = [
                     Math.max(...centres.map((point) => point[0])) - Math.min(...centres.map((point) => point[0])),
                     Math.max(...centres.map((point) => point[1])) - Math.min(...centres.map((point) => point[1])),
@@ -3959,8 +3986,8 @@
                 if (app.picked || app.labels.length > 0) {
                     drawLabels();
                 }
-                if (app.mode.wall) {
-                    app.mode.wall.draw2d();
+                if (app.mode.at(-1).wall) {
+                    app.mode.at(-1).wall.draw2d();
                 }
 
                 if (grid) {
@@ -8013,11 +8040,11 @@
                 this.state = {};
 
                 const scale = this.node.scale ?? 1;
-                const size = this.node.size ?? [scale, scale, scale];
+                this._size = this.node.size ?? [scale, scale, scale];
                 const position = this.node.position ?? [0, 0, 0];
-                const offset = product(this.node.offset ?? [0, 0, 0], size);
+                const offset = product(this.node.offset ?? [0, 0, 0], this._size);
 
-                this.transform.scale(size);
+                this.transform.scale(this._size);
                 if (node) {
                     this.transform.move(position);
                 }
@@ -8039,6 +8066,9 @@
             }
             get centre() {
                 return applyTransform([0.5, 0.5, 0.5], this.world);
+            }
+            get size() {
+                return this._size;
             }
             set opacity(value) {
                 this.instances.forEach((instance) => instance.opacity = value);
@@ -8110,7 +8140,11 @@
                         }
                     }
                 }
-                this.instances.forEach((instance) => instance.show());
+                if (this.part.hidden) {
+                    this.instances.forEach((instance) => instance.hide());
+                } else {
+                    this.instances.forEach((instance) => instance.show());
+                }
             }
             contains(point) {
                 // Get the origin of this element
@@ -8456,7 +8490,7 @@
                     this.instances.forEach((instance) => instance.unhighlight());
                 }
 
-                this.show = true;
+                this.show = !this.part.hidden;
                 const path = this.part.path();
                 if (app.show && !path.includes(app.show.part)) {
                     // Get the origin of this element
@@ -9560,7 +9594,18 @@
 
                 gl.uniform1i(app.pbrShader.effects, 3);
                 gl.bindVertexArray(Room.buffers.vao);
-                gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
+                //gl.drawElements(gl.TRIANGLES, Room.indices.length, gl.UNSIGNED_SHORT, 0);
+                const materialParameters = [0.1, 1, 0.1, 0.3];
+
+                let offset = 0;
+                for (const room of Room.all) {
+                    // Offset is in bytes, hence multiply by 2 for shorts
+                    materialParameters[1] = room.part.hidden ? 0.5 : 1;
+                    gl.vertexAttrib4f(app.pbrShader.materialParameters, ...materialParameters);
+                    gl.drawElements(gl.TRIANGLES, room.indexData.length, gl.UNSIGNED_SHORT, 2 * offset);
+                    offset += room.indexData.length;
+                }
+
                 gl.bindVertexArray(null);
             }
             static pickerRender() {
@@ -10274,57 +10319,60 @@
                 // Draw the user created points and lines
                 ctx.textAlign = 'center';
                 ctx.strokeStyle = 'darkgrey';
+
+                const points = [...this.points];
+                /*
+                if (app.action?.position) {
+                    points.push(app.action.position);
+                }
+                    */
+
                 ctx.beginPath();
-                this.points.forEach((point) => ctx.lineTo(...toScreen(point)));
+                points.forEach((point) => ctx.lineTo(...toScreen(point)));
                 ctx.stroke();
 
                 //ctx.fillStyle = point.colour || 'magenta';
-                this.points.forEach((point) => {
+                points.forEach((point) => {
                     const projected = toScreen(point);
                     ctx.beginPath();
                     ctx.arc(...projected, 5, 0, 2 * Math.PI);
                     ctx.stroke();
                 });
 
-                if (app.action?.position) {
-                    const projected = toScreen(app.action.position);
-                    ctx.beginPath();
-                    ctx.arc(...projected, 5, 0, 2 * Math.PI);
-                    ctx.stroke();
-                }
-
                 // Add dimensions
-                if (this.points.length > 1) {
+                if (points.length > 1) {
                     ctx.fillStyle = 'darkgrey';
-                    ctx.font = '10px sans-serif';
+                    ctx.font = '12px sans-serif';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
 
-                    ctx.beginPath();
-                    this.points.slice(1).forEach((point, i) => {
+                    points.slice(1).forEach((point, i) => {
                         const previous = this.points[i];
                         const direction = subtract(point, previous);
                         const offset = normalised(cross(direction, [0, -1, 0]));
-                        ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.1))));
-                        ctx.lineTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.3))));
-                        ctx.moveTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 0.1))));
-                        ctx.lineTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 0.300))));
-                        ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 0.250))));
-                        ctx.lineTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 0.250))));
-                    });
-                    ctx.stroke();
-                    this.points.slice(1).forEach((point, i) => {
-                        const previous = this.points[i];
-                        const direction = subtract(point, previous);
-                        const offset = normalised(cross(direction, [0, -1, 0]));
-                        const start = sum(previous, Vector.scale(offset, this.thickness[0] + 0.250));
-                        const end = sum(point, Vector.scale(offset, this.thickness[0] + 0.250));
+                        const start = sum(previous, Vector.scale(offset, this.thickness[0] + 250 * app.scale));
+                        const end = sum(point, Vector.scale(offset, this.thickness[0] + 250 * app.scale));
                         const centre = Vector.scale(sum(start, end), 0.5);
                         const length = Math.hypot(...direction);
                         ctx.fillText(`${length.toFixed(2)}${app.units}`, ...toScreen(centre));
+                        ctx.beginPath();
+                        ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 100 * app.scale))));
+                        ctx.lineTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 300 * app.scale))));
+                        ctx.moveTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 100 * app.scale))));
+                        ctx.lineTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 300 * app.scale))));
+                        ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 250 * app.scale))));
+                        ctx.lineTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 250 * app.scale))));
+                        ctx.stroke();
                     });
                 } else {
 
+                }
+                if (app.action?.nearest && app.action.nearest.dist < 8) {
+                    ctx.strokeStyle = 'yellow';
+                    const projected = toScreen(app.action.nearest.point);
+                    ctx.beginPath();
+                    ctx.arc(...projected, 5, 0, 2 * Math.PI);
+                    ctx.stroke();
                 }
             }
         }
@@ -11122,6 +11170,14 @@
                 if (pos > -1) {
                     app.view.renderQueue.splice(pos, 1);
                 }
+            }
+            get centre() {
+                const centreLocal = [(this.minx + this.maxx) / 2, 0, (this.miny + this.maxy) / 2];
+                return applyTransform(centreLocal, this.world);
+            }
+            get size() {
+                const sizeLocal = [this.maxx - this.minx, 0, this.maxy - this.miny];
+                return applyTransform(sizeLocal, this.world);
             }
             initialiseBuffers() {
                 const transform = identityMatrix();
@@ -12594,7 +12650,7 @@ ${vectorFixed(closest[0].local)}`;
         function endMove(event) {
             grid = null;
             if (action.moved) {
-                if (app.mode.name === 'edit') {
+                if (app.mode.at(-1).name === 'edit') {
                     const partViews = [...app.selected].flatMap((part) => app.view.parts.get(part) || []);
                     const offsets = partViews.map((partView, index) =>
                         subtract(partView?.transform.slice(12, 15) ?? [0, 0, 0], partView.start.slice(12, 15)));
@@ -12608,7 +12664,7 @@ ${vectorFixed(closest[0].local)}`;
                     }
                     actionHistory.add(new MoveCameraAction(action.start, end));
                 }
-            } else if (app.mode.name === 'edit walls') {
+            } else if (app.mode.at(-1).name === 'edit walls') {
                 const mouseLine = getRay(action.lastX, action.lastY);
                 const position = planeIntercept(mouseLine, { point: [0, 0, 0], normal: [0, 1, 0] });
                 action.newWall.addPoint(position);
@@ -12643,6 +12699,7 @@ ${vectorFixed(closest[0].local)}`;
          * End the current action.
          */
         function completeAction(event) {
+            app.mode.at(-1).mouseUp(event);
             if (action.end) {
                 action.end(event);
                 action.end = null;
@@ -12652,7 +12709,7 @@ ${vectorFixed(closest[0].local)}`;
 
         document.body.addEventListener('mousemove', mouseMove);
         document.body.addEventListener('mouseup', completeAction);
-        document.body.addEventListener('mouseleave', completeAction);
+        //document.body.addEventListener('mouseleave', completeAction);
 
         document.body.addEventListener('touchmove', (event) => action.move?.(touch(event)));
         document.body.addEventListener('touchend', completeAction);
@@ -15404,7 +15461,9 @@ ${vectorFixed(closest[0].local)}`;
          * 'Hide' the selected item(s).
          */
         function hideSelected() {
-            app.view.items.forEach((item) => item.hidden = app.selected.has(item.part));
+            for (const part of app.selected) {
+                part.hidden = true;
+            }
         }
 
         /**
@@ -15418,7 +15477,7 @@ ${vectorFixed(closest[0].local)}`;
          * Un-hide all items
          */
         function showAll() {
-            app.view.items.forEach((item) => item.hidden = false);
+            app.allParts.forEach((part) => part.hidden = false);
         }
 
         /**
@@ -15712,6 +15771,7 @@ ${vectorFixed(closest[0].local)}`;
         function addCanvasEvents(canvas) {
             canvas.tabIndex = 0;
             canvas.addEventListener('keydown', (event) => {
+                app.mode.at(-1).keyDown(event);
                 if (app.showKeys) {
                     report(event.key);
                 }
@@ -15776,14 +15836,15 @@ ${vectorFixed(closest[0].local)}`;
                     }
                     if (app.picked.part.serialNumber) {
 
-                    } else if (app.mode.name === 'edit' && !event.altKey) {
+                    } else if (app.mode.at(-1).name === 'edit' && !event.altKey) {
                         setAction(dragParts, event);
                         report(`Moving ${action.part.name}`);
+                    } else if (app.mode.at(-1).name === 'edit walls') {
                     } else {
                         setAction(dragView, event);
                     }
                 } else {
-                    setAction(rotateView, event);
+                    app.mode.at(-1).mouseDown(event);
                 }
                 updatePoints();
             };
@@ -15794,7 +15855,7 @@ ${vectorFixed(closest[0].local)}`;
                 report('double click');
                 const box = canvas.getBoundingClientRect();
                 if (app.picked) {
-                    if (app.mode.name === 'edit') {
+                    if (app.mode.at(-1).name === 'edit') {
                         setView([-0.2, 0.2, 1], [0, 1, 0]);
                     } else {
                         nodeAction(app.picked.part);
@@ -16474,12 +16535,11 @@ ${vectorFixed(closest[0].local)}`;
          * Toggle edit mode to allow moving shapes.
          */
         function toggleEdit() {
-            if (app.mode.name === 'edit') {
-                app.mode = app.mode.previous || viewMode;
+            if (app.mode.at(-1).name === 'edit') {
+                app.mode.pop();
                 hidePartsList();
             } else {
-                editMode.previous = app.mode;
-                app.mode = editMode;
+                app.mode.push(editMode);
                 const selection = [...app.selected];
                 if (selection.length === 1) {
                     app.product.context = selection[0];
@@ -16663,10 +16723,11 @@ ${vectorFixed(closest[0].local)}`;
                 serialiseState() {
                 },
                 async action(parameters) {
-                    app.mode = wallEditMode;
+                    app.mode.push(wallEditMode);
+                    app.mode.at(-1).buttons = 1;
                     setAction(movePoint);
                     //action.newWall = new AddWall();
-                    app.mode.wall = new AddWall();
+                    app.mode.at(-1).wall = new AddWall();
                 },
                 __proto__: UserCommand,
             },
