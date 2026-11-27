@@ -2205,6 +2205,7 @@
                 super(content, position, wrap);
                 this.id = id;
                 this.container = document.getElementById(id);
+                this.map = new Map();
             }
             add(item, save = true) {
                 super.add(item);
@@ -2228,7 +2229,10 @@
                 undo.addEventListener('click', (event) => item.undo());
                 redo.addEventListener('click', (event) => item.redo());
                 del.addEventListener('click', (event) => {
-                    item.undo();
+                    const deleteToEnd = event.shiftKey;
+                    if (event.ctrlKey) {
+                        item.undo();
+                    }
                     actionView.classList.add('transparent');
                     let next = actionView.nextElementSibling;
                     const y = actionView.getBoundingClientRect().y - next?.getBoundingClientRect().y;
@@ -2237,21 +2241,37 @@
                         nodes.push(next);
                         next.style.transform = `translateY(${y}px)`;
                         next.style.transition = `all 0.25s`;
+                        if (deleteToEnd) {
+                            next.classList.add('transparent');
+                        }
                         next = next.nextElementSibling;
                     }
                     actionView.addEventListener('transitionend', (event) => {
                         actionView.remove();
-                        nodes.forEach((node) => {
-                            node.style.transition = `opacity 0.25s`;
-                            node.style.transform = 'none';
-                        });
+                        const index = this.map.keys().indexOf(item);
+                        this.map.delete(item);
+                        if (deleteToEnd) {
+                            nodes.forEach((node) => node.remove());
+                            const remove = this.map.keys().slice(index);
+                            remove.forEach((key) => this.map.delete(key));
+                        } else {
+                            nodes.forEach((node) => {
+                                node.style.transition = `opacity 0.25s`;
+                                node.style.transform = 'none';
+                            });
+                        }
                     });
-                    this.content.splice(this.content.indexOf(item), 1);
+                    if (deleteToEnd) {
+                        this.content.length = this.content.indexOf(item);
+                    } else {
+                        this.content.splice(this.content.indexOf(item), 1);
+                    }
                     this.save(this.id);
                 });
 
                 this.container.append(actionView);
                 actionView.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+                this.map.set(item, actionView);
 
                 if (save) {
                     this.save(this.id);
@@ -2551,7 +2571,8 @@
                     up: [...app.view.camera.up],
                 };
                 if (this.moved) {
-                    actionHistory.add(new MoveCameraAction(this.start, end));
+                    //actionHistory.add(new MoveCameraAction(this.start, end));
+                    addMoveCameraAction(this.start, end);
                 }
             },
             __proto__: inputAction,
@@ -2615,7 +2636,8 @@
                     up: [...app.view.camera.up],
                 };
                 if (this.moved) {
-                    actionHistory.add(new MoveCameraAction(this.start, end));
+                    //actionHistory.add(new MoveCameraAction(this.start, end));
+                    addMoveCameraAction(this.start, end);
                 }
             },
             __proto__: inputAction,
@@ -2709,7 +2731,6 @@
          * Add point
          */
         const movePoint = {
-            point: [],
             initialise(event) {
                 const box = canvas.getBoundingClientRect();
                 this.moved = false;
@@ -2723,16 +2744,26 @@
                     };
                 } else {
                     this.plane = app.referencePlane || {
-                        point: [0,0,0], normal: [0,1,0],
+                        point: [0, 0, 0], normal: [0, 1, 0],
                     };
                 }
             },
             mouseMove(event) {
+                this.moved = true;
                 const box = canvas.getBoundingClientRect();
                 const x = event.clientX - box.left;
                 const y = event.clientY - box.top;
                 const mouseLine = getRay(x, y);
-                const point = planeIntercept(mouseLine, this.plane);
+                let point = planeIntercept(mouseLine, this.plane);
+                if (event.ctrlKey && this.reference) {
+                    const delta = subtract(point, this.reference);
+                    if (Math.abs(delta[0]) > Math.abs(delta[2])) {
+                        delta[2] = 0;
+                    } else {
+                        delta[0] = 0;
+                    }
+                    point = sum(this.reference, delta);
+                }
                 this.point[0] = point[0];
                 this.point[1] = point[1];
                 this.point[2] = point[2];
@@ -2746,7 +2777,8 @@
                     up: [...app.view.camera.up],
                 };
                 if (this.moved) {
-                    actionHistory.add(new MoveCameraAction(this.start, end));
+                    //actionHistory.add(new MoveCameraAction(this.start, end));
+                    addMoveCameraAction(this.start, end);
                 }
             },
             __proto__: inputAction,
@@ -2766,12 +2798,13 @@
                 const box = canvas.getBoundingClientRect();
                 const x = event.clientX - box.left;
                 const y = event.clientY - box.top;
-                this.nearest = {dist: Infinity};
+                this.nearest = { dist: Infinity };
                 this.screenPoints.forEach((point, i) => {
                     const d = Math.hypot(point[0] - x, point[1] - y);
                     if (d < this.nearest.dist) {
                         this.nearest.dist = d;
                         this.nearest.point = this.points[i];
+                        this.nearest.index = i;
                     }
                 });
             },
@@ -2784,7 +2817,8 @@
                     up: [...app.view.camera.up],
                 };
                 if (this.moved) {
-                    actionHistory.add(new MoveCameraAction(this.start, end));
+                    //actionHistory.add(new MoveCameraAction(this.start, end));
+                    addMoveCameraAction(this.start, end);
                 }
             },
             __proto__: inputAction,
@@ -2845,23 +2879,79 @@
          */
         const wallEditMode = {
             name: 'edit walls',
-            mouseDown(event) {
-                if (app.action?.nearest && app.action.nearest < 8) {
-                    movePoint.point = app.action.nearest.point;
-                    setAction(movePoint);
-                }
-                this.buttons = event.buttons;
-            },
-            mouseUp(event) {
-                if (this.buttons === 1 && app.action?.point) {
-                    const point = [...app.action.point];
-                    this.wall.addPoint(point);
-                }
-            },
-            keyDown(event) {
-                if (event.key === 'Escape') {
+            start(wall) {
+                this.wall = wall || new CreateWall();
+                if (this.wall.points.length > 1) {
                     pickPoint.points = this.wall.points;
                     setAction(pickPoint);
+                } else {
+                    movePoint.point = this.wall.points.at(-1);
+                    setAction(movePoint);
+                    this.addPoint = true;
+                }
+            },
+            mouseDown(event) {
+                if (app.action?.nearest && app.action.nearest.dist < 8) {
+                    let previous = app.action.nearest.index - 1;
+                    if (previous < 0 && this.wall.closed && this.wall.points.length > 2) {
+                        previous += this.wall.points.length;
+                    }
+                    this.previous = this.wall.points[previous];
+                    let next = app.action.nearest.index + 1;
+                    if (next >= this.wall.points.length && this.wall.closed && this.wall.points.length > 2) {
+                        next -= this.wall.points.length;
+                    }
+                    this.next = this.wall.points[next];
+                    movePoint.point = app.action.nearest.point;
+                    setAction(movePoint);
+                    this.addPoint = false;
+                }
+            },
+            completeAction() {
+                if (this.addPoint && app.action?.point) {
+                    movePoint.reference = movePoint.point;
+                    movePoint.point = [...movePoint.point];
+                    this.wall.addPoint(movePoint.point);
+                } else if (app.action.moved) {
+                    setAction(pickPoint);
+                }
+            },
+            mouseUp(event) {
+                this.completeAction();
+            },
+            keyDown(event) {
+                if (event.key === 'Enter') {
+                    this.completeAction();
+                } else if (event.key === 'Escape') {
+                    if (this.wall.points.length > 2) {
+                        this.wall.points.pop();
+                    }
+                    pickPoint.points = this.wall.points;
+                    setAction(pickPoint);
+                } else if (event.key === 'c') {
+                    this.wall.closed = true;
+                    if (this.wall.points.length > 2) {
+                        this.wall.points.pop();
+                        pickPoint.points = this.wall.points;
+                        setAction(pickPoint);
+                    }
+                } else if (event.key === '/') {
+                    if (this.previous && this.next) {
+                        const p1 = [this.previous[0], 0, this.next[2]];
+                        const p2 = [this.next[0], 0, this.previous[2]];
+                        const d1 = Math.hypot(...subtract(movePoint.point, p1));
+                        const d2 = Math.hypot(...subtract(movePoint.point, p2));
+                        if (d1 < d2) {
+                            movePoint.point[0] = p1[0];
+                            movePoint.point[1] = p1[1];
+                            movePoint.point[2] = p1[2];
+                        } else {
+                            movePoint.point[0] = p2[0];
+                            movePoint.point[1] = p2[1];
+                            movePoint.point[2] = p2[2];
+                        }
+                        app.action.moved = true;
+                    }
                 }
             },
             __proto__: inputMode,
@@ -10300,9 +10390,9 @@
         /**
          * Class used for interactive wall building.
          */
-        class AddWall {
-            constructor() {
-                this.points = [];
+        class CreateWall {
+            constructor(point = [0, 0, 0]) {
+                this.points = [point];
                 this.height = 2.4;
                 this.thickness = [0.050, 0.050];
             }
@@ -10320,19 +10410,12 @@
                 ctx.textAlign = 'center';
                 ctx.strokeStyle = 'darkgrey';
 
-                const points = [...this.points];
-                /*
-                if (app.action?.position) {
-                    points.push(app.action.position);
-                }
-                    */
-
                 ctx.beginPath();
-                points.forEach((point) => ctx.lineTo(...toScreen(point)));
+                this.points.forEach((point) => ctx.lineTo(...toScreen(point)));
                 ctx.stroke();
 
                 //ctx.fillStyle = point.colour || 'magenta';
-                points.forEach((point) => {
+                this.points.forEach((point) => {
                     const projected = toScreen(point);
                     ctx.beginPath();
                     ctx.arc(...projected, 5, 0, 2 * Math.PI);
@@ -10340,21 +10423,20 @@
                 });
 
                 // Add dimensions
-                if (points.length > 1) {
+                if (this.points.length > 1) {
                     ctx.fillStyle = 'darkgrey';
                     ctx.font = '12px sans-serif';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
 
-                    points.slice(1).forEach((point, i) => {
-                        const previous = this.points[i];
+                    const drawLine = (point, previous) => {
                         const direction = subtract(point, previous);
                         const offset = normalised(cross(direction, [0, -1, 0]));
                         const start = sum(previous, Vector.scale(offset, this.thickness[0] + 250 * app.scale));
                         const end = sum(point, Vector.scale(offset, this.thickness[0] + 250 * app.scale));
-                        const centre = Vector.scale(sum(start, end), 0.5);
+                        const centre = toScreen(Vector.scale(sum(start, end), 0.5));
                         const length = Math.hypot(...direction);
-                        ctx.fillText(`${length.toFixed(2)}${app.units}`, ...toScreen(centre));
+
                         ctx.beginPath();
                         ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 100 * app.scale))));
                         ctx.lineTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 300 * app.scale))));
@@ -10363,10 +10445,26 @@
                         ctx.moveTo(...toScreen(sum(previous, Vector.scale(offset, this.thickness[0] + 250 * app.scale))));
                         ctx.lineTo(...toScreen(sum(point, Vector.scale(offset, this.thickness[0] + 250 * app.scale))));
                         ctx.stroke();
-                    });
-                } else {
 
+                        const text = `${length.toFixed(2)}${app.units}`;
+                        const size = ctx.measureText(text);
+                        const textHeight = size.fontBoundingBoxAscent + size.fontBoundingBoxDescent;
+                        ctx.clearRect(centre[0] - size.width / 2, centre[1] - size.fontBoundingBoxAscent, size.width, textHeight);
+                        ctx.fillText(text, ...centre);
+                    }
+
+                    this.points.slice(1).forEach((point, i) =>
+                        drawLine(point, this.points[i]));
+
+                    if (this.closed) {
+                        ctx.beginPath();
+                        ctx.lineTo(...toScreen(this.points[0]));
+                        ctx.lineTo(...toScreen(this.points.at(-1)));
+                        ctx.stroke();
+                        drawLine(this.points[0], this.points.at(-1));
+                    }
                 }
+
                 if (app.action?.nearest && app.action.nearest.dist < 8) {
                     ctx.strokeStyle = 'yellow';
                     const projected = toScreen(app.action.nearest.point);
@@ -10418,6 +10516,13 @@
                 return applyTransform([centre2d[0], 0, centre2d[1]], this.world);
             }
                 */
+            get size() {
+                return [
+                    this.max[0] - this.min[0],
+                    this.height,
+                    this.max[1] - this.min[1],
+                ];
+            }
             initialiseBuffers() {
                 const fixed = {
                     colour: this.part._node.colour ?? [0.6, 0.3, 0.8],
@@ -10435,12 +10540,6 @@
                 this.points = pathToPoints(path).filter((point) => point);
                 this.min = this.points.reduce((min, point) => point.map((v, i) => Math.min(v, min[i])), [Infinity, Infinity]);
                 this.max = this.points.reduce((max, point) => point.map((v, i) => Math.max(v, max[i])), [-Infinity, -Infinity]);
-
-                this.size = [
-                    this.max[0] - this.min[0],
-                    this.height,
-                    this.max[1] - this.min[1],
-                ];
 
                 const thickness = this.part._node.thickness;
                 const offset = [];
@@ -12526,7 +12625,7 @@ ${vectorFixed(closest[0].local)}`;
                 this.state = state;
             }
             get detail() {
-                return this.command.description(this.state);
+                return this.command.description;
             }
             async resolve() {
                 await this.command.resolve(this.state);
@@ -12547,7 +12646,7 @@ ${vectorFixed(closest[0].local)}`;
                     commandName: this.command.name,
                     time: this.time.getTime(),
                     text: this.text,
-                    state: this.command.serialiseState(this.state),
+                    state: this.command.serialise(this.state),
                 };
             }
             static fromJSON(definition) {
@@ -12567,17 +12666,19 @@ ${vectorFixed(closest[0].local)}`;
             constructor(start, end) {
                 super();
                 this.title = 'Move Camera';
-                this.detail = [
-                    `Change the camera view to:`,
-                    document.createElement('br'),
-                    `Position: ${vectorFixed(end.position)}`,
-                    document.createElement('br'),
-                    `Look At: ${vectorFixed(end.lookAt)}`,
-                    document.createElement('br'),
-                    `Up: ${vectorFixed(end.up)}`,
-                ];
                 this.start = start;
                 this.end = end;
+            }
+            get detail() {
+                return [
+                    `Change the camera view to:`,
+                    document.createElement('br'),
+                    `Position: ${vectorFixed(this.end.position)}`,
+                    document.createElement('br'),
+                    `Look At: ${vectorFixed(this.end.lookAt)}`,
+                    document.createElement('br'),
+                    `Up: ${vectorFixed(this.end.up)}`,
+                ];
             }
             undo() {
                 moveCamera(this.start.position, this.start.lookAt, this.start.up);
@@ -12645,6 +12746,22 @@ ${vectorFixed(closest[0].local)}`;
         }
 
         /**
+         * Add a move camera action, joining it with previous move camera if not 'complete'
+         */
+        function addMoveCameraAction(start, end) {
+            if (actionHistory.content.at(-1) instanceof MoveCameraAction &&
+                !actionHistory.content.at(-1).complete) {
+                actionHistory.content.at(-1).end = end;
+                const actionView = actionHistory.map.get(actionHistory.content.at(-1));
+                const detail = actionView.querySelector('.action-view-detail');
+                detail.innerHTML = '';
+                detail.append(...(actionHistory.content.at(-1).detail ?? ['Details...']));
+            } else {
+                actionHistory.add(new MoveCameraAction(action.start, end));
+            }
+        }
+
+        /**
          * End a mouse movement and store change in action history.
          */
         function endMove(event) {
@@ -12662,7 +12779,8 @@ ${vectorFixed(closest[0].local)}`;
                         lookAt: [...app.view.camera.lookAt],
                         up: [...app.view.camera.up],
                     }
-                    actionHistory.add(new MoveCameraAction(action.start, end));
+                    //actionHistory.add(new MoveCameraAction(action.start, end));
+                    addMoveCameraAction(action.start, end);
                 }
             } else if (app.mode.at(-1).name === 'edit walls') {
                 const mouseLine = getRay(action.lastX, action.lastY);
@@ -15755,7 +15873,7 @@ ${vectorFixed(closest[0].local)}`;
             q: (event) => up(),
             r: (event) => setView([1, 0, 0]),
             s: (event) => forward(-2),
-            t: (event) => setView([0, 1, 0], [0, 0, 1]),
+            t: (event) => setView([0, 1, 0], [0, 0, -1]),
             u: (event) => upright(),
             v: (event) => displayVariableDialog(),
             w: (event) => forward(2),
@@ -15839,9 +15957,9 @@ ${vectorFixed(closest[0].local)}`;
                     } else if (app.mode.at(-1).name === 'edit' && !event.altKey) {
                         setAction(dragParts, event);
                         report(`Moving ${action.part.name}`);
-                    } else if (app.mode.at(-1).name === 'edit walls') {
                     } else {
-                        setAction(dragView, event);
+                        //setAction(dragView, event);
+                        app.mode.at(-1).mouseDown(event);
                     }
                 } else {
                     app.mode.at(-1).mouseDown(event);
@@ -15884,7 +16002,8 @@ ${vectorFixed(closest[0].local)}`;
                     lookAt: app.view.camera.lookAt,
                     up: app.view.camera.up,
                 };
-                actionHistory.add(new MoveCameraAction(start, end));
+                //actionHistory.add(new MoveCameraAction(start, end));
+                addMoveCameraAction(start, end);
             });
 
             /**
@@ -16552,26 +16671,34 @@ ${vectorFixed(closest[0].local)}`;
         /**
          * Prototype for user commands.
          */
-        const UserCommand = {
-            parameters: [],
-            do(text) {
-                const parameters = text.replace(this.name, '').trim().split(/\s*[;\|\t\u{1f}]\s*/ug);
-                const state = this.action(parameters);
-                actionHistory.add(new CommandAction(this, text, state));
-            },
-            fromJSON(definition) {
+        class UserCommand {
+            constructor(text) {
+                this.text = text;
+                this.parameters = text.replace(this.constructor.name, '').trim().split(/\s*[;\|\t\u{1f}]\s*/ug);
+                //const state = this.action(this.parameters);
+            }
+            run() {
+                this.state = this.action(this.parameters);
+                actionHistory.add(new CommandAction(this, this.text));
+            }
+            static fromJSON(definition) {
                 const state = this.recreateState(definition.state);
                 return new CommandAction(this, definition.text, state);
-            },
+            }
             recreateState(json) {
                 // Empty function for commands that don't require state to be retained.
-            },
+            }
         }
 
         /**
          * View command
          */
-        const SetViewCommand = {
+        class SetViewCommand extends UserCommand {
+            constructor(text, viewDirection, up) {
+                super(text);
+                this.viewDirection = viewDirection;
+                this.up = up;
+            }
             action(parameters = []) {
                 parameters = parameters.filter((name) => name);
                 if (parameters.length > 0) {
@@ -16585,20 +16712,20 @@ ${vectorFixed(closest[0].local)}`;
                     parts: [...app.selected],
                     prior: app.view?.camera.toJSON(),
                 };
-            },
-            serialiseState(state) {
+            }
+            serialise() {
                 return {
-                    parts: state.parts.map((part) => part.path().map((part) => part.name)),
-                    prior: state.prior,
+                    parts: this.parts.map((part) => part.path().map((part) => part.name)),
+                    prior: this.prior,
                 }
-            },
+            }
             recreateState(state) {
                 return {
                     parts: state.parts,
                     prior: state.prior,
                     unresolved: true,
                 }
-            },
+            }
             async resolve(state) {
                 const parts = [];
                 await Promise.all(state.parts.map(async (path) => {
@@ -16608,497 +16735,732 @@ ${vectorFixed(closest[0].local)}`;
                     }
                 }));
                 state.parts = parts;
-            },
+            }
             undo(state) {
                 moveCamera(state.prior.position, state.prior.lookAt, state.prior.up);
-            },
+            }
             redo(state) {
                 if (state.parts.length) {
                     app.selected.clear();
                     state.parts.forEach((part) => app.selected.add(part));
                     this.action();
                 }
-            },
-            __proto__: UserCommand,
+            }
         }
 
 
         /**
          * List of commands
          */
-        const userCommands = [
-            {
-                name: '?',
-                action(parameters) {
-                    console.log(userCommands.map((command) => command.name).join(', '));
-                },
-                __proto__: UserCommand,
-            },
-            // Scene graph commands
-            {
-                name: 'clear',
-                action(parameters) {
-                    clearScene();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'load',
-                action(parameters) {
-                    parameters.forEach((name) => loadFile(name));
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'add',
-                action(parameters) {
-                    const name = parameters.join(' ');
-                    const selected = [...app.selected][0];
-                    const type = selected?._node[meta].types?.[name];
-                    const source = partsList?.find((part) => part.name === name)?._node ??
-                        Part.all.find((part) => part.name === name)?._node ?? type;
+        class ShowHelp extends UserCommand {
+            static name = '?';
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                console.log(userCommands.map((command) => command.name).join(', '));
+            }
+        }
+        // Scene graph commands
+        class ClearScene extends UserCommand {
+            static name = 'clear';
+            static fromJSON() {
+                return new ClearScene();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                clearScene();
+            }
+        }
+        class LoadScene extends UserCommand {
+            static name = 'load';
+            static fromJSON(definition) {
+                return new LoadScene();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                parameters.forEach((name) => loadFile(name));
+            }
+        }
+        class AddPart extends UserCommand {
+            static name = 'add';
+            static fromJSON(definition) {
+                return new AddPart();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const name = parameters.join(' ');
+                const selected = [...app.selected][0];
+                const type = selected?._node[meta].types?.[name];
+                const source = partsList?.find((part) => part.name === name)?._node ??
+                    Part.all.find((part) => part.name === name)?._node ?? type;
 
-                    if (!source) {
-                        report(`No loaded part named ${name}`);
-                        return;
-                    }
+                if (!source) {
+                    report(`No loaded part named ${name}`);
+                    return;
+                }
 
-                    if (app.selected.size > 0) {
-                        for (const parent of app.selected) {
-                            if (source.position) {
-                                const bounds = getBounds(source);
-                                source.position[0] += bounds.max[0];
-                            }
-                            const part = new Part(source, {}, new Component({}, source, {}), parent);
-                            parent.parts.push(part);
-                            part.parent = parent;
-                            const parentItem = app.view.parts.get(parent);
-                            app.view.addPart(part, parentItem);
-                        }
-                    } else {
-                        app.graph[parts].push(part);
-                        app.views.forEach((view) => view.addPart(part));
-                    }
-
-                    /*
-                const part = parameters.reduce((part, parameter) => {
-                    if (parameter.includes('=')) {
-                        const [name, value] = parameter.trim().split(/\s*=\s* /);
-                        part[name] = interpret(value);
-                    } else {
-                        if (part.name) {
-                            part[parameter.trim()] = true;
-                        } else {
-                            part.name = parameter.trim();
-                            part[meta].name = [parameter.trim()];
-                        }
-                    }
-                    return part;
-                }, { [meta]: { source: { text }, name: [], data: [], typeNames: [], parent: null, states: {}, currentState: new Set() }, [parts]: [] });
-                const part = new Part(parameters[0], parameters.slice(1).join(' '));
                 if (app.selected.size > 0) {
                     for (const parent of app.selected) {
+                        if (source.position) {
+                            const bounds = getBounds(source);
+                            source.position[0] += bounds.max[0];
+                        }
+                        const part = new Part(source, {}, new Component({}, source, {}), parent);
                         parent.parts.push(part);
                         part.parent = parent;
-                        app.views.forEach((view) => {
-                            const parentItem = view.parts.get(parent)?.shapes[0];
-                            if (parentItem) {
-                                view.addPart(part);
-                            }
-                        });
+                        const parentItem = app.view.parts.get(parent);
+                        app.view.addPart(part, parentItem);
                     }
                 } else {
                     app.graph[parts].push(part);
-                app.views.forEach((view) => view.addPart(part));
-            }
-            */
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'add wall',
-                description() {
-                    return 'Add a wall';
-                },
-                serialiseState() {
-                },
-                async action(parameters) {
-                    app.mode.push(wallEditMode);
-                    app.mode.at(-1).buttons = 1;
-                    setAction(movePoint);
-                    //action.newWall = new AddWall();
-                    app.mode.at(-1).wall = new AddWall();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'export',
-                async action(parameters) {
-                    const table = await getTable(app.parts);
-                    const output = table.map((row) => row.join('\t')).join('\n');
-                    downloadText(output, 'deployment.tsv');
-                },
-                __proto__: UserCommand,
-            },
+                    app.views.forEach((view) => view.addPart(part));
+                }
 
-            // Change a node
-            {
-                name: 'move',
-                action(parameters) {
-                    const offset = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
-                    if (offset.length !== 3) {
-                        const start = offset.length;
-                        offset.length = 3;
-                        offset.fill(0, start, 3);
-                    }
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.move(offset));
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'rotate',
-                action(parameters) {
-                    const [angle, ...axis] = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
-                    if (axis.length !== 3) {
-                        const start = axis.length;
-                        axis.length = 3;
-                        axis.fill(0, start, 3);
-                    }
-                    normalise(axis);
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.rotate(angle, axis));
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'colour',
-                action(parameters) {
-                    const colour = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
-                    if (colour.length !== 3) {
-                        const start = colour.length;
-                        colour.length = 3;
-                        colour.fill(0, start, 3);
-                    }
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.colour = colour);
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'reflectivity',
-                action(parameters) {
-                    const reflectivity = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
-                    if (reflectivity.length !== 3) {
-                        const start = reflectivity.length;
-                        reflectivity.length = 3;
-                        reflectivity.fill(0, start, 3);
-                    }
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.reflectivity = reflectivity);
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'roughness',
-                action(parameters) {
-                    const roughness = Number(parameters[0]);
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.roughness = roughness);
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'metallic',
-                action(parameters) {
-                    const metallic = Number(parameters[0]);
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.metallic = metallic);
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'mirror',
-                action(parameters) {
-                    const mirror = Number(parameters[0]);
-                    const selected = [...app.selected];
-                    app.views.forEach((view) => {
-                        const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
-                        items.forEach((item) => item.mirror = mirror);
-                    });
-                },
-                __proto__: UserCommand,
-            },
-            // View commands
-            {
-                name: 'reset',
-                action(parameters) {
-                    reset();
-                },
-                __proto__: UserCommand,
-            },
-            // View commands
-            {
-                name: 'walk',
-                action(parameters) {
-                    toggleWalk();
-                    canvas.focus();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'orthographic',
-                action(parameters) {
-                    app.view.camera.isOrthographic = true;
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'perspective',
-                action(parameters) {
-                    app.view.camera.isOrthographic = false;
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'list',
-                action(parameters) {
-                    const items = app.view.items.filter((item) => app.selected.has(item._node));
-                    if (items.length === 0) {
-                        items.push(...app.view.items);
-                    }
-                    const nodes = items.map((item) => item._node);
-                    app.windows.push(new ListWindow(nodes, parameters));
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'look at',
-                action(parameters) {
-                    const target = parameters[0];
-                    const parts = app.view.findByName(target);
-
-                    // If the target is the name of a part in the view - look at that from the current location
-                    if (parts.length > 0) {
-                        const part = parts[0];
-                        const viewNode = app.view.customisation.get(part) || part._node;
-                        const lookAt = part.transform.apply(viewNode.position);
-                        moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
+                /*
+            const part = parameters.reduce((part, parameter) => {
+                if (parameter.includes('=')) {
+                    const [name, value] = parameter.trim().split(/\s*=\s* /);
+                    part[name] = interpret(value);
+                } else {
+                    if (part.name) {
+                        part[parameter.trim()] = true;
                     } else {
-                        // Assume the target is a position
-                        const position = target.split(/\s*,\s*/).filter((i) => parseFloat(i));
-                        const lookAt = [...app.view.camera.lookAt];
-                        lookAt[0] = position[0] ?? lookAt[0];
-                        lookAt[1] = position[1] ?? lookAt[1];
-                        lookAt[2] = position[2] ?? lookAt[2];
-                        moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
+                        part.name = parameter.trim();
+                        part[meta].name = [parameter.trim()];
                     }
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'position',
-                action(parameters) {
-                    const position = parameteres[0].split(/\s*,\s*/).map((str) => parseFloat(str));
-                    moveCamera(position, app.view.camera.lookAt, app.view.camera.up);
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'grid size',
-                action(parameters) {
-                    const size = parameters[0].split(/\s*,\s*/).map((str) => parseFloat(str));
-                    if (size.length !== 2) {
-                        size.length = 2;
-                        size[1] = size[0];
-                    }
-                    app.gridSize = size;
-                    if (size[0] > 0) {
-                        app.drawGround = true;
-                    } else {
-                        app.drawGround = false;
-                    }
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'below',
-                viewDirection: [0, -1, 0],
-                up: [0, 0, -1],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show below view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'front',
-                viewDirection: [0, 0, 1],
-                up: [0, 1, 0],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show front view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'back',
-                viewDirection: [0, 0, -1],
-                up: [0, 1, 0],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show back view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'top',
-                viewDirection: [0, 1, 0],
-                up: [0, 0, -1],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show top view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'left',
-                action(parameters) { setView([-1, 0, 0]); },
-                viewDirection: [-1, 0, 0],
-                up: [0, 1, 0],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show left view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'right',
-                action(parameters) { setView([1, 0, 0]); },
-                viewDirection: [1, 0, 0],
-                up: [0, 1, 0],
-                description(state) {
-                    const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
-                    return `Show right view of ${parts}`;
-                },
-                __proto__: SetViewCommand,
-            },
-            {
-                name: 'hide',
-                action(parameters) { hideSelected(event); },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'parent',
-                action(parameters) { selectParent(event); },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'save',
-                action(parameters) { save(); },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'snapshot',
-                action(parameters) {
-                    app.snapshotName = parameters.join(' ');
-                    app.savePNG = true;
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'none',
-                action(parameters) {
-                    app.selected.clear();
-                    app.views.forEach((view) => view.refresh());
-                    app.show = null;
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'all',
-                action(parameters) {
-                    app.view.items.forEach((item) => app.selected.add(item._node));
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'skybox',
-                action(parameters) {
-                    skybox(parameters);
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'action',
-                action(parameters) {
-                    const part = app.view.items.find((item) => app.selected.has(item.part) && item._node?.url);
-                    if (part) {
-                        nodeAction(part);
-                    } else {
-                        report('No node selected');
-                    }
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'forward',
-                action(parameters) {
-                    const ammount = text;
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'edit',
-                description: 'Toggle editing',
-                action(parameters) {
-                    toggleEdit();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'show actions',
-                description: 'Show the action history',
-                action(parameters) {
-                    showActions();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'hide actions',
-                description: 'Hide the action history',
-                action(parameters) {
-                    hideActions();
-                },
-                __proto__: UserCommand,
-            },
-            {
-                name: 'toggle errors',
-                description: 'Toggle reporting of GL errors to console',
-                action(parameters) {
-                    app.reportErrors = !app.reportErrors;
-                    report(`Error reporting ${app.reportErrors ? 'On' : 'Off'}`)
-                },
-                __proto__: UserCommand,
+                }
+                return part;
+            }, { [meta]: { source: { text }, name: [], data: [], typeNames: [], parent: null, states: {}, currentState: new Set() }, [parts]: [] });
+            const part = new Part(parameters[0], parameters.slice(1).join(' '));
+            if (app.selected.size > 0) {
+                for (const parent of app.selected) {
+                    parent.parts.push(part);
+                    part.parent = parent;
+                    app.views.forEach((view) => {
+                        const parentItem = view.parts.get(parent)?.shapes[0];
+                        if (parentItem) {
+                            view.addPart(part);
+                        }
+                    });
+                }
+            } else {
+                app.graph[parts].push(part);
+            app.views.forEach((view) => view.addPart(part));
+        }
+        */
             }
+        }
+        class AddWall extends UserCommand {
+            static name = 'add wall';
+            static fromJSON(definition) {
+                return new AddWall(definition.text);
+            }
+            constructor(text) {
+                super(text);
+            }
+            get description() {
+                return 'Add a wall';
+            }
+            serialise() {
+                return {
+                    text: this.text,
+                }
+            }
+            async action(parameters) {
+                wallEditMode.start();
+                app.mode.push(wallEditMode);
+                app.mode.at(-1).buttons = 1;
+                showActions();
+            }
+        }
+        class ExportScene extends UserCommand {
+            static name = 'export';
+            static fromJSON(definition) {
+                return new ExportScene();
+            }
+            constructor(text) {
+                super(text);
+            }
+            async action(parameters) {
+                const table = await getTable(app.parts);
+                const output = table.map((row) => row.join('\t')).join('\n');
+                downloadText(output, 'deployment.tsv');
+            }
+        }
+
+        // Change a node
+        class MoveParts extends UserCommand {
+            static name = 'move';
+            static fromJSON(definition) {
+                return new MoveParts();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const offset = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
+                if (offset.length !== 3) {
+                    const start = offset.length;
+                    offset.length = 3;
+                    offset.fill(0, start, 3);
+                }
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.move(offset));
+                });
+            }
+        }
+        class RotateParts extends UserCommand {
+            static name = 'rotate';
+            static fromJSON(definition) {
+                return new RotateParts();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const [angle, ...axis] = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
+                if (axis.length !== 3) {
+                    const start = axis.length;
+                    axis.length = 3;
+                    axis.fill(0, start, 3);
+                }
+                normalise(axis);
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.rotate(angle, axis));
+                });
+            }
+        }
+        class SetColour extends UserCommand {
+            static name = 'colour';
+            static fromJSON(definition) {
+                return new SetColour();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const colour = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
+                if (colour.length !== 3) {
+                    const start = colour.length;
+                    colour.length = 3;
+                    colour.fill(0, start, 3);
+                }
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.colour = colour);
+                });
+            }
+        }
+        class SetReflectivity extends UserCommand {
+            static name = 'reflectivity';
+            static fromJSON(definition) {
+                return new SetReflectivity();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const reflectivity = parameters[0].split(/\s*,\s*/).map((v) => Number(v));
+                if (reflectivity.length !== 3) {
+                    const start = reflectivity.length;
+                    reflectivity.length = 3;
+                    reflectivity.fill(0, start, 3);
+                }
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.reflectivity = reflectivity);
+                });
+            }
+        }
+        class SetRoughness extends UserCommand {
+            static name = 'roughness';
+            static fromJSON(SetRoughness) {
+                return new LoadScene();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const roughness = Number(parameters[0]);
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.roughness = roughness);
+                });
+            }
+        }
+        class SetMetallic extends UserCommand {
+            static name = 'metallic';
+            static fromJSON(definition) {
+                return new SetMetallic();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const metallic = Number(parameters[0]);
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.metallic = metallic);
+                });
+            }
+        }
+        class SetMirror extends UserCommand {
+            static name = 'mirror';
+            static fromJSON(definition) {
+                return new SetMirror();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const mirror = Number(parameters[0]);
+                const selected = [...app.selected];
+                app.views.forEach((view) => {
+                    const items = selected.flatMap((node) => view.parts.get(node)?.shapes || []);
+                    items.forEach((item) => item.mirror = mirror);
+                });
+            }
+        }
+        // View commands
+        class ResetView extends UserCommand {
+            static name = 'reset';
+            static fromJSON(definition) {
+                return new ResetView();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                reset();
+            }
+        }
+        // View commands
+        class EnterWalkMode extends UserCommand {
+            static name = 'walk';
+            static fromJSON(definition) {
+                return new EnterWalkMode();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                toggleWalk();
+                canvas.focus();
+            }
+        }
+        class SetOrthographicView extends UserCommand {
+            static name = 'orthographic';
+            static fromJSON(definition) {
+                return new SetOrthographicView();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.view.camera.isOrthographic = true;
+            }
+        }
+        class SetPerspectiveView extends UserCommand {
+            static name = 'perspective';
+            static fromJSON(definition) {
+                return new SetPerspectiveView();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.view.camera.isOrthographic = false;
+            }
+        }
+        class ListItems extends UserCommand {
+            static name = 'list';
+            static fromJSON(definition) {
+                return new ListItems();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const items = app.view.items.filter((item) => app.selected.has(item._node));
+                if (items.length === 0) {
+                    items.push(...app.view.items);
+                }
+                const nodes = items.map((item) => item._node);
+                app.windows.push(new ListWindow(nodes, parameters));
+            }
+        }
+        class LookAtPart extends UserCommand {
+            static name = 'look at';
+            static fromJSON(definition) {
+                return new LookAtPart();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const target = parameters[0];
+                const parts = app.view.findByName(target);
+
+                // If the target is the name of a part in the view - look at that from the current location
+                if (parts.length > 0) {
+                    const part = parts[0];
+                    const viewNode = app.view.customisation.get(part) || part._node;
+                    const lookAt = part.transform.apply(viewNode.position);
+                    moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
+                } else {
+                    // Assume the target is a position
+                    const position = target.split(/\s*,\s*/).filter((i) => parseFloat(i));
+                    const lookAt = [...app.view.camera.lookAt];
+                    lookAt[0] = position[0] ?? lookAt[0];
+                    lookAt[1] = position[1] ?? lookAt[1];
+                    lookAt[2] = position[2] ?? lookAt[2];
+                    moveCamera(app.view.camera.position, lookAt, app.view.camera.up);
+                }
+            }
+        }
+        class SetCameraPosition extends UserCommand {
+            static name = 'position';
+            static fromJSON(definition) {
+                return new SetCameraPosition();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const position = parameteres[0].split(/\s*,\s*/).map((str) => parseFloat(str));
+                moveCamera(position, app.view.camera.lookAt, app.view.camera.up);
+            }
+        }
+        class SetGridSize extends UserCommand {
+            static name = 'grid size';
+            static fromJSON(definition) {
+                return new SetGridSize();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const size = parameters[0].split(/\s*,\s*/).map((str) => parseFloat(str));
+                if (size.length !== 2) {
+                    size.length = 2;
+                    size[1] = size[0];
+                }
+                app.gridSize = size;
+                if (size[0] > 0) {
+                    app.drawGround = true;
+                } else {
+                    app.drawGround = false;
+                }
+            }
+        }
+        class BottomView extends SetViewCommand {
+            static name = 'below';
+            static fromJSON(definition) {
+                return new BottomView();
+            }
+            constructor(text) {
+                super(text, [0, -1, 0], [0, 0, -1]);
+            }
+            description(state) {
+                const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show below view of ${parts}`;
+            }
+        }
+        class FrontView extends SetViewCommand {
+            static name = 'front';
+            static fromJSON(definition) {
+                return new FrontView();
+            }
+            constructor(text) {
+                super(text, [0, 0, 1], [0, 1, 0]);
+            }
+            description(state) {
+                const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show front view of ${parts}`;
+            }
+        }
+        class BackView extends SetViewCommand {
+            static name = 'back';
+            static fromJSON(definition) {
+                return new BackView();
+            }
+            constructor(text) {
+                super(text, [0, 0, -1], [0, 1, 0]);
+            }
+            description(state) {
+                const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show back view of ${parts}`;
+            }
+        }
+        class TopView extends SetViewCommand {
+            static name = 'top';
+            static fromJSON(definition) {
+                return new TopView();
+            }
+            constructor(text) {
+                super(text, [0, 1, 0], [0, 0, -1]);
+                if (this.parameters.length) {
+                    this.parts = this.parameters.flatMap((name) => app.allParts.find((part) => part.name === name) || []);
+                } else {
+                    this.parts = [...app.selected];
+                }
+            }
+            get description() {
+                const parts = this.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show top view of ${parts}`;
+            }
+        }
+        class LeftView extends SetViewCommand {
+            static name = 'left';
+            static fromJSON(definition) {
+                return new LeftView();
+            }
+            constructor(text) {
+                super(text, [-1, 0, 0], [0, 1, 0]);
+            }
+            description(state) {
+                const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show left view of ${parts}`;
+            }
+        }
+        class RightView extends SetViewCommand {
+            static name = 'right';
+            static fromJSON(definition) {
+                return new RightView();
+            }
+            constructor(text) {
+                super(text, [1, 0, 0], [0, 1, 0]);
+            }
+            description(state) {
+                const parts = state.parts.map((part) => part.name || part.at(-1)).join(', ');
+                return `Show right view of ${parts}`;
+            }
+        }
+        class HideParts extends UserCommand {
+            static name = 'hide';
+            static fromJSON(definition) {
+                return new HideParts();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) { hideSelected(event); }
+        }
+        class SelectParent extends UserCommand {
+            static name = 'parent';
+            static fromJSON(definition) {
+                return new SelectParent();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) { selectParent(event); }
+        }
+        class SaveState extends UserCommand {
+            static name = 'save';
+            static fromJSON(definition) {
+                return new SaveState();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) { save(); }
+        }
+        class Screenshot extends UserCommand {
+            static name = 'screenshot';
+            static fromJSON(definition) {
+                return new Screenshot();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.snapshotName = parameters.join(' ');
+                app.savePNG = true;
+            }
+        }
+
+        class ClearSelection extends UserCommand {
+            static name = 'none';
+            static fromJSON(definition) {
+                return new ClearSelection();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.selected.clear();
+                app.views.forEach((view) => view.refresh());
+                app.show = null;
+            }
+        }
+        class SelectAll extends UserCommand {
+            static name = 'all';
+            static fromJSON(definition) {
+                return new SelectAll();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.view.items.forEach((item) => app.selected.add(item._node));
+            }
+        }
+        class AddSkybox extends UserCommand {
+            static name = 'skybox';
+            static fromJSON(definition) {
+                return new AddSkybox();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                skybox(parameters);
+            }
+        }
+        class PerformDefaultAction extends UserCommand {
+            static name = 'action';
+            static fromJSON(definition) {
+                return new PerformDefaultAction();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                const part = app.view.items.find((item) => app.selected.has(item.part) && item._node?.url);
+                if (part) {
+                    nodeAction(part);
+                } else {
+                    report('No node selected');
+                }
+            }
+        }
+        class MoveForward extends UserCommand {
+            static name = 'forward';
+            static fromJSON(definition) {
+                return new MoveForward();
+            }
+            constructor(text) {
+                super(text);
+                this.ammount = parseFloat(this.parameters[0]);
+                this.units = app.units;
+            }
+            get description() {
+                return `move forward ${this.ammount}${this.units}`;
+            }
+            action(parameters) {
+                const ammount = text;
+            }
+        }
+        class ToggleEditMode extends UserCommand {
+            static name = 'edit';
+            static description = 'Toggle editing';
+            static fromJSON(definition) {
+                return new ToggleEditMode();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                toggleEdit();
+            }
+        }
+        class ShowActionHistory extends UserCommand {
+            static name = 'show actions';
+            static desription = 'Show the action history';
+            static fromJSON(definition) {
+                return new ShowActionHistory();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                showActions();
+            }
+        }
+        class HideActionHistory extends UserCommand {
+            static name = 'hide actions';
+            static desription = 'Hide the action history';
+            static fromJSON(definition) {
+                return new HideActionHistory();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                hideActions();
+            }
+        }
+        class ToggleErrorReporting extends UserCommand {
+            static name = 'toggle errors';
+            static desription = 'Toggle reporting of GL errors to console';
+            static fromJSON(definition) {
+                return new ToggleErrorReporting();
+            }
+            constructor(text) {
+                super(text);
+            }
+            action(parameters) {
+                app.reportErrors = !app.reportErrors;
+                report(`Error reporting ${app.reportErrors ? 'On' : 'Off'}`)
+            }
+        }
+
+        const userCommands = [
+            ShowHelp,
+            ClearScene,
+            AddPart,
+            AddWall,
+            ExportScene,
+            MoveParts,
+            RotateParts,
+            SetColour,
+            SetReflectivity,
+            SetRoughness,
+            SetMetallic,
+            SetMirror,
+            ResetView,
+            EnterWalkMode,
+            SetOrthographicView,
+            SetPerspectiveView,
+            ListItems,
+            LookAtPart,
+            SetCameraPosition,
+            SetGridSize,
+            BottomView,
+            FrontView,
+            BackView,
+            TopView,
+            LeftView,
+            RightView,
+            HideParts,
+            SelectParent,
+            SaveState,
+            Screenshot,
+            ClearSelection,
+            SelectAll,
+            AddSkybox,
+            PerformDefaultAction,
+            MoveForward,
+            ToggleEditMode,
+            ShowActionHistory,
+            HideActionHistory,
+            ToggleErrorReporting
         ];
 
         /**
@@ -17293,7 +17655,8 @@ ${vectorFixed(closest[0].local)}`;
                 const commands = userCommands.filter((command) => fullCommand.startsWith(command.name));
 
                 if (commands.length > 0) {
-                    commands[0].do(fullCommand);
+                    command = new commands[0](fullCommand);
+                    command.run();
                 } else if (commands.length === 0) {
                     const names = fullCommand.split(/\s*,\s*/);
                     const select = names.filter((name) => !name.startsWith('-')).map((name) => new RegExp(name, 'i'));
